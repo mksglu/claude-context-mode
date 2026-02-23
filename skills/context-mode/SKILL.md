@@ -41,9 +41,14 @@ description: |
 
   API Endpoints: hit endpoint, call API, check response, test endpoint, API debugging.
 
+  Browser & UI Inspection: page snapshot, browser snapshot, extract elements, DOM structure,
+  page accessibility tree, inspect page, page elements, form fields, UI components,
+  screenshot analysis, web page structure, HTML elements, element selectors.
+
+  MCP Tool Output Routing: ANY large output from Playwright, Context7, GitHub API,
+  Sentry, or other MCP tools should be routed through index → search.
+
   Or ANY operation where output might exceed 20 lines.
-  Also use when routing output from other MCP tools (Playwright snapshots, Context7 docs,
-  GitHub API responses, Sentry data) through index → search to avoid context bloat.
 ---
 
 # Context Mode: Default for All Large Output
