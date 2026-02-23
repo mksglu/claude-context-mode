@@ -2,19 +2,38 @@
 
 **Claude Code MCP plugin that saves 94% of your context window.**
 
-Every tool call in Claude Code consumes context tokens. A single Playwright snapshot is 5-50KB. A Context7 docs lookup is 5-60KB. A `gh pr list` dumps 2-20KB. After 30 minutes of real debugging, you've burned 150K+ tokens and responses slow to a crawl.
+Every tool call in Claude Code consumes context tokens. A single Playwright snapshot burns 10K-135K tokens. A Context7 docs lookup dumps 4K-10K tokens. GitHub's `list_commits` with 30 results costs 29K-64K tokens. With 5+ MCP servers active, you lose ~55K tokens before your first message — and after 30 minutes of real debugging, responses slow to a crawl.
 
 Context Mode intercepts these operations, processes data in isolated subprocesses, and returns only what matters.
+
+## The Problem: MCP Context Bloat
+
+Claude Code has a 200K token context window. Here's how fast popular MCP servers eat through it:
+
+| MCP Server | Tool | Output per Call | Source |
+|---|---|---|---|
+| **Playwright** | `browser_snapshot` | 10K-135K tokens (50-540 KB) | [playwright-mcp#1233](https://github.com/microsoft/playwright-mcp/issues/1233) |
+| **Context7** | `query-docs` | 4K-10K tokens per query | [upstash/context7](https://github.com/upstash/context7) |
+| **GitHub** | `list_commits` (30) | 29K-64K tokens | [github-mcp-server#142](https://github.com/github/github-mcp-server/issues/142) |
+| **Sentry** | full mode tools | 14K tokens (definitions only) | [getsentry/sentry-mcp](https://github.com/getsentry/sentry-mcp) |
+| **Supabase** | database tools | 4.2K tokens (definitions only) | [supabase-community/supabase-mcp](https://github.com/supabase-community/supabase-mcp) |
+| **Firecrawl** | `scrape` / `crawl` | 5K-50K+ tokens per page | [firecrawl](https://github.com/mendableai/firecrawl) |
+| **Chrome DevTools** | all tools | 17K tokens (definitions only) | Community benchmark |
+| **Fetch** | `fetch` | 5K-50K tokens per page | Official reference server |
+
+**Real measurement** ([Scott Spence, 2025](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code)): With 81+ MCP tools enabled across multiple servers, **143K of 200K tokens (72%) consumed** — 82K tokens just for MCP tool definitions. Only 28% left for actual work.
+
+**Vercel's finding** ([December 2025](https://www.anthropic.com/engineering/advanced-tool-use)): Removing 80% of tools resulted in 3.5x faster execution, 37% fewer tokens, and 100% success rate (up from 80%).
 
 ## Before / After
 
 | What you're doing | Without Context Mode | With Context Mode | Savings |
 |---|---|---|---|
-| Playwright `browser_snapshot` | 12 KB snapshot into context | 50 B element summary | **99%** |
-| Context7 `query-docs` (React) | 60 KB raw documentation | 285 B search result | **99%** |
-| `gh pr list` / `gh api` | 8 KB JSON response | 40 B formatted summary | **99%** |
+| Playwright `browser_snapshot` | 12 KB into context | 50 B summary | **99%** |
+| Context7 `query-docs` (React) | 60 KB raw docs | 285 B search result | **99%** |
+| `gh pr list` / `gh api` | 8 KB JSON response | 40 B summary | **99%** |
 | Read `access.log` (500 req) | 45 KB raw log | 71 B status breakdown | **99%** |
-| `npm test` (30 suites) | 6 KB raw output | 37 B pass/fail count | **99%** |
+| `npm test` (30 suites) | 6 KB raw output | 37 B pass/fail | **99%** |
 | Git log (153 commits) | 12 KB raw log | 18 B summary | **99%** |
 | Supabase Edge Functions docs | 4 KB raw docs | 123 B code example | **97%** |
 
@@ -38,39 +57,11 @@ claude mcp add context-mode -- npx -y context-mode
 
 Restart Claude Code. 5 tools are now available.
 
-## What Problems Does It Solve?
-
-### Problem 1: MCP tools flood your context
-
-Popular MCP servers return large payloads that eat tokens:
-
-| MCP Server | Tool | Typical Output |
-|---|---|---|
-| **Playwright** | `browser_snapshot` | 5-50 KB per page |
-| **Context7** | `query-docs` | 5-60 KB per query |
-| **GitHub** | `gh api`, `gh pr view` | 2-20 KB per call |
-| **Supabase** | schema/RLS queries | 3-15 KB per query |
-| **Memory** | `search_nodes` | 1-10 KB per search |
-
-Context Mode gives you `fetch_and_index` and `index` → `search` to keep raw data out of context.
-
-### Problem 2: File operations are wasteful
-
-Reading a 500-line log file with `cat` puts 45KB into context. You only needed "how many 500 errors?"
-
-Context Mode's `execute_file` reads the file in a subprocess — only your printed summary enters context.
-
-### Problem 3: Command output is too large
-
-`npm test`, `git log`, `docker ps`, `kubectl get pods` — all produce output that's mostly noise.
-
-Context Mode's `execute` runs commands in a sandbox. You write the filtering code, only the result enters context.
-
 ## Tools
 
 ### `execute` — Run Code in Sandbox
 
-10 languages: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R
+Execute code in 10 languages: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R. Only stdout enters context — raw data stays in the subprocess.
 
 ```
 Claude calls: execute({ language: "shell", code: "gh pr list --json title,state | jq length" })
@@ -81,7 +72,7 @@ Authenticated CLIs work out of the box — `gh`, `aws`, `gcloud`, `kubectl`, `do
 
 ### `execute_file` — Process Files Without Loading
 
-File contents never enter context. Loaded into `FILE_CONTENT` variable in the sandbox.
+File contents never enter context. The file is read into a `FILE_CONTENT` variable inside the sandbox.
 
 ```
 Claude calls: execute_file({ path: "access.log", language: "python", code: "..." })
@@ -90,7 +81,7 @@ Returns: "200: 312 | 404: 89 | 500: 14"     ← 30 bytes instead of 45KB
 
 ### `index` — Build Searchable Knowledge Base
 
-Chunks markdown by headings. Keeps code blocks intact. Stores in ephemeral FTS5 database with BM25 ranking.
+Chunks markdown by headings, keeps code blocks intact, stores in ephemeral FTS5 database with BM25 ranking.
 
 ```
 Claude calls: index({ content: <60KB React docs>, source: "React useEffect" })
@@ -181,7 +172,6 @@ Each `execute` call spawns an isolated subprocess with:
 The `index` and `search` tools use SQLite FTS5 with BM25 ranking:
 
 ```sql
--- Schema
 CREATE VIRTUAL TABLE chunks USING fts5(
   title,                        -- heading hierarchy, weighted 2x
   content,                      -- section text + code blocks
@@ -190,7 +180,6 @@ CREATE VIRTUAL TABLE chunks USING fts5(
   tokenize='porter unicode61'   -- stemming + unicode support
 );
 
--- Search query
 SELECT title, content, bm25(chunks, 2.0, 1.0) AS rank
 FROM chunks
 WHERE chunks MATCH ?
