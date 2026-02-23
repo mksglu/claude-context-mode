@@ -242,9 +242,10 @@ export class ContentStore {
 
   // ── Search ──
 
-  search(query: string, limit: number = 3): SearchResult[] {
+  search(query: string, limit: number = 3, source?: string): SearchResult[] {
     const sanitized = sanitizeQuery(query);
 
+    const sourceFilter = source ? "AND sources.label LIKE ?" : "";
     const stmt = this.#db.prepare(`
       SELECT
         chunks.title,
@@ -254,12 +255,16 @@ export class ContentStore {
         bm25(chunks, 2.0, 1.0) AS rank
       FROM chunks
       JOIN sources ON sources.id = chunks.source_id
-      WHERE chunks MATCH ?
+      WHERE chunks MATCH ? ${sourceFilter}
       ORDER BY rank
       LIMIT ?
     `);
 
-    const rows = stmt.all(sanitized, limit) as Array<{
+    const params = source
+      ? [sanitized, `%${source}%`, limit]
+      : [sanitized, limit];
+
+    const rows = stmt.all(...params) as Array<{
       title: string;
       content: string;
       content_type: string;
@@ -274,6 +279,16 @@ export class ContentStore {
       rank: r.rank,
       contentType: r.content_type as "code" | "prose",
     }));
+  }
+
+  // ── Sources ──
+
+  listSources(): Array<{ label: string; chunkCount: number }> {
+    return this.#db
+      .prepare(
+        "SELECT label, chunk_count as chunkCount FROM sources ORDER BY id DESC",
+      )
+      .all() as Array<{ label: string; chunkCount: number }>;
   }
 
   // ── Vocabulary ──

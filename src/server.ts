@@ -11,7 +11,7 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
-const VERSION = "0.5.5";
+const VERSION = "0.5.6";
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
@@ -155,7 +155,7 @@ function indexStdout(
     content: [
       {
         type: "text" as const,
-        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}\nUse search() to query this content.`,
+        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}\nUse search() to query this content. Use source: "${indexed.label}" to scope results.`,
       },
     ],
   };
@@ -434,7 +434,7 @@ server.registerTool(
         content: [
           {
             type: "text" as const,
-            text: `Indexed ${result.totalChunks} sections (${result.codeChunks} with code) from: ${result.label}\nUse search() to query this content.`,
+            text: `Indexed ${result.totalChunks} sections (${result.codeChunks} with code) from: ${result.label}\nUse search() to query this content. Use source: "${result.label}" to scope results.`,
           },
         ],
       };
@@ -470,6 +470,7 @@ server.registerTool(
       "SEARCH TIPS:\n" +
       "- Queries use OR semantics — results matching more terms rank higher via BM25\n" +
       "- Use 2-4 specific technical terms per query for best results\n" +
+      "- Use 'source' parameter to scope search to a specific indexed source (partial match)\n" +
       "- Check 'Searchable terms' from execute/execute_file results for available vocabulary\n" +
       "- For broad topics, send multiple focused searches in parallel\n\n" +
       "Returns exact content — not summaries. Each result includes heading hierarchy and full section text.",
@@ -480,19 +481,31 @@ server.registerTool(
         .optional()
         .default(3)
         .describe("Maximum results to return (default: 3)"),
+      source: z
+        .string()
+        .optional()
+        .describe(
+          "Filter results to a specific indexed source (partial match). " +
+          "Use the source label from index/fetch_and_index response.",
+        ),
     }),
   },
-  async ({ query, limit }) => {
+  async ({ query, limit, source }) => {
     try {
       const store = getStore();
-      const results = store.search(query, limit);
+      const results = store.search(query, limit, source);
 
       if (results.length === 0) {
+        const sources = store.listSources();
+        const sourceList =
+          sources.length > 0
+            ? `\nIndexed sources: ${sources.map((s) => `"${s.label}" (${s.chunkCount} sections)`).join(", ")}`
+            : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `No results found for: "${query}". Make sure content has been indexed first.`,
+              text: `No results found for: "${query}"${source ? ` in source "${source}"` : ""}.${sourceList}`,
             },
           ],
         };

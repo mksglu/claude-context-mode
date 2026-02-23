@@ -578,6 +578,85 @@ async function main() {
     store.close();
   });
 
+  // ===== SOURCE-SCOPED SEARCH =====
+  console.log("\n--- Source-Scoped Search ---\n");
+
+  await test("search with source filter returns only matching source", () => {
+    const store = createStore();
+    store.index({
+      content: "# Zod Transform\n\nUse .transform() to map values.\n\n## Refine\n\nUse .refine() for custom validation.",
+      source: "Zod API docs",
+    });
+    store.index({
+      content: "# Security Release\n\nCVE-2025-1234: Fixed transform injection vulnerability.\n\n## Fixes\n\nRefine permission checks.",
+      source: "Node.js v22 CHANGELOG",
+    });
+
+    // Without source filter — both sources may match
+    const allResults = store.search("transform refine", 5);
+    assert.ok(allResults.length >= 2, "Should find results from both sources");
+
+    // With source filter — only Zod
+    const zodResults = store.search("transform refine", 5, "Zod");
+    assert.ok(zodResults.length > 0, "Should find Zod results");
+    assert.ok(
+      zodResults.every((r) => r.source.includes("Zod")),
+      `All results should be from Zod, got: ${zodResults.map((r) => r.source).join(", ")}`,
+    );
+
+    // With source filter — only Node.js
+    const nodeResults = store.search("transform refine", 5, "Node.js");
+    assert.ok(nodeResults.length > 0, "Should find Node.js results");
+    assert.ok(
+      nodeResults.every((r) => r.source.includes("Node.js")),
+      `All results should be from Node.js, got: ${nodeResults.map((r) => r.source).join(", ")}`,
+    );
+
+    store.close();
+  });
+
+  await test("search with non-matching source returns empty", () => {
+    const store = createStore();
+    store.index({
+      content: "# React Hooks\n\nuseEffect for side effects.",
+      source: "React docs",
+    });
+    const results = store.search("useEffect", 3, "Vue");
+    assert.equal(results.length, 0, "Should return empty for non-matching source");
+    store.close();
+  });
+
+  await test("listSources returns all indexed sources", () => {
+    const store = createStore();
+    store.index({ content: "# A\n\nContent A.", source: "Source A" });
+    store.index({ content: "# B\n\nContent B.", source: "Source B" });
+    store.index({ content: "# C\n\nContent C.", source: "Source C" });
+
+    const sources = store.listSources();
+    assert.equal(sources.length, 3, `Expected 3 sources, got ${sources.length}`);
+    const labels = sources.map((s) => s.label);
+    assert.ok(labels.includes("Source A"));
+    assert.ok(labels.includes("Source B"));
+    assert.ok(labels.includes("Source C"));
+    assert.ok(sources.every((s) => s.chunkCount >= 1));
+    store.close();
+  });
+
+  await test("source filter uses partial match (LIKE)", () => {
+    const store = createStore();
+    store.index({ content: "# Config\n\nDatabase config.", source: "Node.js v22 CHANGELOG" });
+    store.index({ content: "# Config\n\nApp config.", source: "Zod API docs" });
+
+    // Partial match "v22" should match "Node.js v22 CHANGELOG"
+    const results = store.search("config", 5, "v22");
+    assert.ok(results.length > 0, "Partial source match should work");
+    assert.ok(
+      results.every((r) => r.source.includes("v22")),
+      "Should only return v22 source",
+    );
+    store.close();
+  });
+
   // ===== CONTEXT SAVINGS =====
   console.log("\n--- Context Savings Measurement ---\n");
 

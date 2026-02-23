@@ -96,9 +96,18 @@ Use context-mode for ANY of these, without being asked:
 
 - BM25 uses **OR semantics** — results matching more terms rank higher automatically
 - Use 2-4 specific technical terms per query: `search("transform refine pipe")`
+- **Always use `source` parameter** when multiple docs are indexed to avoid cross-source contamination
+  - After `fetch_and_index` returns `source: "Zod API docs"`, use `search("refine", source: "Zod")`
+  - Partial match works: `source: "Node"` matches `"Node.js v22 CHANGELOG"`
 - Send multiple `search()` calls **in parallel** for different aspects of a topic
 - Example: instead of one broad search, send 3 focused parallel queries:
-  - `search("transform pipe preprocess")` + `search("refine superRefine check")` + `search("coerce codec")`
+  - `search("transform pipe", source: "Zod")` + `search("refine superRefine", source: "Zod")` + `search("coerce codec", source: "Zod")`
+
+## External Documentation
+
+- **Always use `fetch_and_index`** for external docs — NEVER `cat` or `execute` with local paths for packages you don't own
+- For GitHub-hosted projects, use the raw URL: `https://raw.githubusercontent.com/org/repo/main/CHANGELOG.md`
+- After indexing, use the `source` parameter in search to scope results to that specific document
 
 ## Critical Rules
 
