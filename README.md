@@ -45,7 +45,7 @@ Claude Code has a 200K token context window. Here's how fast popular MCP servers
 
 ```bash
 /plugin marketplace add mksglu/claude-context-mode
-/plugin install context-mode@mksglu/claude-context-mode
+/plugin install context-mode@claude-context-mode
 ```
 
 Installs as a Claude Code plugin with MCP server + skills bundled. The skill automatically guides Claude to route large outputs through Context Mode.
