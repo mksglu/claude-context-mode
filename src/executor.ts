@@ -307,23 +307,23 @@ export class PolyglotExecutor {
     switch (language) {
       case "javascript":
       case "typescript":
-        return `const FILE_CONTENT = require("fs").readFileSync(${escaped}, "utf-8");\n${code}`;
+        return `const FILE_CONTENT_PATH = ${escaped};\nconst FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
       case "python":
-        return `with open(${escaped}, "r") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
+        return `FILE_CONTENT_PATH = ${escaped}\nwith open(FILE_CONTENT_PATH, "r") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
       case "shell":
-        return `FILE_CONTENT=$(cat ${escaped})\n${code}`;
+        return `FILE_CONTENT_PATH=${escaped}\nFILE_CONTENT=$(cat ${escaped})\n${code}`;
       case "ruby":
-        return `FILE_CONTENT = File.read(${escaped})\n${code}`;
+        return `FILE_CONTENT_PATH = ${escaped}\nFILE_CONTENT = File.read(FILE_CONTENT_PATH)\n${code}`;
       case "go":
-        return `package main\n\nimport (\n\t"fmt"\n\t"os"\n)\n\nfunc main() {\n\tb, _ := os.ReadFile(${escaped})\n\tFILE_CONTENT := string(b)\n\t_ = FILE_CONTENT\n${code}\n}\n`;
+        return `package main\n\nimport (\n\t"fmt"\n\t"os"\n)\n\nvar FILE_CONTENT_PATH = ${escaped}\n\nfunc main() {\n\tb, _ := os.ReadFile(FILE_CONTENT_PATH)\n\tFILE_CONTENT := string(b)\n\t_ = FILE_CONTENT\n\t_ = fmt.Sprint()\n${code}\n}\n`;
       case "rust":
-        return `use std::fs;\n\nfn main() {\n    let file_content = fs::read_to_string(${escaped}).unwrap();\n${code}\n}\n`;
+        return `use std::fs;\n\nfn main() {\n    let file_content_path = ${escaped};\n    let file_content = fs::read_to_string(file_content_path).unwrap();\n${code}\n}\n`;
       case "php":
-        return `<?php\n$FILE_CONTENT = file_get_contents(${escaped});\n${code}`;
+        return `<?php\n$FILE_CONTENT_PATH = ${escaped};\n$FILE_CONTENT = file_get_contents($FILE_CONTENT_PATH);\n${code}`;
       case "perl":
-        return `open(my $fh, '<', ${escaped}) or die "Cannot open: $!";\nmy $FILE_CONTENT = do { local $/; <$fh> };\nclose($fh);\n${code}`;
+        return `my $FILE_CONTENT_PATH = ${escaped};\nopen(my $fh, '<', $FILE_CONTENT_PATH) or die "Cannot open: $!";\nmy $FILE_CONTENT = do { local $/; <$fh> };\nclose($fh);\n${code}`;
       case "r":
-        return `FILE_CONTENT <- readLines(${escaped}, warn=FALSE)\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
+        return `FILE_CONTENT_PATH <- ${escaped}\nFILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE)\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
     }
   }
 }
