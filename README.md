@@ -1,6 +1,6 @@
 # Context Mode
 
-**Claude Code MCP plugin that saves 94% of your context window.**
+**Claude Code MCP plugin that saves 98% of your context window.**
 
 Every tool call in Claude Code consumes context tokens. A single Playwright snapshot burns 10K-135K tokens. A Context7 docs lookup dumps 4K-10K tokens. GitHub's `list_commits` with 30 results costs 29K-64K tokens. With 5+ MCP servers active, you lose ~55K tokens before your first message — and after 30 minutes of real debugging, responses slow to a crawl.
 
@@ -12,14 +12,14 @@ Claude Code has a 200K token context window. Here's how fast popular MCP servers
 
 | MCP Server | Tool | Without Context Mode | With Context Mode | Savings | Source |
 |---|---|---|---|---|---|
-| **Playwright** | `browser_snapshot` | 10K-135K tokens | ~20 tokens | **99%** | [playwright-mcp#1233](https://github.com/microsoft/playwright-mcp/issues/1233) |
-| **Context7** | `query-docs` | 4K-10K tokens | ~70 tokens | **98%** | [upstash/context7](https://github.com/upstash/context7) |
-| **GitHub** | `list_commits` (30) | 29K-64K tokens | ~10 tokens | **99%** | [github-mcp-server#142](https://github.com/github/github-mcp-server/issues/142) |
-| **Sentry** | issue analysis | 5K-30K tokens | ~25 tokens | **99%** | [getsentry/sentry-mcp](https://github.com/getsentry/sentry-mcp) |
-| **Supabase** | schema queries | 2K-30K tokens | ~30 tokens | **99%** | [supabase-community/supabase-mcp](https://github.com/supabase-community/supabase-mcp) |
-| **Firecrawl** | `scrape` / `crawl` | 5K-50K+ tokens | ~70 tokens | **99%** | [firecrawl](https://github.com/mendableai/firecrawl) |
-| **Chrome DevTools** | DOM / network | 5K-50K+ tokens | ~25 tokens | **99%** | Community benchmark |
-| **Fetch** | `fetch` | 5K-50K tokens | ~70 tokens | **99%** | Official reference server |
+| **Playwright** | `browser_snapshot` | 10K-135K tokens | ~75 tokens | **99%** | [playwright-mcp#1233](https://github.com/microsoft/playwright-mcp/issues/1233) |
+| **Context7** | `query-docs` | 4K-10K tokens | ~65 tokens | **98%** | [upstash/context7](https://github.com/upstash/context7) |
+| **GitHub** | `list_commits` (30) | 29K-64K tokens | ~180 tokens | **99%** | [github-mcp-server#142](https://github.com/github/github-mcp-server/issues/142) |
+| **Sentry** | issue analysis | 5K-30K tokens | ~85 tokens | **99%** | [getsentry/sentry-mcp](https://github.com/getsentry/sentry-mcp) |
+| **Supabase** | schema queries | 2K-30K tokens | ~80 tokens | **99%** | [supabase-community/supabase-mcp](https://github.com/supabase-community/supabase-mcp) |
+| **Firecrawl** | `scrape` / `crawl` | 5K-50K+ tokens | ~65 tokens | **99%** | [firecrawl](https://github.com/mendableai/firecrawl) |
+| **Chrome DevTools** | DOM / network | 5K-50K+ tokens | ~75 tokens | **99%** | Community benchmark |
+| **Fetch** | `fetch` | 5K-50K tokens | ~65 tokens | **99%** | Official reference server |
 
 **Real measurement** ([Scott Spence, 2025](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code)): With 81+ MCP tools enabled across multiple servers, **143K of 200K tokens (72%) consumed** — 82K tokens just for MCP tool definitions. Only 28% left for actual work.
 
@@ -29,15 +29,15 @@ Claude Code has a 200K token context window. Here's how fast popular MCP servers
 
 | What you're doing | Without Context Mode | With Context Mode | Savings |
 |---|---|---|---|
-| Playwright `browser_snapshot` | 12 KB into context | 50 B summary | **99%** |
-| Context7 `query-docs` (React) | 60 KB raw docs | 285 B search result | **99%** |
-| `gh pr list` / `gh api` | 8 KB JSON response | 40 B summary | **99%** |
-| Read `access.log` (500 req) | 45 KB raw log | 71 B status breakdown | **99%** |
-| `npm test` (30 suites) | 6 KB raw output | 37 B pass/fail | **99%** |
-| Git log (153 commits) | 12 KB raw log | 18 B summary | **99%** |
-| Supabase Edge Functions docs | 4 KB raw docs | 123 B code example | **97%** |
+| Playwright `browser_snapshot` | 56 KB into context | 299 B summary | **99%** |
+| Context7 `query-docs` (React) | 5.9 KB raw docs | 261 B summary | **96%** |
+| GitHub issues (20) | 59 KB JSON response | 1.1 KB summary | **98%** |
+| Read `access.log` (500 req) | 45 KB raw log | 155 B status breakdown | **100%** |
+| `vitest` (30 suites) | 6 KB raw output | 337 B pass/fail | **95%** |
+| Git log (153 commits) | 12 KB raw log | 107 B summary | **99%** |
+| Analytics CSV (500 rows) | 86 KB raw data | 222 B summary | **100%** |
 
-**Real aggregate across 13 scenarios: 194 KB raw → 12.6 KB context (94% savings)**
+**Real aggregate across 14 scenarios: 315 KB raw → 5.4 KB context (98% savings)**
 
 ## Quick Start
 
@@ -75,7 +75,7 @@ Claude calls: execute({ language: "shell", code: "gh pr list --json title,state 
 Returns: "3"                  ← 2 bytes instead of 8KB JSON
 ```
 
-**Intent-driven search** (v0.5.0): When you provide an `intent` parameter and output exceeds 5KB, Context Mode uses BM25 search to return only the relevant sections matching your intent.
+**Intent-driven search** (v0.5.2): When you provide an `intent` parameter and output exceeds 5KB, Context Mode uses score-based BM25 search to return only the relevant sections matching your intent.
 
 ```
 Claude calls: execute({
@@ -83,8 +83,11 @@ Claude calls: execute({
   code: "cat /var/log/app.log",
   intent: "connection refused database error"
 })
-Returns: only the 3 matching log sections (1.5KB) ← instead of 100KB raw log
+Returns: section titles + searchable terms (500B) ← instead of 100KB raw log
 ```
+
+When intent search runs, the response includes `Searchable terms` — distinctive vocabulary
+extracted from the output via IDF scoring. Use these terms for targeted follow-up `search()` calls.
 
 Authenticated CLIs work out of the box — `gh`, `aws`, `gcloud`, `kubectl`, `docker` credentials are passed through securely. Bun auto-detected for 3-5x faster JS/TS.
 
@@ -132,12 +135,12 @@ Use instead of WebFetch or Context7 when you need documentation — index once, 
 ┌──────────────────────────────────────────────────────────────────┐
 │ Without Context Mode                                             │
 │                                                                  │
-│ Claude Code → Playwright snapshot → 12KB into context            │
-│ Claude Code → Context7 docs      → 60KB into context             │
-│ Claude Code → gh pr list         →  8KB into context             │
+│ Claude Code → Playwright snapshot → 56KB into context            │
+│ Claude Code → Context7 docs      →  6KB into context             │
+│ Claude Code → gh pr list         →  6KB into context             │
 │ Claude Code → cat access.log     → 45KB into context             │
 │                                                                  │
-│ Total: 125KB consumed = ~32,000 tokens = 16% of context gone     │
+│ Total: 113KB consumed = ~29,000 tokens = 14% of context gone     │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
@@ -145,10 +148,10 @@ Use instead of WebFetch or Context7 when you need documentation — index once, 
 │                                                                  │
 │ Claude Code → fetch_and_index(url)  → "Indexed 8 sections" (50B)│
 │ Claude Code → search("snapshot")    → exact element       (500B) │
-│ Claude Code → execute("gh pr list") → "3 open PRs"         (40B)│
-│ Claude Code → execute_file(log)     → "500:14, 404:89"     (30B)│
+│ Claude Code → execute("gh pr list") → "5 PRs, +59 -0"    (719B)│
+│ Claude Code → execute_file(log)     → "500:13, 404:13"    (155B)│
 │                                                                  │
-│ Total: 620B consumed = ~160 tokens = 0.08% of context            │
+│ Total: 1.4KB consumed = ~350 tokens = 0.18% of context           │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,6 +175,7 @@ Use instead of WebFetch or Context7 when you need documentation — index once, 
                                          │  │ • BM25 ranking         │  │
                                          │  │ • Porter stemming      │  │
                                          │  │ • Heading-aware chunks │  │
+                                         │  │ • Vocabulary hints     │  │
                                          │  └────────────────────────┘  │
                                          └──────────────────────────────┘
 ```
@@ -213,20 +217,26 @@ ORDER BY rank LIMIT 3;
 
 **Lazy singleton:** Database created only when `index` or `search` is first called — zero overhead for sessions that don't use it.
 
-### Intent-Driven Search (v0.5.0)
+### Intent-Driven Search (v0.5.2)
 
-When `execute` or `execute_file` is called with an `intent` parameter and output exceeds 5KB, Context Mode chunks the output and uses BM25 search to return only the relevant sections:
+When `execute` or `execute_file` is called with an `intent` parameter and output exceeds 5KB, Context Mode uses score-based BM25 search to return only the relevant sections:
+
+- **Score-based search**: Searches ALL intent words independently, ranks chunks by match count
+- **Searchable terms**: Distinctive vocabulary hints extracted via IDF scoring, helping you craft precise follow-up `search()` calls
+- **Smarter chunk titles**: Uses the first content line of each chunk instead of generic "Section N" labels
 
 ```
 Without intent:
   stdout (100KB) → full output enters context
 
 With intent:
-  stdout (100KB) → chunk by lines → in-memory FTS5 → search(intent) → 2-5KB relevant sections
-  Result: only what you need enters context
+  stdout (100KB) → chunk by lines → in-memory FTS5 → score all intent words → top chunks + searchable terms
+  Result: only what you need enters context, plus vocabulary for targeted follow-ups
 ```
 
-Tested across 4 real-world scenarios:
+**31% to 100% recall on real-world CHANGELOG test** — the score-based approach finds every relevant section, not just those matching a single query string.
+
+Tested across 5 real-world scenarios:
 
 | Scenario | Without Intent | With Intent | Size Reduction |
 |---|---|---|---|
@@ -234,6 +244,7 @@ Tested across 4 real-world scenarios:
 | 3 test failures among 200 tests | only 2/3 visible | **all 3 found** | 2.4 KB vs 5.0 KB |
 | 2 build warnings among 300 lines | both lost in output | **both found** | 2.1 KB vs 5.0 KB |
 | API auth error (line 743/1000) | error lost in output | **found** | 1.2 KB vs 4.9 KB |
+| Semantic gap (CHANGELOG search) | 31% recall | **100% recall** | Full coverage |
 
 Intent search finds the target every time while using 50-75% fewer bytes.
 
@@ -256,17 +267,17 @@ Tested with tools from popular MCP servers and Claude Code workflows:
 
 | Scenario | Tool | Raw | Context | Savings |
 |---|---|---|---|---|
-| Playwright page snapshot | `execute_file` | 50+ KB | 78 B | **99%** |
-| Context7 React docs | `index + search` | 5.9 KB | 285 B | **95%** |
-| Context7 Supabase docs | `index + search` | 3.9 KB | 123 B | **97%** |
-| Context7 Next.js docs | `index + search` | 6.5 KB | 273 B | **96%** |
-| httpbin.org API docs | `fetch_and_index` | 9.4 KB | 50 B | **99%** |
-| GitHub API response | `execute` | 8+ KB | 40 B | **99%** |
-| Access log (500 req) | `execute_file` | 45.1 KB | 71 B | **100%** |
-| Analytics CSV (500 rows) | `execute_file` | 85.5 KB | 11.5 KB | **87%** |
-| MCP tools manifest (40 tools) | `execute_file` | 17.0 KB | 78 B | **100%** |
-| npm test (30 suites) | `execute_file` | 6.0 KB | 37 B | **99%** |
-| Git log (153 commits) | `execute` | 11.6 KB | 18 B | **100%** |
+| Playwright page snapshot | `execute` | 56.2 KB | 299 B | **99%** |
+| Context7 React docs | `execute` | 5.9 KB | 261 B | **96%** |
+| Context7 Next.js docs | `execute` | 6.5 KB | 249 B | **96%** |
+| Context7 Tailwind docs | `execute` | 4.0 KB | 186 B | **95%** |
+| GitHub Issues (20) | `execute` | 58.9 KB | 1.1 KB | **98%** |
+| GitHub PR list (5) | `execute` | 6.4 KB | 719 B | **89%** |
+| Access log (500 req) | `execute_file` | 45.1 KB | 155 B | **100%** |
+| Analytics CSV (500 rows) | `execute_file` | 85.5 KB | 222 B | **100%** |
+| MCP tools manifest (40 tools) | `execute_file` | 17.0 KB | 742 B | **96%** |
+| Test output (30 suites) | `execute` | 6.0 KB | 337 B | **95%** |
+| Git log (153 commits) | `execute` | 11.6 KB | 107 B | **99%** |
 
 ### Session Impact
 
@@ -274,9 +285,9 @@ Typical 45-minute debugging session:
 
 | Metric | Without | With | Delta |
 |---|---|---|---|
-| Context consumed | 177 KB | 10 KB | **-94%** |
-| Tokens used | ~45,300 | ~2,600 | **-94%** |
-| Context remaining | 77% | 95% | **+18pp** |
+| Context consumed | 315 KB | 5.4 KB | **-98%** |
+| Tokens used | ~80,600 | ~1,400 | **-98%** |
+| Context remaining | 60% | 99% | **+39pp** |
 | Time before slowdown | ~30 min | ~3 hours | **+6x** |
 
 ## Tool Decision Matrix
@@ -375,13 +386,13 @@ Just ask naturally — Claude automatically routes through Context Mode when it 
 
 ## Test Suite
 
-99+ tests across 4 suites:
+100+ tests across 4 suites:
 
 | Suite | Tests | Coverage |
 |---|---|---|
 | Executor | 55 | 10 languages, sandbox, output handling, concurrency, timeouts |
 | ContentStore | 40 | FTS5 schema, BM25 ranking, chunking, stemming, plain text indexing |
-| Intent Search | 4 | Intent-driven search across 4 real-world scenarios |
+| Intent Search | 5 | Intent-driven search across 5 real-world scenarios (incl. semantic gap) |
 | MCP Integration | 24 | JSON-RPC protocol, all 5 tools, fetch_and_index, errors |
 
 ## Development
@@ -393,7 +404,7 @@ npm install
 npm run build
 npm test              # executor (55 tests)
 npm run test:store    # FTS5/BM25 (40 tests)
-npm run test:all      # all suites (99+ tests)
+npm run test:all      # all suites (100+ tests)
 ```
 
 ## License
