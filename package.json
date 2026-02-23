@@ -28,6 +28,8 @@
   "files": [
     "build",
     "skills",
+    ".claude-plugin",
+    ".mcp.json",
     "README.md",
     "LICENSE"
   ],

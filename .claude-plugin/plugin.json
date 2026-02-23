@@ -1,0 +1,29 @@
+{
+  "name": "context-mode",
+  "version": "0.4.0",
+  "description": "Claude Code MCP plugin that saves 94% of your context window. Sandboxed code execution in 10 languages, FTS5 knowledge base with BM25 ranking, and smart truncation.",
+  "author": {
+    "name": "Mert Koseoğlu",
+    "url": "https://github.com/mksglu"
+  },
+  "homepage": "https://github.com/mksglu/claude-context-mode#readme",
+  "repository": "https://github.com/mksglu/claude-context-mode",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "context-window",
+    "sandbox",
+    "code-execution",
+    "fts5",
+    "bm25",
+    "playwright",
+    "context7"
+  ],
+  "mcpServers": {
+    "context-mode": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/build/server.js"]
+    }
+  },
+  "skills": "./skills/"
+}
