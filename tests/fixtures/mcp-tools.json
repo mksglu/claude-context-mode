@@ -1,0 +1,491 @@
+[
+  {
+    "name": "search_codebase",
+    "description": "Search for code patterns across the codebase using ripgrep",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "description": "Regex pattern to search for" },
+        "path": { "type": "string", "description": "Directory to search in" },
+        "fileType": { "type": "string", "description": "File extension filter (e.g. ts, tsx, json)" }
+      },
+      "required": ["pattern"]
+    }
+  },
+  {
+    "name": "read_file",
+    "description": "Read the contents of a file at the given path",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Absolute path to the file" },
+        "startLine": { "type": "number", "description": "Line number to start reading from" },
+        "endLine": { "type": "number", "description": "Line number to stop reading at" }
+      },
+      "required": ["path"]
+    }
+  },
+  {
+    "name": "write_file",
+    "description": "Write content to a file, creating it if it doesn't exist",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Absolute path to the file" },
+        "content": { "type": "string", "description": "Content to write to the file" }
+      },
+      "required": ["path", "content"]
+    }
+  },
+  {
+    "name": "edit_file",
+    "description": "Apply targeted edits to a file using search and replace",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Absolute path to the file" },
+        "oldText": { "type": "string", "description": "Text to search for" },
+        "newText": { "type": "string", "description": "Text to replace with" }
+      },
+      "required": ["path", "oldText", "newText"]
+    }
+  },
+  {
+    "name": "list_directory",
+    "description": "List files and directories at the given path",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Directory path to list" },
+        "recursive": { "type": "boolean", "description": "Whether to list recursively" },
+        "maxDepth": { "type": "number", "description": "Maximum depth for recursive listing" }
+      },
+      "required": ["path"]
+    }
+  },
+  {
+    "name": "run_command",
+    "description": "Execute a shell command in the project directory",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": { "type": "string", "description": "Shell command to execute" },
+        "cwd": { "type": "string", "description": "Working directory" },
+        "timeout": { "type": "number", "description": "Timeout in milliseconds" }
+      },
+      "required": ["command"]
+    }
+  },
+  {
+    "name": "run_tests",
+    "description": "Run the test suite with optional filters",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "testPath": { "type": "string", "description": "Specific test file or directory" },
+        "filter": { "type": "string", "description": "Test name filter pattern" },
+        "watch": { "type": "boolean", "description": "Run in watch mode" },
+        "coverage": { "type": "boolean", "description": "Collect coverage information" }
+      }
+    }
+  },
+  {
+    "name": "git_status",
+    "description": "Show the working tree status",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "short": { "type": "boolean", "description": "Show short format output" }
+      }
+    }
+  },
+  {
+    "name": "git_diff",
+    "description": "Show changes between commits, working tree, etc.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Specific file to diff" },
+        "staged": { "type": "boolean", "description": "Show only staged changes" },
+        "base": { "type": "string", "description": "Base commit or branch to diff against" }
+      }
+    }
+  },
+  {
+    "name": "git_log",
+    "description": "Show commit logs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "maxCount": { "type": "number", "description": "Maximum number of commits to show" },
+        "oneline": { "type": "boolean", "description": "Show each commit on a single line" },
+        "author": { "type": "string", "description": "Filter by author" },
+        "since": { "type": "string", "description": "Show commits after date" }
+      }
+    }
+  },
+  {
+    "name": "git_commit",
+    "description": "Create a new commit with staged changes",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "message": { "type": "string", "description": "Commit message" },
+        "files": { "type": "array", "items": { "type": "string" }, "description": "Files to stage before committing" }
+      },
+      "required": ["message"]
+    }
+  },
+  {
+    "name": "git_branch",
+    "description": "List, create, or delete branches",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Branch name" },
+        "action": { "type": "string", "enum": ["list", "create", "delete", "checkout"], "description": "Branch operation" }
+      }
+    }
+  },
+  {
+    "name": "lint",
+    "description": "Run ESLint on the codebase",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "File or directory to lint" },
+        "fix": { "type": "boolean", "description": "Automatically fix problems" },
+        "quiet": { "type": "boolean", "description": "Only report errors, not warnings" }
+      }
+    }
+  },
+  {
+    "name": "format_code",
+    "description": "Format code using Prettier",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "File or directory to format" },
+        "check": { "type": "boolean", "description": "Only check if files are formatted" }
+      },
+      "required": ["path"]
+    }
+  },
+  {
+    "name": "typecheck",
+    "description": "Run TypeScript compiler to check for type errors",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "project": { "type": "string", "description": "Path to tsconfig.json" },
+        "noEmit": { "type": "boolean", "description": "Do not emit output files" }
+      }
+    }
+  },
+  {
+    "name": "deploy",
+    "description": "Deploy the application to the specified environment",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "environment": { "type": "string", "enum": ["staging", "production"], "description": "Target environment" },
+        "dryRun": { "type": "boolean", "description": "Preview the deployment without executing" }
+      },
+      "required": ["environment"]
+    }
+  },
+  {
+    "name": "database_migrate",
+    "description": "Run database migrations",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["up", "down", "status", "reset"], "description": "Migration action" },
+        "name": { "type": "string", "description": "Migration name for creating new migrations" }
+      },
+      "required": ["action"]
+    }
+  },
+  {
+    "name": "database_seed",
+    "description": "Seed the database with initial or test data",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "environment": { "type": "string", "enum": ["development", "test"], "description": "Target environment" },
+        "truncate": { "type": "boolean", "description": "Clear existing data before seeding" }
+      }
+    }
+  },
+  {
+    "name": "create_file",
+    "description": "Create a new file from a template",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Path for the new file" },
+        "template": { "type": "string", "enum": ["component", "hook", "api-route", "test", "service"], "description": "Template to use" },
+        "name": { "type": "string", "description": "Name for the generated entity" }
+      },
+      "required": ["path", "template", "name"]
+    }
+  },
+  {
+    "name": "find_references",
+    "description": "Find all references to a symbol in the codebase",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string", "description": "Symbol name to find references for" },
+        "path": { "type": "string", "description": "Scope the search to a directory" },
+        "includeDeclaration": { "type": "boolean", "description": "Include the declaration itself" }
+      },
+      "required": ["symbol"]
+    }
+  },
+  {
+    "name": "find_definition",
+    "description": "Find the definition of a symbol",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string", "description": "Symbol name to find" },
+        "file": { "type": "string", "description": "File context to search from" },
+        "line": { "type": "number", "description": "Line number for context" }
+      },
+      "required": ["symbol"]
+    }
+  },
+  {
+    "name": "get_diagnostics",
+    "description": "Get diagnostics (errors, warnings) for a file or the entire project",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "File path to get diagnostics for" },
+        "severity": { "type": "string", "enum": ["error", "warning", "info"], "description": "Minimum severity level" }
+      }
+    }
+  },
+  {
+    "name": "install_package",
+    "description": "Install npm packages",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "packages": { "type": "array", "items": { "type": "string" }, "description": "Package names to install" },
+        "dev": { "type": "boolean", "description": "Install as dev dependency" }
+      },
+      "required": ["packages"]
+    }
+  },
+  {
+    "name": "uninstall_package",
+    "description": "Remove npm packages",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "packages": { "type": "array", "items": { "type": "string" }, "description": "Package names to remove" }
+      },
+      "required": ["packages"]
+    }
+  },
+  {
+    "name": "view_logs",
+    "description": "View application or server logs",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string", "enum": ["app", "server", "database", "worker"], "description": "Log source" },
+        "lines": { "type": "number", "description": "Number of lines to show" },
+        "level": { "type": "string", "enum": ["debug", "info", "warn", "error"], "description": "Minimum log level" },
+        "since": { "type": "string", "description": "Show logs since timestamp" }
+      }
+    }
+  },
+  {
+    "name": "open_browser",
+    "description": "Open a URL in the browser for testing",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "URL to open" },
+        "incognito": { "type": "boolean", "description": "Open in incognito mode" }
+      },
+      "required": ["url"]
+    }
+  },
+  {
+    "name": "take_screenshot",
+    "description": "Take a screenshot of a web page",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "URL to screenshot" },
+        "selector": { "type": "string", "description": "CSS selector to screenshot" },
+        "fullPage": { "type": "boolean", "description": "Capture the full scrollable page" }
+      },
+      "required": ["url"]
+    }
+  },
+  {
+    "name": "check_api",
+    "description": "Make an HTTP request to test an API endpoint",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "description": "API endpoint URL" },
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "HTTP method" },
+        "headers": { "type": "object", "description": "Request headers" },
+        "body": { "type": "string", "description": "Request body as JSON string" }
+      },
+      "required": ["url"]
+    }
+  },
+  {
+    "name": "generate_types",
+    "description": "Generate TypeScript types from various sources",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source": { "type": "string", "enum": ["prisma", "openapi", "graphql", "json-schema"], "description": "Source to generate types from" },
+        "input": { "type": "string", "description": "Input file or URL" },
+        "output": { "type": "string", "description": "Output file path" }
+      },
+      "required": ["source"]
+    }
+  },
+  {
+    "name": "analyze_bundle",
+    "description": "Analyze the production bundle size",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": { "type": "string", "enum": ["tree", "json", "html"], "description": "Output format" },
+        "limit": { "type": "string", "description": "Size limit (e.g. '500kb')" }
+      }
+    }
+  },
+  {
+    "name": "check_dependencies",
+    "description": "Check for outdated, unused, or vulnerable dependencies",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "check": { "type": "string", "enum": ["outdated", "unused", "vulnerabilities", "licenses"], "description": "Type of check" }
+      },
+      "required": ["check"]
+    }
+  },
+  {
+    "name": "create_migration",
+    "description": "Create a new database migration",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Migration name" },
+        "sql": { "type": "string", "description": "Raw SQL for the migration" }
+      },
+      "required": ["name"]
+    }
+  },
+  {
+    "name": "run_benchmark",
+    "description": "Run performance benchmarks",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "description": "Benchmark file or directory" },
+        "iterations": { "type": "number", "description": "Number of iterations" },
+        "warmup": { "type": "number", "description": "Number of warmup iterations" }
+      }
+    }
+  },
+  {
+    "name": "search_docs",
+    "description": "Search project documentation",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "description": "Search query" },
+        "scope": { "type": "string", "enum": ["api", "guides", "changelog", "all"], "description": "Documentation scope" }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "manage_env",
+    "description": "Manage environment variables",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["list", "get", "set", "delete"], "description": "Action to perform" },
+        "key": { "type": "string", "description": "Environment variable key" },
+        "value": { "type": "string", "description": "Environment variable value" },
+        "environment": { "type": "string", "enum": ["development", "staging", "production"], "description": "Target environment" }
+      },
+      "required": ["action"]
+    }
+  },
+  {
+    "name": "start_dev_server",
+    "description": "Start the development server",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "number", "description": "Port to run on" },
+        "turbo": { "type": "boolean", "description": "Enable Turbopack" },
+        "https": { "type": "boolean", "description": "Enable HTTPS" }
+      }
+    }
+  },
+  {
+    "name": "stop_dev_server",
+    "description": "Stop the running development server",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "number", "description": "Port of the server to stop" }
+      }
+    }
+  },
+  {
+    "name": "docker_compose",
+    "description": "Manage Docker Compose services",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["up", "down", "restart", "logs", "ps"], "description": "Docker Compose action" },
+        "service": { "type": "string", "description": "Specific service to target" },
+        "detach": { "type": "boolean", "description": "Run in detached mode" }
+      },
+      "required": ["action"]
+    }
+  },
+  {
+    "name": "generate_api_docs",
+    "description": "Generate API documentation from source code",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": { "type": "string", "enum": ["openapi", "markdown", "html"], "description": "Output format" },
+        "output": { "type": "string", "description": "Output file path" },
+        "title": { "type": "string", "description": "API documentation title" }
+      }
+    }
+  },
+  {
+    "name": "rename_symbol",
+    "description": "Rename a symbol across the entire codebase",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "oldName": { "type": "string", "description": "Current symbol name" },
+        "newName": { "type": "string", "description": "New symbol name" },
+        "path": { "type": "string", "description": "Scope the rename to a directory" },
+        "dryRun": { "type": "boolean", "description": "Preview changes without applying" }
+      },
+      "required": ["oldName", "newName"]
+    }
+  }
+]

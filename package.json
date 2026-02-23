@@ -1,0 +1,62 @@
+{
+  "name": "context-mode",
+  "version": "0.4.0",
+  "type": "module",
+  "description": "Claude Code MCP plugin that saves 94% of your context window. Sandboxed code execution, FTS5 knowledge base, and smart truncation.",
+  "author": "Mert Koseoğlu",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "claude-code",
+    "context-window",
+    "sandbox",
+    "code-execution",
+    "fts5",
+    "bm25"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mksglu/claude-context-mode"
+  },
+  "homepage": "https://github.com/mksglu/claude-context-mode#readme",
+  "bugs": "https://github.com/mksglu/claude-context-mode/issues",
+  "bin": {
+    "context-mode": "./build/server.js"
+  },
+  "files": [
+    "build",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "npx tsx src/server.ts",
+    "setup": "npx tsx src/cli.ts setup",
+    "doctor": "npx tsx src/cli.ts doctor",
+    "typecheck": "tsc --noEmit",
+    "test": "npx tsx tests/executor.test.ts",
+    "benchmark": "npx tsx tests/benchmark.ts",
+    "test:use-cases": "npx tsx tests/use-cases.ts",
+    "test:compare": "npx tsx tests/context-comparison.ts",
+    "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
+    "test:store": "npx tsx tests/store.test.ts",
+    "test:all": "npx tsx tests/executor.test.ts && npx tsx tests/store.test.ts && npx tsx tests/use-cases.ts && npx tsx tests/context-comparison.ts && npx tsx tests/benchmark.ts && npx tsx tests/ecosystem-benchmark.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.0.1",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "better-sqlite3": "^12.6.2",
+    "picocolors": "^1.1.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.19.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}

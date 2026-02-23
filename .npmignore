@@ -1,0 +1,13 @@
+src/
+tests/
+*.ts
+!build/**/*.js
+!build/**/*.d.ts
+tsconfig.json
+bun.lock
+BENCHMARK.md
+PRD*.md
+tasks/
+.github/
+.DS_Store
+*.db

@@ -1,0 +1,153 @@
+f8a3b1c 2026-02-23 Mert Koseoglu feat: add user role management with audit logging
+d7e2a0b 2026-02-23 Mert Koseoglu refactor: improve UserList component with skeleton loading
+c6d1f9a 2026-02-23 Mert Koseoglu feat: add email magic link authentication
+b5c0e8f 2026-02-22 Alice Johnson fix: resolve null updatedAt in user role mutation
+a4b9d7e 2026-02-22 Alice Johnson test: add comprehensive billing router tests
+93a8c6d 2026-02-22 Mert Koseoglu feat: add middleware route protection
+82f7b5c 2026-02-22 Bob Martinez refactor: extract database transaction helper
+71e6a4b 2026-02-22 Bob Martinez chore: update prisma schema with user tracking fields
+60d5f3a 2026-02-21 Mert Koseoglu feat: implement stripe webhook handling
+5fc4e29 2026-02-21 Charlie Kim fix: handle race condition in concurrent user updates
+4eb3d18 2026-02-21 Charlie Kim perf: add database connection pooling configuration
+3da2c07 2026-02-21 Alice Johnson docs: update API documentation for user endpoints
+2c91b06 2026-02-21 Diana Chen feat: add file upload with uploadthing integration
+1b80a05 2026-02-20 Mert Koseoglu refactor: migrate to Next.js 15 app router patterns
+0a7f904 2026-02-20 Bob Martinez fix: correct CORS middleware origin validation
+f96e803 2026-02-20 Alice Johnson test: add rate limiting middleware tests
+e85d702 2026-02-20 Diana Chen feat: implement real-time notifications component
+d74c601 2026-02-20 Charlie Kim chore: upgrade tailwindcss to v4
+c63b500 2026-02-19 Mert Koseoglu feat: add dashboard analytics page with charts
+b52a4ff 2026-02-19 Mert Koseoglu feat: implement data grid with virtual scrolling
+a41f3ee 2026-02-19 Alice Johnson fix: resolve pagination boundary error in table component
+9f0e2dd 2026-02-19 Bob Martinez refactor: consolidate validation utilities
+8ef1dcc 2026-02-19 Diana Chen feat: add rich text editor component
+7de0cbb 2026-02-18 Charlie Kim perf: optimize image loading with lazy initialization
+6cd9baa 2026-02-18 Mert Koseoglu feat: implement project CRUD operations
+5bc8a99 2026-02-18 Alice Johnson test: add auth library unit tests
+4ab7f88 2026-02-18 Bob Martinez fix: handle JWT token expiration edge case
+3fa6e77 2026-02-18 Diana Chen chore: configure prettier-plugin-tailwindcss
+2e95d66 2026-02-17 Mert Koseoglu feat: add user search and filtering
+1d84c55 2026-02-17 Charlie Kim refactor: extract reusable form components
+0c73b44 2026-02-17 Alice Johnson fix: correct timezone handling in date utilities
+fb62a33 2026-02-17 Bob Martinez test: add helper function unit tests
+ea51f22 2026-02-17 Diana Chen feat: implement toast notification system
+d940e11 2026-02-16 Mert Koseoglu feat: add dropdown menu component with keyboard navigation
+c83fd00 2026-02-16 Mert Koseoglu refactor: implement shadcn/ui component patterns
+b72ecff 2026-02-16 Alice Johnson fix: resolve sidebar active route highlighting
+a61dbee 2026-02-16 Charlie Kim perf: reduce bundle size by tree-shaking lucide icons
+9f0cadd 2026-02-16 Bob Martinez chore: update eslint to v9 flat config
+8efb9cc 2026-02-15 Diana Chen feat: add CSV export functionality to data grid
+7dea8bb 2026-02-15 Mert Koseoglu feat: implement billing page with subscription management
+6cdf7aa 2026-02-15 Alice Johnson test: add project router integration tests
+5bce699 2026-02-15 Charlie Kim fix: handle empty state in analytics aggregation
+4abd588 2026-02-15 Bob Martinez refactor: improve error handling in tRPC routers
+3fac477 2026-02-14 Mert Koseoglu feat: add settings page with profile management
+2e9b366 2026-02-14 Diana Chen feat: implement responsive sidebar with mobile drawer
+1d8a255 2026-02-14 Alice Johnson fix: correct query invalidation after user mutation
+0c79144 2026-02-14 Charlie Kim docs: add contributing guidelines
+fb68033 2026-02-14 Bob Martinez chore: configure vitest with React Testing Library
+ea56f22 2026-02-13 Mert Koseoglu feat: set up tRPC with React Query integration
+d945e11 2026-02-13 Mert Koseoglu feat: configure NextAuth with GitHub and Google providers
+c834d00 2026-02-13 Alice Johnson refactor: extract shared type definitions
+b723cff 2026-02-13 Bob Martinez fix: resolve hydration mismatch in client components
+a612bee 2026-02-13 Diana Chen test: add component rendering tests for Button
+9501add 2026-02-12 Charlie Kim feat: implement Prisma schema with user and project models
+84f09cc 2026-02-12 Mert Koseoglu feat: scaffold Next.js 15 project with TypeScript
+73ef8bb 2026-02-12 Mert Koseoglu chore: initialize repository with eslint and prettier
+62de7aa 2026-02-12 Alice Johnson docs: add project architecture overview
+51cd699 2026-02-12 Bob Martinez chore: set up CI/CD with GitHub Actions
+40bc588 2026-02-11 Diana Chen feat: design system tokens and CSS variables
+3fab477 2026-02-11 Charlie Kim chore: configure Docker Compose for local development
+2e9a366 2026-02-11 Mert Koseoglu feat: add initial landing page with pricing section
+1d89255 2026-02-11 Alice Johnson fix: correct TypeScript strict mode configuration
+0c78144 2026-02-11 Bob Martinez refactor: reorganize project folder structure
+fb67033 2026-02-10 Diana Chen feat: implement forgot password flow
+ea55f22 2026-02-10 Mert Koseoglu feat: add signup page with form validation
+d944e11 2026-02-10 Charlie Kim perf: configure Next.js image optimization
+c833d00 2026-02-10 Alice Johnson test: set up Playwright for E2E testing
+b722cff 2026-02-10 Bob Martinez fix: resolve environment variable loading order
+a611bee 2026-02-09 Diana Chen feat: implement user avatar with fallback initials
+9500add 2026-02-09 Mert Koseoglu feat: add modal component with focus trapping
+84ef9cc 2026-02-09 Charlie Kim chore: add .env.example with required variables
+73de8bb 2026-02-09 Alice Johnson refactor: simplify auth callback handling
+62cd7aa 2026-02-09 Bob Martinez fix: handle API route error responses consistently
+51bc699 2026-02-08 Diana Chen feat: implement loading skeleton components
+40ab588 2026-02-08 Mert Koseoglu feat: add table component with sorting and selection
+3faa477 2026-02-08 Charlie Kim test: add database connection tests
+2e99366 2026-02-08 Alice Johnson fix: correct middleware redirect loop
+1d88255 2026-02-08 Bob Martinez perf: lazy load heavy dashboard components
+0c77144 2026-02-07 Diana Chen feat: add form component with Zod validation
+fb66033 2026-02-07 Mert Koseoglu feat: implement tabs component with accessibility
+ea54f22 2026-02-07 Charlie Kim refactor: extract API client configuration
+d943e11 2026-02-07 Alice Johnson chore: update all dependencies to latest versions
+c832d00 2026-02-07 Bob Martinez fix: resolve CSS specificity issues with Tailwind
+b721cff 2026-02-06 Diana Chen feat: add card component with header and footer slots
+a610bee 2026-02-06 Mert Koseoglu feat: implement input and label form primitives
+95ffadd 2026-02-06 Charlie Kim docs: add deployment guide for Vercel
+84ee9cc 2026-02-06 Alice Johnson test: add form validation unit tests
+73dd8bb 2026-02-06 Bob Martinez fix: handle null session in protected routes
+62cc7aa 2026-02-05 Diana Chen refactor: migrate CSS modules to Tailwind utility classes
+51bb699 2026-02-05 Mert Koseoglu feat: implement select component with search
+40aa588 2026-02-05 Charlie Kim perf: add ISR for documentation pages
+3fa9477 2026-02-05 Alice Johnson fix: correct date-fns locale configuration
+2e98366 2026-02-05 Bob Martinez chore: set up Dependabot for automated updates
+1d87255 2026-02-04 Diana Chen feat: add dialog component with animation
+0c76144 2026-02-04 Mert Koseoglu feat: implement breadcrumb navigation
+fb65033 2026-02-04 Charlie Kim test: add E2E tests for authentication flow
+ea53f22 2026-02-04 Alice Johnson refactor: improve type safety in tRPC procedures
+d942e11 2026-02-04 Bob Martinez fix: resolve memory leak in WebSocket connection
+c831d00 2026-02-03 Diana Chen feat: add badge and tag components
+b720cff 2026-02-03 Mert Koseoglu feat: implement command palette with fuzzy search
+a60fbee 2026-02-03 Charlie Kim chore: configure Sentry error tracking
+95feadd 2026-02-03 Alice Johnson fix: handle concurrent database writes gracefully
+84ed9cc 2026-02-03 Bob Martinez perf: implement request deduplication in tRPC
+73dc8bb 2026-02-02 Diana Chen feat: add tooltip component with portal rendering
+62cb7aa 2026-02-02 Mert Koseoglu feat: implement global search functionality
+51ba699 2026-02-02 Charlie Kim refactor: consolidate theme configuration
+40a9588 2026-02-02 Alice Johnson test: add accessibility tests for all UI components
+3fa8477 2026-02-02 Bob Martinez fix: correct OAuth redirect URI in production
+2e97366 2026-02-01 Diana Chen docs: add component storybook documentation
+1d86255 2026-02-01 Mert Koseoglu feat: implement keyboard shortcuts system
+0c75144 2026-02-01 Charlie Kim feat: add dark mode with system preference detection
+fb64033 2026-02-01 Alice Johnson chore: configure Turbopack for faster dev builds
+ea52f22 2026-02-01 Bob Martinez fix: resolve flaky tests in CI pipeline
+d941e11 2026-01-31 Diana Chen feat: implement progress bar component
+c830d00 2026-01-31 Mert Koseoglu feat: add collapsible panel component
+b71fcff 2026-01-31 Charlie Kim refactor: extract shared middleware utilities
+a60ebee 2026-01-31 Alice Johnson fix: handle edge case in pagination calculation
+95fdadd 2026-01-31 Bob Martinez test: add snapshot tests for UI components
+84ec9cc 2026-01-30 Diana Chen perf: optimize re-renders with React.memo
+73db8bb 2026-01-30 Mert Koseoglu feat: implement accordion component
+62ca7aa 2026-01-30 Charlie Kim chore: add pre-commit hooks with Husky
+51b9699 2026-01-30 Alice Johnson fix: correct responsive breakpoints for mobile
+40a8588 2026-01-30 Bob Martinez refactor: improve error boundary implementation
+3fa7477 2026-01-29 Diana Chen feat: add alert and banner components
+2e96366 2026-01-29 Mert Koseoglu feat: implement infinite scroll for feed pages
+0c74144 2026-01-29 Charlie Kim docs: add API rate limiting documentation
+fb63033 2026-01-29 Alice Johnson test: add integration tests for email service
+ea51f22 2026-01-29 Bob Martinez fix: resolve timezone offset in scheduled jobs
+d940e11 2026-01-28 Diana Chen feat: add popover component with arrow positioning
+c82fd00 2026-01-28 Mert Koseoglu feat: implement webhook event processing queue
+b71ecff 2026-01-28 Charlie Kim perf: add Redis caching layer for frequent queries
+a60dbee 2026-01-28 Alice Johnson refactor: standardize error response format
+95fcadd 2026-01-28 Bob Martinez chore: migrate to pnpm package manager
+84eb9cc 2026-01-27 Diana Chen fix: handle file upload size validation correctly
+73da8bb 2026-01-27 Mert Koseoglu feat: implement audit log system
+62c97aa 2026-01-27 Charlie Kim test: add performance benchmarks for API routes
+51b8699 2026-01-27 Alice Johnson fix: resolve cross-origin cookie issues
+40a7588 2026-01-27 Bob Martinez refactor: simplify state management in dashboard
+3fa6477 2026-01-26 Diana Chen feat: add stepper component for multi-step forms
+2e95366 2026-01-26 Mert Koseoglu feat: implement team workspace management
+0c73144 2026-01-26 Charlie Kim chore: add license headers to source files
+fb62033 2026-01-26 Alice Johnson fix: correct email template rendering
+ea50f22 2026-01-26 Bob Martinez perf: optimize database queries with proper indexing
+d93fe11 2026-01-25 Diana Chen feat: add combobox component with async loading
+c82ed00 2026-01-25 Mert Koseoglu feat: implement role-based access control
+b71dcff 2026-01-25 Charlie Kim refactor: extract shared validation schemas
+a60cbee 2026-01-25 Alice Johnson test: add security tests for authentication endpoints
+95fbadd 2026-01-25 Bob Martinez fix: handle graceful shutdown in server
+84ea9cc 2026-01-24 Diana Chen docs: update README with setup instructions
+73d98bb 2026-01-24 Mert Koseoglu feat: scaffold initial project structure
+62c87aa 2026-01-24 Charlie Kim chore: initialize monorepo with Turborepo
+51b7699 2026-01-24 Alice Johnson feat: set up development environment configuration
+40a6588 2026-01-24 Bob Martinez feat: create initial database schema design

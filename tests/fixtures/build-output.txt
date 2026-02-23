@@ -1,0 +1,122 @@
+  ▲ Next.js 15.1.0
+  - Environments: .env.local
+
+   Creating an optimized production build ...
+  ✓ Compiled src/app/page.tsx (342ms)
+  ✓ Compiled src/app/layout.tsx (128ms)
+  ✓ Compiled src/app/loading.tsx (45ms)
+  ✓ Compiled src/app/error.tsx (52ms)
+  ✓ Compiled src/app/not-found.tsx (38ms)
+  ✓ Compiled src/app/dashboard/page.tsx (456ms)
+  ✓ Compiled src/app/dashboard/layout.tsx (189ms)
+  ✓ Compiled src/app/dashboard/settings/page.tsx (234ms)
+  ✓ Compiled src/app/dashboard/analytics/page.tsx (312ms)
+  ⚠ Warning: src/app/dashboard/analytics/page.tsx - Image elements must have an explicit width and height
+  ✓ Compiled src/app/dashboard/users/page.tsx (278ms)
+  ✓ Compiled src/app/dashboard/users/[id]/page.tsx (198ms)
+  ✓ Compiled src/app/dashboard/projects/page.tsx (267ms)
+  ✓ Compiled src/app/dashboard/billing/page.tsx (345ms)
+  ✓ Compiled src/app/auth/signin/page.tsx (156ms)
+  ✓ Compiled src/app/auth/signup/page.tsx (162ms)
+  ✓ Compiled src/app/auth/forgot-password/page.tsx (134ms)
+  ⚠ Warning: src/app/auth/signup/page.tsx - Using <a> instead of <Link /> from next/link
+  ✓ Compiled src/app/pricing/page.tsx (189ms)
+  ✓ Compiled src/app/docs/page.tsx (223ms)
+  ✓ Compiled src/app/docs/[...slug]/page.tsx (298ms)
+  ✓ Compiled src/components/ui/Button.tsx (34ms)
+  ✓ Compiled src/components/ui/Card.tsx (28ms)
+  ✓ Compiled src/components/ui/Dialog.tsx (42ms)
+  ✓ Compiled src/components/ui/DropdownMenu.tsx (38ms)
+  ✓ Compiled src/components/ui/Input.tsx (22ms)
+  ✓ Compiled src/components/ui/Label.tsx (18ms)
+  ✓ Compiled src/components/ui/Select.tsx (35ms)
+  ✓ Compiled src/components/ui/Table.tsx (41ms)
+  ✓ Compiled src/components/ui/Toast.tsx (29ms)
+  ⚠ Warning: src/components/ui/Card.tsx - Unused import 'useEffect'
+  ✓ Compiled src/components/UserList.tsx (167ms)
+  ✓ Compiled src/components/UserCard.tsx (89ms)
+  ✓ Compiled src/components/Sidebar.tsx (112ms)
+  ✓ Compiled src/components/Header.tsx (78ms)
+  ✓ Compiled src/components/Footer.tsx (56ms)
+  ✓ Compiled src/components/DataGrid.tsx (234ms)
+  ✓ Compiled src/components/SearchBar.tsx (67ms)
+  ⚠ Warning: src/components/DataGrid.tsx - React Hook useEffect has missing dependencies: 'sortOrder' and 'filters'
+  ✓ Compiled src/components/Chart.tsx (189ms)
+  ✓ Compiled src/components/EmptyState.tsx (34ms)
+  ✓ Compiled src/components/Skeleton.tsx (28ms)
+  ✓ Compiled src/components/Modal.tsx (56ms)
+  ✓ Compiled src/components/FileUpload.tsx (98ms)
+  ⚠ Warning: src/components/FileUpload.tsx - Possible unhandled promise rejection in handleUpload
+  ✓ Compiled src/components/RichTextEditor.tsx (345ms)
+  ✓ Compiled src/components/Notifications.tsx (78ms)
+  ✓ Compiled src/hooks/useAuth.ts (23ms)
+  ✓ Compiled src/hooks/useDebounce.ts (12ms)
+  ✓ Compiled src/hooks/usePagination.ts (15ms)
+  ✓ Compiled src/hooks/useLocalStorage.ts (14ms)
+  ✓ Compiled src/hooks/useMediaQuery.ts (11ms)
+  ⚠ Warning: src/hooks/useLocalStorage.ts - Unsafe assignment of an 'any' value
+  ✓ Compiled src/api/trpc/routers/user.ts (189ms)
+  ✓ Compiled src/api/trpc/routers/project.ts (167ms)
+  ✓ Compiled src/api/trpc/routers/billing.ts (198ms)
+  ✓ Compiled src/api/trpc/routers/analytics.ts (145ms)
+  ✓ Compiled src/api/trpc/routers/upload.ts (134ms)
+  ✓ Compiled src/api/trpc/trpc.ts (45ms)
+  ✓ Compiled src/api/trpc/root.ts (34ms)
+  ERROR in src/api/trpc/routers/user.ts(45,12): TS2345: Argument of type 'string' is not assignable to parameter of type 'UserRole'.
+  ✓ Compiled src/lib/auth.ts (78ms)
+  ✓ Compiled src/lib/database.ts (56ms)
+  ✓ Compiled src/lib/stripe.ts (89ms)
+  ✓ Compiled src/lib/email.ts (67ms)
+  ✓ Compiled src/lib/uploadthing.ts (45ms)
+  ⚠ Warning: src/lib/stripe.ts - 'metadata' is defined but never used
+  ✓ Compiled src/utils/helpers.ts (23ms)
+  ✓ Compiled src/utils/date.ts (18ms)
+  ✓ Compiled src/utils/validation.ts (21ms)
+  ✓ Compiled src/utils/cn.ts (8ms)
+  ✓ Compiled src/utils/trpc.ts (34ms)
+  ✓ Compiled src/middleware.ts (56ms)
+  ERROR in src/middleware.ts(23,8): TS2345: Argument of type '{ callbackUrl: string; }' is not assignable to parameter of type 'URLSearchParams'.
+  ⚠ Warning: src/middleware.ts - Middleware should not redirect to external URLs
+  ✓ Compiled src/config/config.ts (28ms)
+  ✓ Compiled src/config/navigation.ts (15ms)
+  ✓ Compiled src/config/constants.ts (12ms)
+  ✓ Compiled src/types/index.ts (18ms)
+  ✓ Compiled src/types/api.ts (22ms)
+  ⚠ Warning: src/types/api.ts - This type is declared but never used
+  ✓ Compiled src/styles/globals.css (234ms)
+  ERROR in src/components/DataGrid.tsx(89,23): TS18047: 'data' is possibly 'null'.
+  ⚠ Warning: src/app/dashboard/page.tsx - Async Server Component props should be awaited before use
+  ✓ Compiled src/app/api/webhooks/stripe/route.ts (123ms)
+  ✓ Compiled src/app/api/uploadthing/route.ts (89ms)
+  ✓ Compiled src/app/api/health/route.ts (23ms)
+  ⚠ Warning: src/app/api/webhooks/stripe/route.ts - Unhandled 'default' case in switch statement
+  ✓ Compiled src/app/api/trpc/[trpc]/route.ts (67ms)
+
+  Route (app)                              Size     First Load JS
+  ┌ ○ /                                    5.23 kB    89.4 kB
+  ├ ○ /auth/signin                         3.45 kB    87.6 kB
+  ├ ○ /auth/signup                         4.12 kB    88.3 kB
+  ├ ○ /auth/forgot-password                2.89 kB    87.1 kB
+  ├ ƒ /dashboard                           12.3 kB    96.5 kB
+  ├ ƒ /dashboard/analytics                 18.7 kB   102.9 kB
+  ├ ƒ /dashboard/billing                   8.45 kB    92.6 kB
+  ├ ƒ /dashboard/projects                  14.2 kB    98.4 kB
+  ├ ƒ /dashboard/settings                  6.78 kB    91.0 kB
+  ├ ƒ /dashboard/users                     15.6 kB    99.8 kB
+  ├ ƒ /dashboard/users/[id]                9.34 kB    93.5 kB
+  ├ ○ /docs                                7.89 kB    92.1 kB
+  ├ ƒ /docs/[...slug]                      4.56 kB    88.8 kB
+  ├ ○ /pricing                             5.67 kB    89.9 kB
+  └ ƒ /api/trpc/[trpc]                     0 B        84.2 kB
+  + First Load JS shared by all            84.2 kB
+    ├ chunks/framework-a1b2c3d4.js         45.6 kB
+    ├ chunks/main-e5f6g7h8.js              28.3 kB
+    └ other shared chunks (total)          10.3 kB
+
+  ○  (Static)   prerendered as static content
+  ƒ  (Dynamic)  server-rendered on demand
+
+  ✓ Generating static pages (8/8)
+
+  Build completed with 3 errors and 12 warnings.
+  Total build time: 12.34s

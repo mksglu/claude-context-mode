@@ -1,0 +1,168 @@
+ RUN  v2.1.8 /Users/mert/projects/my-saas-app
+
+ ✓ src/components/Button.test.tsx (3 tests) 45ms
+   ✓ renders correctly 12ms
+   ✓ handles click events 18ms
+   ✓ applies variant classes 15ms
+ ✓ src/components/Avatar.test.tsx (3 tests) 38ms
+   ✓ renders with image 14ms
+   ✓ renders fallback initials 11ms
+   ✓ handles loading state 13ms
+ ✓ src/components/Card.test.tsx (4 tests) 52ms
+   ✓ renders children 8ms
+   ✓ applies custom className 12ms
+   ✓ renders header and footer 19ms
+   ✓ handles onClick 13ms
+ ✗ src/components/UserList.test.tsx (4 tests) 234ms
+   ✓ renders user list 23ms
+   ✗ handles empty state 156ms
+     → expected: "No users found"
+       received: undefined
+   ✓ filters by role 34ms
+   ✓ paginates correctly 21ms
+ ✓ src/components/Modal.test.tsx (3 tests) 67ms
+   ✓ opens and closes 28ms
+   ✓ renders overlay 19ms
+   ✓ traps focus 20ms
+ ✓ src/components/Sidebar.test.tsx (4 tests) 89ms
+   ✓ renders navigation items 15ms
+   ✓ highlights active route 22ms
+   ✓ collapses on mobile 31ms
+   ✓ handles keyboard navigation 21ms
+ ✓ src/components/Table.test.tsx (5 tests) 112ms
+   ✓ renders rows 18ms
+   ✓ sorts by column 24ms
+   ✓ handles pagination 22ms
+   ✓ renders empty state 14ms
+   ✓ selects rows 34ms
+ ✓ src/components/Form.test.tsx (4 tests) 98ms
+   ✓ validates required fields 28ms
+   ✓ submits form data 31ms
+   ✓ displays error messages 19ms
+   ✓ resets on cancel 20ms
+ ✓ src/components/Toast.test.tsx (3 tests) 41ms
+   ✓ shows notification 14ms
+   ✓ auto-dismisses after timeout 15ms
+   ✓ handles manual dismiss 12ms
+ ✗ src/components/DataGrid.test.tsx (5 tests) 345ms
+   ✓ renders columns 19ms
+   ✓ sorts data 27ms
+   ✗ filters with complex queries 198ms
+     → TypeError: Cannot read properties of null (reading 'filter')
+       at filterData (src/components/DataGrid.tsx:89:23)
+       at Object.<anonymous> (src/components/DataGrid.test.tsx:67:12)
+   ✓ exports to CSV 56ms
+   ✓ handles virtual scrolling 45ms
+ ✓ src/components/Dropdown.test.tsx (3 tests) 55ms
+   ✓ opens on click 18ms
+   ✓ closes on outside click 22ms
+   ✓ selects option 15ms
+ ✓ src/components/Tabs.test.tsx (4 tests) 71ms
+   ✓ renders tab panels 16ms
+   ✓ switches tabs 19ms
+   ✓ handles disabled tabs 18ms
+   ✓ supports keyboard navigation 18ms
+ ✓ src/hooks/useAuth.test.ts (4 tests) 134ms
+   ✓ returns current user 31ms
+   ✓ handles login 38ms
+   ✓ handles logout 29ms
+   ✓ refreshes token 36ms
+ ✓ src/hooks/useDebounce.test.ts (3 tests) 223ms
+   ✓ debounces value changes 102ms
+   ✓ cancels on unmount 67ms
+   ✓ handles immediate option 54ms
+ ✓ src/hooks/usePagination.test.ts (4 tests) 56ms
+   ✓ calculates page count 12ms
+   ✓ handles next/prev 15ms
+   ✓ resets on data change 14ms
+   ✓ handles boundary pages 15ms
+ ✓ src/hooks/useLocalStorage.test.ts (3 tests) 42ms
+   ✓ reads stored value 14ms
+   ✓ writes new value 15ms
+   ✓ handles JSON parse errors 13ms
+ ✗ src/api/trpc/routers/user.test.ts (5 tests) 456ms
+   ✓ lists users 45ms
+   ✓ creates user 67ms
+   ✗ updates user role 234ms
+     → Expected: { role: "admin", updatedAt: expect.any(Date) }
+       Received: { role: "admin", updatedAt: null }
+
+       - Expected
+       + Received
+
+         Object {
+           "role": "admin",
+       -   "updatedAt": Any<Date>,
+       +   "updatedAt": null,
+         }
+
+       at Object.<anonymous> (src/api/trpc/routers/user.test.ts:89:18)
+   ✓ deletes user 52ms
+   ✓ validates input schema 58ms
+ ✓ src/api/trpc/routers/project.test.ts (4 tests) 178ms
+   ✓ lists projects for user 34ms
+   ✓ creates project with defaults 45ms
+   ✓ updates project settings 48ms
+   ✓ handles authorization 51ms
+ ✓ src/api/trpc/routers/billing.test.ts (3 tests) 267ms
+   ✓ creates checkout session 89ms
+   ✓ handles webhook events 98ms
+   ✓ retrieves subscription status 80ms
+ ✓ src/api/trpc/routers/analytics.test.ts (4 tests) 189ms
+   ✓ tracks page views 34ms
+   ✓ aggregates daily stats 56ms
+   ✓ filters by date range 48ms
+   ✓ exports report 51ms
+ ✓ src/lib/auth.test.ts (4 tests) 156ms
+   ✓ validates JWT tokens 38ms
+   ✓ handles expired tokens 42ms
+   ✓ creates session 36ms
+   ✓ checks permissions 40ms
+ ✓ src/lib/database.test.ts (3 tests) 312ms
+   ✓ connects to database 98ms
+   ✓ handles connection pooling 112ms
+   ✓ retries on failure 102ms
+ ✗ src/lib/email.test.ts (4 tests) 567ms
+   ✓ sends welcome email 89ms
+   ✗ sends password reset email 312ms
+     → Error: Resend API returned 429: Rate limit exceeded
+       at sendEmail (src/lib/email.ts:45:11)
+       at Object.<anonymous> (src/lib/email.test.ts:56:14)
+   ✓ validates email templates 78ms
+   ✓ handles bounce notifications 88ms
+ ✓ src/lib/stripe.test.ts (3 tests) 234ms
+   ✓ creates payment intent 78ms
+   ✓ processes refund 89ms
+   ✓ validates webhook signature 67ms
+ ✓ src/utils/helpers.test.ts (5 tests) 34ms
+   ✓ formats currency 6ms
+   ✓ truncates text 5ms
+   ✓ generates slug 8ms
+   ✓ validates email format 7ms
+   ✓ deep merges objects 8ms
+ ✓ src/utils/date.test.ts (4 tests) 28ms
+   ✓ formats relative time 7ms
+   ✓ parses ISO strings 6ms
+   ✓ handles timezone conversion 8ms
+   ✓ calculates date ranges 7ms
+ ✓ src/utils/validation.test.ts (3 tests) 19ms
+   ✓ validates required fields 6ms
+   ✓ validates email format 7ms
+   ✓ validates password strength 6ms
+ ✓ src/middleware/rateLimit.test.ts (3 tests) 145ms
+   ✓ allows requests under limit 42ms
+   ✓ blocks requests over limit 56ms
+   ✓ resets after window expires 47ms
+ ✓ src/middleware/cors.test.ts (3 tests) 23ms
+   ✓ allows whitelisted origins 8ms
+   ✓ blocks unknown origins 7ms
+   ✓ handles preflight requests 8ms
+ ✓ src/middleware/logging.test.ts (3 tests) 31ms
+   ✓ logs request details 10ms
+   ✓ masks sensitive headers 11ms
+   ✓ tracks request duration 10ms
+
+ Test Files  4 failed | 26 passed (30)
+ Tests       4 failed | 108 passed (112)
+ Start at    10:23:45
+ Duration    4.21s (transform 1.23s, setup 0.89s, collect 2.09s, tests 3.87s, environment 0.34s, prepare 0.56s)
