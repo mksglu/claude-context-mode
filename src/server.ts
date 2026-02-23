@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { ContentStore } from "./store.js";
+import { ContentStore, type SearchResult } from "./store.js";
 import {
   detectRuntimes,
   getRuntimeSummary,
@@ -15,7 +15,7 @@ const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
   name: "context-mode",
-  version: "0.5.0",
+  version: "0.5.1",
 });
 
 const executor = new PolyglotExecutor({ runtimes });
@@ -72,8 +72,8 @@ server.registerTool(
         .optional()
         .describe(
           "What you're looking for in the output. When provided and output is large (>5KB), " +
-          "returns only matching sections via BM25 search instead of truncated output. " +
-          "Example: 'find failing tests', 'HTTP 500 errors', 'memory usage statistics'.",
+          "indexes output into knowledge base and returns section titles + previews — not full content. " +
+          "Use search() to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'.",
         ),
     }),
   },
@@ -98,7 +98,7 @@ server.registerTool(
         if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
           return {
             content: [
-              { type: "text" as const, text: intentSearch(output, intent) },
+              { type: "text" as const, text: intentSearch(output, intent, `execute:${language}:error`) },
             ],
             isError: true,
           };
@@ -117,7 +117,7 @@ server.registerTool(
       if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
         return {
           content: [
-            { type: "text" as const, text: intentSearch(stdout, intent) },
+            { type: "text" as const, text: intentSearch(stdout, intent, `execute:${language}`) },
           ],
         };
       }
@@ -168,38 +168,64 @@ const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
 function intentSearch(
   stdout: string,
   intent: string,
+  source: string,
   maxResults: number = 5,
 ): string {
-  const store = new ContentStore(":memory:");
-  try {
-    const totalLines = stdout.split("\n").length;
-    const totalBytes = Buffer.byteLength(stdout);
+  const totalLines = stdout.split("\n").length;
+  const totalBytes = Buffer.byteLength(stdout);
 
-    store.indexPlainText(stdout, "exec-output");
-    const results = store.search(intent, maxResults);
+  // Index into the PERSISTENT store so user can search() later
+  const persistent = getStore();
+  const indexed = persistent.indexPlainText(stdout, source);
+
+  // Search with an ephemeral store to find matching section titles
+  const ephemeral = new ContentStore(":memory:");
+  try {
+    ephemeral.indexPlainText(stdout, source);
+    let results = ephemeral.search(intent, maxResults);
+
+    // Relaxed search: try individual words (OR semantics)
+    if (results.length === 0) {
+      const words = intent.trim().split(/\s+/).filter(w => w.length > 2);
+      const relaxed: SearchResult[] = [];
+      for (const word of words) {
+        const wordResults = ephemeral.search(word, 3);
+        for (const r of wordResults) {
+          if (!relaxed.some(existing => existing.title === r.title)) {
+            relaxed.push(r);
+          }
+        }
+        if (relaxed.length >= maxResults) break;
+      }
+      results = relaxed.slice(0, maxResults);
+    }
 
     if (results.length === 0) {
       return (
-        `[Intent search: no matches for "${intent}" in ${totalLines}-line output. Returning full output.]\n\n` +
-        stdout
+        `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.\n` +
+        `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).\n` +
+        `Use search() to explore the indexed content.`
       );
     }
 
-    const totalChunks = store.getStats().chunks;
-    const header = `[Intent search: ${results.length} of ${totalChunks} sections matched "${intent}" from ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB)]`;
+    // Return ONLY titles + first-line previews — not full content
+    const lines = [
+      `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
+      `${results.length} sections matched "${intent}" (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB):`,
+      "",
+    ];
 
-    const formatted = results
-      .map((r, i) => {
-        const matchLabel = i === 0 ? " (best match)" : "";
-        return `--- ${r.title}${matchLabel} ---\n${r.content}`;
-      })
-      .join("\n\n");
+    for (const r of results) {
+      const preview = r.content.split("\n")[0].slice(0, 120);
+      lines.push(`  - ${r.title}: ${preview}`);
+    }
 
-    const footer = `[Full output: ${totalLines} lines / ${(totalBytes / 1024).toFixed(1)}KB. Re-run without intent to see raw output.]`;
+    lines.push("");
+    lines.push("Use search() to retrieve full content of any section.");
 
-    return `${header}\n\n${formatted}\n\n${footer}`;
+    return lines.join("\n");
   } finally {
-    store.close();
+    ephemeral.close();
   }
 }
 
@@ -276,7 +302,7 @@ server.registerTool(
         if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
           return {
             content: [
-              { type: "text" as const, text: intentSearch(output, intent) },
+              { type: "text" as const, text: intentSearch(output, intent, `file:${path}:error`) },
             ],
             isError: true,
           };
@@ -294,7 +320,7 @@ server.registerTool(
       if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
         return {
           content: [
-            { type: "text" as const, text: intentSearch(stdout, intent) },
+            { type: "text" as const, text: intentSearch(stdout, intent, `file:${path}`) },
           ],
         };
       }
