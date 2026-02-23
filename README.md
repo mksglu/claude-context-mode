@@ -271,6 +271,72 @@ Typical 45-minute debugging session:
 | Source code to edit | Plain `Read` tool | Need full content for edits |
 | Small files (<20 lines) | Plain `Read` tool | Minimal overhead |
 
+## Example Prompts
+
+Just ask naturally — Claude automatically routes through Context Mode when it saves tokens.
+
+### Git & GitHub
+
+```
+"Analyze the last 50 commits and find the most frequently changed files"
+"List all open PRs on this repo and summarize their status"
+"Show contributors ranked by commit count this month"
+"Find all commits that touched the auth module in the last 30 days"
+```
+
+### Code Analysis
+
+```
+"Analyze all TypeScript files in src/ and report function counts per file"
+"Find all TODO and FIXME comments across the codebase"
+"Count lines of code per language in this project"
+"List all exported functions from src/utils/ and their parameter signatures"
+```
+
+### Logs & Debugging
+
+```
+"Read the access log and break down requests by HTTP status code"
+"Find the top 10 slowest API endpoints from the request log"
+"Parse the error log and group exceptions by type with frequency"
+"Analyze the build output and list all warnings with file locations"
+```
+
+### Test & CI
+
+```
+"Run the test suite and give me a pass/fail summary"
+"Analyze test coverage output and find untested files"
+"Check which tests have been flaky in the last 10 CI runs"
+```
+
+### Data & Config
+
+```
+"Analyze package-lock.json and find the 10 largest dependencies by size"
+"Parse the CSV export and compute average response time per endpoint"
+"Read the Kubernetes manifests and summarize resource limits per pod"
+"Compare tsconfig.json across packages in this monorepo"
+```
+
+### Documentation Lookup
+
+```
+"Fetch the React useEffect docs and find the cleanup pattern"
+"Index the Next.js App Router documentation and search for loading states"
+"Look up the Zod docs and find string validation examples"
+"Fetch the Tailwind docs and search for responsive breakpoint utilities"
+```
+
+### Cloud & Infrastructure
+
+```
+"List all S3 buckets and their sizes using AWS CLI"
+"Show running Kubernetes pods and their restart counts"
+"List all Docker containers with their memory and CPU usage"
+"Check the status of all Cloudflare Workers in this account"
+```
+
 ## Requirements
 
 - **Node.js 18+**
