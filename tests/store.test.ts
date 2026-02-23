@@ -609,6 +609,77 @@ async function main() {
     store.close();
   });
 
+  // ===== PLAIN TEXT INDEXING =====
+  console.log("\n--- Plain Text Indexing ---\n");
+
+  await test("indexPlainText: chunks by line groups", () => {
+    const store = createStore();
+    const lines = Array.from({ length: 100 }, (_, i) => `Log line ${i + 1}: processing request`).join("\n");
+    const result = store.indexPlainText(lines, "build-output");
+    assert.ok(result.totalChunks >= 5, `Expected >=5 chunks for 100 lines with 20-line groups, got ${result.totalChunks}`);
+    assert.equal(result.label, "build-output");
+    assert.equal(result.codeChunks, 0);
+    store.close();
+  });
+
+  await test("indexPlainText: single chunk for small output", () => {
+    const store = createStore();
+    const content = "Line 1\nLine 2\nLine 3";
+    const result = store.indexPlainText(content, "small-output");
+    assert.equal(result.totalChunks, 1, `Expected 1 chunk for 3 lines, got ${result.totalChunks}`);
+    assert.equal(result.label, "small-output");
+    store.close();
+  });
+
+  await test("indexPlainText: blank-line splitting for sectioned output", () => {
+    const store = createStore();
+    const content = [
+      "Section A line 1\nSection A line 2",
+      "Section B line 1\nSection B line 2",
+      "Section C line 1\nSection C line 2",
+    ].join("\n\n");
+    const result = store.indexPlainText(content, "sectioned-output");
+    assert.equal(result.totalChunks, 3, `Expected 3 chunks for 3 blank-line-separated sections, got ${result.totalChunks}`);
+    store.close();
+  });
+
+  await test("indexPlainText: searchable after indexing", () => {
+    const store = createStore();
+    const lines = Array.from({ length: 200 }, (_, i) => {
+      if (i === 149) return "ERROR: connection refused to database host";
+      return `[INFO] ${i + 1}: normal operation continued`;
+    }).join("\n");
+    store.indexPlainText(lines, "server-logs");
+    const results = store.search("connection refused", 3);
+    assert.ok(results.length > 0, "Should find the error line via search");
+    assert.ok(
+      results[0].content.includes("connection refused"),
+      `Result should contain 'connection refused', got: ${results[0].content.slice(0, 100)}`,
+    );
+    store.close();
+  });
+
+  await test("indexPlainText: empty content returns 0 chunks", () => {
+    const store = createStore();
+    const result = store.indexPlainText("", "empty-output");
+    assert.equal(result.totalChunks, 0, "Empty content should produce 0 chunks");
+    assert.equal(result.label, "empty-output");
+    store.close();
+  });
+
+  await test("indexPlainText: in-memory store works", () => {
+    const store = new ContentStore(":memory:");
+    const content = "Line 1\nLine 2\nLine 3";
+    const result = store.indexPlainText(content, "memory-test");
+    assert.equal(result.totalChunks, 1);
+    assert.equal(result.label, "memory-test");
+
+    const searchResults = store.search("Line 1", 1);
+    assert.ok(searchResults.length > 0, "In-memory store should support search");
+    assert.ok(searchResults[0].content.includes("Line 1"));
+    store.close();
+  });
+
   // ===== SUMMARY =====
   console.log("\n" + "=".repeat(60));
   console.log(

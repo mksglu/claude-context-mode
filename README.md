@@ -75,11 +75,22 @@ Claude calls: execute({ language: "shell", code: "gh pr list --json title,state 
 Returns: "3"                  ← 2 bytes instead of 8KB JSON
 ```
 
+**Intent-driven search** (v0.5.0): When you provide an `intent` parameter and output exceeds 5KB, Context Mode uses BM25 search to return only the relevant sections — instead of blind head/tail truncation.
+
+```
+Claude calls: execute({
+  language: "shell",
+  code: "cat /var/log/app.log",
+  intent: "connection refused database error"
+})
+Returns: only the 3 matching log sections (1.5KB) ← instead of 100KB truncated log
+```
+
 Authenticated CLIs work out of the box — `gh`, `aws`, `gcloud`, `kubectl`, `docker` credentials are passed through securely. Bun auto-detected for 3-5x faster JS/TS.
 
 ### `execute_file` — Process Files Without Loading
 
-File contents never enter context. The file is read into a `FILE_CONTENT` variable inside the sandbox.
+File contents never enter context. The file is read into a `FILE_CONTENT` variable inside the sandbox. Also supports `intent` parameter for intent-driven search on large outputs.
 
 ```
 Claude calls: execute_file({ path: "access.log", language: "python", code: "..." })
@@ -213,6 +224,31 @@ Tail (40%): Final output with errors/results
 ```
 
 Line-boundary snapping — never cuts mid-line. Error messages at the bottom are always preserved.
+
+### Intent-Driven Search (v0.5.0)
+
+When `execute` or `execute_file` is called with an `intent` parameter and output exceeds 5KB, Context Mode replaces blind truncation with intelligent BM25 search:
+
+```
+Traditional truncation:
+  stdout (100KB) → head(60%) + tail(40%) → ~100KB in context
+  Problem: relevant info in the middle is lost
+
+Intent-driven search:
+  stdout (100KB) → chunk by lines → in-memory FTS5 → search(intent) → 2-5KB relevant sections
+  Result: only what you need enters context
+```
+
+Tested across 4 real-world scenarios:
+
+| Scenario | Smart Truncation | Intent Search | Intent Size | Truncation Size |
+|---|---|---|---|---|
+| Server log error (line 347/500) | **missed** | **found** | 1.5 KB | 5.0 KB |
+| 3 test failures among 200 tests | found 2/3 | **found 3/3** | 2.4 KB | 5.0 KB |
+| 2 build warnings among 300 lines | **missed both** | **found both** | 2.1 KB | 5.0 KB |
+| API auth error (line 743/1000) | **missed** | **found** | 1.2 KB | 4.9 KB |
+
+Smart truncation fails on 3 of 4 scenarios because relevant content is in the dropped middle section. Intent search finds the target every time while using 50-75% fewer bytes.
 
 ### HTML to Markdown Conversion
 
@@ -352,12 +388,13 @@ Just ask naturally — Claude automatically routes through Context Mode when it 
 
 ## Test Suite
 
-113 tests across 3 suites:
+99+ tests across 4 suites:
 
 | Suite | Tests | Coverage |
 |---|---|---|
 | Executor | 55 | 10 languages, sandbox, truncation, concurrency, timeouts |
-| ContentStore | 34 | FTS5 schema, BM25 ranking, chunking, stemming, fixtures |
+| ContentStore | 40 | FTS5 schema, BM25 ranking, chunking, stemming, plain text indexing |
+| Intent Search | 4 | Smart truncation vs intent-driven search across 4 real-world scenarios |
 | MCP Integration | 24 | JSON-RPC protocol, all 5 tools, fetch_and_index, errors |
 
 ## Development
@@ -368,8 +405,8 @@ cd claude-context-mode
 npm install
 npm run build
 npm test              # executor (55 tests)
-npm run test:store    # FTS5/BM25 (34 tests)
-npm run test:all      # all suites (113 tests)
+npm run test:store    # FTS5/BM25 (40 tests)
+npm run test:all      # all suites (99+ tests)
 ```
 
 ## License

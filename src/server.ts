@@ -15,7 +15,7 @@ const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
   name: "context-mode",
-  version: "0.4.1",
+  version: "0.5.0",
 });
 
 const executor = new PolyglotExecutor({ runtimes });
@@ -67,9 +67,17 @@ server.registerTool(
         .optional()
         .default(30000)
         .describe("Max execution time in ms"),
+      intent: z
+        .string()
+        .optional()
+        .describe(
+          "What you're looking for in the output. When provided and output is large (>5KB), " +
+          "returns only matching sections via BM25 search instead of truncated output. " +
+          "Example: 'find failing tests', 'HTTP 500 errors', 'memory usage statistics'.",
+        ),
     }),
   },
-  async ({ language, code, timeout }) => {
+  async ({ language, code, timeout, intent }) => {
     try {
       const result = await executor.execute({ language, code, timeout });
 
@@ -86,20 +94,37 @@ server.registerTool(
       }
 
       if (result.exitCode !== 0) {
+        const output = `Exit code: ${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`;
+        if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
+          return {
+            content: [
+              { type: "text" as const, text: intentSearch(output, intent) },
+            ],
+            isError: true,
+          };
+        }
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Exit code: ${result.exitCode}\n\nstdout:\n${result.stdout}\n\nstderr:\n${result.stderr}`,
-            },
+            { type: "text" as const, text: output },
           ],
           isError: true,
         };
       }
 
+      const stdout = result.stdout || "(no output)";
+
+      // Intent-driven search: if intent provided and output is large enough
+      if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
+        return {
+          content: [
+            { type: "text" as const, text: intentSearch(stdout, intent) },
+          ],
+        };
+      }
+
       return {
         content: [
-          { type: "text" as const, text: result.stdout || "(no output)" },
+          { type: "text" as const, text: stdout },
         ],
       };
     } catch (err: unknown) {
@@ -132,6 +157,50 @@ function indexStdout(
       },
     ],
   };
+}
+
+// ─────────────────────────────────────────────────────────
+// Helper: intent-driven search on execution output
+// ─────────────────────────────────────────────────────────
+
+const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
+
+function intentSearch(
+  stdout: string,
+  intent: string,
+  maxResults: number = 5,
+): string {
+  const store = new ContentStore(":memory:");
+  try {
+    const totalLines = stdout.split("\n").length;
+    const totalBytes = Buffer.byteLength(stdout);
+
+    store.indexPlainText(stdout, "exec-output");
+    const results = store.search(intent, maxResults);
+
+    if (results.length === 0) {
+      return (
+        `[Intent search: no matches for "${intent}" in ${totalLines}-line output. Returning full output.]\n\n` +
+        stdout
+      );
+    }
+
+    const totalChunks = store.getStats().chunks;
+    const header = `[Intent search: ${results.length} of ${totalChunks} sections matched "${intent}" from ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB)]`;
+
+    const formatted = results
+      .map((r, i) => {
+        const matchLabel = i === 0 ? " (best match)" : "";
+        return `--- ${r.title}${matchLabel} ---\n${r.content}`;
+      })
+      .join("\n\n");
+
+    const footer = `[Full output: ${totalLines} lines / ${(totalBytes / 1024).toFixed(1)}KB. Re-run without intent to see raw output.]`;
+
+    return `${header}\n\n${formatted}\n\n${footer}`;
+  } finally {
+    store.close();
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -172,9 +241,16 @@ server.registerTool(
         .optional()
         .default(30000)
         .describe("Max execution time in ms"),
+      intent: z
+        .string()
+        .optional()
+        .describe(
+          "What you're looking for in the output. When provided and output is large (>5KB), " +
+          "returns only matching sections via BM25 search instead of truncated output.",
+        ),
     }),
   },
-  async ({ path, language, code, timeout }) => {
+  async ({ path, language, code, timeout, intent }) => {
     try {
       const result = await executor.executeFile({
         path,
@@ -196,20 +272,36 @@ server.registerTool(
       }
 
       if (result.exitCode !== 0) {
+        const output = `Error processing ${path} (exit ${result.exitCode}):\n${result.stderr || result.stdout}`;
+        if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
+          return {
+            content: [
+              { type: "text" as const, text: intentSearch(output, intent) },
+            ],
+            isError: true,
+          };
+        }
         return {
           content: [
-            {
-              type: "text" as const,
-              text: `Error processing ${path} (exit ${result.exitCode}):\n${result.stderr || result.stdout}`,
-            },
+            { type: "text" as const, text: output },
           ],
           isError: true,
         };
       }
 
+      const stdout = result.stdout || "(no output)";
+
+      if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
+        return {
+          content: [
+            { type: "text" as const, text: intentSearch(stdout, intent) },
+          ],
+        };
+      }
+
       return {
         content: [
-          { type: "text" as const, text: result.stdout || "(no output)" },
+          { type: "text" as const, text: stdout },
         ],
       };
     } catch (err: unknown) {

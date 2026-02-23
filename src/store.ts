@@ -165,6 +165,61 @@ export class ContentStore {
     };
   }
 
+  // ── Index Plain Text ──
+
+  /**
+   * Index plain-text output (logs, build output, test results) by splitting
+   * into fixed-size line groups. Unlike markdown indexing, this does not
+   * look for headings — it chunks by line count with overlap.
+   */
+  indexPlainText(
+    content: string,
+    source: string,
+    linesPerChunk: number = 20,
+  ): IndexResult {
+    if (!content || content.trim().length === 0) {
+      const insertSource = this.#db.prepare(
+        "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, 0, 0)",
+      );
+      const info = insertSource.run(source);
+      return {
+        sourceId: Number(info.lastInsertRowid),
+        label: source,
+        totalChunks: 0,
+        codeChunks: 0,
+      };
+    }
+
+    const chunks = this.#chunkPlainText(content, linesPerChunk);
+
+    const insertSource = this.#db.prepare(
+      "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, ?, ?)",
+    );
+    const insertChunk = this.#db.prepare(
+      "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
+    );
+
+    const transaction = this.#db.transaction(() => {
+      const info = insertSource.run(source, chunks.length, 0);
+      const sourceId = Number(info.lastInsertRowid);
+
+      for (const chunk of chunks) {
+        insertChunk.run(chunk.title, chunk.content, sourceId, "prose");
+      }
+
+      return sourceId;
+    });
+
+    const sourceId = transaction();
+
+    return {
+      sourceId,
+      label: source,
+      totalChunks: chunks.length,
+      codeChunks: 0,
+    };
+  }
+
   // ── Search ──
 
   search(query: string, limit: number = 3): SearchResult[] {
@@ -318,6 +373,51 @@ export class ContentStore {
 
     // Flush remaining content
     flush();
+
+    return chunks;
+  }
+
+  #chunkPlainText(
+    text: string,
+    linesPerChunk: number,
+  ): Array<{ title: string; content: string }> {
+    // Try blank-line splitting first for naturally-sectioned output
+    const sections = text.split(/\n\s*\n/);
+    if (
+      sections.length >= 3 &&
+      sections.length <= 200 &&
+      sections.every((s) => Buffer.byteLength(s) < 5000)
+    ) {
+      return sections
+        .map((section, i) => ({
+          title: `Section ${i + 1}`,
+          content: section.trim(),
+        }))
+        .filter((s) => s.content.length > 0);
+    }
+
+    const lines = text.split("\n");
+
+    // Small enough for a single chunk
+    if (lines.length <= linesPerChunk) {
+      return [{ title: "Output", content: text }];
+    }
+
+    // Fixed-size line groups with 2-line overlap
+    const chunks: Array<{ title: string; content: string }> = [];
+    const overlap = 2;
+    const step = Math.max(linesPerChunk - overlap, 1);
+
+    for (let i = 0; i < lines.length; i += step) {
+      const slice = lines.slice(i, i + linesPerChunk);
+      if (slice.length === 0) break;
+      const startLine = i + 1;
+      const endLine = Math.min(i + slice.length, lines.length);
+      chunks.push({
+        title: `Lines ${startLine}-${endLine}`,
+        content: slice.join("\n"),
+      });
+    }
 
     return chunks;
   }
