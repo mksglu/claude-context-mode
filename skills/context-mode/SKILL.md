@@ -5,26 +5,43 @@ description: |
   Bash/curl/cat when processing large outputs. The cost of routing through context-mode is near zero,
   but flooding context with 50KB+ of raw data is catastrophic.
 
-  Use when: user wants to "fetch documentation", "look up the docs", "fetch the docs",
-  "check the API reference", "find examples in docs", "index documentation", "search docs",
-  "analyze logs", "check the logs", "read access.log", "debug the 500s",
-  "run tests", "run the test suite", "check if tests pass", "npm test", "vitest", "pytest",
-  "git log", "show recent commits", "list commits", "what changed", "diff between branches",
-  "analyze output", "summarize output", "process data", "parse JSON", "parse CSV",
-  "filter results", "extract errors", "check build output", "analyze dependencies",
-  "process API response", "large file analysis", "hit this endpoint", "call the API",
-  "check the response", "outdated packages", "count lines", "find TODOs",
-  "analyze codebase", "security audit",
-  "docker stats", "docker ps", "docker containers", "docker logs", "list containers",
-  "container memory", "container CPU", "container usage", "check pods", "kubectl get",
-  "kubectl describe", "kubectl logs", "list pods", "pod status", "k8s", "kubernetes",
-  "list services", "list deployments", "helm list", "docker compose",
-  "npm ls", "pip list", "brew list", "apt list", "cargo tree",
-  "list processes", "ps aux", "top", "htop", "disk usage", "df -h", "du -sh",
-  "network connections", "netstat", "lsof", "ss -tlnp",
-  "list databases", "show tables", "describe table", "explain query",
-  "aws s3 ls", "aws ec2 describe", "gcloud", "az vm list",
-  or ANY operation where output might exceed 20 lines.
+  Use when the user's intent involves ANY of these categories (and similar variations):
+
+  Documentation & APIs: fetch docs, look up docs, check API reference, find examples,
+  index documentation, search docs, read the changelog, check release notes.
+
+  Logs & Debugging: analyze logs, check logs, debug errors, find 500s, trace requests,
+  inspect error output, review stack traces.
+
+  Testing: run tests, check test results, test suite output, coverage report.
+
+  Version Control: git history, recent commits, what changed, diff between branches,
+  commit log, blame, changelog analysis.
+
+  Data Processing: parse JSON, parse CSV, analyze output, summarize output, process data,
+  filter results, extract patterns, transform data, count occurrences.
+
+  Infrastructure & Containers: list containers, container resource usage, container stats,
+  container memory, container CPU, pod status, service health, deployment status,
+  cluster info, orchestration state, compose services.
+
+  System & Processes: running processes, system resource usage, disk usage, memory usage,
+  network connections, open ports, file descriptors, system load.
+
+  Package & Dependency Management: list dependencies, outdated packages, dependency tree,
+  installed packages, audit vulnerabilities, license check.
+
+  Database: list databases, show tables, describe schema, explain query, query results.
+
+  Cloud & DevOps: cloud resources, storage buckets, compute instances, cloud functions,
+  DNS records, SSL certificates, CDN status, CI/CD pipeline output.
+
+  Code Analysis: count lines, find TODOs, analyze codebase, security audit, code metrics,
+  find patterns, codebase statistics.
+
+  API Endpoints: hit endpoint, call API, check response, test endpoint, API debugging.
+
+  Or ANY operation where output might exceed 20 lines.
   Also use when routing output from other MCP tools (Playwright snapshots, Context7 docs,
   GitHub API responses, Sentry data) through index → search to avoid context bloat.
 ---
