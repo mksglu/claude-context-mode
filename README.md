@@ -75,7 +75,7 @@ Claude calls: execute({ language: "shell", code: "gh pr list --json title,state 
 Returns: "3"                  ← 2 bytes instead of 8KB JSON
 ```
 
-**Intent-driven search** (v0.5.0): When you provide an `intent` parameter and output exceeds 5KB, Context Mode uses BM25 search to return only the relevant sections — instead of blind head/tail truncation.
+**Intent-driven search** (v0.5.0): When you provide an `intent` parameter and output exceeds 5KB, Context Mode uses BM25 search to return only the relevant sections matching your intent.
 
 ```
 Claude calls: execute({
@@ -83,7 +83,7 @@ Claude calls: execute({
   code: "cat /var/log/app.log",
   intent: "connection refused database error"
 })
-Returns: only the 3 matching log sections (1.5KB) ← instead of 100KB truncated log
+Returns: only the 3 matching log sections (1.5KB) ← instead of 100KB raw log
 ```
 
 Authenticated CLIs work out of the box — `gh`, `aws`, `gcloud`, `kubectl`, `docker` credentials are passed through securely. Bun auto-detected for 3-5x faster JS/TS.
@@ -163,7 +163,7 @@ Use instead of WebFetch or Context7 when you need documentation — index once, 
                                          │  │ • 10 language runtimes │  │
                                          │  │ • Sandboxed subprocess │  │
                                          │  │ • Auth passthrough     │  │
-                                         │  │ • Smart truncation     │  │
+                                         │  │ • Intent-driven search │  │
                                          │  └────────────────────────┘  │
                                          │                              │
                                          │  ┌────────────────────────┐  │
@@ -213,42 +213,29 @@ ORDER BY rank LIMIT 3;
 
 **Lazy singleton:** Database created only when `index` or `search` is first called — zero overhead for sessions that don't use it.
 
-### Smart Truncation
-
-When subprocess output exceeds the 100KB buffer, Context Mode preserves both head and tail:
-
-```
-Head (60%): Initial output with context
-... [47 lines / 3.2KB truncated — showing first 12 + last 8 lines] ...
-Tail (40%): Final output with errors/results
-```
-
-Line-boundary snapping — never cuts mid-line. Error messages at the bottom are always preserved.
-
 ### Intent-Driven Search (v0.5.0)
 
-When `execute` or `execute_file` is called with an `intent` parameter and output exceeds 5KB, Context Mode replaces blind truncation with intelligent BM25 search:
+When `execute` or `execute_file` is called with an `intent` parameter and output exceeds 5KB, Context Mode chunks the output and uses BM25 search to return only the relevant sections:
 
 ```
-Traditional truncation:
-  stdout (100KB) → head(60%) + tail(40%) → ~100KB in context
-  Problem: relevant info in the middle is lost
+Without intent:
+  stdout (100KB) → full output enters context
 
-Intent-driven search:
+With intent:
   stdout (100KB) → chunk by lines → in-memory FTS5 → search(intent) → 2-5KB relevant sections
   Result: only what you need enters context
 ```
 
 Tested across 4 real-world scenarios:
 
-| Scenario | Smart Truncation | Intent Search | Intent Size | Truncation Size |
-|---|---|---|---|---|
-| Server log error (line 347/500) | **missed** | **found** | 1.5 KB | 5.0 KB |
-| 3 test failures among 200 tests | found 2/3 | **found 3/3** | 2.4 KB | 5.0 KB |
-| 2 build warnings among 300 lines | **missed both** | **found both** | 2.1 KB | 5.0 KB |
-| API auth error (line 743/1000) | **missed** | **found** | 1.2 KB | 4.9 KB |
+| Scenario | Without Intent | With Intent | Size Reduction |
+|---|---|---|---|
+| Server log error (line 347/500) | error lost in output | **found** | 1.5 KB vs 5.0 KB |
+| 3 test failures among 200 tests | only 2/3 visible | **all 3 found** | 2.4 KB vs 5.0 KB |
+| 2 build warnings among 300 lines | both lost in output | **both found** | 2.1 KB vs 5.0 KB |
+| API auth error (line 743/1000) | error lost in output | **found** | 1.2 KB vs 4.9 KB |
 
-Smart truncation fails on 3 of 4 scenarios because relevant content is in the dropped middle section. Intent search finds the target every time while using 50-75% fewer bytes.
+Intent search finds the target every time while using 50-75% fewer bytes.
 
 ### HTML to Markdown Conversion
 
@@ -392,9 +379,9 @@ Just ask naturally — Claude automatically routes through Context Mode when it 
 
 | Suite | Tests | Coverage |
 |---|---|---|
-| Executor | 55 | 10 languages, sandbox, truncation, concurrency, timeouts |
+| Executor | 55 | 10 languages, sandbox, output handling, concurrency, timeouts |
 | ContentStore | 40 | FTS5 schema, BM25 ranking, chunking, stemming, plain text indexing |
-| Intent Search | 4 | Smart truncation vs intent-driven search across 4 real-world scenarios |
+| Intent Search | 4 | Intent-driven search across 4 real-world scenarios |
 | MCP Integration | 24 | JSON-RPC protocol, all 5 tools, fetch_and_index, errors |
 
 ## Development
