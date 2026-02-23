@@ -376,6 +376,126 @@ async function main() {
     );
   });
 
+  // ===== SCENARIO 5: Score-Based Search — Semantic Gap Fix =====
+  console.log(
+    "\n--- Scenario 5: Score-based search finds sections matching later intent words ---\n",
+  );
+
+  await test("score-based search: multi-word matches rank higher than single-word matches", () => {
+    // Build a 500-line synthetic changelog/advisory output.
+    // Three relevant sections are scattered across the document:
+    //   Lines 100-120: prototype-related code change (hasOwnProperty, allowPrototypes)
+    //   Lines 300-320: proto key filtering change
+    //   Lines 400-420: security advisory note
+    // The rest is generic filler that may match individual words like "fix" or "security".
+    const lines: string[] = [];
+    for (let i = 0; i < 500; i++) {
+      if (i >= 100 && i <= 120) {
+        // Section A: prototype pollution fix — contains "prototype", "fix", "security"
+        if (i === 100) {
+          lines.push("## Prototype Pollution Fix");
+        } else if (i === 101) {
+          lines.push("Object.prototype.hasOwnProperty check added to prevent prototype pollution.");
+        } else if (i === 102) {
+          lines.push("The allowPrototypes option is now disabled by default for security.");
+        } else if (i === 103) {
+          lines.push("This fix addresses CVE-2022-XXXXX prototype pollution vulnerability.");
+        } else {
+          lines.push(`  - Internal refactor line ${i}: tightened prototype chain validation.`);
+        }
+      } else if (i >= 300 && i <= 320) {
+        // Section B: __proto__ key filtering — contains "proto", "filtered", "pollution"
+        if (i === 300) {
+          lines.push("## Proto Key Filtering");
+        } else if (i === 301) {
+          lines.push("__proto__ keys filtered from user input to prevent pollution attacks.");
+        } else if (i === 302) {
+          lines.push("constructor.prototype paths are now blocked in query string parsing.");
+        } else {
+          lines.push(`  - Filtering rule ${i}: additional prototype path blocked.`);
+        }
+      } else if (i >= 400 && i <= 420) {
+        // Section C: security advisory — contains "security", "vulnerability", "advisory"
+        if (i === 400) {
+          lines.push("## Security Advisory");
+        } else if (i === 401) {
+          lines.push("Security advisory note added for prototype pollution vulnerability.");
+        } else if (i === 402) {
+          lines.push("Users should upgrade immediately to fix this security vulnerability.");
+        } else {
+          lines.push(`  - Advisory detail ${i}: downstream dependency notification.`);
+        }
+      } else {
+        // Filler — generic changelog lines. Some deliberately contain single
+        // intent words ("fix", "security") to create noise that a naive search
+        // might grab instead of the high-value multi-match sections.
+        if (i % 50 === 0) {
+          lines.push(`Version ${Math.floor(i / 50)}.${i % 10}.0: security patch applied.`);
+        } else if (i % 37 === 0) {
+          lines.push(`Bugfix release ${i}: minor fix for edge case in parser.`);
+        } else {
+          lines.push(`Version ${Math.floor(i / 50)}.${i % 10}.${i % 5}: improved performance and stability for module-${i}.`);
+        }
+      }
+    }
+    const changelogOutput = lines.join("\n");
+
+    // Intent: multi-word query where the important terms are "prototype" and "pollution"
+    // A naive first-come-first-served approach might fill results with chunks
+    // matching just "security" or "fix" (which appear in filler lines too).
+    const intent = "security vulnerability prototype pollution fix";
+
+    // Score-based intent search: BM25 ranks chunks matching MORE intent words higher
+    const intentResult = simulateIntentSearch(changelogOutput, intent, 5);
+
+    // Check which of the three important sections were found
+    const foundPrototypeFix = intentResult.found.includes("Object.prototype.hasOwnProperty")
+      || intentResult.found.includes("allowPrototypes");
+    const foundProtoFiltering = intentResult.found.includes("__proto__ keys filtered")
+      || intentResult.found.includes("constructor.prototype");
+    const foundSecurityAdvisory = intentResult.found.includes("security advisory note added")
+      || intentResult.found.includes("Security Advisory");
+
+    const relevantSectionsFound = [
+      foundPrototypeFix,
+      foundProtoFiltering,
+      foundSecurityAdvisory,
+    ].filter(Boolean).length;
+
+    console.log(`    Found "Prototype Pollution Fix" section: ${foundPrototypeFix ? "YES" : "NO"}`);
+    console.log(`    Found "Proto Key Filtering" section: ${foundProtoFiltering ? "YES" : "NO"}`);
+    console.log(`    Found "Security Advisory" section: ${foundSecurityAdvisory ? "YES" : "NO"}`);
+    console.log(`    Relevant sections found: ${relevantSectionsFound}/3`);
+    console.log(`    Intent result size: ${intentResult.bytes} bytes`);
+
+    scenarioResults.push({
+      name: "Score-Based Search",
+      truncationFound: "N/A (score test)",
+      intentFound: `${relevantSectionsFound}/3`,
+      intentBytes: intentResult.bytes,
+      truncationBytes: 0,
+    });
+
+    // The score-based search MUST find at least 2 of the 3 relevant sections.
+    // BM25 scoring ensures sections matching multiple intent words
+    // (e.g., "prototype" + "pollution" + "security" + "fix") rank higher
+    // than filler lines matching just one word like "fix".
+    assert.ok(
+      relevantSectionsFound >= 2,
+      `Score-based search should find at least 2/3 relevant sections, found ${relevantSectionsFound}/3. ` +
+      `BM25 should rank multi-word matches above single-word filler matches.`,
+    );
+
+    // The prototype pollution fix section (Section A) is the highest-value result
+    // because it matches the most intent words: "prototype", "pollution", "fix", "security".
+    // Score-based ranking must surface it.
+    assert.ok(
+      foundPrototypeFix,
+      "Score-based search MUST find the 'Prototype Pollution Fix' section — " +
+      "it matches 4 intent words and should rank highest via BM25.",
+    );
+  });
+
   // ===== SUMMARY TABLE =====
   console.log("\n");
   console.log("=== INTENT SEARCH vs SMART TRUNCATION ===");

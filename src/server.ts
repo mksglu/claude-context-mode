@@ -11,7 +11,7 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
@@ -74,7 +74,8 @@ server.registerTool(
         .describe(
           "What you're looking for in the output. When provided and output is large (>5KB), " +
           "indexes output into knowledge base and returns section titles + previews — not full content. " +
-          "Use search() to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'.",
+          "Use search() to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
+          "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.",
         ),
     }),
   },
@@ -185,28 +186,50 @@ function intentSearch(
     ephemeral.indexPlainText(stdout, source);
     let results = ephemeral.search(intent, maxResults);
 
-    // Relaxed search: try individual words (OR semantics)
+    // Score-based relaxed search: search ALL words, rank by match count
     if (results.length === 0) {
-      const words = intent.trim().split(/\s+/).filter(w => w.length > 2);
-      const relaxed: SearchResult[] = [];
-      for (const word of words) {
-        const wordResults = ephemeral.search(word, 3);
-        for (const r of wordResults) {
-          if (!relaxed.some(existing => existing.title === r.title)) {
-            relaxed.push(r);
+      const words = intent.trim().split(/\s+/).filter(w => w.length > 2).slice(0, 20);
+      if (words.length > 0) {
+        const sectionScores = new Map<string, { result: SearchResult; score: number; bestRank: number }>();
+
+        for (const word of words) {
+          const wordResults = ephemeral.search(word, 10);
+          for (const r of wordResults) {
+            const existing = sectionScores.get(r.title);
+            if (existing) {
+              existing.score += 1;
+              if (r.rank < existing.bestRank) {
+                existing.bestRank = r.rank;
+                existing.result = r;
+              }
+            } else {
+              sectionScores.set(r.title, { result: r, score: 1, bestRank: r.rank });
+            }
           }
         }
-        if (relaxed.length >= maxResults) break;
+
+        results = Array.from(sectionScores.values())
+          .sort((a, b) => b.score - a.score || a.bestRank - b.bestRank)
+          .slice(0, maxResults)
+          .map(s => s.result);
       }
-      results = relaxed.slice(0, maxResults);
     }
 
+    // Extract distinctive terms as vocabulary hints for the LLM
+    const distinctiveTerms = persistent.getDistinctiveTerms(indexed.sourceId);
+
     if (results.length === 0) {
-      return (
-        `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.\n` +
-        `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).\n` +
-        `Use search() to explore the indexed content.`
-      );
+      const lines = [
+        `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
+        `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).`,
+      ];
+      if (distinctiveTerms.length > 0) {
+        lines.push("");
+        lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
+      }
+      lines.push("");
+      lines.push("Use search() to explore the indexed content.");
+      return lines.join("\n");
     }
 
     // Return ONLY titles + first-line previews — not full content
@@ -219,6 +242,11 @@ function intentSearch(
     for (const r of results) {
       const preview = r.content.split("\n")[0].slice(0, 120);
       lines.push(`  - ${r.title}: ${preview}`);
+    }
+
+    if (distinctiveTerms.length > 0) {
+      lines.push("");
+      lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
     }
 
     lines.push("");
@@ -439,6 +467,10 @@ server.registerTool(
       "- Look up API signatures ('Supabase RLS policy syntax')\n" +
       "- Get configuration details ('Tailwind responsive breakpoints')\n" +
       "- Find migration steps ('App Router data fetching')\n\n" +
+      "SEARCH TIPS:\n" +
+      "- Use specific technical terms, not concepts ('__proto__' not 'security')\n" +
+      "- Check 'Searchable terms' from execute/execute_file results for available vocabulary\n" +
+      "- Combine multiple specific terms for better results\n\n" +
       "Returns exact content — not summaries. Each result includes heading hierarchy and full section text.",
     inputSchema: z.object({
       query: z.string().describe("Natural language search query"),

@@ -45,6 +45,26 @@ export interface StoreStats {
 }
 
 // ─────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────
+
+const STOPWORDS = new Set([
+  "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+  "her", "was", "one", "our", "out", "has", "his", "how", "its", "may",
+  "new", "now", "old", "see", "way", "who", "did", "get", "got", "let",
+  "say", "she", "too", "use", "will", "with", "this", "that", "from",
+  "they", "been", "have", "many", "some", "them", "than", "each", "make",
+  "like", "just", "over", "such", "take", "into", "year", "your", "good",
+  "could", "would", "about", "which", "their", "there", "other", "after",
+  "should", "through", "also", "more", "most", "only", "very", "when",
+  "what", "then", "these", "those", "being", "does", "done", "both",
+  "same", "still", "while", "where", "here", "were", "much",
+  // Common in code/changelogs
+  "update", "updates", "updated", "deps", "dev", "tests", "test",
+  "add", "added", "fix", "fixed", "run", "running", "using",
+]);
+
+// ─────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────
 
@@ -256,6 +276,57 @@ export class ContentStore {
     }));
   }
 
+  // ── Vocabulary ──
+
+  getDistinctiveTerms(sourceId: number, maxTerms: number = 40): string[] {
+    const stats = this.#db
+      .prepare("SELECT chunk_count FROM sources WHERE id = ?")
+      .get(sourceId) as { chunk_count: number } | undefined;
+
+    if (!stats || stats.chunk_count < 3) return [];
+
+    const totalChunks = stats.chunk_count;
+    const minAppearances = 2;
+    const maxAppearances = Math.max(3, Math.ceil(totalChunks * 0.4));
+
+    const rows = this.#db
+      .prepare("SELECT content FROM chunks WHERE source_id = ?")
+      .all(sourceId) as Array<{ content: string }>;
+
+    // Count document frequency (how many sections contain each word)
+    const docFreq = new Map<string, number>();
+
+    for (const row of rows) {
+      const words = new Set(
+        row.content
+          .toLowerCase()
+          .split(/[^\p{L}\p{N}_-]+/u)
+          .filter((w) => w.length >= 3 && !STOPWORDS.has(w)),
+      );
+      for (const word of words) {
+        docFreq.set(word, (docFreq.get(word) ?? 0) + 1);
+      }
+    }
+
+    const filtered = Array.from(docFreq.entries())
+      .filter(([, count]) => count >= minAppearances && count <= maxAppearances);
+
+    // Score: IDF (rarity) + length bonus + identifier bonus (underscore/camelCase)
+    const scored = filtered.map(([word, count]: [string, number]) => {
+      const idf = Math.log(totalChunks / count);
+      const lenBonus = Math.min(word.length / 20, 0.5);
+      const hasSpecialChars = /[_]/.test(word);
+      const isCamelOrLong = word.length >= 12;
+      const identifierBonus = hasSpecialChars ? 1.5 : isCamelOrLong ? 0.8 : 0;
+      return { word, score: idf + lenBonus + identifierBonus };
+    });
+
+    return scored
+      .sort((a: { word: string; score: number }, b: { word: string; score: number }) => b.score - a.score)
+      .slice(0, maxTerms)
+      .map((s: { word: string; score: number }) => s.word);
+  }
+
   // ── Stats ──
 
   getStats(): StoreStats {
@@ -389,10 +460,14 @@ export class ContentStore {
       sections.every((s) => Buffer.byteLength(s) < 5000)
     ) {
       return sections
-        .map((section, i) => ({
-          title: `Section ${i + 1}`,
-          content: section.trim(),
-        }))
+        .map((section, i) => {
+          const trimmed = section.trim();
+          const firstLine = trimmed.split("\n")[0].slice(0, 80);
+          return {
+            title: firstLine || `Section ${i + 1}`,
+            content: trimmed,
+          };
+        })
         .filter((s) => s.content.length > 0);
     }
 
@@ -413,8 +488,9 @@ export class ContentStore {
       if (slice.length === 0) break;
       const startLine = i + 1;
       const endLine = Math.min(i + slice.length, lines.length);
+      const firstLine = slice[0]?.trim().slice(0, 80);
       chunks.push({
-        title: `Lines ${startLine}-${endLine}`,
+        title: firstLine || `Lines ${startLine}-${endLine}`,
         content: slice.join("\n"),
       });
     }

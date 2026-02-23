@@ -680,6 +680,134 @@ async function main() {
     store.close();
   });
 
+  // ===== DISTINCTIVE TERMS =====
+  console.log("\n--- getDistinctiveTerms ---\n");
+
+  await test("getDistinctiveTerms: returns terms in moderate frequency range", () => {
+    const store = createStore();
+    // Create content with 10 sections. A distinctive term appears in 3-4 sections
+    // (i.e., >= 2 and <= 40% of 10 = 4).
+    const sections = Array.from({ length: 10 }, (_, i) => {
+      const base = `## Section ${i}\n\nGeneric content for section number ${i}.`;
+      if (i < 3) return `${base}\n\nThe authentication middleware validates tokens.`;
+      if (i < 5) return `${base}\n\nThe database connection pool handles queries.`;
+      return `${base}\n\nPlain filler paragraph without special keywords.`;
+    }).join("\n\n");
+    const result = store.indexPlainText(sections, "distinctive-moderate");
+    const terms = store.getDistinctiveTerms(result.sourceId);
+    assert.ok(Array.isArray(terms), "Should return an array");
+    assert.ok(terms.length > 0, `Should return some distinctive terms, got ${terms.length}`);
+    // "authentication" appears in 3/10 sections — should be distinctive
+    assert.ok(
+      terms.includes("authentication"),
+      `Expected 'authentication' in distinctive terms, got: ${terms.join(", ")}`,
+    );
+    store.close();
+  });
+
+  await test("getDistinctiveTerms: returns empty for too few sections", () => {
+    const store = createStore();
+    // Only 2 sections — below the chunk_count < 3 threshold
+    const content = "Section A content here.\n\nSection B content here.";
+    const result = store.indexPlainText(content, "too-few-sections");
+    assert.ok(result.totalChunks <= 2, `Expected <=2 chunks, got ${result.totalChunks}`);
+    const terms = store.getDistinctiveTerms(result.sourceId);
+    assert.deepEqual(terms, [], "Should return empty array for fewer than 3 chunks");
+    store.close();
+  });
+
+  await test("getDistinctiveTerms: excludes stopwords", () => {
+    const store = createStore();
+    // Create 5 sections where stopwords "the", "this", "that", "with" appear in every section.
+    // "encryption" appears in 2 sections (moderate frequency).
+    const sections = Array.from({ length: 5 }, (_, i) => {
+      const base = `## Part ${i}\n\nThis is the content that comes with part number ${i}.`;
+      if (i < 2) return `${base}\n\nEncryption algorithms protect the data.`;
+      return base;
+    }).join("\n\n");
+    const result = store.indexPlainText(sections, "stopwords-test");
+    const terms = store.getDistinctiveTerms(result.sourceId);
+    // Stopwords should never appear
+    const stopwords = ["the", "this", "that", "with", "for", "and"];
+    for (const sw of stopwords) {
+      assert.ok(
+        !terms.includes(sw),
+        `Stopword '${sw}' should not be in distinctive terms`,
+      );
+    }
+    // "encryption" appears in 2/5 sections — should qualify
+    assert.ok(
+      terms.includes("encryption"),
+      `Expected 'encryption' in terms, got: ${terms.join(", ")}`,
+    );
+    store.close();
+  });
+
+  // ===== SMART CHUNK TITLES =====
+  console.log("\n--- Smart Chunk Titles ---\n");
+
+  await test("smart chunk titles: blank-line split uses first line as title", () => {
+    const store = createStore();
+    // 4 blank-line-separated sections with meaningful first lines
+    const content = [
+      "v2.3.0 - Performance improvements\nFixed memory leak in connection pool\nReduced startup time by 40%",
+      "v2.2.1 - Security patch\nPatched XSS vulnerability in template engine\nUpdated dependencies",
+      "v2.2.0 - New features\nAdded WebSocket support\nNew configuration API",
+      "v2.1.0 - Bug fixes\nFixed race condition in worker threads\nImproved error messages",
+    ].join("\n\n");
+    store.indexPlainText(content, "changelog-sections");
+
+    // Search for a term in the first section
+    const results = store.search("memory leak connection pool", 1);
+    assert.ok(results.length > 0, "Should find the section");
+    assert.ok(
+      results[0].title.startsWith("v2.3.0"),
+      `Title should be first line 'v2.3.0 - Performance improvements', got: '${results[0].title}'`,
+    );
+    // Should NOT be a generic "Section N" title
+    assert.ok(
+      !results[0].title.startsWith("Section"),
+      `Title should not be generic 'Section N', got: '${results[0].title}'`,
+    );
+
+    // Verify another section too
+    const results2 = store.search("XSS vulnerability template", 1);
+    assert.ok(results2.length > 0, "Should find second section");
+    assert.ok(
+      results2[0].title.startsWith("v2.2.1"),
+      `Title should be 'v2.2.1 - Security patch', got: '${results2[0].title}'`,
+    );
+    store.close();
+  });
+
+  await test("smart chunk titles: line-group chunks use first line as title", () => {
+    const store = createStore();
+    // Create enough lines (>20) to trigger line-group chunking (not blank-line splitting)
+    // by making it a single block of lines with no blank-line sections
+    const lines = Array.from({ length: 60 }, (_, i) => {
+      if (i === 0) return "ERROR: Failed to compile module 'auth-service'";
+      if (i === 20) return "WARNING: Deprecated API usage in routes/v2.ts";
+      if (i === 40) return "INFO: Build completed with 2 warnings";
+      return `[LOG] Step ${i}: processing task ${i}`;
+    });
+    const content = lines.join("\n");
+    store.indexPlainText(content, "build-log");
+
+    // Search for content in the first chunk
+    const results = store.search("Failed compile auth-service", 1);
+    assert.ok(results.length > 0, "Should find the first chunk");
+    assert.ok(
+      results[0].title.includes("ERROR"),
+      `Title should be first line of chunk containing 'ERROR', got: '${results[0].title}'`,
+    );
+    // Should NOT be a generic "Lines N-M" title
+    assert.ok(
+      !results[0].title.startsWith("Lines"),
+      `Title should not be generic 'Lines N-M', got: '${results[0].title}'`,
+    );
+    store.close();
+  });
+
   // ===== SUMMARY =====
   console.log("\n" + "=".repeat(60));
   console.log(
