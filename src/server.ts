@@ -15,7 +15,7 @@ const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
   name: "context-mode",
-  version: "0.4.0",
+  version: "0.4.1",
 });
 
 const executor = new PolyglotExecutor({ runtimes });
