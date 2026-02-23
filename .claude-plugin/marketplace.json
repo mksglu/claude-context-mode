@@ -1,0 +1,33 @@
+{
+  "name": "mksglu/claude-context-mode",
+  "owner": {
+    "name": "Mert Koseoğlu",
+    "email": "code.bm.ksglu@gmail.com"
+  },
+  "metadata": {
+    "description": "Claude Code plugins by Mert Koseoğlu",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "context-mode",
+      "source": "./",
+      "description": "Claude Code MCP plugin that saves 94% of your context window. Sandboxed code execution in 10 languages, FTS5 knowledge base with BM25 ranking, and smart truncation.",
+      "version": "0.4.0",
+      "author": {
+        "name": "Mert Koseoğlu"
+      },
+      "category": "development",
+      "keywords": [
+        "mcp",
+        "context-window",
+        "sandbox",
+        "code-execution",
+        "fts5",
+        "bm25",
+        "playwright",
+        "context7"
+      ]
+    }
+  ]
+}
