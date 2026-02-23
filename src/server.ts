@@ -11,11 +11,12 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
+const VERSION = "0.5.1";
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
   name: "context-mode",
-  version: "0.5.1",
+  version: VERSION,
 });
 
 const executor = new PolyglotExecutor({ runtimes });
@@ -633,7 +634,7 @@ server.registerTool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Context Mode MCP server v0.4.0 running on stdio");
+  console.error(`Context Mode MCP server v${VERSION} running on stdio`);
   console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
   if (!hasBunRuntime()) {
     console.error(
