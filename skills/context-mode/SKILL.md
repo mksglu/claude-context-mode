@@ -1,12 +1,23 @@
 ---
 name: context-mode
 description: |
-  ALWAYS use context-mode tools instead of Bash/curl/cat when output MIGHT exceed 20 lines.
-  This includes: API requests (curl, fetch, gh, aws), file reading (cat, head, tail),
-  command output (npm test, git log, docker ps, kubectl), log analysis, data processing,
-  and ANY operation where you cannot guarantee the output will be small.
-  When in doubt, use context-mode — the cost of routing through it is near zero,
-  but the cost of flooding context with 50KB+ of raw data is catastrophic.
+  Use context-mode tools (execute, execute_file, fetch_and_index, index, search) instead of
+  Bash/curl/cat when processing large outputs. The cost of routing through context-mode is near zero,
+  but flooding context with 50KB+ of raw data is catastrophic.
+
+  Use when: user wants to "fetch documentation", "look up the docs", "fetch the docs",
+  "check the API reference", "find examples in docs", "index documentation", "search docs",
+  "analyze logs", "check the logs", "read access.log", "debug the 500s",
+  "run tests", "run the test suite", "check if tests pass", "npm test", "vitest", "pytest",
+  "git log", "show recent commits", "list commits", "what changed", "diff between branches",
+  "analyze output", "summarize output", "process data", "parse JSON", "parse CSV",
+  "filter results", "extract errors", "check build output", "analyze dependencies",
+  "process API response", "large file analysis", "hit this endpoint", "call the API",
+  "check the response", "list containers", "check pods", "outdated packages",
+  "count lines", "find TODOs", "analyze codebase", "security audit",
+  or ANY operation where output might exceed 20 lines.
+  Also use when routing output from other MCP tools (Playwright snapshots, Context7 docs,
+  GitHub API responses, Sentry data) through index → search to avoid context bloat.
 ---
 
 # Context Mode: Default for All Large Output
