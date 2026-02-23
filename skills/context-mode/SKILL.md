@@ -1,120 +1,139 @@
 ---
 name: context-mode
 description: |
-  Use context-mode tools (execute, execute_file) instead of Bash/cat when processing
-  large outputs. Trigger phrases: "analyze logs", "summarize output", "process data",
-  "parse JSON", "filter results", "extract errors", "check build output",
-  "analyze dependencies", "process API response", "large file analysis".
+  ALWAYS use context-mode tools instead of Bash/curl/cat when output MIGHT exceed 20 lines.
+  This includes: API requests (curl, fetch, gh, aws), file reading (cat, head, tail),
+  command output (npm test, git log, docker ps, kubectl), log analysis, data processing,
+  and ANY operation where you cannot guarantee the output will be small.
+  When in doubt, use context-mode — the cost of routing through it is near zero,
+  but the cost of flooding context with 50KB+ of raw data is catastrophic.
 ---
 
-# Context Mode: execute & execute_file
+# Context Mode: Default for All Large Output
 
-## When to Use (Decision Tree)
+## MANDATORY RULE
 
-```
-Will the command output > 20 lines?
-├── YES → Will you process/filter/summarize that output?
-│   ├── YES → Use execute or execute_file
-│   └── NO  → Use Bash (you need raw output)
-└── NO  → Use Bash (small output fits in context)
-```
+**Before using Bash, curl, cat, or any command that produces output, ask yourself:**
 
-**Rule of thumb:** If you would pipe Bash output through grep/awk/jq to reduce it,
-use `execute` or `execute_file` instead — the LLM summary is better.
+> "Could this output be more than 20 lines?"
 
-## Quick Reference
+If YES or UNCERTAIN → use `execute` or `execute_file`. Not Bash. Not curl. Not cat.
 
-| Tool | Purpose | Key Parameters |
-|------|---------|---------------|
-| `execute` | Run inline code, get LLM summary | `code`, `language`, `timeout_ms`, `summary_prompt` |
-| `execute_file` | Run a script file, get LLM summary | `file_path`, `args`, `timeout_ms`, `summary_prompt` |
+**This is not optional.** Every KB of unnecessary context reduces the quality and speed of the entire session.
 
-Both tools execute code and return an **LLM-generated summary** instead of raw stdout.
-The raw output never enters your context window — only the summary does.
-
-## Language Selection Guide
-
-| Scenario | Language | Why |
-|----------|----------|-----|
-| HTTP requests, JSON APIs | `javascript` | Native fetch, JSON.parse |
-| Data analysis, CSV, math | `python` | pandas, csv module, statistics |
-| Piping commands, grep, find | `shell` | Native OS tools |
-| TypeScript project analysis | `javascript` | Can require/import project files |
-| Log file filtering | `shell` | grep/awk are purpose-built |
-| File comparison | `python` | difflib is excellent |
-
-## Usage Pattern
-
-### execute — inline code
+## Decision Tree
 
 ```
-Tool: execute
-Parameters:
-  code: |
-    const data = require('fs').readFileSync('package.json', 'utf8');
-    const pkg = JSON.parse(data);
-    console.log(`Name: ${pkg.name}`);
-    console.log(`Dependencies: ${Object.keys(pkg.dependencies || {}).length}`);
-    console.log(`DevDependencies: ${Object.keys(pkg.devDependencies || {}).length}`);
-    Object.entries(pkg.dependencies || {}).forEach(([k, v]) => console.log(`  ${k}: ${v}`));
-  language: javascript
-  timeout_ms: 10000
-  summary_prompt: "List the package name, dependency count, and any outdated patterns"
+About to run a command / read a file / call an API?
+│
+├── Output is GUARANTEED small (<20 lines)?
+│   └── Use Bash (git status, pwd, ls, echo, etc.)
+│
+├── Output MIGHT be large or you're UNSURE?
+│   └── Use context-mode execute or execute_file
+│
+├── Fetching web documentation or HTML page?
+│   └── Use fetch_and_index → search
+│
+├── Processing output from another MCP tool (Playwright, Context7, etc.)?
+│   └── Use index → search
+│
+└── Reading a file to analyze/summarize (not edit)?
+    └── Use execute_file (file loads into FILE_CONTENT, not context)
 ```
 
-### execute_file — run existing script
+## When to Use Each Tool
 
-```
-Tool: execute_file
-Parameters:
-  file_path: ./scripts/analyze-bundle.js
-  args: ["--format", "summary"]
-  timeout_ms: 30000
-  summary_prompt: "Report bundle size changes and any chunks exceeding 500KB"
-```
+| Situation | Tool | Example |
+|-----------|------|---------|
+| Hit an API endpoint | `execute` | `fetch('http://localhost:3000/api/orders')` |
+| Run CLI that returns data | `execute` | `gh pr list`, `aws s3 ls`, `kubectl get pods` |
+| Run tests | `execute` | `npm test`, `pytest`, `go test ./...` |
+| Git operations | `execute` | `git log --oneline -50`, `git diff HEAD~5` |
+| Docker/K8s inspection | `execute` | `docker stats --no-stream`, `kubectl describe pod` |
+| Read a log file | `execute_file` | Parse access.log, error.log, build output |
+| Read a data file | `execute_file` | Analyze CSV, JSON, YAML, XML |
+| Read source code to analyze | `execute_file` | Count functions, find patterns, extract metrics |
+| Fetch web docs | `fetch_and_index` | Index React/Next.js/Zod docs, then search |
+| Process large MCP output | `index` → `search` | Index Playwright snapshot, then query elements |
+
+## Automatic Triggers
+
+Use context-mode for ANY of these, without being asked:
+
+- **API debugging**: "hit this endpoint", "call the API", "check the response", "find the bug in the response"
+- **Log analysis**: "check the logs", "what errors", "read access.log", "debug the 500s"
+- **Test runs**: "run the tests", "check if tests pass", "test suite output"
+- **Git history**: "show recent commits", "git log", "what changed", "diff between branches"
+- **Data inspection**: "look at the CSV", "parse the JSON", "analyze the config"
+- **Infrastructure**: "list containers", "check pods", "S3 buckets", "show running services"
+- **Dependency audit**: "check dependencies", "outdated packages", "security audit"
+- **Build output**: "build the project", "check for warnings", "compile errors"
+- **Code metrics**: "count lines", "find TODOs", "function count", "analyze codebase"
+- **Web docs lookup**: "look up the docs", "check the API reference", "find examples"
+
+## Language Selection
+
+| Situation | Language | Why |
+|-----------|----------|-----|
+| HTTP/API calls, JSON | `javascript` | Native fetch, JSON.parse, async/await |
+| Data analysis, CSV, stats | `python` | csv, statistics, collections, re |
+| Shell commands with pipes | `shell` | grep, awk, jq, native tools |
+| File pattern matching | `shell` | find, wc, sort, uniq |
 
 ## Critical Rules
 
-1. **Always print/log output.** The tool captures stdout. No output = empty summary.
-2. **Use `summary_prompt`** to guide what the LLM extracts from the output.
-3. **Set appropriate `timeout_ms`** — network calls need 15000+, file ops need 5000+.
-4. **Print structured data** — JSON.stringify or formatted tables summarize better.
-5. **Don't use for < 20 lines** — Bash is simpler and wastes no LLM call.
+1. **Always console.log/print your findings.** stdout is all that enters context. No output = wasted call.
+2. **Write analysis code, not just data dumps.** Don't `console.log(JSON.stringify(data))` — analyze first, print findings.
+3. **Be specific in output.** Print bug details with IDs, line numbers, exact values — not just counts.
+4. **For files you need to EDIT**: Use the normal Read tool. context-mode is for analysis, not editing.
+5. **For tiny outputs (<5 lines guaranteed)**: Use Bash. Don't over-engineer `git status` through context-mode.
 
-## Examples by Language
+## Examples
 
-### JavaScript: API response analysis
+### Debug an API endpoint
 ```javascript
-const resp = await fetch('https://api.example.com/status');
-const data = await resp.json();
-console.log(JSON.stringify(data, null, 2));
-```
-> summary_prompt: "Report service health, any degraded components, and error rates"
+const resp = await fetch('http://localhost:3000/api/orders');
+const { orders } = await resp.json();
 
-### Python: Log analysis
-```python
-import re
-with open('/var/log/app.log') as f:
-    errors = [l for l in f if 'ERROR' in l]
-for e in errors[-50:]:
-    print(e.strip())
-print(f"\nTotal errors: {len(errors)}")
-```
-> summary_prompt: "Categorize errors by type and report frequency of each"
+const bugs = [];
+const negQty = orders.filter(o => o.quantity < 0);
+if (negQty.length) bugs.push(`Negative qty: ${negQty.map(o => o.id).join(', ')}`);
 
-### Shell: Build output filtering
+const nullFields = orders.filter(o => !o.product || !o.customer);
+if (nullFields.length) bugs.push(`Null fields: ${nullFields.map(o => o.id).join(', ')}`);
+
+console.log(`${orders.length} orders, ${bugs.length} bugs found:`);
+bugs.forEach(b => console.log(`- ${b}`));
+```
+
+### Analyze test output
 ```shell
-npm run build 2>&1
-echo "EXIT_CODE=$?"
+npm test 2>&1
+echo "EXIT=$?"
 ```
-> summary_prompt: "Report success/failure, list any errors or warnings with file locations"
 
-## Anti-Patterns (Avoid These)
+### Check GitHub PRs
+```shell
+gh pr list --json number,title,state,reviewDecision --jq '.[] | "\(.number) [\(.state)] \(.title) — \(.reviewDecision // "no review")"'
+```
 
-- Using `execute` for `git status` (small output — use Bash)
-- Forgetting `console.log()` / `print()` (produces empty summary)
-- Setting `timeout_ms: 5000` for network requests (will timeout)
-- Loading a 10K-line file into context then asking to summarize (use execute instead)
+### Read and analyze a large file
+```python
+# FILE_CONTENT is pre-loaded by execute_file
+import json
+data = json.loads(FILE_CONTENT)
+print(f"Records: {len(data)}")
+# ... analyze and print findings
+```
+
+## Anti-Patterns
+
+- Using `curl http://api/endpoint` via Bash → 50KB floods context. Use `execute` with fetch instead.
+- Using `cat large-file.json` via Bash → entire file in context. Use `execute_file` instead.
+- Using `gh pr list` via Bash → raw JSON in context. Use `execute` with `--jq` filter instead.
+- Piping Bash output through `| head -20` → you lose the rest. Use `execute` to analyze ALL data and print summary.
+- Running `npm test` via Bash → full test output in context. Use `execute` to capture and summarize.
 
 ## Reference Files
 
