@@ -92,6 +92,14 @@ Use context-mode for ANY of these, without being asked:
 | Shell commands with pipes | `shell` | grep, awk, jq, native tools |
 | File pattern matching | `shell` | find, wc, sort, uniq |
 
+## Search Query Strategy
+
+- BM25 uses **OR semantics** — results matching more terms rank higher automatically
+- Use 2-4 specific technical terms per query: `search("transform refine pipe")`
+- Send multiple `search()` calls **in parallel** for different aspects of a topic
+- Example: instead of one broad search, send 3 focused parallel queries:
+  - `search("transform pipe preprocess")` + `search("refine superRefine check")` + `search("coerce codec")`
+
 ## Critical Rules
 
 1. **Always console.log/print your findings.** stdout is all that enters context. No output = wasted call.

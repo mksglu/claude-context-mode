@@ -11,7 +11,7 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
-const VERSION = "0.5.4";
+const VERSION = "0.5.5";
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
@@ -468,9 +468,10 @@ server.registerTool(
       "- Get configuration details ('Tailwind responsive breakpoints')\n" +
       "- Find migration steps ('App Router data fetching')\n\n" +
       "SEARCH TIPS:\n" +
-      "- Use specific technical terms, not concepts ('__proto__' not 'security')\n" +
+      "- Queries use OR semantics — results matching more terms rank higher via BM25\n" +
+      "- Use 2-4 specific technical terms per query for best results\n" +
       "- Check 'Searchable terms' from execute/execute_file results for available vocabulary\n" +
-      "- Combine multiple specific terms for better results\n\n" +
+      "- For broad topics, send multiple focused searches in parallel\n\n" +
       "Returns exact content — not summaries. Each result includes heading hierarchy and full section text.",
     inputSchema: z.object({
       query: z.string().describe("Natural language search query"),
