@@ -10,16 +10,16 @@ Context Mode intercepts these operations, processes data in isolated subprocesse
 
 Claude Code has a 200K token context window. Here's how fast popular MCP servers eat through it:
 
-| MCP Server | Tool | Output per Call | Source |
-|---|---|---|---|
-| **Playwright** | `browser_snapshot` | 10K-135K tokens (50-540 KB) | [playwright-mcp#1233](https://github.com/microsoft/playwright-mcp/issues/1233) |
-| **Context7** | `query-docs` | 4K-10K tokens per query | [upstash/context7](https://github.com/upstash/context7) |
-| **GitHub** | `list_commits` (30) | 29K-64K tokens | [github-mcp-server#142](https://github.com/github/github-mcp-server/issues/142) |
-| **Sentry** | full mode tools | 14K tokens (definitions only) | [getsentry/sentry-mcp](https://github.com/getsentry/sentry-mcp) |
-| **Supabase** | database tools | 4.2K tokens (definitions only) | [supabase-community/supabase-mcp](https://github.com/supabase-community/supabase-mcp) |
-| **Firecrawl** | `scrape` / `crawl` | 5K-50K+ tokens per page | [firecrawl](https://github.com/mendableai/firecrawl) |
-| **Chrome DevTools** | all tools | 17K tokens (definitions only) | Community benchmark |
-| **Fetch** | `fetch` | 5K-50K tokens per page | Official reference server |
+| MCP Server | Tool | Without Context Mode | With Context Mode | Savings | Source |
+|---|---|---|---|---|---|
+| **Playwright** | `browser_snapshot` | 10K-135K tokens | ~20 tokens | **99%** | [playwright-mcp#1233](https://github.com/microsoft/playwright-mcp/issues/1233) |
+| **Context7** | `query-docs` | 4K-10K tokens | ~70 tokens | **98%** | [upstash/context7](https://github.com/upstash/context7) |
+| **GitHub** | `list_commits` (30) | 29K-64K tokens | ~10 tokens | **99%** | [github-mcp-server#142](https://github.com/github/github-mcp-server/issues/142) |
+| **Sentry** | issue analysis | 5K-30K tokens | ~25 tokens | **99%** | [getsentry/sentry-mcp](https://github.com/getsentry/sentry-mcp) |
+| **Supabase** | schema queries | 2K-30K tokens | ~30 tokens | **99%** | [supabase-community/supabase-mcp](https://github.com/supabase-community/supabase-mcp) |
+| **Firecrawl** | `scrape` / `crawl` | 5K-50K+ tokens | ~70 tokens | **99%** | [firecrawl](https://github.com/mendableai/firecrawl) |
+| **Chrome DevTools** | DOM / network | 5K-50K+ tokens | ~25 tokens | **99%** | Community benchmark |
+| **Fetch** | `fetch` | 5K-50K tokens | ~70 tokens | **99%** | Official reference server |
 
 **Real measurement** ([Scott Spence, 2025](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code)): With 81+ MCP tools enabled across multiple servers, **143K of 200K tokens (72%) consumed** — 82K tokens just for MCP tool definitions. Only 28% left for actual work.
 
