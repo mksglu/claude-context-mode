@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution in 10 languages, FTS5 knowledge base with BM25 ranking, and intent-driven search.",
   "author": {
     "name": "Mert Koseoğlu",
@@ -22,7 +22,7 @@
   "mcpServers": {
     "context-mode": {
       "command": "npx",
-      "args": ["-y", "context-mode@latest"]
+      "args": ["--prefer-online", "-y", "context-mode@latest"]
     }
   },
   "skills": "./skills/",
