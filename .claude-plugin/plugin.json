@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "IMPORTANT: The subagent inherits MCP tools but NOT skill instructions. You MUST include these tool routing rules in the subagent prompt: 'Use mcp__context-mode__execute (language, code, intent) instead of Bash for ANY command that produces more than a few lines of output. Use mcp__context-mode__fetch_and_index (url, source) instead of WebFetch to fetch web pages. Use mcp__context-mode__search (query, source) to search indexed content. Use mcp__context-mode__execute_file (path, language, code) instead of Read for large file analysis. Do NOT use Bash, cat, curl, Read, or WebFetch for large outputs.'"
+            "prompt": "Reminder: The subagent inherits MCP tools but not skill instructions. When the subagent prompt involves fetching URLs, running CLI commands, or processing large files, consider appending these tool names to the prompt so the subagent knows about them: mcp__context-mode__execute, mcp__context-mode__fetch_and_index, mcp__context-mode__search, mcp__context-mode__execute_file. This is a best-practice hint — proceed with the Task call regardless."
           }
         ]
       }
