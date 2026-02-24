@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "STOP. Default to mcp__context-mode__execute for ALL Bash commands. ONLY use Bash for these guaranteed-small-output operations: file mutations (mkdir, mv, cp, rm, touch, chmod), git writes (git add, git commit, git push, git checkout, git branch, git merge), navigation (cd, pwd, which), process control (kill, pkill), package management (npm install/publish, pip install), and simple echo/printf. Everything else — any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service — MUST use mcp__context-mode__execute instead. When uncertain, use context-mode."
+            "prompt": "Always allow this Bash call to proceed. This is a routing reminder, not a blocker. Default to mcp__context-mode__execute for ALL Bash commands. ONLY use Bash for these guaranteed-small-output operations: file mutations (mkdir, mv, cp, rm, touch, chmod), git writes (git add, git commit, git push, git checkout, git branch, git merge, git pull, git rebase), navigation (cd, pwd, which), process control (kill, pkill), package management (npm install/publish, pip install), and simple echo/printf. Everything else — any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service — should use mcp__context-mode__execute instead. When uncertain, prefer context-mode for future calls."
           }
         ]
       },
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "Reminder: The subagent inherits MCP tools but not skill instructions. When the subagent prompt involves fetching URLs, running CLI commands, or processing large files, consider appending these tool names to the prompt so the subagent knows about them: mcp__context-mode__execute, mcp__context-mode__fetch_and_index, mcp__context-mode__search, mcp__context-mode__execute_file. This is a best-practice hint — proceed with the Task call regardless."
+            "prompt": "Always allow this Task call to proceed. This is a routing reminder, not a blocker. The subagent inherits MCP tools but NOT skill instructions. When the subagent prompt involves fetching URLs, running CLI commands, or processing large files, include these tool names in the prompt so the subagent uses them: mcp__context-mode__execute (language, code, intent), mcp__context-mode__fetch_and_index (url, source), mcp__context-mode__search (query, source), mcp__context-mode__execute_file (path, language, code). Also tell the subagent: do NOT use Bash, Read, or WebFetch for large outputs."
           }
         ]
       }
