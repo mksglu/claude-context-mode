@@ -1,10 +1,23 @@
 # Context Mode
 
-**Stop losing context to large outputs.**
+**The other half of the context problem.**
 
 [![npm](https://img.shields.io/npm/v/context-mode)](https://www.npmjs.com/package/context-mode) [![marketplace](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmksglu%2Fclaude-context-mode%2Fmain%2F.claude-plugin%2Fmarketplace.json&query=%24.plugins%5B0%5D.version&label=marketplace&color=brightgreen)](https://github.com/mksglu/claude-context-mode) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Run tests without burning 5K tokens. Query docs without loading raw HTML. Debug logs without reading 45KB of noise. Only summaries reach Claude — everything else stays in the sandbox.
+Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode-mcp/) solved the input side: 2,500 tool definitions compressed into ~1,000 tokens. But there is another side. Every tool call that returns data — a Playwright snapshot, a log file, an API response — dumps raw output directly into the context window. 56 KB from a browser snapshot. 59 KB from twenty GitHub issues. 45 KB from an access log.
+
+Context Mode solves the output side. It intercepts these operations, processes them in isolated sandboxes, and returns only what matters. The raw data never enters context.
+
+```
+                    CONTEXT WINDOW
+                    ┌────────────────────────┐
+                    │                        │
+  Code Mode ───►   │  Tool definitions       │  ← input optimized (Cloudflare)
+                    │                        │
+  Context Mode ──► │  Tool outputs           │  ← output optimized
+                    │                        │
+                    └────────────────────────┘
+```
 
 ```
 Without Context Mode                          With Context Mode
@@ -17,13 +30,15 @@ Context7 docs       →  6 KB into context      → 261 B summary
 Total: 166 KB = 42K tokens gone               Total: 1.8 KB = ~450 tokens
 ```
 
+**315 KB of raw output becomes 5.4 KB across 14 real scenarios. 98% reduction.**
+
 ## Install
 
 ```bash
 claude mcp add context-mode -- npx -y context-mode
 ```
 
-Restart Claude Code. Done. You now have 5 tools that intercept large outputs and return only what matters.
+Restart Claude Code. Done.
 
 <details>
 <summary><strong>Plugin install</strong> (includes auto-routing skill)</summary>
@@ -33,7 +48,7 @@ Restart Claude Code. Done. You now have 5 tools that intercept large outputs and
 /plugin install context-mode@claude-context-mode
 ```
 
-Installs the MCP server + a skill that automatically guides Claude to route large outputs through Context Mode. No prompting needed.
+Installs the MCP server + a skill that automatically routes large outputs through Context Mode. No prompting needed.
 
 </details>
 
@@ -46,37 +61,50 @@ claude --plugin-dir ./path/to/context-mode
 
 </details>
 
-## What It Does
+## The Problem
 
-Every MCP tool call dumps raw data into your 200K context window. With [81+ tools active, 143K tokens (72%) get consumed before your first message](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code). Context Mode intercepts these operations, processes data in isolated subprocesses, and returns only what you need.
+MCP has become the standard way for AI agents to use external tools. Cloudflare identified a tension at its core: agents need many tools, yet every tool added fills the context window. Their solution — Code Mode — collapses thousands of tool definitions into typed code, cutting input tokens by 99.9%.
 
-**Result:** 315 KB raw data becomes 5.4 KB of context across 14 real scenarios — **98% savings**.
+But tool definitions are only half the story. With [81+ tools active, 143K tokens (72%) get consumed before your first message](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code). And then the tools start returning data. A single Playwright snapshot burns 56 KB. A `gh issue list` dumps 59 KB. Run a test suite, read a log file, fetch documentation — each response eats into what remains.
 
-| Metric | Without | With |
-|---|---|---|
-| Context consumed per session | 315 KB | 5.4 KB |
-| Time before slowdown | ~30 min | ~3 hours |
-| Context remaining after 45 min | 60% | 99% |
+The context window has two pressure points. Code Mode addresses the first. Context Mode addresses the second.
 
-## Tools
+## How It Works
 
-### `execute` — Run code in sandbox
+Context Mode is an MCP server. It exposes five tools that process data in isolated subprocesses and return only summaries to the context window.
 
-Execute code in 10 languages (JS, TS, Python, Shell, Ruby, Go, Rust, PHP, Perl, R). Only stdout enters context.
+```
+┌─────────────┐    stdio / JSON-RPC     ┌──────────────────────────────────┐
+│ Claude Code │ ◄─────────────────────► │  Context Mode MCP Server         │
+│             │    tool calls/results    │                                  │
+└─────────────┘                          │  Sandboxed subprocesses          │
+                                         │  • 10 language runtimes          │
+                                         │  • Credential passthrough        │
+                                         │  • Intent-driven filtering       │
+                                         │                                  │
+                                         │  FTS5 knowledge base             │
+                                         │  • BM25 ranking                  │
+                                         │  • Heading-aware chunking        │
+                                         └──────────────────────────────────┘
+```
+
+Each `execute` call spawns an isolated subprocess. Only stdout enters context. Everything else stays in the sandbox.
+
+### `execute` — Run code, return summary
+
+Execute code in 10 languages. Only printed output reaches Claude.
 
 ```
 execute({ language: "shell", code: "gh pr list --json title,state | jq length" })
 → "3"                                           ← 2 bytes instead of 8KB
 ```
 
-Add `intent` for large outputs — Context Mode filters to relevant sections automatically:
+Add `intent` for large outputs — Context Mode indexes the output and returns only matching sections:
 
 ```
 execute({ language: "shell", code: "cat app.log", intent: "database connection error" })
 → matching sections + searchable terms           ← 500B instead of 100KB
 ```
-
-Authenticated CLIs work out of the box — `gh`, `aws`, `gcloud`, `kubectl`, `docker` credentials pass through. Bun auto-detected for 3-5x faster JS/TS.
 
 ### `execute_file` — Process files without loading
 
@@ -89,7 +117,7 @@ execute_file({ path: "access.log", language: "python", code: "..." })
 
 ### `index` + `search` — Searchable knowledge base
 
-Index documentation into FTS5 with BM25 ranking. Search returns exact code blocks — not summaries.
+Index documentation into SQLite FTS5. Search returns exact code blocks with BM25 ranking — not summaries.
 
 ```
 index({ content: <60KB React docs>, source: "React useEffect" })
@@ -101,29 +129,14 @@ search({ query: "useEffect cleanup function" })
 
 ### `fetch_and_index` — Fetch URLs into knowledge base
 
-Fetches, converts HTML to markdown, indexes. Raw content never enters context. Use instead of WebFetch or Context7 when you need to reference docs multiple times.
+Fetches, converts HTML to markdown, indexes. Raw content never enters context.
 
 ```
 fetch_and_index({ url: "https://react.dev/reference/react/useEffect" })
 → "Indexed 33 sections (15 with code)"           ← 40 bytes instead of 60KB
 ```
 
-## Example Prompts
-
-Just ask naturally — Claude routes through Context Mode automatically when it saves tokens.
-
-```
-"Analyze the last 50 commits and find the most frequently changed files"
-"Read the access log and break down requests by HTTP status code"
-"Run the test suite and give me a pass/fail summary"
-"Fetch the React useEffect docs and find the cleanup pattern"
-"List all Docker containers with their memory usage"
-"Find all TODO comments across the codebase"
-"Analyze package-lock.json and find the 10 largest dependencies"
-"Show running Kubernetes pods and their restart counts"
-```
-
-## Real-World Benchmarks
+## Benchmarks
 
 | Operation | Raw | Context | Savings |
 |---|---|---|---|
@@ -135,27 +148,25 @@ Just ask naturally — Claude routes through Context Mode automatically when it 
 | Git log (153 commits) | 11.6 KB | 107 B | **99%** |
 | Test output (30 suites) | 6.0 KB | 337 B | **95%** |
 
+| Metric | Without | With |
+|---|---|---|
+| Context consumed per session | 315 KB | 5.4 KB |
+| Time before slowdown | ~30 min | ~3 hours |
+| Context remaining after 45 min | 60% | 99% |
+
 [Full benchmark data with 21 scenarios →](BENCHMARK.md)
 
-## How It Works
+## Example Prompts
+
+Just ask naturally. Claude routes through Context Mode when it saves tokens.
 
 ```
-┌─────────────┐    stdio / JSON-RPC     ┌─────────────────────────────────┐
-│ Claude Code │ ◄─────────────────────► │  Context Mode MCP Server        │
-│             │    tool calls/results    │                                 │
-└─────────────┘                          │  Sandboxed subprocesses         │
-                                         │  • 10 language runtimes         │
-                                         │  • Auth passthrough (gh, aws…)  │
-                                         │  • Intent-driven search         │
-                                         │                                 │
-                                         │  SQLite FTS5 knowledge base     │
-                                         │  • BM25 ranking                 │
-                                         │  • Porter stemming              │
-                                         │  • Heading-aware chunking       │
-                                         └─────────────────────────────────┘
+"Analyze the last 50 commits and find the most frequently changed files"
+"Read the access log and break down requests by HTTP status code"
+"Run the test suite and give me a pass/fail summary"
+"Fetch the React useEffect docs and find the cleanup pattern"
+"Analyze package-lock.json and find the 10 largest dependencies"
 ```
-
-Each `execute` call spawns an isolated subprocess — scripts can't access each other, but authenticated CLIs (`gh`, `aws`, `gcloud`) find their configs through secure credential passthrough.
 
 ## Requirements
 
@@ -168,7 +179,7 @@ Each `execute` call spawns an isolated subprocess — scripts can't access each 
 ```bash
 git clone https://github.com/mksglu/claude-context-mode.git
 cd claude-context-mode && npm install
-npm test              # 100+ tests across 4 suites
+npm test              # run tests
 npm run test:all      # full suite
 ```
 
