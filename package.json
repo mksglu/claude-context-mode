@@ -27,6 +27,7 @@
   },
   "files": [
     "build",
+    "server.bundle.mjs",
     "skills",
     ".claude-plugin",
     ".mcp.json",
@@ -36,6 +37,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --minify",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
@@ -59,6 +61,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.11",
+    "esbuild": "^0.27.3",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0"
   }

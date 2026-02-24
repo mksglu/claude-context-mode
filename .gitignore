@@ -4,3 +4,4 @@ build/
 .DS_Store
 /tmp/
 *.db
+# server.bundle.mjs is committed by CI — do NOT gitignore
