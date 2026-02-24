@@ -2,4 +2,5 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 [ -d node_modules ] || npm install --production --silent 2>/dev/null
+[ -f build/server.js ] || npm run build --silent 2>/dev/null
 exec node build/server.js
