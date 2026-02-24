@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "0.5.23",
+  "version": "0.5.24",
   "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution in 10 languages, FTS5 knowledge base with BM25 ranking, and intent-driven search.",
   "author": {
     "name": "Mert Koseoğlu",
@@ -34,6 +34,15 @@
           {
             "type": "prompt",
             "prompt": "STOP. Default to mcp__context-mode__execute for ALL Bash commands. ONLY use Bash for these guaranteed-small-output operations: file mutations (mkdir, mv, cp, rm, touch, chmod), git writes (git add, git commit, git push, git checkout, git branch, git merge), navigation (cd, pwd, which), process control (kill, pkill), package management (npm install/publish, pip install), and simple echo/printf. Everything else — any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service — MUST use mcp__context-mode__execute instead. When uncertain, use context-mode."
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "IMPORTANT: The subagent inherits MCP tools but NOT skill instructions. You MUST include these tool routing rules in the subagent prompt: 'Use mcp__context-mode__execute (language, code, intent) instead of Bash for ANY command that produces more than a few lines of output. Use mcp__context-mode__fetch_and_index (url, source) instead of WebFetch to fetch web pages. Use mcp__context-mode__search (query, source) to search indexed content. Use mcp__context-mode__execute_file (path, language, code) instead of Read for large file analysis. Do NOT use Bash, cat, curl, Read, or WebFetch for large outputs.'"
           }
         ]
       }
