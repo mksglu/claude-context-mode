@@ -8,10 +8,24 @@
  * you need EXACT text later — not summaries.
  */
 
-import Database from "better-sqlite3";
+import type DatabaseConstructor from "better-sqlite3";
+import type { Database as DatabaseInstance } from "better-sqlite3";
+import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Lazy-load better-sqlite3 — only when ContentStore is first used.
+// This lets the MCP server start instantly even if the native module
+// isn't installed yet (marketplace first-run scenario).
+let _Database: typeof DatabaseConstructor | null = null;
+function loadDatabase(): typeof DatabaseConstructor {
+  if (!_Database) {
+    const require = createRequire(import.meta.url);
+    _Database = require("better-sqlite3") as typeof DatabaseConstructor;
+  }
+  return _Database;
+}
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -87,9 +101,10 @@ function sanitizeQuery(query: string): string {
 // ─────────────────────────────────────────────────────────
 
 export class ContentStore {
-  #db: Database.Database;
+  #db: DatabaseInstance;
 
   constructor(dbPath?: string) {
+    const Database = loadDatabase();
     const path =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
     this.#db = new Database(path, { timeout: 5000 });

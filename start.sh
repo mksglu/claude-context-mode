@@ -2,9 +2,9 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
-# Bundle exists (CI-built) — only need native module
+# Bundle exists (CI-built) — start instantly, install native module in background
 if [ -f server.bundle.mjs ]; then
-  [ -d node_modules/better-sqlite3 ] || npm install better-sqlite3 --no-package-lock --ignore-scripts=false --silent 2>/dev/null
+  [ -d node_modules/better-sqlite3 ] || npm install better-sqlite3 --no-package-lock --no-save --silent 2>/dev/null &
   exec node server.bundle.mjs
 fi
 
