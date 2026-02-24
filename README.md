@@ -2,7 +2,7 @@
 
 **Stop losing context to large outputs.**
 
-[![npm](https://img.shields.io/npm/v/context-mode)](https://www.npmjs.com/package/context-mode) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/context-mode)](https://www.npmjs.com/package/context-mode) [![marketplace](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmksglu%2Fclaude-context-mode%2Fmain%2F.claude-plugin%2Fmarketplace.json&query=%24.plugins%5B0%5D.version&label=marketplace&color=brightgreen)](https://github.com/mksglu/claude-context-mode) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Run tests without burning 5K tokens. Query docs without loading raw HTML. Debug logs without reading 45KB of noise. Only summaries reach Claude — everything else stays in the sandbox.
 
