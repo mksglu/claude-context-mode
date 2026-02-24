@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "context-mode": {
-      "command": "npx",
-      "args": ["--prefer-online", "-y", "context-mode@latest"]
+      "command": "sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/start.sh"]
     }
   }
 }
