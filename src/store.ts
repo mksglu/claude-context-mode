@@ -92,7 +92,7 @@ export class ContentStore {
   constructor(dbPath?: string) {
     const path =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
-    this.#db = new Database(path);
+    this.#db = new Database(path, { timeout: 5000 });
     this.#db.pragma("journal_mode = WAL");
     this.#db.pragma("synchronous = NORMAL");
     this.#initSchema();
