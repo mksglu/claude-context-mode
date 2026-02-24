@@ -93,17 +93,18 @@ This encourages batching queries via `search(queries: ["q1", "q2", "q3"])` or `b
 
 The `stats` tool tracks context consumption in real-time. Useful for debugging context usage during long sessions.
 
-```
-Session uptime:                 2.6 min
-Tool calls:                     5
-Bytes returned to context:      62.0 KB (~15.9k tokens)
-Bytes indexed (stayed in sandbox): 140.5 KB
-Context savings ratio:          2.3x (56% reduction)
+| Metric | Value |
+|---|---|
+| Session uptime | 2.6 min |
+| Tool calls | 5 |
+| Bytes returned to context | 62.0 KB (~15.9k tokens) |
+| Bytes indexed (stayed in sandbox) | 140.5 KB |
+| Context savings ratio | 2.3x (56% reduction) |
 
-Per-tool breakdown:
-  batch_execute    4 calls    58.2 KB
-  search           1 call      3.8 KB
-```
+| Tool | Calls | Context used |
+|---|---|---|
+| batch_execute | 4 | 58.2 KB |
+| search | 1 | 3.8 KB |
 
 ## Subagent Routing
 
@@ -128,43 +129,31 @@ Over a full session: 315 KB of raw output becomes 5.4 KB. Session time before sl
 
 ## Try It
 
-These prompts work out of the box. Claude routes through Context Mode automatically.
+These prompts work out of the box. Run `/context-mode stats` after each to see the savings.
 
-**Git history analysis**
+**Deep repo research** — 5 calls, 62 KB context (raw: 986 KB, 94% saved)
 ```
-Clone https://github.com/modelcontextprotocol/servers and analyze its git history:
-top contributors, commit types (feat/fix/docs/chore), and busiest weeks.
-```
-
-**Web page extraction**
-```
-Fetch the Hacker News front page and extract: top 15 posts with titles, scores,
-comment counts, and domains. Group them by domain.
+Research https://github.com/modelcontextprotocol/servers — architecture, tech stack,
+top contributors, open issues, and recent activity. Then run /context-mode stats.
 ```
 
-**Documentation lookup**
+**Git history analysis** — 1 call, 5.6 KB context
 ```
-Fetch the React useEffect docs and find the cleanup pattern.
-```
-
-**Monorepo dependency audit**
-```
-Analyze package-lock.json: find the 10 largest dependencies,
-which packages share the most common deps, and the heaviest package by count.
+Clone https://github.com/facebook/react and analyze the last 500 commits:
+top contributors, commit frequency by month, and most changed files.
+Then run /context-mode stats.
 ```
 
-**Parallel browser + docs analysis**
+**Web scraping** — 1 call, 3.2 KB context
 ```
-Run 3 parallel tasks:
-1. Navigate to news.ycombinator.com, take a snapshot, count all links and interactive elements
-2. Navigate to jsonplaceholder.typicode.com, extract all API endpoint paths and HTTP methods
-3. Fetch the Anthropic prompt caching docs, search for cache TTL and token pricing
-Present all findings in a comparison table.
+Fetch the Hacker News front page, extract all posts with titles, scores,
+and domains. Group by domain. Then run /context-mode stats.
 ```
 
-**Deep repo research**
+**Documentation search** — 2 calls, 1.8 KB context
 ```
-Research the following repository: https://github.com/vercel-labs/agent-browser
+Fetch the React useEffect docs, index them, and find the cleanup pattern
+with code examples. Then run /context-mode stats.
 ```
 
 ## Requirements
