@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "context-mode": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/build/server.js"]
+      "command": "npx",
+      "args": ["-y", "context-mode"]
     }
   }
 }
