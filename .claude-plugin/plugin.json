@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "0.5.13",
+  "version": "0.5.14",
   "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution in 10 languages, FTS5 knowledge base with BM25 ranking, and intent-driven search.",
   "author": {
     "name": "Mert Koseoğlu",
@@ -22,8 +22,21 @@
   "mcpServers": {
     "context-mode": {
       "command": "npx",
-      "args": ["-y", "context-mode"]
+      "args": ["-y", "context-mode@latest"]
     }
   },
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "You have mcp__context-mode__execute and mcp__context-mode__execute_file available. If this Bash command could produce more than 20 lines of output (curl, npm test, git log, cat large files, API calls, docker/kubectl commands), use mcp__context-mode__execute instead — it processes output in a sandbox and only returns a summary to context. For small commands (git status, pwd, ls, echo) Bash is fine."
+          }
+        ]
+      }
+    ]
+  }
 }
