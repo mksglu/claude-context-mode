@@ -91,7 +91,19 @@ This encourages batching queries via `search(queries: ["q1", "q2", "q3"])` or `b
 
 ## Session Stats
 
-The `stats` tool tracks context consumption in real-time: session uptime, tool calls, bytes returned to context vs bytes indexed in sandbox, and context savings ratio. Per-tool breakdown shows exactly which tools consume the most context.
+The `stats` tool tracks context consumption in real-time. Useful for debugging context usage during long sessions.
+
+```
+Session uptime:                 2.6 min
+Tool calls:                     5
+Bytes returned to context:      62.0 KB (~15.9k tokens)
+Bytes indexed (stayed in sandbox): 140.5 KB
+Context savings ratio:          2.3x (56% reduction)
+
+Per-tool breakdown:
+  batch_execute    4 calls    58.2 KB
+  search           1 call      3.8 KB
+```
 
 ## Subagent Routing
 
