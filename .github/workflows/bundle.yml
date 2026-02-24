@@ -8,6 +8,9 @@ on:
       - 'package.json'
       - 'tsconfig.json'
 
+permissions:
+  contents: write
+
 jobs:
   bundle:
     runs-on: ubuntu-latest
