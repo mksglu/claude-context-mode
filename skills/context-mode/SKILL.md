@@ -32,7 +32,7 @@ Bash whitelist (safe to run directly):
 - **Git writes**: `git add`, `git commit`, `git push`, `git checkout`, `git branch`, `git merge`
 - **Navigation**: `cd`, `pwd`, `which`
 - **Process control**: `kill`, `pkill`
-- **Package install**: `npm install`, `pip install`
+- **Package management**: `npm install`, `npm publish`, `pip install`
 - **Simple output**: `echo`, `printf`
 
 **Everything else → `execute` or `execute_file`.** Any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service. This includes ALL CLIs (gh, aws, kubectl, docker, terraform, wrangler, fly, heroku, gcloud, etc.) — there are thousands and we cannot list them all.

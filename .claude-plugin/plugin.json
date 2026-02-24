@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "STOP. Default to mcp__context-mode__execute for ALL Bash commands. ONLY use Bash for these guaranteed-small-output operations: file mutations (mkdir, mv, cp, rm, touch, chmod), git writes (git add, git commit, git push, git checkout, git branch, git merge), navigation (cd, pwd, which), process control (kill, pkill), package install (npm install, pip install), and simple echo/printf. Everything else — any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service — MUST use mcp__context-mode__execute instead. When uncertain, use context-mode."
+            "prompt": "STOP. Default to mcp__context-mode__execute for ALL Bash commands. ONLY use Bash for these guaranteed-small-output operations: file mutations (mkdir, mv, cp, rm, touch, chmod), git writes (git add, git commit, git push, git checkout, git branch, git merge), navigation (cd, pwd, which), process control (kill, pkill), package management (npm install/publish, pip install), and simple echo/printf. Everything else — any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service — MUST use mcp__context-mode__execute instead. When uncertain, use context-mode."
           }
         ]
       }
