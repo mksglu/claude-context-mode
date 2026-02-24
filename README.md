@@ -19,14 +19,14 @@ claude mcp add context-mode -- npx -y context-mode
 Restart Claude Code. Done.
 
 <details>
-<summary><strong>Plugin install</strong> (includes auto-routing skill)</summary>
+<summary><strong>Plugin install</strong> (includes auto-routing skill + subagent hook)</summary>
 
 ```bash
 /plugin marketplace add mksglu/claude-context-mode
 /plugin install context-mode@claude-context-mode
 ```
 
-Installs the MCP server + a skill that automatically routes large outputs through Context Mode. No prompting needed.
+Installs the MCP server + a skill that automatically routes large outputs through Context Mode + a PreToolUse hook that injects context-mode routing into subagent prompts. No prompting needed.
 
 </details>
 
@@ -51,11 +51,38 @@ Code Mode showed that tool definitions can be compressed by 99.9%. Context Mode 
 
 | Tool | What it does | Context saved |
 |---|---|---|
+| `batch_execute` | Run multiple commands + search multiple queries in ONE call. | 986 KB → 62 KB |
 | `execute` | Run code in 10 languages. Only stdout enters context. | 56 KB → 299 B |
 | `execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
 | `index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
-| `search` | Query indexed content. Returns exact code blocks. | On-demand retrieval |
+| `search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
 | `fetch_and_index` | Fetch URL, convert to markdown, index. | 60 KB → 40 B |
+| `stats` | Session token tracking with per-tool breakdown. | — |
+
+## batch_execute
+
+The primary tool for subagents and complex research tasks. Executes N shell commands as a batch, indexes all output into the knowledge base, and runs M search queries against the indexed content — all in a single tool call.
+
+```
+batch_execute(
+  commands: [
+    { label: "Repo Info", command: "gh repo view owner/repo" },
+    { label: "README", command: "gh api repos/owner/repo/readme --jq .content | base64 -d" },
+    { label: "File Tree", command: "gh api repos/owner/repo/git/trees/main?recursive=1 --jq '.tree[] | .path'" }
+  ],
+  queries: [
+    "project description and purpose",
+    "architecture and tech stack",
+    "dependencies and configuration",
+    "recent activity and contributors"
+  ]
+)
+```
+
+Returns: section inventory + search results with smart snippets around matching terms + searchable vocabulary for follow-ups.
+
+**Before batch_execute:** 37 individual tool calls, 986 KB context, 5+ minutes.
+**After batch_execute:** 5 tool calls, 62 KB context, 2.6 minutes.
 
 ## How the Sandbox Works
 
@@ -71,11 +98,47 @@ When output exceeds 5 KB and an `intent` is provided, Context Mode switches to i
 
 The `index` tool chunks markdown content by headings while keeping code blocks intact, then stores them in a **SQLite FTS5** (Full-Text Search 5) virtual table. Search uses **BM25 ranking** — a probabilistic relevance algorithm that scores documents based on term frequency, inverse document frequency, and document length normalization. **Porter stemming** is applied at index time so "running", "runs", and "ran" match the same stem.
 
-When you call `search`, it returns exact code blocks with their heading hierarchy — not summaries, not approximations, the actual indexed content. `fetch_and_index` extends this to URLs: fetch, convert HTML to markdown, chunk, index. The raw page never enters context.
+When you call `search`, it returns relevant content snippets focused around matching query terms — not full documents, not approximations, the actual indexed content with smart extraction around what you're looking for. `fetch_and_index` extends this to URLs: fetch, convert HTML to markdown, chunk, index. The raw page never enters context.
+
+## Smart Snippets
+
+Search results use intelligent extraction instead of truncation. Instead of returning the first N characters (which might miss the important part), Context Mode finds where your query terms appear in the content and returns windows around those matches. If your query is "authentication JWT token", you get the paragraphs where those terms actually appear — not an arbitrary prefix.
+
+## Progressive Search Throttling
+
+The `search` tool includes progressive throttling to prevent context flooding from excessive individual calls:
+
+- **Calls 1-3:** Normal results (2 per query)
+- **Calls 4-8:** Reduced results (1 per query) + warning
+- **Calls 9+:** Blocked — redirects to `batch_execute`
+
+This encourages batching queries via `search(queries: ["q1", "q2", "q3"])` or `batch_execute` instead of making dozens of individual calls.
+
+## Session Stats
+
+The `stats` tool tracks context consumption in real-time:
+
+```
+┌───────────────────────────────────┬─────────────────────────┐
+│              Metric               │          Value          │
+├───────────────────────────────────┼─────────────────────────┤
+│ Session uptime                    │ 2.6 min                 │
+│ Tool calls                        │ 5                       │
+│ Bytes returned to context         │ 62.0 KB (~15.9k tokens) │
+│ Bytes indexed (stayed in sandbox) │ 140.5 KB                │
+│ Context savings ratio             │ 2.3x (56% reduction)    │
+└───────────────────────────────────┴─────────────────────────┘
+```
+
+Per-tool breakdown shows exactly which tools consume the most context, helping you optimize your workflow.
+
+## Subagent Routing
+
+When installed as a plugin, Context Mode includes a PreToolUse hook that automatically injects routing instructions into subagent (Task tool) prompts. Subagents learn to use `batch_execute` as their primary tool and `search(queries: [...])` for follow-ups — without any manual configuration.
 
 ## The Numbers
 
-Measured across 11 real-world scenarios. Every operation under 1 KB output.
+Measured across real-world scenarios:
 
 **Playwright snapshot** — 56.2 KB raw → 299 B context (99% saved)
 **GitHub Issues (20)** — 58.9 KB raw → 1.1 KB context (98% saved)
@@ -84,6 +147,7 @@ Measured across 11 real-world scenarios. Every operation under 1 KB output.
 **Analytics CSV (500 rows)** — 85.5 KB raw → 222 B context (100% saved)
 **Git log (153 commits)** — 11.6 KB raw → 107 B context (99% saved)
 **Test output (30 suites)** — 6.0 KB raw → 337 B context (95% saved)
+**Repo research (subagent)** — 986 KB raw → 62 KB context (94% saved, 5 calls vs 37)
 
 Over a full session: 315 KB of raw output becomes 5.4 KB. Session time before slowdown goes from ~30 minutes to ~3 hours. Context remaining after 45 minutes: 99% instead of 60%.
 
@@ -123,6 +187,11 @@ Run 3 parallel tasks:
 2. Navigate to jsonplaceholder.typicode.com, extract all API endpoint paths and HTTP methods
 3. Fetch the Anthropic prompt caching docs, search for cache TTL and token pricing
 Present all findings in a comparison table.
+```
+
+**Deep repo research**
+```
+Research the following repository: https://github.com/vercel-labs/agent-browser
 ```
 
 ## Requirements
