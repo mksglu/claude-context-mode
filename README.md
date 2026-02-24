@@ -59,31 +59,6 @@ Code Mode showed that tool definitions can be compressed by 99.9%. Context Mode 
 | `fetch_and_index` | Fetch URL, convert to markdown, index. | 60 KB → 40 B |
 | `stats` | Session token tracking with per-tool breakdown. | — |
 
-## batch_execute
-
-The primary tool for subagents and complex research tasks. Executes N shell commands as a batch, indexes all output into the knowledge base, and runs M search queries against the indexed content — all in a single tool call.
-
-```
-batch_execute(
-  commands: [
-    { label: "Repo Info", command: "gh repo view owner/repo" },
-    { label: "README", command: "gh api repos/owner/repo/readme --jq .content | base64 -d" },
-    { label: "File Tree", command: "gh api repos/owner/repo/git/trees/main?recursive=1 --jq '.tree[] | .path'" }
-  ],
-  queries: [
-    "project description and purpose",
-    "architecture and tech stack",
-    "dependencies and configuration",
-    "recent activity and contributors"
-  ]
-)
-```
-
-Returns: section inventory + search results with smart snippets around matching terms + searchable vocabulary for follow-ups.
-
-**Before batch_execute:** 37 individual tool calls, 986 KB context, 5+ minutes.
-**After batch_execute:** 5 tool calls, 62 KB context, 2.6 minutes.
-
 ## How the Sandbox Works
 
 Each `execute` call spawns an isolated subprocess with its own process boundary. Scripts can't access each other's memory or state. The subprocess runs your code, captures stdout, and only that stdout enters the conversation context. The raw data — log files, API responses, snapshots — never leaves the sandbox.
@@ -116,21 +91,7 @@ This encourages batching queries via `search(queries: ["q1", "q2", "q3"])` or `b
 
 ## Session Stats
 
-The `stats` tool tracks context consumption in real-time:
-
-```
-┌───────────────────────────────────┬─────────────────────────┐
-│              Metric               │          Value          │
-├───────────────────────────────────┼─────────────────────────┤
-│ Session uptime                    │ 2.6 min                 │
-│ Tool calls                        │ 5                       │
-│ Bytes returned to context         │ 62.0 KB (~15.9k tokens) │
-│ Bytes indexed (stayed in sandbox) │ 140.5 KB                │
-│ Context savings ratio             │ 2.3x (56% reduction)    │
-└───────────────────────────────────┴─────────────────────────┘
-```
-
-Per-tool breakdown shows exactly which tools consume the most context, helping you optimize your workflow.
+The `stats` tool tracks context consumption in real-time: session uptime, tool calls, bytes returned to context vs bytes indexed in sandbox, and context savings ratio. Per-tool breakdown shows exactly which tools consume the most context.
 
 ## Subagent Routing
 
