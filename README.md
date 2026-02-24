@@ -4,20 +4,9 @@
 
 [![npm](https://img.shields.io/npm/v/context-mode)](https://www.npmjs.com/package/context-mode) [![marketplace](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fmksglu%2Fclaude-context-mode%2Fmain%2F.claude-plugin%2Fmarketplace.json&query=%24.plugins%5B0%5D.version&label=marketplace&color=brightgreen)](https://github.com/mksglu/claude-context-mode) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode-mcp/) solved the input side: 2,500 tool definitions compressed into ~1,000 tokens. But there is another side. Every tool call that returns data — a Playwright snapshot, a log file, an API response — dumps raw output directly into the context window. 56 KB from a browser snapshot. 59 KB from twenty GitHub issues. 45 KB from an access log.
+Inspired by Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode-mcp/) — which compresses tool definitions from millions of tokens into ~1,000 — we asked: what about the other direction? Every tool call that returns data dumps raw output into the context window. 56 KB from a browser snapshot. 59 KB from twenty GitHub issues. 45 KB from an access log.
 
-Context Mode solves the output side. It intercepts these operations, processes them in isolated sandboxes, and returns only what matters. The raw data never enters context.
-
-```
-                    CONTEXT WINDOW
-                    ┌────────────────────────┐
-                    │                        │
-  Code Mode ───►   │  Tool definitions       │  ← input optimized (Cloudflare)
-                    │                        │
-  Context Mode ──► │  Tool outputs           │  ← output optimized
-                    │                        │
-                    └────────────────────────┘
-```
+Context Mode intercepts these outputs, processes them in isolated sandboxes, and returns only what matters. The raw data never enters context.
 
 ```
 Without Context Mode                          With Context Mode
@@ -63,11 +52,11 @@ claude --plugin-dir ./path/to/context-mode
 
 ## The Problem
 
-MCP has become the standard way for AI agents to use external tools. Cloudflare identified a tension at its core: agents need many tools, yet every tool added fills the context window. Their solution — Code Mode — collapses thousands of tool definitions into typed code, cutting input tokens by 99.9%.
+MCP has become the standard way for AI agents to use external tools. But there is a tension at its core: every tool interaction fills the context window from both sides — definitions on the way in, raw output on the way out.
 
-But tool definitions are only half the story. With [81+ tools active, 143K tokens (72%) get consumed before your first message](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code). And then the tools start returning data. A single Playwright snapshot burns 56 KB. A `gh issue list` dumps 59 KB. Run a test suite, read a log file, fetch documentation — each response eats into what remains.
+With [81+ tools active, 143K tokens (72%) get consumed before your first message](https://scottspence.com/posts/optimising-mcp-server-context-usage-in-claude-code). And then the tools start returning data. A single Playwright snapshot burns 56 KB. A `gh issue list` dumps 59 KB. Run a test suite, read a log file, fetch documentation — each response eats into what remains.
 
-The context window has two pressure points. Code Mode addresses the first. Context Mode addresses the second.
+Code Mode showed that tool definitions can be compressed by 99.9%. Context Mode applies the same principle to tool outputs — processing them in sandboxes so only summaries reach the model.
 
 ## How It Works
 
