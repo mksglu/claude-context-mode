@@ -16,9 +16,7 @@ description: |
   "outdated packages", "dependency tree", "cloud resources", "CI/CD output".
   Also triggers on ANY MCP tool output (Playwright, Context7, GitHub API) that
   may exceed 20 lines, and any operation where output size is uncertain.
-  CRITICAL: When spawning subagents (Task tool), ALWAYS include explicit MCP tool
-  names (mcp__context-mode__execute, mcp__context-mode__fetch_and_index, etc.)
-  in the subagent prompt. Subagents inherit tools but NOT skill instructions.
+  Subagent routing is handled automatically via PreToolUse hook — no manual tool names needed in prompts.
 ---
 
 # Context Mode: Default for All Large Output
@@ -128,13 +126,12 @@ Use context-mode for ANY of these, without being asked:
 ## Search Query Strategy
 
 - BM25 uses **OR semantics** — results matching more terms rank higher automatically
-- Use 2-4 specific technical terms per query: `search("transform refine pipe")`
+- Use 2-4 specific technical terms per query
 - **Always use `source` parameter** when multiple docs are indexed to avoid cross-source contamination
-  - After `fetch_and_index` returns `source: "Zod API docs"`, use `search("refine", source: "Zod")`
   - Partial match works: `source: "Node"` matches `"Node.js v22 CHANGELOG"`
-- Send multiple `search()` calls **in parallel** for different aspects of a topic
-- Example: instead of one broad search, send 3 focused parallel queries:
-  - `search("transform pipe", source: "Zod")` + `search("refine superRefine", source: "Zod")` + `search("coerce codec", source: "Zod")`
+- **Always use `queries` array** — batch ALL search questions in ONE call:
+  - `search(queries: ["transform pipe", "refine superRefine", "coerce codec"], source: "Zod")`
+  - NEVER make multiple separate search() calls — put all queries in one array
 
 ## External Documentation
 
@@ -208,7 +205,7 @@ Step 1: browser_snapshot(filename: "/tmp/playwright-snapshot.md")
 Step 2: index(path: "/tmp/playwright-snapshot.md", source: "Playwright snapshot")
         → reads file SERVER-SIDE, indexes into FTS5, returns ~80B confirmation
 
-Step 3: search("login form email password", source: "Playwright")
+Step 3: search(queries: ["login form email password"], source: "Playwright")
         → returns only matching chunks (~300B)
 ```
 
@@ -258,40 +255,9 @@ browser_network_requests(includeStatic: false, filename: "/tmp/network.md")
 >
 > Data flow: **Playwright → file → server-side read → context**. Never: **Playwright → context → index(content) → context again**.
 
-## Subagent Usage (CRITICAL)
+## Subagent Usage
 
-**Subagents inherit MCP tools but NOT skill instructions.** When you spawn a subagent via the Task tool, the subagent has access to `mcp__context-mode__execute`, `mcp__context-mode__execute_file`, `mcp__context-mode__fetch_and_index`, and `mcp__context-mode__search` — but it doesn't know it should use them instead of Bash/Read/WebFetch.
-
-**You MUST include explicit tool names in every subagent prompt.** This is the only way to ensure subagents use context-mode tools.
-
-### Rules for spawning subagents:
-
-1. **Never write a subagent prompt that says "analyze this URL" or "run tests"** without specifying which tool to use.
-2. **Always include the full MCP tool name** in the subagent prompt: `mcp__context-mode__execute`, not "context-mode execute" or "execute".
-3. **Always add "do NOT use Bash, Read, or WebFetch"** to prevent fallback to standard tools.
-4. **For browser tasks**, specify `mcp__context-mode__execute` with `language: "shell"` and the exact agent-browser commands.
-5. **For doc fetching**, specify `mcp__context-mode__fetch_and_index` with exact url and source parameters, then `mcp__context-mode__search` with query and source.
-
-### Template for subagent prompts:
-
-```
-Use mcp__context-mode__execute with language "[lang]" and code:
-[exact code here]
-Set intent to "[what you're looking for]".
-Do NOT use Bash, Read, or WebFetch.
-```
-
-### Example — parallel browser + docs analysis:
-
-```
-Task 1: Use mcp__context-mode__execute with language "shell" and code:
-AGENT_BROWSER_SESSION="session-a" agent-browser open https://example.com 2>&1 && AGENT_BROWSER_SESSION="session-a" agent-browser snapshot -i 2>&1
-Set intent to "links buttons forms". Do NOT use Bash.
-
-Task 2: Use mcp__context-mode__fetch_and_index with url "https://docs.example.com" and source "Example Docs".
-Then use mcp__context-mode__search with query "authentication setup" and source "Example".
-Do NOT use WebFetch.
-```
+Subagents automatically receive context-mode tool routing via a PreToolUse hook. You do NOT need to manually add tool names to subagent prompts — the hook injects them. Just write natural task descriptions.
 
 ## Anti-Patterns
 

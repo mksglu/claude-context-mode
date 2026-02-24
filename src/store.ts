@@ -306,6 +306,35 @@ export class ContentStore {
       .all() as Array<{ label: string; chunkCount: number }>;
   }
 
+  /**
+   * Get all chunks for a given source by ID — bypasses FTS5 MATCH entirely.
+   * Use this for inventory/listing where you need all sections, not search.
+   */
+  getChunksBySource(sourceId: number): SearchResult[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT c.title, c.content, c.content_type, s.label
+         FROM chunks c
+         JOIN sources s ON s.id = c.source_id
+         WHERE c.source_id = ?
+         ORDER BY c.rowid`,
+      )
+      .all(sourceId) as Array<{
+      title: string;
+      content: string;
+      content_type: string;
+      label: string;
+    }>;
+
+    return rows.map((r) => ({
+      title: r.title,
+      content: r.content,
+      source: r.label,
+      rank: 0,
+      contentType: r.content_type as "code" | "prose",
+    }));
+  }
+
   // ── Vocabulary ──
 
   getDistinctiveTerms(sourceId: number, maxTerms: number = 40): string[] {

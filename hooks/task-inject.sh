@@ -6,23 +6,24 @@
 LOG="/tmp/context-mode-hook.log"
 INPUT=$(cat /dev/stdin)
 
-PROMPT=$(echo "$INPUT" | jq -r '.tool_input.prompt // ""')
-
-# If prompt already contains context-mode references, pass through
-if echo "$PROMPT" | grep -q 'mcp__context-mode'; then
-  echo "$(date '+%H:%M:%S') PASSTHROUGH" >> "$LOG"
-  exit 0
-fi
-
 ROUTING_BLOCK='
 
 ---
-TOOL ROUTING: You have context-mode MCP tools. Use these instead of Bash/WebFetch/Read for large outputs:
-- mcp__context-mode__execute (language, code, intent) — instead of Bash for ANY command producing >5 lines
-- mcp__context-mode__fetch_and_index (url, source) — instead of WebFetch for web pages
-- mcp__context-mode__search (query, source) — to search indexed content
-- mcp__context-mode__execute_file (path, language, code) — instead of Read for large file analysis
-Do NOT use Bash, curl, cat, Read, or WebFetch for large outputs.
+CONTEXT WINDOW PROTECTION — USE CONTEXT-MODE MCP TOOLS
+
+Raw Bash/Read/WebFetch output floods your context. You have context-mode tools that keep data in sandbox.
+
+STEP 1 — GATHER: mcp__context-mode__batch_execute(commands, queries)
+  commands: [{label: "Name", command: "shell cmd"}, ...]
+  queries: ["query1", "query2", ...] — put 5-8 queries covering everything you need.
+  Runs all commands, indexes output, returns search results. ONE call, no follow-ups.
+
+STEP 2 — FOLLOW-UP: mcp__context-mode__search(queries: ["q1", "q2", "q3", ...])
+  Pass ALL follow-up questions as queries array. ONE call, not separate calls.
+
+OTHER: execute(language, code) | execute_file(path, language, code) | fetch_and_index(url) + search
+
+FORBIDDEN: Bash for output, Read for files, WebFetch. Bash is ONLY for git/mkdir/rm/mv.
 ---'
 
 # Merge: take ALL original tool_input fields, only override prompt
