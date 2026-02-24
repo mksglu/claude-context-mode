@@ -25,21 +25,27 @@ description: |
 
 ## MANDATORY RULE
 
-**Before using Bash, curl, cat, or any command that produces output, ask yourself:**
+**Default to context-mode for ALL commands. Only use Bash for guaranteed-small-output operations.**
 
-> "Could this output be more than 20 lines?"
+Bash whitelist (safe to run directly):
+- **File mutations**: `mkdir`, `mv`, `cp`, `rm`, `touch`, `chmod`
+- **Git writes**: `git add`, `git commit`, `git push`, `git checkout`, `git branch`, `git merge`
+- **Navigation**: `cd`, `pwd`, `which`
+- **Process control**: `kill`, `pkill`
+- **Package install**: `npm install`, `pip install`
+- **Simple output**: `echo`, `printf`
 
-If YES or UNCERTAIN → use `execute` or `execute_file`. Not Bash. Not curl. Not cat.
+**Everything else → `execute` or `execute_file`.** Any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service. This includes ALL CLIs (gh, aws, kubectl, docker, terraform, wrangler, fly, heroku, gcloud, etc.) — there are thousands and we cannot list them all.
 
-**This is not optional.** Every KB of unnecessary context reduces the quality and speed of the entire session.
+**When uncertain, use context-mode.** Every KB of unnecessary context reduces the quality and speed of the entire session.
 
 ## Decision Tree
 
 ```
 About to run a command / read a file / call an API?
 │
-├── Output is GUARANTEED small (<20 lines)?
-│   └── Use Bash (git status, pwd, ls, echo, etc.)
+├── Command is on the Bash whitelist (file mutations, git writes, navigation, echo)?
+│   └── Use Bash
 │
 ├── Output MIGHT be large or you're UNSURE?
 │   └── Use context-mode execute or execute_file
@@ -142,7 +148,7 @@ Use context-mode for ANY of these, without being asked:
 2. **Write analysis code, not just data dumps.** Don't `console.log(JSON.stringify(data))` — analyze first, print findings.
 3. **Be specific in output.** Print bug details with IDs, line numbers, exact values — not just counts.
 4. **For files you need to EDIT**: Use the normal Read tool. context-mode is for analysis, not editing.
-5. **For tiny outputs (<5 lines guaranteed)**: Use Bash. Don't over-engineer `git status` through context-mode.
+5. **For Bash whitelist commands only**: Use Bash for file mutations, git writes, navigation, process control, package install, and echo. Everything else goes through context-mode.
 6. **Never use `index(content: large_data)`.** Use `index(path: ...)` to read files server-side. The `content` parameter sends data through context as a tool parameter — use it only for small inline text.
 7. **Always use `filename` parameter** on Playwright tools (`browser_snapshot`, `browser_console_messages`, `browser_network_requests`). Without it, the full output enters context.
 8. **Don't re-index data already in context.** If an MCP tool returned data in a previous response, it's already loaded — use it directly or save to file first.

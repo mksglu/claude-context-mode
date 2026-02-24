@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "0.5.22",
+  "version": "0.5.23",
   "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution in 10 languages, FTS5 knowledge base with BM25 ranking, and intent-driven search.",
   "author": {
     "name": "Mert Koseoğlu",
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "prompt",
-            "prompt": "You have mcp__context-mode__execute and mcp__context-mode__execute_file available. If this Bash command could produce more than 20 lines of output (curl, npm test, git log, cat large files, API calls, docker/kubectl commands), use mcp__context-mode__execute instead — it processes output in a sandbox and only returns a summary to context. For small commands (git status, pwd, ls, echo) Bash is fine."
+            "prompt": "STOP. Default to mcp__context-mode__execute for ALL Bash commands. ONLY use Bash for these guaranteed-small-output operations: file mutations (mkdir, mv, cp, rm, touch, chmod), git writes (git add, git commit, git push, git checkout, git branch, git merge), navigation (cd, pwd, which), process control (kill, pkill), package install (npm install, pip install), and simple echo/printf. Everything else — any command that reads, queries, fetches, lists, logs, tests, builds, diffs, inspects, or calls an external service — MUST use mcp__context-mode__execute instead. When uncertain, use context-mode."
           }
         ]
       }
