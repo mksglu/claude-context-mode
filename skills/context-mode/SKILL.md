@@ -16,6 +16,9 @@ description: |
   "outdated packages", "dependency tree", "cloud resources", "CI/CD output".
   Also triggers on ANY MCP tool output (Playwright, Context7, GitHub API) that
   may exceed 20 lines, and any operation where output size is uncertain.
+  CRITICAL: When spawning subagents (Task tool), ALWAYS include explicit MCP tool
+  names (mcp__context-mode__execute, mcp__context-mode__fetch_and_index, etc.)
+  in the subagent prompt. Subagents inherit tools but NOT skill instructions.
 ---
 
 # Context Mode: Default for All Large Output
@@ -248,6 +251,41 @@ browser_network_requests(includeStatic: false, filename: "/tmp/network.md")
 > Then process via `index(path: ...)` or `execute_file(path: ...)` — never `index(content: ...)`.
 >
 > Data flow: **Playwright → file → server-side read → context**. Never: **Playwright → context → index(content) → context again**.
+
+## Subagent Usage (CRITICAL)
+
+**Subagents inherit MCP tools but NOT skill instructions.** When you spawn a subagent via the Task tool, the subagent has access to `mcp__context-mode__execute`, `mcp__context-mode__execute_file`, `mcp__context-mode__fetch_and_index`, and `mcp__context-mode__search` — but it doesn't know it should use them instead of Bash/Read/WebFetch.
+
+**You MUST include explicit tool names in every subagent prompt.** This is the only way to ensure subagents use context-mode tools.
+
+### Rules for spawning subagents:
+
+1. **Never write a subagent prompt that says "analyze this URL" or "run tests"** without specifying which tool to use.
+2. **Always include the full MCP tool name** in the subagent prompt: `mcp__context-mode__execute`, not "context-mode execute" or "execute".
+3. **Always add "do NOT use Bash, Read, or WebFetch"** to prevent fallback to standard tools.
+4. **For browser tasks**, specify `mcp__context-mode__execute` with `language: "shell"` and the exact agent-browser commands.
+5. **For doc fetching**, specify `mcp__context-mode__fetch_and_index` with exact url and source parameters, then `mcp__context-mode__search` with query and source.
+
+### Template for subagent prompts:
+
+```
+Use mcp__context-mode__execute with language "[lang]" and code:
+[exact code here]
+Set intent to "[what you're looking for]".
+Do NOT use Bash, Read, or WebFetch.
+```
+
+### Example — parallel browser + docs analysis:
+
+```
+Task 1: Use mcp__context-mode__execute with language "shell" and code:
+AGENT_BROWSER_SESSION="session-a" agent-browser open https://example.com 2>&1 && AGENT_BROWSER_SESSION="session-a" agent-browser snapshot -i 2>&1
+Set intent to "links buttons forms". Do NOT use Bash.
+
+Task 2: Use mcp__context-mode__fetch_and_index with url "https://docs.example.com" and source "Example Docs".
+Then use mcp__context-mode__search with query "authentication setup" and source "Example".
+Do NOT use WebFetch.
+```
 
 ## Anti-Patterns
 
