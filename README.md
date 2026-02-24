@@ -10,6 +10,8 @@ Inspired by Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode-mcp/)
 
 Context Mode is an MCP server that sits between Claude Code and these outputs. **315 KB becomes 5.4 KB. 98% reduction.**
 
+https://github.com/user-attachments/assets/07013dbf-07c0-4ef1-974a-33ea1207637b
+
 ## Install
 
 ```bash
