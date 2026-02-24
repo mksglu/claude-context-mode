@@ -73,38 +73,56 @@ The `index` tool chunks markdown content by headings while keeping code blocks i
 
 When you call `search`, it returns exact code blocks with their heading hierarchy — not summaries, not approximations, the actual indexed content. `fetch_and_index` extends this to URLs: fetch, convert HTML to markdown, chunk, index. The raw page never enters context.
 
-## Benchmarks
+## The Numbers
 
-| Operation | Raw output | After Context Mode | Savings |
-|---|---|---|---|
-| Playwright `browser_snapshot` | 56.2 KB | 299 B | **99%** |
-| GitHub Issues (20) | 58.9 KB | 1.1 KB | **98%** |
-| Access log (500 requests) | 45.1 KB | 155 B | **100%** |
-| Context7 React docs | 5.9 KB | 261 B | **96%** |
-| Analytics CSV (500 rows) | 85.5 KB | 222 B | **100%** |
-| Git log (153 commits) | 11.6 KB | 107 B | **99%** |
-| Test output (30 suites) | 6.0 KB | 337 B | **95%** |
+Measured across 11 real-world scenarios. Every operation under 1 KB output.
 
-Validated across 11 real-world scenarios — test triage, TypeScript error diagnosis, git diff review, dependency audit, API response processing, CSV analytics. All under 1 KB output each.
+**Playwright snapshot** — 56.2 KB raw → 299 B context (99% saved)
+**GitHub Issues (20)** — 58.9 KB raw → 1.1 KB context (98% saved)
+**Access log (500 requests)** — 45.1 KB raw → 155 B context (100% saved)
+**Context7 React docs** — 5.9 KB raw → 261 B context (96% saved)
+**Analytics CSV (500 rows)** — 85.5 KB raw → 222 B context (100% saved)
+**Git log (153 commits)** — 11.6 KB raw → 107 B context (99% saved)
+**Test output (30 suites)** — 6.0 KB raw → 337 B context (95% saved)
 
-| Metric | Without | With |
-|---|---|---|
-| Context consumed per session | 315 KB | 5.4 KB |
-| Time before slowdown | ~30 min | ~3 hours |
-| Context remaining after 45 min | 60% | 99% |
+Over a full session: 315 KB of raw output becomes 5.4 KB. Session time before slowdown goes from ~30 minutes to ~3 hours. Context remaining after 45 minutes: 99% instead of 60%.
 
 [Full benchmark data with 21 scenarios →](BENCHMARK.md)
 
-## Example Prompts
+## Try It
 
-Just ask naturally. Claude routes through Context Mode when it saves tokens.
+These prompts work out of the box. Claude routes through Context Mode automatically.
 
+**Git history analysis**
 ```
-"Analyze the last 50 commits and find the most frequently changed files"
-"Read the access log and break down requests by HTTP status code"
-"Run the test suite and give me a pass/fail summary"
-"Fetch the React useEffect docs and find the cleanup pattern"
-"Analyze package-lock.json and find the 10 largest dependencies"
+Clone https://github.com/modelcontextprotocol/servers and analyze its git history:
+top contributors, commit types (feat/fix/docs/chore), and busiest weeks.
+```
+
+**Web page extraction**
+```
+Fetch the Hacker News front page and extract: top 15 posts with titles, scores,
+comment counts, and domains. Group them by domain.
+```
+
+**Documentation lookup**
+```
+Fetch the React useEffect docs and find the cleanup pattern.
+```
+
+**Monorepo dependency audit**
+```
+Analyze package-lock.json: find the 10 largest dependencies,
+which packages share the most common deps, and the heaviest package by count.
+```
+
+**Parallel browser + docs analysis**
+```
+Run 3 parallel tasks:
+1. Navigate to news.ycombinator.com, take a snapshot, count all links and interactive elements
+2. Navigate to jsonplaceholder.typicode.com, extract all API endpoint paths and HTTP methods
+3. Fetch the Anthropic prompt caching docs, search for cache TTL and token pricing
+Present all findings in a comparison table.
 ```
 
 ## Requirements
