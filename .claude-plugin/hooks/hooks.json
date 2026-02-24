@@ -1,0 +1,16 @@
+{
+  "description": "Context-mode tool routing — injects MCP tool instructions into subagent prompts",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/task-inject.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

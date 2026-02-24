@@ -11,7 +11,7 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
-const VERSION = "0.5.25";
+const VERSION = "0.5.26";
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
@@ -42,7 +42,7 @@ server.registerTool(
   "execute",
   {
     title: "Execute Code",
-    description: `Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess. Use instead of bash/cat when output would exceed 20 lines.${bunNote} Available: ${langList}.`,
+    description: `Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess. Use instead of bash/cat when output would exceed 20 lines.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.`,
     inputSchema: z.object({
       language: z
         .enum([
@@ -267,7 +267,7 @@ server.registerTool(
   {
     title: "Execute File Processing",
     description:
-      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.",
+      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.",
     inputSchema: z.object({
       path: z
         .string()
@@ -613,7 +613,8 @@ server.registerTool(
     description:
       "Fetches URL content, converts HTML to markdown, and indexes into the searchable knowledge base. " +
       "Raw content never enters context — only a brief confirmation is returned.\n\n" +
-      "Use INSTEAD of WebFetch/Context7 when you need to reference web documentation later via search.\n\n" +
+      "PREFER THIS OVER WebFetch when you need to reference web documentation later via search. " +
+      "WebFetch loads entire page content into context; this tool indexes it and lets you search() on-demand.\n\n" +
       "After fetching, use 'search' to retrieve specific sections on-demand.",
     inputSchema: z.object({
       url: z.string().describe("The URL to fetch and index"),
