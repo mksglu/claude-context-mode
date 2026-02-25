@@ -27,6 +27,7 @@
   },
   "files": [
     "build",
+    "hooks",
     "server.bundle.mjs",
     "skills",
     ".claude-plugin",

@@ -1,13 +1,22 @@
 {
-  "description": "Context-mode tool routing — injects MCP tool instructions into subagent prompts",
+  "description": "Context-mode PreToolUse — intercepts Bash data-fetching and injects subagent routing",
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+          }
+        ]
+      },
       {
         "matcher": "Task",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/task-inject.sh"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
           }
         ]
       }
