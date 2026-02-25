@@ -22,9 +22,11 @@ jobs:
           NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq -r '.downloads // 0')
           NPM_TOTAL=${NPM_TOTAL:-0}
 
-          # GitHub unique clones (last 14 days)
-          CLONES=$(gh api repos/${{ github.repository }}/traffic/clones --jq '.uniques // 0' 2>/dev/null || echo 0)
-          CLONES=${CLONES:-0}
+          # GitHub unique clones (last 14 days) — needs push access, may 403
+          CLONES_RAW=$(gh api repos/${{ github.repository }}/traffic/clones 2>/dev/null || true)
+          CLONES=$(echo "$CLONES_RAW" | jq -r '.uniques // 0' 2>/dev/null || echo 0)
+          # Strip non-numeric
+          CLONES=$(echo "$CLONES" | grep -oE '^[0-9]+$' || echo 0)
 
           # Ensure numeric
           NPM_TOTAL=$((NPM_TOTAL + 0))
