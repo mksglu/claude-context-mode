@@ -15,20 +15,24 @@ https://github.com/user-attachments/assets/07013dbf-07c0-4ef1-974a-33ea1207637b
 ## Install
 
 ```bash
-claude mcp add context-mode -- npx -y context-mode
-```
-
-Restart Claude Code. Done.
-
-<details>
-<summary><strong>Plugin install</strong> (includes auto-routing skill + subagent hook)</summary>
-
-```bash
 /plugin marketplace add mksglu/claude-context-mode
 /plugin install context-mode@claude-context-mode
 ```
 
-Installs the MCP server + a skill that automatically routes large outputs through Context Mode + a PreToolUse hook that injects context-mode routing into subagent prompts. No prompting needed.
+Restart Claude Code. Done. This installs the MCP server + a PreToolUse hook that automatically routes tool outputs through the sandbox + slash commands for diagnostics and upgrades.
+
+| Command | What it does |
+|---|---|
+| `/context-mode:stats` | Show context savings for the current session — per-tool breakdown, tokens consumed, savings ratio. |
+| `/context-mode:doctor` | Run diagnostics — checks runtimes, hooks, FTS5, plugin registration, npm and marketplace versions. |
+| `/context-mode:upgrade` | Pull latest from GitHub, rebuild, migrate cache, fix hooks. |
+
+<details>
+<summary><strong>MCP-only install</strong> (no hooks or slash commands)</summary>
+
+```bash
+claude mcp add context-mode -- npx -y context-mode
+```
 
 </details>
 
@@ -179,16 +183,6 @@ exactly what's in it. Then run /context-mode:stats.
 Fetch the React useEffect docs, index them, and find the cleanup pattern
 with code examples. Then run /context-mode:stats.
 ```
-
-## Slash Commands
-
-Available when installed as a plugin:
-
-| Command | What it does |
-|---|---|
-| `/context-mode:stats` | Show context savings for the current session — per-tool breakdown, tokens consumed, savings ratio. |
-| `/context-mode:doctor` | Run diagnostics — checks runtimes, hooks, FTS5, plugin registration, npm and marketplace versions. |
-| `/context-mode:upgrade` | Pull latest from GitHub, rebuild, reinstall plugin, update npm global, fix hooks. |
 
 ## Requirements
 
