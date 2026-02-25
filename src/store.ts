@@ -50,6 +50,7 @@ export interface SearchResult {
   source: string;
   rank: number;
   contentType: "code" | "prose";
+  matchLayer?: "porter" | "trigram" | "fuzzy";
 }
 
 export interface StoreStats {
@@ -96,6 +97,37 @@ function sanitizeQuery(query: string): string {
   return words.map((w) => `"${w}"`).join(" OR ");
 }
 
+function sanitizeTrigramQuery(query: string): string {
+  const cleaned = query.replace(/["'(){}[\]*:^~]/g, "").trim();
+  if (cleaned.length < 3) return "";
+  const words = cleaned.split(/\s+/).filter((w) => w.length >= 3);
+  if (words.length === 0) return "";
+  return words.map((w) => `"${w}"`).join(" OR ");
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j++) {
+      curr[j] =
+        a[i - 1] === b[j - 1]
+          ? prev[j - 1]
+          : 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+function maxEditDistance(wordLength: number): number {
+  if (wordLength <= 4) return 1;
+  if (wordLength <= 12) return 2;
+  return 3;
+}
+
 // ─────────────────────────────────────────────────────────
 // ContentStore
 // ─────────────────────────────────────────────────────────
@@ -131,6 +163,18 @@ export class ContentStore {
         source_id UNINDEXED,
         content_type UNINDEXED,
         tokenize='porter unicode61'
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
+        title,
+        content,
+        source_id UNINDEXED,
+        content_type UNINDEXED,
+        tokenize='trigram'
+      );
+
+      CREATE TABLE IF NOT EXISTS vocabulary (
+        word TEXT PRIMARY KEY
       );
     `);
   }
@@ -173,24 +217,25 @@ export class ContentStore {
     const insertChunk = this.#db.prepare(
       "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
     );
+    const insertChunkTrigram = this.#db.prepare(
+      "INSERT INTO chunks_trigram (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
+    );
 
     const transaction = this.#db.transaction(() => {
       const info = insertSource.run(label, chunks.length, codeChunks);
       const sourceId = Number(info.lastInsertRowid);
 
       for (const chunk of chunks) {
-        insertChunk.run(
-          chunk.title,
-          chunk.content,
-          sourceId,
-          chunk.hasCode ? "code" : "prose",
-        );
+        const ct = chunk.hasCode ? "code" : "prose";
+        insertChunk.run(chunk.title, chunk.content, sourceId, ct);
+        insertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct);
       }
 
       return sourceId;
     });
 
     const sourceId = transaction();
+    this.#extractAndStoreVocabulary(text);
 
     return {
       sourceId,
@@ -233,6 +278,9 @@ export class ContentStore {
     const insertChunk = this.#db.prepare(
       "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
     );
+    const insertChunkTrigram = this.#db.prepare(
+      "INSERT INTO chunks_trigram (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
+    );
 
     const transaction = this.#db.transaction(() => {
       const info = insertSource.run(source, chunks.length, 0);
@@ -240,12 +288,14 @@ export class ContentStore {
 
       for (const chunk of chunks) {
         insertChunk.run(chunk.title, chunk.content, sourceId, "prose");
+        insertChunkTrigram.run(chunk.title, chunk.content, sourceId, "prose");
       }
 
       return sourceId;
     });
 
     const sourceId = transaction();
+    this.#extractAndStoreVocabulary(content);
 
     return {
       sourceId,
@@ -294,6 +344,137 @@ export class ContentStore {
       rank: r.rank,
       contentType: r.content_type as "code" | "prose",
     }));
+  }
+
+  // ── Trigram Search (Layer 2) ──
+
+  searchTrigram(
+    query: string,
+    limit: number = 3,
+    source?: string,
+  ): SearchResult[] {
+    const sanitized = sanitizeTrigramQuery(query);
+    if (!sanitized) return [];
+
+    const sourceFilter = source ? "AND sources.label LIKE ?" : "";
+    const stmt = this.#db.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        sources.label,
+        bm25(chunks_trigram, 2.0, 1.0) AS rank
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? ${sourceFilter}
+      ORDER BY rank
+      LIMIT ?
+    `);
+
+    const params = source
+      ? [sanitized, `%${source}%`, limit]
+      : [sanitized, limit];
+
+    const rows = stmt.all(...params) as Array<{
+      title: string;
+      content: string;
+      content_type: string;
+      label: string;
+      rank: number;
+    }>;
+
+    return rows.map((r) => ({
+      title: r.title,
+      content: r.content,
+      source: r.label,
+      rank: r.rank,
+      contentType: r.content_type as "code" | "prose",
+    }));
+  }
+
+  // ── Fuzzy Correction (Layer 3) ──
+
+  fuzzyCorrect(query: string): string | null {
+    const word = query.toLowerCase().trim();
+    if (word.length < 3) return null;
+
+    const maxDist = maxEditDistance(word.length);
+
+    const candidates = this.#db
+      .prepare(
+        "SELECT word FROM vocabulary WHERE length(word) BETWEEN ? AND ?",
+      )
+      .all(word.length - maxDist, word.length + maxDist) as Array<{
+      word: string;
+    }>;
+
+    let bestWord: string | null = null;
+    let bestDist = maxDist + 1;
+
+    for (const { word: candidate } of candidates) {
+      if (candidate === word) return null; // exact match — no correction
+      const dist = levenshtein(word, candidate);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestWord = candidate;
+      }
+    }
+
+    return bestDist <= maxDist ? bestWord : null;
+  }
+
+  // ── Unified Fallback Search ──
+
+  searchWithFallback(
+    query: string,
+    limit: number = 3,
+    source?: string,
+  ): SearchResult[] {
+    // Layer 1: Porter stemming (existing FTS5 MATCH)
+    const porterResults = this.search(query, limit, source);
+    if (porterResults.length > 0) {
+      return porterResults.map((r) => ({ ...r, matchLayer: "porter" as const }));
+    }
+
+    // Layer 2: Trigram substring matching
+    const trigramResults = this.searchTrigram(query, limit, source);
+    if (trigramResults.length > 0) {
+      return trigramResults.map((r) => ({
+        ...r,
+        matchLayer: "trigram" as const,
+      }));
+    }
+
+    // Layer 3: Fuzzy correction + re-search
+    const words = query
+      .toLowerCase()
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length >= 3);
+    const original = words.join(" ");
+    const correctedWords = words.map((w) => this.fuzzyCorrect(w) ?? w);
+    const correctedQuery = correctedWords.join(" ");
+
+    if (correctedQuery !== original) {
+      // Try Porter with corrected query first
+      const fuzzyPorter = this.search(correctedQuery, limit, source);
+      if (fuzzyPorter.length > 0) {
+        return fuzzyPorter.map((r) => ({
+          ...r,
+          matchLayer: "fuzzy" as const,
+        }));
+      }
+      // Try trigram with corrected query
+      const fuzzyTrigram = this.searchTrigram(correctedQuery, limit, source);
+      if (fuzzyTrigram.length > 0) {
+        return fuzzyTrigram.map((r) => ({
+          ...r,
+          matchLayer: "fuzzy" as const,
+        }));
+      }
+    }
+
+    return [];
   }
 
   // ── Sources ──
@@ -419,6 +600,24 @@ export class ContentStore {
 
   close(): void {
     this.#db.close();
+  }
+
+  // ── Vocabulary Extraction ──
+
+  #extractAndStoreVocabulary(content: string): void {
+    const words = content
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}_-]+/u)
+      .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+
+    const unique = [...new Set(words)];
+    const insert = this.#db.prepare(
+      "INSERT OR IGNORE INTO vocabulary (word) VALUES (?)",
+    );
+
+    for (const word of unique) {
+      insert.run(word);
+    }
   }
 
   // ── Chunking ──

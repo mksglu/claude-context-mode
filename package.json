@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
   "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
   "author": "Mert Koseoğlu",
@@ -50,7 +50,9 @@
     "test:compare": "npx tsx tests/context-comparison.ts",
     "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
     "test:store": "npx tsx tests/store.test.ts",
-    "test:all": "npx tsx tests/executor.test.ts && npx tsx tests/store.test.ts && npx tsx tests/use-cases.ts && npx tsx tests/context-comparison.ts && npx tsx tests/benchmark.ts && npx tsx tests/ecosystem-benchmark.ts"
+    "test:fuzzy": "npx tsx tests/fuzzy-search.test.ts",
+    "test:hooks": "npx tsx tests/hook-integration.test.ts",
+    "test:all": "npx tsx tests/executor.test.ts && npx tsx tests/store.test.ts && npx tsx tests/fuzzy-search.test.ts && npx tsx tests/hook-integration.test.ts && npx tsx tests/use-cases.ts && npx tsx tests/context-comparison.ts && npx tsx tests/benchmark.ts && npx tsx tests/ecosystem-benchmark.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",

@@ -1,5 +1,5 @@
 {
-  "description": "Context-mode PreToolUse — intercepts Bash, WebFetch, and subagent routing",
+  "description": "Context-mode PreToolUse — intercepts data-fetching tools, nudges toward sandbox execution",
   "hooks": {
     "PreToolUse": [
       {
@@ -13,6 +13,24 @@
       },
       {
         "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Grep",
         "hooks": [
           {
             "type": "command",

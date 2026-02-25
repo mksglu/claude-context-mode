@@ -77,6 +77,16 @@ The `index` tool chunks markdown content by headings while keeping code blocks i
 
 When you call `search`, it returns relevant content snippets focused around matching query terms — not full documents, not approximations, the actual indexed content with smart extraction around what you're looking for. `fetch_and_index` extends this to URLs: fetch, convert HTML to markdown, chunk, index. The raw page never enters context.
 
+## Fuzzy Search
+
+Search uses a three-layer fallback to handle typos, partial terms, and substring matches:
+
+- **Layer 1 — Porter stemming**: Standard FTS5 MATCH with porter tokenizer. "caching" matches "cached", "caches", "cach".
+- **Layer 2 — Trigram substring**: FTS5 trigram tokenizer matches partial strings. "useEff" finds "useEffect", "authenticat" finds "authentication".
+- **Layer 3 — Fuzzy correction**: Levenshtein distance corrects typos before re-searching. "kuberntes" → "kubernetes", "autentication" → "authentication".
+
+The `searchWithFallback` method cascades through all three layers and annotates results with `matchLayer` so you know which layer resolved the query.
+
 ## Smart Snippets
 
 Search results use intelligent extraction instead of truncation. Instead of returning the first N characters (which might miss the important part), Context Mode finds where your query terms appear in the content and returns windows around those matches. If your query is "authentication JWT token", you get the paragraphs where those terms actually appear — not an arbitrary prefix.
@@ -93,24 +103,30 @@ This encourages batching queries via `search(queries: ["q1", "q2", "q3"])` or `b
 
 ## Session Stats
 
-The `stats` tool tracks context consumption in real-time. Useful for debugging context usage during long sessions.
+The `stats` tool tracks context consumption in real-time. Network I/O inside the sandbox is automatically tracked for JS/TS executions.
 
 | Metric | Value |
 |---|---|
-| Session uptime | 2.6 min |
-| Tool calls | 5 |
-| Bytes returned to context | 62.0 KB (~15.9k tokens) |
-| Bytes indexed (stayed in sandbox) | 140.5 KB |
-| Context savings ratio | 2.3x (56% reduction) |
+| Session | 1.4 min |
+| Tool calls | 1 |
+| Total data processed | **9.6MB** |
+| Kept in sandbox | **9.6MB** |
+| Entered context | 0.3KB |
+| Tokens consumed | ~82 |
+| **Context savings** | **24,576.0x (99% reduction)** |
 
-| Tool | Calls | Context used |
-|---|---|---|
-| batch_execute | 4 | 58.2 KB |
-| search | 1 | 3.8 KB |
+| Tool | Calls | Context | Tokens |
+|---|---|---|---|
+| execute | 1 | 0.3KB | ~82 |
+| **Total** | **1** | **0.3KB** | **~82** |
+
+> Without context-mode, **9.6MB** of raw tool output would flood your context window. Instead, **9.6MB** (99%) stayed in sandbox — saving **~2,457,600 tokens** of context space.
 
 ## Subagent Routing
 
 When installed as a plugin, Context Mode includes a PreToolUse hook that automatically injects routing instructions into subagent (Task tool) prompts. Subagents learn to use `batch_execute` as their primary tool and `search(queries: [...])` for follow-ups — without any manual configuration.
+
+Bash subagents are automatically upgraded to `general-purpose` so they can access MCP tools. Without this, a `subagent_type: "Bash"` agent only has the Bash tool — it can't call `batch_execute` or `search`, and all raw output floods context.
 
 ## The Numbers
 
@@ -131,39 +147,49 @@ Over a full session: 315 KB of raw output becomes 5.4 KB. Session time before sl
 
 ## Try It
 
-These prompts work out of the box. Run `/context-mode stats` after each to see the savings.
+These prompts work out of the box. Run `/context-mode:stats` after each to see the savings.
 
 **Deep repo research** — 5 calls, 62 KB context (raw: 986 KB, 94% saved)
 ```
 Research https://github.com/modelcontextprotocol/servers — architecture, tech stack,
-top contributors, open issues, and recent activity. Then run /context-mode stats.
+top contributors, open issues, and recent activity. Then run /context-mode:stats.
 ```
 
 **Git history analysis** — 1 call, 5.6 KB context
 ```
 Clone https://github.com/facebook/react and analyze the last 500 commits:
 top contributors, commit frequency by month, and most changed files.
-Then run /context-mode stats.
+Then run /context-mode:stats.
 ```
 
 **Web scraping** — 1 call, 3.2 KB context
 ```
 Fetch the Hacker News front page, extract all posts with titles, scores,
-and domains. Group by domain. Then run /context-mode stats.
+and domains. Group by domain. Then run /context-mode:stats.
 ```
 
 **Large JSON API** — 7.5 MB raw → 0.9 KB context (99% saved)
 ```
 Create a local server that returns a 7.5 MB JSON with 20,000 records and a secret
 hidden at index 13000. Fetch the endpoint, find the hidden record, and show me
-exactly what's in it. Then run /context-mode stats.
+exactly what's in it. Then run /context-mode:stats.
 ```
 
 **Documentation search** — 2 calls, 1.8 KB context
 ```
 Fetch the React useEffect docs, index them, and find the cleanup pattern
-with code examples. Then run /context-mode stats.
+with code examples. Then run /context-mode:stats.
 ```
+
+## Slash Commands
+
+Available when installed as a plugin:
+
+| Command | What it does |
+|---|---|
+| `/context-mode:stats` | Show context savings for the current session — per-tool breakdown, tokens consumed, savings ratio. |
+| `/context-mode:doctor` | Run diagnostics — checks runtimes, hooks, FTS5, plugin registration, npm and marketplace versions. |
+| `/context-mode:upgrade` | Pull latest from GitHub, rebuild, reinstall plugin, update npm global, fix hooks. |
 
 ## Requirements
 

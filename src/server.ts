@@ -36,6 +36,7 @@ const sessionStats = {
   calls: {} as Record<string, number>,
   bytesReturned: {} as Record<string, number>,
   bytesIndexed: 0,
+  bytesSandboxed: 0, // network I/O consumed inside sandbox (never enters context)
   sessionStart: Date.now(),
 };
 
@@ -174,7 +175,30 @@ server.registerTool(
   },
   async ({ language, code, timeout, intent }) => {
     try {
-      const result = await executor.execute({ language, code, timeout });
+      // For JS/TS: wrap in async IIFE with fetch interceptor to track network bytes
+      let instrumentedCode = code;
+      if (language === "javascript" || language === "typescript") {
+        instrumentedCode = `
+let __cm_net=0;const __cm_f=globalThis.fetch;
+globalThis.fetch=async(...a)=>{const r=await __cm_f(...a);
+try{const cl=r.clone();const b=await cl.arrayBuffer();__cm_net+=b.byteLength}catch{}
+return r};
+async function __cm_main(){
+${code}
+}
+__cm_main().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>{
+if(__cm_net>0)process.stderr.write('__CM_NET__:'+__cm_net+'\\n');
+});`;
+      }
+      const result = await executor.execute({ language, code: instrumentedCode, timeout });
+
+      // Parse sandbox network metrics from stderr
+      const netMatch = result.stderr?.match(/__CM_NET__:(\d+)/);
+      if (netMatch) {
+        sessionStats.bytesSandboxed += parseInt(netMatch[1]);
+        // Clean the metric line from stderr
+        result.stderr = result.stderr.replace(/\n?__CM_NET__:\d+\n?/g, "");
+      }
 
       if (result.timedOut) {
         return trackResponse("execute", {
@@ -777,11 +801,9 @@ server.registerTool(
   {
     title: "Fetch & Index URL",
     description:
-      "Fetches URL content, converts HTML to markdown, and indexes into the searchable knowledge base. " +
-      "Raw content never enters context — only a brief confirmation is returned.\n\n" +
-      "PREFER THIS OVER WebFetch when you need to reference web documentation later via search. " +
-      "WebFetch loads entire page content into context; this tool indexes it and lets you search() on-demand.\n\n" +
-      "After fetching, use 'search' to retrieve specific sections on-demand.",
+      "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, " +
+      "and returns a ~3KB preview. Full content stays in sandbox — use search() for deeper lookups.\n\n" +
+      "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.",
     inputSchema: z.object({
       url: z.string().describe("The URL to fetch and index"),
       source: z
@@ -826,8 +848,31 @@ server.registerTool(
         });
       }
 
-      // Index the markdown into FTS5 (indexStdout already calls trackIndexed)
-      return trackResponse("fetch_and_index", indexStdout(result.stdout, source ?? url));
+      // Index the markdown into FTS5
+      const store = getStore();
+      const markdown = result.stdout.trim();
+      trackIndexed(Buffer.byteLength(markdown));
+      const indexed = store.index({ content: markdown, source: source ?? url });
+
+      // Build preview — first ~3KB of markdown for immediate use
+      const PREVIEW_LIMIT = 3072;
+      const preview = markdown.length > PREVIEW_LIMIT
+        ? markdown.slice(0, PREVIEW_LIMIT) + "\n\n…[truncated — use search() for full content]"
+        : markdown;
+      const totalKB = (Buffer.byteLength(markdown) / 1024).toFixed(1);
+
+      const text = [
+        `Fetched and indexed **${indexed.totalChunks} sections** (${totalKB}KB) from: ${indexed.label}`,
+        `Full content indexed in sandbox — use search(queries: [...], source: "${indexed.label}") for specific lookups.`,
+        "",
+        "---",
+        "",
+        preview,
+      ].join("\n");
+
+      return trackResponse("fetch_and_index", {
+        content: [{ type: "text" as const, text }],
+      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return trackResponse("fetch_and_index", {
@@ -1036,7 +1081,6 @@ server.registerTool(
       (sum, b) => sum + b,
       0,
     );
-    const estimatedTokens = Math.round(totalBytesReturned / 4);
     const totalCalls = Object.values(sessionStats.calls).reduce(
       (sum, c) => sum + c,
       0,
@@ -1044,43 +1088,66 @@ server.registerTool(
     const uptimeMs = Date.now() - sessionStats.sessionStart;
     const uptimeMin = (uptimeMs / 60_000).toFixed(1);
 
+    // Total data kept out of context = indexed (FTS5) + sandboxed (network I/O inside sandbox)
+    const keptOut = sessionStats.bytesIndexed + sessionStats.bytesSandboxed;
+    const totalProcessed = keptOut + totalBytesReturned;
+    const savingsRatio = totalProcessed / Math.max(totalBytesReturned, 1);
+    const reductionPct = totalProcessed > 0
+      ? ((1 - totalBytesReturned / totalProcessed) * 100).toFixed(0)
+      : "0";
+
+    const kb = (b: number) => {
+      if (b >= 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)}MB`;
+      return `${(b / 1024).toFixed(1)}KB`;
+    };
+
+    // ── Summary table ──
     const lines: string[] = [
-      `## Context Mode Session Stats`,
+      `## context-mode session stats`,
       "",
-      `Session uptime: ${uptimeMin} min`,
-      `Total tool calls: ${totalCalls}`,
-      `Total bytes returned to context: ${totalBytesReturned.toLocaleString()} (${(totalBytesReturned / 1024).toFixed(1)}KB)`,
-      `Estimated tokens consumed: ~${estimatedTokens.toLocaleString()} (bytes/4)`,
-      `Total bytes indexed (stayed in sandbox): ${sessionStats.bytesIndexed.toLocaleString()} (${(sessionStats.bytesIndexed / 1024).toFixed(1)}KB)`,
+      `| Metric | Value |`,
+      `|--------|------:|`,
+      `| Session | ${uptimeMin} min |`,
+      `| Tool calls | ${totalCalls} |`,
+      `| Total data processed | **${kb(totalProcessed)}** |`,
+      `| Kept in sandbox | **${kb(keptOut)}** |`,
+      `| Entered context | ${kb(totalBytesReturned)} |`,
+      `| Tokens consumed | ~${Math.round(totalBytesReturned / 4).toLocaleString()} |`,
+      `| **Context savings** | **${savingsRatio.toFixed(1)}x (${reductionPct}% reduction)** |`,
     ];
 
-    if (sessionStats.bytesIndexed > 0) {
-      const savingsRatio = sessionStats.bytesIndexed / Math.max(totalBytesReturned, 1);
-      lines.push(
-        `Context savings ratio: ${savingsRatio.toFixed(1)}x (${((1 - 1 / Math.max(savingsRatio, 1)) * 100).toFixed(0)}% reduction)`,
-      );
-    }
-
-    lines.push("", "### Per-Tool Breakdown", "");
-    lines.push("| Tool | Calls | Bytes Returned | Est. Tokens |");
-    lines.push("|------|------:|---------------:|------------:|");
-
+    // ── Per-tool table ──
     const toolNames = new Set([
       ...Object.keys(sessionStats.calls),
       ...Object.keys(sessionStats.bytesReturned),
     ]);
 
-    for (const tool of Array.from(toolNames).sort()) {
-      const calls = sessionStats.calls[tool] || 0;
-      const bytes = sessionStats.bytesReturned[tool] || 0;
-      const tokens = Math.round(bytes / 4);
+    if (toolNames.size > 0) {
       lines.push(
-        `| ${tool} | ${calls} | ${bytes.toLocaleString()} (${(bytes / 1024).toFixed(1)}KB) | ~${tokens.toLocaleString()} |`,
+        "",
+        `| Tool | Calls | Context | Tokens |`,
+        `|------|------:|--------:|-------:|`,
       );
+      for (const tool of Array.from(toolNames).sort()) {
+        const calls = sessionStats.calls[tool] || 0;
+        const bytes = sessionStats.bytesReturned[tool] || 0;
+        const tokens = Math.round(bytes / 4);
+        lines.push(`| ${tool} | ${calls} | ${kb(bytes)} | ~${tokens.toLocaleString()} |`);
+      }
+      lines.push(`| **Total** | **${totalCalls}** | **${kb(totalBytesReturned)}** | **~${Math.round(totalBytesReturned / 4).toLocaleString()}** |`);
+    }
+
+    // ── DevRel summary ──
+    const tokensSaved = Math.round(keptOut / 4);
+    if (totalCalls === 0) {
+      lines.push("", "> No context-mode calls this session. Use `batch_execute` to run commands, `fetch_and_index` for URLs, or `execute` to process data in sandbox.");
+    } else if (keptOut === 0) {
+      lines.push("", `> context-mode handled **${totalCalls}** tool calls. All outputs were compact enough to enter context directly. Process larger data or batch multiple commands for bigger savings.`);
+    } else {
+      lines.push("", `> Without context-mode, **${kb(totalProcessed)}** of raw tool output would flood your context window. Instead, **${kb(keptOut)}** (${reductionPct}%) stayed in sandbox — saving **~${tokensSaved.toLocaleString()} tokens** of context space.`);
     }
 
     const text = lines.join("\n");
-    // Track the stats tool itself
     return trackResponse("stats", {
       content: [{ type: "text" as const, text }],
     });

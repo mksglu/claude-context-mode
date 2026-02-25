@@ -1,36 +1,39 @@
 #!/bin/bash
 # Unified PreToolUse hook for context-mode
-# - Bash: blocks data-fetching commands (curl, wget, inline fetch)
-# - Task: injects context-mode routing into subagent prompts
+# Redirects data-fetching tools to context-mode MCP tools
 
 INPUT=$(cat /dev/stdin)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // ""')
 
-# ─── Bash: block data-fetching commands ───
+# ─── Bash: redirect data-fetching commands via updatedInput ───
 if [ "$TOOL" = "Bash" ]; then
   COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // ""')
 
-  # curl/wget
+  # curl/wget → replace with echo redirect
   if echo "$COMMAND" | grep -qiE '(^|\s|&&|\||\;)(curl|wget)\s'; then
-    cat <<'EOF'
-{
-  "decision": "block",
-  "reason": "BLOCKED: curl/wget floods context window. Use context-mode execute instead.\n\nExample:\nmcp__context-mode__execute(language: \"javascript\", code: \"const resp = await fetch('http://...'); const data = await resp.json(); console.log(JSON.stringify(data, null, 2));\")\n\nThis runs in sandbox — only stdout enters context."
-}
-EOF
+    jq -n '{
+      "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": {
+          "command": "echo \"context-mode: curl/wget blocked. You MUST use mcp__context-mode__fetch_and_index(url, source) to fetch URLs, or mcp__context-mode__execute(language, code) to run HTTP calls in sandbox. Do NOT retry with curl/wget.\""
+        }
+      }
+    }'
     exit 0
   fi
 
-  # inline fetch (node -e, python -c, etc.)
+  # inline fetch (node -e, python -c, etc.) → replace with echo redirect
   if echo "$COMMAND" | grep -qiE 'fetch\s*\(\s*['"'"'"](https?://|http)' || \
      echo "$COMMAND" | grep -qiE 'requests\.(get|post|put)\s*\(' || \
      echo "$COMMAND" | grep -qiE 'http\.(get|request)\s*\('; then
-    cat <<'EOF'
-{
-  "decision": "block",
-  "reason": "BLOCKED: Inline HTTP fetch via Bash floods context window. Use context-mode execute instead.\n\nExample:\nmcp__context-mode__execute(language: \"javascript\", code: \"const resp = await fetch('http://...'); const data = await resp.json(); console.log(JSON.stringify(data, null, 2));\")\n\nThis runs in sandbox — only stdout enters context."
-}
-EOF
+    jq -n '{
+      "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": {
+          "command": "echo \"context-mode: Inline HTTP blocked. Use mcp__context-mode__execute(language, code) to run HTTP calls in sandbox, or mcp__context-mode__fetch_and_index(url, source) for web pages. Do NOT retry with Bash.\""
+        }
+      }
+    }'
     exit 0
   fi
 
@@ -38,19 +41,54 @@ EOF
   exit 0
 fi
 
-# ─── WebFetch: block, redirect to fetch_and_index ───
+# ─── Read: nudge toward execute_file ───
+if [ "$TOOL" = "Read" ]; then
+  jq -n '{
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "additionalContext": "CONTEXT TIP: If this file is large (>50 lines), prefer mcp__context-mode__execute_file(path, language, code) — processes in sandbox, only stdout enters context."
+    }
+  }'
+  exit 0
+fi
+
+# ─── Grep: nudge toward execute ───
+if [ "$TOOL" = "Grep" ]; then
+  jq -n '{
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "additionalContext": "CONTEXT TIP: If results may be large, prefer mcp__context-mode__execute(language: \"shell\", code: \"grep ...\") — runs in sandbox, only stdout enters context."
+    }
+  }'
+  exit 0
+fi
+
+# ─── Glob: passthrough ───
+if [ "$TOOL" = "Glob" ]; then
+  exit 0
+fi
+
+# ─── WebFetch: deny + redirect to sandbox ───
 if [ "$TOOL" = "WebFetch" ]; then
-  cat <<'EOF'
-{
-  "decision": "block",
-  "reason": "BLOCKED: WebFetch dumps raw HTML into context. Use context-mode instead.\n\nFor web pages:\nmcp__context-mode__fetch_and_index(url: \"https://...\", source: \"page-name\")\nThen: mcp__context-mode__search(queries: [\"what you need\"], source: \"page-name\")\n\nFor APIs:\nmcp__context-mode__execute(language: \"javascript\", code: \"const resp = await fetch('...'); const data = await resp.json(); console.log(...);\")"
-}
-EOF
+  ORIGINAL_URL=$(echo "$INPUT" | jq -r '.tool_input.url // ""')
+  jq -n --arg url "$ORIGINAL_URL" '{
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "reason": ("context-mode: WebFetch blocked. Use mcp__context-mode__fetch_and_index(url: \"" + $url + "\", source: \"...\") to fetch this URL in sandbox. Then use mcp__context-mode__search(queries: [...]) to query results. Do NOT use curl/wget — they are also blocked.")
+    }
+  }'
+  exit 0
+fi
+
+# ─── WebSearch: passthrough ───
+if [ "$TOOL" = "WebSearch" ]; then
   exit 0
 fi
 
 # ─── Task: inject context-mode routing into subagent prompts ───
 if [ "$TOOL" = "Task" ]; then
+  SUBAGENT_TYPE=$(echo "$INPUT" | jq -r '.tool_input.subagent_type // ""')
   ROUTING_BLOCK='
 
 ---
@@ -71,12 +109,22 @@ OTHER: execute(language, code) | execute_file(path, language, code) | fetch_and_
 FORBIDDEN: Bash for output, Read for files, WebFetch. Bash is ONLY for git/mkdir/rm/mv.
 ---'
 
-  echo "$INPUT" | jq --arg routing "$ROUTING_BLOCK" '{
-    "hookSpecificOutput": {
-      "hookEventName": "PreToolUse",
-      "updatedInput": (.tool_input + { "prompt": (.tool_input.prompt + $routing) })
-    }
-  }'
+  if [ "$SUBAGENT_TYPE" = "Bash" ]; then
+    # Bash subagents only have the Bash tool — upgrade to general-purpose for MCP access
+    echo "$INPUT" | jq --arg routing "$ROUTING_BLOCK" '{
+      "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": (.tool_input + { "prompt": (.tool_input.prompt + $routing), "subagent_type": "general-purpose" })
+      }
+    }'
+  else
+    echo "$INPUT" | jq --arg routing "$ROUTING_BLOCK" '{
+      "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": (.tool_input + { "prompt": (.tool_input.prompt + $routing) })
+      }
+    }'
+  fi
   exit 0
 fi
 
