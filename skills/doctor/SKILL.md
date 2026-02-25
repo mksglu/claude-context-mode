@@ -26,7 +26,7 @@ Run diagnostics and display results directly in the conversation.
    - [x] Server test: PASS
    - [x] Hooks: PASS
    - [x] FTS5: PASS
-   - [x] npm: v0.7.0
-   - [x] Marketplace: v0.7.0
+   - [x] npm: v0.7.1
+   - [x] Marketplace: v0.7.1
    ```
    Use `[x]` for PASS, `[ ]` for FAIL, `[-]` for WARN.
