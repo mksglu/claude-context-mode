@@ -16,7 +16,7 @@ jobs:
 
       - name: Fetch stats and update
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
         run: |
           # npm total downloads
           NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq -r '.downloads // 0')
