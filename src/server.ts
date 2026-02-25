@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { ContentStore, type SearchResult } from "./store.js";
+import { ContentStore, cleanupStaleDBs, type SearchResult } from "./store.js";
 import {
   detectRuntimes,
   getRuntimeSummary,
@@ -11,7 +11,7 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
-const VERSION = "0.5.26";
+const VERSION = "0.7.2";
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 const server = new McpServer({
@@ -1159,6 +1159,20 @@ server.registerTool(
 // ─────────────────────────────────────────────────────────
 
 async function main() {
+  // Clean up stale DB files from previous sessions
+  const cleaned = cleanupStaleDBs();
+  if (cleaned > 0) {
+    console.error(`Cleaned up ${cleaned} stale DB file(s) from previous sessions`);
+  }
+
+  // Clean up own DB on shutdown
+  const shutdown = () => {
+    if (_store) _store.cleanup();
+  };
+  process.on("exit", shutdown);
+  process.on("SIGINT", () => { shutdown(); process.exit(0); });
+  process.on("SIGTERM", () => { shutdown(); process.exit(0); });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`Context Mode MCP server v${VERSION} running on stdio`);

@@ -11,7 +11,7 @@
 import type DatabaseConstructor from "better-sqlite3";
 import type { Database as DatabaseInstance } from "better-sqlite3";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, unlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,17 +132,55 @@ function maxEditDistance(wordLength: number): number {
 // ContentStore
 // ─────────────────────────────────────────────────────────
 
+/**
+ * Remove stale DB files from previous sessions whose processes no longer exist.
+ */
+export function cleanupStaleDBs(): number {
+  const dir = tmpdir();
+  let cleaned = 0;
+  try {
+    const files = readdirSync(dir);
+    for (const file of files) {
+      const match = file.match(/^context-mode-(\d+)\.db$/);
+      if (!match) continue;
+      const pid = parseInt(match[1], 10);
+      if (pid === process.pid) continue;
+      try {
+        process.kill(pid, 0);
+      } catch {
+        const base = join(dir, file);
+        for (const suffix of ["", "-wal", "-shm"]) {
+          try { unlinkSync(base + suffix); } catch { /* ignore */ }
+        }
+        cleaned++;
+      }
+    }
+  } catch { /* ignore readdir errors */ }
+  return cleaned;
+}
+
 export class ContentStore {
   #db: DatabaseInstance;
+  #dbPath: string;
 
   constructor(dbPath?: string) {
     const Database = loadDatabase();
-    const path =
+    this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
-    this.#db = new Database(path, { timeout: 5000 });
+    this.#db = new Database(this.#dbPath, { timeout: 5000 });
     this.#db.pragma("journal_mode = WAL");
     this.#db.pragma("synchronous = NORMAL");
     this.#initSchema();
+  }
+
+  /** Delete this session's DB files. Call on process exit. */
+  cleanup(): void {
+    try {
+      this.#db.close();
+    } catch { /* ignore */ }
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(this.#dbPath + suffix); } catch { /* ignore */ }
+    }
   }
 
   // ── Schema ──

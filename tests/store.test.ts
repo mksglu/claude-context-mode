@@ -6,11 +6,11 @@
  */
 
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { ContentStore } from "../src/store.js";
+import { ContentStore, cleanupStaleDBs } from "../src/store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(__dirname, "fixtures");
@@ -885,6 +885,62 @@ async function main() {
       `Title should not be generic 'Lines N-M', got: '${results[0].title}'`,
     );
     store.close();
+  });
+
+  // ===== DB CLEANUP =====
+  console.log("\n--- DB Cleanup ---\n");
+
+  await test("cleanupStaleDBs removes files for dead PIDs", () => {
+    const fakePid = 99999;
+    const fakePath = join(tmpdir(), `context-mode-${fakePid}.db`);
+    writeFileSync(fakePath, "fake");
+    writeFileSync(fakePath + "-wal", "fake");
+    writeFileSync(fakePath + "-shm", "fake");
+
+    const cleaned = cleanupStaleDBs();
+    assert.ok(cleaned >= 1, `Should clean at least 1 file, cleaned ${cleaned}`);
+    assert.ok(!existsSync(fakePath), "DB file should be removed");
+    assert.ok(!existsSync(fakePath + "-wal"), "WAL file should be removed");
+    assert.ok(!existsSync(fakePath + "-shm"), "SHM file should be removed");
+  });
+
+  await test("cleanupStaleDBs does not remove current process DB", () => {
+    const myPath = join(tmpdir(), `context-mode-${process.pid}.db`);
+    writeFileSync(myPath, "current");
+
+    cleanupStaleDBs();
+    assert.ok(existsSync(myPath), "Current process DB should NOT be removed");
+
+    // Clean up manually
+    try { require("fs").unlinkSync(myPath); } catch {}
+  });
+
+  await test("store.cleanup() removes own DB and WAL/SHM files", () => {
+    const store = createStore();
+    // Index something to generate WAL activity
+    store.index({ content: "# Test\n\nCleanup test content.", source: "cleanup-test" });
+
+    // Get the DB path by creating a known-path store
+    const knownPath = join(tmpdir(), `context-mode-cleanup-test-${Date.now()}.db`);
+    const knownStore = new ContentStore(knownPath);
+    knownStore.index({ content: "# Data\n\nSome data.", source: "known" });
+
+    assert.ok(existsSync(knownPath), "DB should exist before cleanup");
+
+    knownStore.cleanup();
+    assert.ok(!existsSync(knownPath), "DB should be removed after cleanup");
+    assert.ok(!existsSync(knownPath + "-wal"), "WAL should be removed after cleanup");
+    assert.ok(!existsSync(knownPath + "-shm"), "SHM should be removed after cleanup");
+
+    store.close();
+  });
+
+  await test("store.cleanup() is safe to call multiple times", () => {
+    const path = join(tmpdir(), `context-mode-cleanup-idempotent-${Date.now()}.db`);
+    const store = new ContentStore(path);
+    store.cleanup();
+    // Second call should not throw
+    assert.doesNotThrow(() => store.cleanup());
   });
 
   // ===== SUMMARY =====
