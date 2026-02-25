@@ -38,6 +38,17 @@ EOF
   exit 0
 fi
 
+# ─── WebFetch: block, redirect to fetch_and_index ───
+if [ "$TOOL" = "WebFetch" ]; then
+  cat <<'EOF'
+{
+  "decision": "block",
+  "reason": "BLOCKED: WebFetch dumps raw HTML into context. Use context-mode instead.\n\nFor web pages:\nmcp__context-mode__fetch_and_index(url: \"https://...\", source: \"page-name\")\nThen: mcp__context-mode__search(queries: [\"what you need\"], source: \"page-name\")\n\nFor APIs:\nmcp__context-mode__execute(language: \"javascript\", code: \"const resp = await fetch('...'); const data = await resp.json(); console.log(...);\")"
+}
+EOF
+  exit 0
+fi
+
 # ─── Task: inject context-mode routing into subagent prompts ───
 if [ "$TOOL" = "Task" ]; then
   ROUTING_BLOCK='
