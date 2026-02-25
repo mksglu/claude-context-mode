@@ -18,49 +18,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-
           # npm total downloads
-          NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq '.downloads // 0')
+          NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq -r '.downloads // 0')
           NPM_TOTAL=${NPM_TOTAL:-0}
 
           # GitHub unique clones (last 14 days)
-          CLONES_RAW=$(gh api repos/${{ github.repository }}/traffic/clones 2>/dev/null || echo '{}')
-          CLONES=$(echo "$CLONES_RAW" | jq '.uniques // 0')
+          CLONES=$(gh api repos/${{ github.repository }}/traffic/clones --jq '.uniques // 0' 2>/dev/null || echo 0)
           CLONES=${CLONES:-0}
 
+          # Ensure numeric
+          NPM_TOTAL=$((NPM_TOTAL + 0))
+          CLONES=$((CLONES + 0))
           TOTAL=$((NPM_TOTAL + CLONES))
 
-          # Format number
-          fmt() {
-            local n=$1
-            if [ "$n" -ge 1000000 ]; then
-              printf "%.1fM+" "$(echo "$n / 1000000" | bc -l)"
-            elif [ "$n" -ge 1000 ]; then
-              printf "%.1fk+" "$(echo "$n / 1000" | bc -l)"
-            else
-              echo "$n"
-            fi
-          }
+          echo "npm=$NPM_TOTAL clones=$CLONES total=$TOTAL"
 
-          MSG=$(fmt $TOTAL)
-          NPM_FMT=$(fmt $NPM_TOTAL)
-          CLONES_FMT=$(fmt $CLONES)
-
-          echo "npm=$NPM_TOTAL ($NPM_FMT) clones=$CLONES ($CLONES_FMT) total=$TOTAL ($MSG)"
-
-          # Write valid JSON (no heredoc indentation issues)
+          # Use jq for all formatting — no shell function quirks
           jq -n \
-            --arg msg "$MSG" \
-            --arg npm "$NPM_FMT" \
-            --arg mkt "$CLONES_FMT" \
+            --argjson npm "$NPM_TOTAL" \
+            --argjson clones "$CLONES" \
+            --argjson total "$TOTAL" \
             '{
               schemaVersion: 1,
               label: "users",
-              message: $msg,
+              message: (if $total >= 1000000 then "\($total / 1000000 * 10 | floor / 10)M+" elif $total >= 1000 then "\($total / 1000 * 10 | floor / 10)k+" else "\($total)" end),
               color: "brightgreen",
-              npm: $npm,
-              marketplace: $mkt
+              npm: (if $npm >= 1000000 then "\($npm / 1000000 * 10 | floor / 10)M+" elif $npm >= 1000 then "\($npm / 1000 * 10 | floor / 10)k+" else "\($npm)" end),
+              marketplace: (if $clones >= 1000 then "\($clones / 1000 * 10 | floor / 10)k+" else "\($clones)" end)
             }' > stats.json
 
           cat stats.json
@@ -72,6 +56,6 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add stats.json
-            git commit -m "ci: update install stats ($MSG)"
+            git commit -m "ci: update install stats"
             git push
           fi
