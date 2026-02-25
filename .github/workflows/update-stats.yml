@@ -1,0 +1,67 @@
+name: Update install stats
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch stats and update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # npm total downloads
+          NPM_TOTAL=$(curl -s "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq '.downloads // 0')
+
+          # GitHub clones (last 14 days unique, requires auth)
+          CLONES=$(gh api repos/${{ github.repository }}/traffic/clones --jq '.uniques // 0' 2>/dev/null || echo 0)
+
+          TOTAL=$((NPM_TOTAL + CLONES))
+
+          # Format helpers
+          fmt() {
+            local n=$1
+            if [ "$n" -ge 1000000 ]; then
+              echo "$(echo "scale=1; $n/1000000" | bc)M+"
+            elif [ "$n" -ge 1000 ]; then
+              echo "$(echo "scale=1; $n/1000" | bc)k+"
+            else
+              echo "$n"
+            fi
+          }
+
+          MSG=$(fmt $TOTAL)
+          NPM_FMT=$(fmt $NPM_TOTAL)
+          CLONES_FMT=$(fmt $CLONES)
+
+          echo "npm=$NPM_TOTAL ($NPM_FMT) clones=$CLONES ($CLONES_FMT) total=$TOTAL ($MSG)"
+
+          cat > stats.json << EOFJSON
+          {
+            "schemaVersion": 1,
+            "label": "users",
+            "message": "$MSG",
+            "color": "brightgreen",
+            "npm": "$NPM_FMT",
+            "marketplace": "$CLONES_FMT"
+          }
+          EOFJSON
+
+          # Only commit if changed
+          if git diff --quiet stats.json; then
+            echo "No change"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add stats.json
+            git commit -m "ci: update install stats ($MSG)"
+            git push
+          fi
