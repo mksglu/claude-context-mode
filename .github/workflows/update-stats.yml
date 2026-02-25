@@ -60,12 +60,12 @@ jobs:
             git add stats.json
             git commit -m "ci: update install stats"
             git push
-
-            # Purge CDN + badge caches
-            sleep 5
-            curl -sf "https://purge.jsdelivr.net/gh/mksglu/claude-context-mode@main/stats.json" > /dev/null
-            curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fclaude-context-mode%40main%2Fstats.json&query=%24.message&label=users&cacheSeconds=0" > /dev/null
-            curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fclaude-context-mode%40main%2Fstats.json&query=%24.npm&label=npm&cacheSeconds=0" > /dev/null
-            curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fclaude-context-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&cacheSeconds=0" > /dev/null
-            echo "Caches purged"
           fi
+
+          # Always purge CDN + badge caches
+          sleep 5
+          curl -sf "https://purge.jsdelivr.net/gh/mksglu/claude-context-mode@main/stats.json" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fclaude-context-mode%40main%2Fstats.json&query=%24.message&label=users&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fclaude-context-mode%40main%2Fstats.json&query=%24.npm&label=npm&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fclaude-context-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&cacheSeconds=0" > /dev/null || true
+          echo "Caches purged"
