@@ -357,7 +357,7 @@ async function upgrade() {
 
   p.intro(color.bgCyan(color.black(" context-mode upgrade ")));
 
-  const pluginRoot = getPluginRoot();
+  let pluginRoot = getPluginRoot();
   const settingsPath = getSettingsPath();
   const changes: string[] = [];
   const s = p.spinner();
@@ -428,6 +428,25 @@ async function upgrade() {
     });
     s.stop("Dependencies ready");
 
+    // Step 2.5: Migrate versioned cache directory if version changed
+    const cacheMatch = pluginRoot.match(
+      /^(.*\/plugins\/cache\/[^/]+\/[^/]+\/)(\d+\.\d+\.\d+[^/]*)$/,
+    );
+    if (cacheMatch && newVersion !== cacheMatch[2] && newVersion !== "unknown") {
+      const oldDirVersion = cacheMatch[2];
+      const newCacheDir = cacheMatch[1] + newVersion;
+      s.start(`Migrating cache: ${oldDirVersion} → ${newVersion}`);
+      try {
+        execSync(`rm -rf "${newCacheDir}"`, { stdio: "pipe" });
+        execSync(`mv "${pluginRoot}" "${newCacheDir}"`, { stdio: "pipe" });
+        pluginRoot = newCacheDir;
+        s.stop(color.green(`Cache directory: ${newVersion}`));
+        changes.push(`Migrated cache: ${oldDirVersion} → ${newVersion}`);
+      } catch {
+        s.stop(color.yellow("Cache migration skipped — using existing directory"));
+      }
+    }
+
     // Update global npm package from same GitHub source
     s.start("Updating npm global package");
     try {
@@ -480,7 +499,7 @@ async function upgrade() {
 
   // Step 4: Fix hooks
   p.log.step("Configuring PreToolUse hooks...");
-  const hookScriptPath = getHookScriptPath();
+  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.sh");
   const settings = readSettings() ?? {};
 
   const desiredHookEntry = {
