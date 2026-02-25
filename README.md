@@ -152,6 +152,13 @@ Fetch the Hacker News front page, extract all posts with titles, scores,
 and domains. Group by domain. Then run /context-mode stats.
 ```
 
+**Large JSON API** — 7.5 MB raw → 0.9 KB context (99% saved)
+```
+Create a local server that returns a 7.5 MB JSON with 20,000 records and a secret
+hidden at index 13000. Fetch the endpoint, find the hidden record, and show me
+exactly what's in it. Then run /context-mode stats.
+```
+
 **Documentation search** — 2 calls, 1.8 KB context
 ```
 Fetch the React useEffect docs, index them, and find the cleanup pattern
