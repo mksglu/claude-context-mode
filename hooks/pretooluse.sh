@@ -107,6 +107,21 @@ STEP 2 — FOLLOW-UP: mcp__context-mode__search(queries: ["q1", "q2", "q3", ...]
 OTHER: execute(language, code) | execute_file(path, language, code) | fetch_and_index(url) + search
 
 FORBIDDEN: Bash for output, Read for files, WebFetch. Bash is ONLY for git/mkdir/rm/mv.
+
+OUTPUT FORMAT — KEEP YOUR FINAL RESPONSE UNDER 500 WORDS:
+The parent agent context window is precious. Your full response gets injected into it.
+
+1. ARTIFACTS (PRDs, configs, code files) → Write to FILES, never return as inline text.
+   Return only: file path + 1-line description.
+2. DETAILED FINDINGS → Index into knowledge base:
+   mcp__context-mode__index(content: "...", source: "descriptive-label")
+   The parent agent shares the SAME knowledge base and can search() your indexed content.
+3. YOUR RESPONSE must be a concise summary:
+   - What you did (2-3 bullets)
+   - File paths created/modified (if any)
+   - Source labels you indexed (so parent can search)
+   - Key findings in bullet points
+   Do NOT return raw data, full file contents, or lengthy explanations.
 ---'
 
   if [ "$SUBAGENT_TYPE" = "Bash" ]; then
