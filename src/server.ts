@@ -300,82 +300,47 @@ function intentSearch(
   const persistent = getStore();
   const indexed = persistent.indexPlainText(stdout, source);
 
-  // Search with an ephemeral store to find matching section titles
-  const ephemeral = new ContentStore(":memory:");
-  try {
-    ephemeral.indexPlainText(stdout, source);
-    let results = ephemeral.search(intent, maxResults);
+  // Search the persistent store directly (porter → trigram → fuzzy)
+  let results = persistent.searchWithFallback(intent, maxResults, source);
 
-    // Score-based relaxed search: search ALL words, rank by match count
-    if (results.length === 0) {
-      const words = intent.trim().split(/\s+/).filter(w => w.length > 2).slice(0, 20);
-      if (words.length > 0) {
-        const sectionScores = new Map<string, { result: SearchResult; score: number; bestRank: number }>();
+  // Extract distinctive terms as vocabulary hints for the LLM
+  const distinctiveTerms = persistent.getDistinctiveTerms(indexed.sourceId);
 
-        for (const word of words) {
-          const wordResults = ephemeral.search(word, 10);
-          for (const r of wordResults) {
-            const existing = sectionScores.get(r.title);
-            if (existing) {
-              existing.score += 1;
-              if (r.rank < existing.bestRank) {
-                existing.bestRank = r.rank;
-                existing.result = r;
-              }
-            } else {
-              sectionScores.set(r.title, { result: r, score: 1, bestRank: r.rank });
-            }
-          }
-        }
-
-        results = Array.from(sectionScores.values())
-          .sort((a, b) => b.score - a.score || a.bestRank - b.bestRank)
-          .slice(0, maxResults)
-          .map(s => s.result);
-      }
-    }
-
-    // Extract distinctive terms as vocabulary hints for the LLM
-    const distinctiveTerms = persistent.getDistinctiveTerms(indexed.sourceId);
-
-    if (results.length === 0) {
-      const lines = [
-        `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
-        `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).`,
-      ];
-      if (distinctiveTerms.length > 0) {
-        lines.push("");
-        lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
-      }
-      lines.push("");
-      lines.push("Use search() to explore the indexed content.");
-      return lines.join("\n");
-    }
-
-    // Return ONLY titles + first-line previews — not full content
+  if (results.length === 0) {
     const lines = [
       `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
-      `${results.length} sections matched "${intent}" (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB):`,
-      "",
+      `No sections matched intent "${intent}" in ${totalLines}-line output (${(totalBytes / 1024).toFixed(1)}KB).`,
     ];
-
-    for (const r of results) {
-      const preview = r.content.split("\n")[0].slice(0, 120);
-      lines.push(`  - ${r.title}: ${preview}`);
-    }
-
     if (distinctiveTerms.length > 0) {
       lines.push("");
       lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
     }
-
     lines.push("");
-    lines.push("Use search(queries: [...]) to retrieve full content of any section.");
-
+    lines.push("Use search() to explore the indexed content.");
     return lines.join("\n");
-  } finally {
-    ephemeral.close();
   }
+
+  // Return ONLY titles + first-line previews — not full content
+  const lines = [
+    `Indexed ${indexed.totalChunks} sections from "${source}" into knowledge base.`,
+    `${results.length} sections matched "${intent}" (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB):`,
+    "",
+  ];
+
+  for (const r of results) {
+    const preview = r.content.split("\n")[0].slice(0, 120);
+    lines.push(`  - ${r.title}: ${preview}`);
+  }
+
+  if (distinctiveTerms.length > 0) {
+    lines.push("");
+    lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
+  }
+
+  lines.push("");
+  lines.push("Use search(queries: [...]) to retrieve full content of any section.");
+
+  return lines.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────
@@ -672,7 +637,7 @@ server.registerTool(
           continue;
         }
 
-        const results = store.search(q, effectiveLimit, source);
+        const results = store.searchWithFallback(q, effectiveLimit, source);
 
         if (results.length === 0) {
           sections.push(`## ${q}\nNo results found.`);
@@ -997,18 +962,12 @@ server.registerTool(
           continue;
         }
 
-        // Tier 1: scoped search (within this batch's source)
-        let results = store.search(query, 3, source);
+        // Tier 1: scoped search with fallback (porter → trigram → fuzzy)
+        let results = store.searchWithFallback(query, 3, source);
 
-        // Tier 2: boosted with section titles
-        if (results.length === 0 && sectionTitles.length > 0) {
-          const boosted = `${query} ${sectionTitles.join(" ")}`;
-          results = store.search(boosted, 3, source);
-        }
-
-        // Tier 3: global fallback (no source filter)
+        // Tier 2: global fallback (no source filter)
         if (results.length === 0) {
-          results = store.search(query, 3);
+          results = store.searchWithFallback(query, 3);
         }
 
         queryResults.push(`## ${query}`);
