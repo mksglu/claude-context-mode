@@ -21,7 +21,18 @@
   ],
   "logo": "assets/logo.svg",
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
+  "hooks": {
+    "version": 1,
+    "hooks": {
+      "preToolUse": [
+        { "command": "./hooks/pretooluse-cursor.sh", "matcher": "Shell" },
+        { "command": "./hooks/pretooluse-cursor.sh", "matcher": "Read" },
+        { "command": "./hooks/pretooluse-cursor.sh", "matcher": "Grep" },
+        { "command": "./hooks/pretooluse-cursor.sh", "matcher": "Task" },
+        { "command": "./hooks/pretooluse-cursor.sh", "matcher": "WebFetch" }
+      ]
+    }
+  },
   "mcpServers": {
     "context-mode": {
       "command": "npx",
