@@ -85,12 +85,25 @@ async function fetchLatestVersion(): Promise<string> {
 }
 
 function getMarketplaceVersion(): string {
-  // Detect from our own path: .../plugins/cache/<marketplace>/<plugin>/<version>/
-  const root = getPluginRoot();
-  const match = root.match(/plugins\/cache\/[^/]+\/[^/]+\/(\d+\.\d+\.\d+[^/]*)/);
-  if (match) return match[1];
+  // Primary: read from installed_plugins.json (source of truth for Claude Code)
+  try {
+    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const ipRaw = JSON.parse(readFileSync(ipPath, "utf-8"));
+    const plugins = ipRaw.plugins ?? {};
+    for (const [key, entries] of Object.entries(plugins)) {
+      if (!key.toLowerCase().includes("context-mode")) continue;
+      const arr = entries as Array<Record<string, unknown>>;
+      if (arr.length > 0 && typeof arr[0].version === "string") {
+        return arr[0].version;
+      }
+    }
+  } catch { /* fallback below */ }
 
-  // Fallback: scan common plugin cache locations
+  // Fallback: read from own package.json
+  const localVer = getLocalVersion();
+  if (localVer !== "unknown") return localVer;
+
+  // Last resort: scan common plugin cache locations
   const bases = [
     resolve(homedir(), ".claude"),
     resolve(homedir(), ".config", "claude"),
@@ -451,29 +464,9 @@ async function upgrade() {
     });
     s.stop("Dependencies ready");
 
-    // Step 2.5: Migrate versioned cache directory if version changed
-    const cacheMatch = pluginRoot.match(
-      /^(.*\/plugins\/cache\/[^/]+\/[^/]+\/)(\d+\.\d+\.\d+[^/]*)$/,
-    );
-    if (cacheMatch && newVersion !== cacheMatch[2] && newVersion !== "unknown") {
-      const oldDirVersion = cacheMatch[2];
-      const newCacheDir = cacheMatch[1] + newVersion;
-      s.start(`Migrating cache: ${oldDirVersion} → ${newVersion}`);
-      try {
-        rmSync(newCacheDir, { recursive: true, force: true });
-        cpSync(pluginRoot, newCacheDir, { recursive: true });
-        rmSync(pluginRoot, { recursive: true, force: true });
-        pluginRoot = newCacheDir;
-        s.stop(color.green(`Cache directory: ${newVersion}`));
-        changes.push(`Migrated cache: ${oldDirVersion} → ${newVersion}`);
-      } catch {
-        s.stop(color.yellow("Cache migration skipped — using existing directory"));
-      }
-
-    }
-
-    // Update installed_plugins.json so Claude Code loads from new path
+    // Step 2.5: Update installed_plugins.json to point to current directory with new version
     const installedPluginsPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    s.start("Updating plugin registry");
     try {
       const ipRaw = JSON.parse(readFileSync(installedPluginsPath, "utf-8"));
       const plugins = ipRaw.plugins ?? {};
@@ -489,11 +482,32 @@ async function upgrade() {
       }
       if (updated) {
         writeFileSync(installedPluginsPath, JSON.stringify(ipRaw, null, 2) + "\n", "utf-8");
-        p.log.success(color.green("Plugin registry updated") + color.dim(` — installed_plugins.json`));
-        changes.push("Updated plugin registry path");
+        s.stop(color.green("Plugin registry updated"));
+        changes.push("Updated plugin registry");
+      } else {
+        s.stop(color.yellow("No context-mode entry found in plugin registry"));
       }
-    } catch {
-      p.log.warn(color.yellow("Could not update installed_plugins.json — marketplace may show old version"));
+    } catch (err) {
+      s.stop(color.yellow("Plugin registry update skipped"));
+      p.log.warn(color.yellow("Could not update installed_plugins.json") + color.dim(` — ${err instanceof Error ? err.message : String(err)}`));
+    }
+
+    // Clean up old cache directories (keep only current)
+    const cacheMatch = pluginRoot.match(
+      /^(.*\/plugins\/cache\/[^/]+\/[^/]+\/)([^/]+)$/,
+    );
+    if (cacheMatch) {
+      const cacheParent = cacheMatch[1];
+      const currentDir = cacheMatch[2];
+      try {
+        const dirs = readdirSync(cacheParent).filter(d => d !== currentDir);
+        for (const old of dirs) {
+          try { rmSync(resolve(cacheParent, old), { recursive: true, force: true }); } catch { /* skip */ }
+        }
+        if (dirs.length > 0) {
+          p.log.info(color.dim(`  Cleaned ${dirs.length} old cache dir(s)`));
+        }
+      } catch { /* parent doesn't exist or not readable */ }
     }
 
     // Update global npm package from same GitHub source
