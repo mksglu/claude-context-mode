@@ -470,20 +470,30 @@ async function upgrade() {
         s.stop(color.yellow("Cache migration skipped — using existing directory"));
       }
 
-      // Update installed_plugins.json so Claude Code loads from new path
-      const installedPluginsPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-      try {
-        const raw = readFileSync(installedPluginsPath, "utf-8");
-        const updated = raw
-          .replace(new RegExp(oldDirVersion.replace(/\./g, "\\."), "g"), newVersion);
-        if (updated !== raw) {
-          writeFileSync(installedPluginsPath, updated, "utf-8");
-          p.log.success(color.green("Plugin registry updated") + color.dim(` — installed_plugins.json`));
-          changes.push("Updated plugin registry path");
+    }
+
+    // Update installed_plugins.json so Claude Code loads from new path
+    const installedPluginsPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    try {
+      const ipRaw = JSON.parse(readFileSync(installedPluginsPath, "utf-8"));
+      const plugins = ipRaw.plugins ?? {};
+      let updated = false;
+      for (const [key, entries] of Object.entries(plugins)) {
+        if (!key.toLowerCase().includes("context-mode")) continue;
+        for (const entry of entries as Array<Record<string, unknown>>) {
+          entry.installPath = pluginRoot;
+          entry.version = newVersion;
+          entry.lastUpdated = new Date().toISOString();
+          updated = true;
         }
-      } catch {
-        p.log.warn(color.yellow("Could not update installed_plugins.json — marketplace may show old version"));
       }
+      if (updated) {
+        writeFileSync(installedPluginsPath, JSON.stringify(ipRaw, null, 2) + "\n", "utf-8");
+        p.log.success(color.green("Plugin registry updated") + color.dim(` — installed_plugins.json`));
+        changes.push("Updated plugin registry path");
+      }
+    } catch {
+      p.log.warn(color.yellow("Could not update installed_plugins.json — marketplace may show old version"));
     }
 
     // Update global npm package from same GitHub source
