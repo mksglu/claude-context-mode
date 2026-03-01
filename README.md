@@ -202,7 +202,7 @@ npm run test:all      # full suite
 ## Contributors
 
 <a href="https://github.com/mksglu/claude-context-mode/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=mksglu/claude-context-mode" />
+  <img src="https://contrib.rocks/image?repo=mksglu/claude-context-mode&columns=8&anon=1" />
 </a>
 
 ## License
