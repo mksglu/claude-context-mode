@@ -7,7 +7,6 @@ import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 process.chdir(__dirname);
-
 if (!process.env.CLAUDE_PROJECT_DIR) {
   process.env.CLAUDE_PROJECT_DIR = process.cwd();
 }
@@ -74,7 +73,6 @@ for (const pkg of ["better-sqlite3", "turndown", "turndown-plugin-gfm", "@mixmar
     } catch { /* best effort */ }
   }
 }
-
 // Bundle exists (CI-built) — start instantly
 if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {
   await import("./server.bundle.mjs");
@@ -92,3 +90,4 @@ if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {
   }
   await import("./build/server.js");
 }
+

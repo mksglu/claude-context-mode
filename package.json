@@ -2,7 +2,7 @@
   "name": "context-mode",
   "version": "0.9.17",
   "type": "module",
-  "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
+  "description": "MCP server for Claude Code and opencode that saves 98% of context window. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
   "author": "Mert Koseoğlu",
   "license": "MIT",
   "keywords": [
@@ -14,7 +14,10 @@
     "sandbox",
     "code-execution",
     "fts5",
-    "bm25"
+    "bm25",
+    "opencode",
+    "ai-agent",
+    "context-management"
   ],
   "repository": {
     "type": "git",
@@ -23,7 +26,7 @@
   "homepage": "https://github.com/mksglu/claude-context-mode#readme",
   "bugs": "https://github.com/mksglu/claude-context-mode/issues",
   "bin": {
-    "context-mode": "./build/server.js"
+    "context-mode": "./start.mjs"
   },
   "files": [
     "build",
@@ -34,6 +37,9 @@
     ".mcp.json",
     "start.mjs",
     "README.md",
+    "OPENCODE.md",
+    "opencode.json",
+    "opencode-npx.json",
     "LICENSE"
   ],
   "scripts": {
@@ -65,7 +71,7 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^12.6.2",
     "picocolors": "^1.1.1",
-    "turndown": "^7.2.0",
+    "turndown": "^7.2.2",
     "turndown-plugin-gfm": "^1.0.2",
     "zod": "^3.25.0"
   },
