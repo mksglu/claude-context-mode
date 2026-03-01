@@ -469,6 +469,21 @@ async function upgrade() {
       } catch {
         s.stop(color.yellow("Cache migration skipped — using existing directory"));
       }
+
+      // Update installed_plugins.json so Claude Code loads from new path
+      const installedPluginsPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+      try {
+        const raw = readFileSync(installedPluginsPath, "utf-8");
+        const updated = raw
+          .replace(new RegExp(oldDirVersion.replace(/\./g, "\\."), "g"), newVersion);
+        if (updated !== raw) {
+          writeFileSync(installedPluginsPath, updated, "utf-8");
+          p.log.success(color.green("Plugin registry updated") + color.dim(` — installed_plugins.json`));
+          changes.push("Updated plugin registry path");
+        }
+      } catch {
+        p.log.warn(color.yellow("Could not update installed_plugins.json — marketplace may show old version"));
+      }
     }
 
     // Update global npm package from same GitHub source
