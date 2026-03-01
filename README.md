@@ -62,7 +62,7 @@ Code Mode showed that tool definitions can be compressed by 99.9%. Context Mode 
 | `execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
 | `index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
 | `search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
-| `fetch_and_index` | Fetch URL, convert to markdown, index. | 60 KB → 40 B |
+| `fetch_and_index` | Fetch URL, detect content type (HTML/JSON/text), chunk and index. | 60 KB → 40 B |
 
 ## How the Sandbox Works
 

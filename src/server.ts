@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createRequire } from "node:module";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { ContentStore, cleanupStaleDBs, type SearchResult } from "./store.js";
+import { ContentStore, cleanupStaleDBs, type SearchResult, type IndexResult } from "./store.js";
 import {
   detectRuntimes,
   getRuntimeSummary,
@@ -780,6 +780,9 @@ function resolveGfmPluginPath(): string {
 // Tool: fetch_and_index
 // ─────────────────────────────────────────────────────────
 
+// Subprocess code that fetches a URL, detects Content-Type, and outputs a
+// __CM_CT__:<type> marker on the first line so the handler can route to the
+// appropriate indexing strategy.  HTML is converted to markdown via Turndown.
 function buildFetchCode(url: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
@@ -791,12 +794,38 @@ const url = ${JSON.stringify(url)};
 async function main() {
   const resp = await fetch(url);
   if (!resp.ok) { console.error("HTTP " + resp.status); process.exit(1); }
-  const html = await resp.text();
+  const contentType = resp.headers.get('content-type') || '';
 
-  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-  td.use(gfm);
-  td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
-  console.log(td.turndown(html));
+  // --- JSON responses ---
+  if (contentType.includes('application/json') || contentType.includes('+json')) {
+    const text = await resp.text();
+    try {
+      const pretty = JSON.stringify(JSON.parse(text), null, 2);
+      console.log('__CM_CT__:json');
+      console.log(pretty);
+    } catch {
+      // Unparseable "JSON" — fall back to plain text
+      console.log('__CM_CT__:text');
+      console.log(text);
+    }
+    return;
+  }
+
+  // --- HTML responses (default for text/html, application/xhtml+xml) ---
+  if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+    const html = await resp.text();
+    const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    td.use(gfm);
+    td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
+    console.log('__CM_CT__:html');
+    console.log(td.turndown(html));
+    return;
+  }
+
+  // --- Everything else: plain text, CSV, XML, etc. ---
+  const text = await resp.text();
+  console.log('__CM_CT__:text');
+  console.log(text);
 }
 main();
 `;
@@ -809,7 +838,8 @@ server.registerTool(
     description:
       "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, " +
       "and returns a ~3KB preview. Full content stays in sandbox — use search() for deeper lookups.\n\n" +
-      "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.",
+      "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.\n\n" +
+      "Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.",
     inputSchema: z.object({
       url: z.string().describe("The URL to fetch and index"),
       source: z
@@ -842,23 +872,38 @@ server.registerTool(
         });
       }
 
-      if (!result.stdout || result.stdout.trim().length === 0) {
+      // Parse content-type marker from subprocess output
+      const store = getStore();
+      const rawOutput = (result.stdout || "").trim();
+      const firstNewline = rawOutput.indexOf("\n");
+      const header = firstNewline >= 0 ? rawOutput.slice(0, firstNewline) : "";
+      const content = firstNewline >= 0 ? rawOutput.slice(firstNewline + 1) : rawOutput;
+      const markdown = content.trim();
+
+      if (markdown.length === 0) {
         return trackResponse("fetch_and_index", {
           content: [
             {
               type: "text" as const,
-              text: `Fetched ${url} but got empty content after HTML conversion`,
+              text: `Fetched ${url} but got empty content`,
             },
           ],
           isError: true,
         });
       }
 
-      // Index the markdown into FTS5
-      const store = getStore();
-      const markdown = result.stdout.trim();
       trackIndexed(Buffer.byteLength(markdown));
-      const indexed = store.index({ content: markdown, source: source ?? url });
+
+      // Route to the appropriate indexing strategy based on Content-Type
+      let indexed: IndexResult;
+      if (header === "__CM_CT__:json") {
+        indexed = store.indexJSON(markdown, source ?? url);
+      } else if (header === "__CM_CT__:text") {
+        indexed = store.indexPlainText(markdown, source ?? url);
+      } else {
+        // HTML (default) — content is already converted to markdown
+        indexed = store.index({ content: markdown, source: source ?? url });
+      }
 
       // Build preview — first ~3KB of markdown for immediate use
       const PREVIEW_LIMIT = 3072;

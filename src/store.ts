@@ -129,6 +129,11 @@ function maxEditDistance(wordLength: number): number {
   return 3;
 }
 
+// Oversized chunks (e.g., a 50KB section between two headings) hurt BM25
+// length normalization and produce unwieldy search results. Split at paragraph
+// boundaries when a chunk exceeds this cap.
+const MAX_CHUNK_BYTES = 4096;
+
 // ─────────────────────────────────────────────────────────
 // ContentStore
 // ─────────────────────────────────────────────────────────
@@ -235,6 +240,76 @@ export class ContentStore {
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
+    return this.#insertChunks(chunks, label, text);
+  }
+
+  // ── Index Plain Text ──
+
+  /**
+   * Index plain-text output (logs, build output, test results) by splitting
+   * into fixed-size line groups. Unlike markdown indexing, this does not
+   * look for headings — it chunks by line count with overlap.
+   */
+  indexPlainText(
+    content: string,
+    source: string,
+    linesPerChunk: number = 20,
+  ): IndexResult {
+    if (!content || content.trim().length === 0) {
+      return this.#insertChunks([], source, "");
+    }
+
+    const chunks = this.#chunkPlainText(content, linesPerChunk);
+
+    return this.#insertChunks(
+      chunks.map((c) => ({ ...c, hasCode: false })),
+      source,
+      content,
+    );
+  }
+
+  // ── Index JSON ──
+
+  /**
+   * Index JSON content by walking the object tree and using key paths
+   * as chunk titles (analogous to heading hierarchy in markdown). Objects
+   * recurse by key; arrays batch items by size.
+   *
+   * Falls back to `indexPlainText` if the content is not valid JSON.
+   */
+  indexJSON(
+    content: string,
+    source: string,
+    maxChunkBytes: number = MAX_CHUNK_BYTES,
+  ): IndexResult {
+    if (!content || content.trim().length === 0) {
+      return this.indexPlainText("", source);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return this.indexPlainText(content, source);
+    }
+
+    const chunks: Chunk[] = [];
+    this.#walkJSON(parsed, [], chunks, maxChunkBytes);
+
+    if (chunks.length === 0) {
+      return this.indexPlainText(content, source);
+    }
+
+    return this.#insertChunks(chunks, source, content);
+  }
+
+  // ── Shared DB Insertion ──
+
+  /**
+   * Shared DB insertion logic for all index methods. Inserts chunks
+   * into both FTS5 tables within a transaction and extracts vocabulary.
+   */
+  #insertChunks(chunks: Chunk[], label: string, text: string): IndexResult {
     if (chunks.length === 0) {
       const insertSource = this.#db.prepare(
         "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, 0, 0)",
@@ -281,66 +356,6 @@ export class ContentStore {
       label,
       totalChunks: chunks.length,
       codeChunks,
-    };
-  }
-
-  // ── Index Plain Text ──
-
-  /**
-   * Index plain-text output (logs, build output, test results) by splitting
-   * into fixed-size line groups. Unlike markdown indexing, this does not
-   * look for headings — it chunks by line count with overlap.
-   */
-  indexPlainText(
-    content: string,
-    source: string,
-    linesPerChunk: number = 20,
-  ): IndexResult {
-    if (!content || content.trim().length === 0) {
-      const insertSource = this.#db.prepare(
-        "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, 0, 0)",
-      );
-      const info = insertSource.run(source);
-      return {
-        sourceId: Number(info.lastInsertRowid),
-        label: source,
-        totalChunks: 0,
-        codeChunks: 0,
-      };
-    }
-
-    const chunks = this.#chunkPlainText(content, linesPerChunk);
-
-    const insertSource = this.#db.prepare(
-      "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, ?, ?)",
-    );
-    const insertChunk = this.#db.prepare(
-      "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
-    );
-    const insertChunkTrigram = this.#db.prepare(
-      "INSERT INTO chunks_trigram (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
-    );
-
-    const transaction = this.#db.transaction(() => {
-      const info = insertSource.run(source, chunks.length, 0);
-      const sourceId = Number(info.lastInsertRowid);
-
-      for (const chunk of chunks) {
-        insertChunk.run(chunk.title, chunk.content, sourceId, "prose");
-        insertChunkTrigram.run(chunk.title, chunk.content, sourceId, "prose");
-      }
-
-      return sourceId;
-    });
-
-    const sourceId = transaction();
-    this.#extractAndStoreVocabulary(content);
-
-    return {
-      sourceId,
-      label: source,
-      totalChunks: chunks.length,
-      codeChunks: 0,
     };
   }
 
@@ -670,7 +685,7 @@ export class ContentStore {
 
   // ── Chunking ──
 
-  #chunkMarkdown(text: string): Chunk[] {
+  #chunkMarkdown(text: string, maxChunkBytes: number = MAX_CHUNK_BYTES): Chunk[] {
     const chunks: Chunk[] = [];
     const lines = text.split("\n");
     const headingStack: Array<{ level: number; text: string }> = [];
@@ -681,11 +696,47 @@ export class ContentStore {
       const joined = currentContent.join("\n").trim();
       if (joined.length === 0) return;
 
-      chunks.push({
-        title: this.#buildTitle(headingStack, currentHeading),
-        content: joined,
-        hasCode: currentContent.some((l) => /^`{3,}/.test(l)),
-      });
+      const title = this.#buildTitle(headingStack, currentHeading);
+      const hasCode = currentContent.some((l) => /^`{3,}/.test(l));
+
+      // If under the cap, emit as-is (fast path — most chunks hit this)
+      if (Buffer.byteLength(joined) <= maxChunkBytes) {
+        chunks.push({ title, content: joined, hasCode });
+        currentContent = [];
+        return;
+      }
+
+      // Split oversized chunk at paragraph boundaries (double newlines)
+      const paragraphs = joined.split(/\n\n+/);
+      let accumulator: string[] = [];
+      let partIndex = 1;
+
+      const flushAccumulator = () => {
+        if (accumulator.length === 0) return;
+        const part = accumulator.join("\n\n").trim();
+        if (part.length === 0) return;
+        const partTitle = paragraphs.length > 1 ? `${title} (${partIndex})` : title;
+        partIndex++;
+        chunks.push({
+          title: partTitle,
+          content: part,
+          hasCode: part.includes("```"),
+        });
+        accumulator = [];
+      };
+
+      for (const para of paragraphs) {
+        accumulator.push(para);
+        const candidate = accumulator.join("\n\n");
+        if (Buffer.byteLength(candidate) > maxChunkBytes && accumulator.length > 1) {
+          // Remove the paragraph that pushed us over
+          accumulator.pop();
+          flushAccumulator();
+          accumulator = [para];
+        }
+      }
+      flushAccumulator();
+
       currentContent = [];
     };
 
@@ -802,6 +853,143 @@ export class ContentStore {
     }
 
     return chunks;
+  }
+
+  #walkJSON(
+    value: unknown,
+    path: string[],
+    chunks: Chunk[],
+    maxChunkBytes: number,
+  ): void {
+    const title = path.length > 0 ? path.join(" > ") : "(root)";
+    const serialized = JSON.stringify(value, null, 2);
+
+    // Small enough — emit as a single chunk
+    if (Buffer.byteLength(serialized) <= maxChunkBytes) {
+      // Exception: objects with nested structure (object/array values) always
+      // recurse so that key paths become chunk titles for searchability —
+      // even when the subtree fits in one chunk. Flat objects (all primitive
+      // values) stay as a single chunk since there's no hierarchy to expose.
+      const shouldRecurse =
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        Object.values(value).some(
+          (v) => typeof v === "object" && v !== null,
+        );
+
+      if (!shouldRecurse) {
+        chunks.push({ title, content: serialized, hasCode: true });
+        return;
+      }
+    }
+
+    // Object — recurse into each key
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const entries = Object.entries(value);
+      if (entries.length > 0) {
+        for (const [key, val] of entries) {
+          this.#walkJSON(val, [...path, key], chunks, maxChunkBytes);
+        }
+        return;
+      }
+      // Empty object — emit as-is
+      chunks.push({ title, content: serialized, hasCode: true });
+      return;
+    }
+
+    // Array — batch by size with identity-field-aware titles
+    if (Array.isArray(value)) {
+      this.#chunkJSONArray(value, path, chunks, maxChunkBytes);
+      return;
+    }
+
+    // Primitive that exceeds maxChunkBytes (e.g., very long string)
+    chunks.push({ title, content: serialized, hasCode: false });
+  }
+
+  /**
+   * Scan the first element of an array of objects for a recognizable
+   * identity field. Returns the field name or null.
+   */
+  #findIdentityField(arr: unknown[]): string | null {
+    if (arr.length === 0) return null;
+    const first = arr[0];
+    if (typeof first !== "object" || first === null || Array.isArray(first)) return null;
+
+    const candidates = ["id", "name", "title", "path", "slug", "key", "label"];
+    const obj = first as Record<string, unknown>;
+    for (const field of candidates) {
+      if (field in obj && (typeof obj[field] === "string" || typeof obj[field] === "number")) {
+        return field;
+      }
+    }
+    return null;
+  }
+
+  #jsonBatchTitle(
+    prefix: string,
+    startIdx: number,
+    endIdx: number,
+    batch: unknown[],
+    identityField: string | null,
+  ): string {
+    const sep = prefix ? `${prefix} > ` : "";
+
+    if (!identityField) {
+      return startIdx === endIdx
+        ? `${sep}[${startIdx}]`
+        : `${sep}[${startIdx}-${endIdx}]`;
+    }
+
+    const getId = (item: unknown) =>
+      String((item as Record<string, unknown>)[identityField]);
+
+    if (batch.length === 1) {
+      return `${sep}${getId(batch[0])}`;
+    }
+    if (batch.length <= 3) {
+      return sep + batch.map(getId).join(", ");
+    }
+    return `${sep}${getId(batch[0])}\u2026${getId(batch[batch.length - 1])}`;
+  }
+
+  #chunkJSONArray(
+    arr: unknown[],
+    path: string[],
+    chunks: Chunk[],
+    maxChunkBytes: number,
+  ): void {
+    const prefix = path.length > 0 ? path.join(" > ") : "(root)";
+    const identityField = this.#findIdentityField(arr);
+
+    let batch: unknown[] = [];
+    let batchStart = 0;
+
+    const flushBatch = (batchEnd: number) => {
+      if (batch.length === 0) return;
+      const title = this.#jsonBatchTitle(prefix, batchStart, batchEnd, batch, identityField);
+      chunks.push({
+        title,
+        content: JSON.stringify(batch, null, 2),
+        hasCode: true,
+      });
+    };
+
+    for (let i = 0; i < arr.length; i++) {
+      batch.push(arr[i]);
+      const candidate = JSON.stringify(batch, null, 2);
+
+      if (Buffer.byteLength(candidate) > maxChunkBytes && batch.length > 1) {
+        batch.pop();
+        flushBatch(i - 1);
+        batch = [arr[i]];
+        batchStart = i;
+      }
+    }
+
+    // Flush remaining
+    flushBatch(batchStart + batch.length - 1);
   }
 
   #buildTitle(

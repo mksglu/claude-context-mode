@@ -943,6 +943,241 @@ async function main() {
     assert.doesNotThrow(() => store.cleanup());
   });
 
+  // ===== MAX CHUNK SIZE =====
+  console.log("\n--- Max Chunk Size ---\n");
+
+  await test("splits oversized markdown chunk at paragraph boundaries", () => {
+    const store = createStore();
+    // Build a markdown doc with one heading and ~8KB of prose in paragraphs
+    const paragraphs = Array.from({ length: 20 }, (_, i) =>
+      `Paragraph ${i + 1}. ${"Lorem ipsum dolor sit amet. ".repeat(20)}`
+    );
+    const content = `# Big Section\n\n${paragraphs.join("\n\n")}`;
+
+    const result = store.index({ content, source: "max-chunk-test" });
+    // With default maxChunkBytes (~4096), this should split into multiple chunks
+    assert.ok(result.totalChunks > 1, `Expected >1 chunk, got ${result.totalChunks}`);
+
+    // Each chunk's title should reference the parent heading
+    const searchResult = store.search("Paragraph", 10, "max-chunk-test");
+    for (const r of searchResult) {
+      assert.ok(r.title.includes("Big Section"), `Expected heading in title, got: ${r.title}`);
+    }
+    store.close();
+  });
+
+  await test("does not split chunks already under maxChunkBytes", () => {
+    const store = createStore();
+    const content = `# Small Section\n\nJust a few lines of text.\n\nAnother paragraph.`;
+    const result = store.index({ content, source: "small-chunk-test" });
+    assert.equal(result.totalChunks, 1);
+    store.close();
+  });
+
+  await test("keeps code blocks intact when splitting oversized chunks", () => {
+    const store = createStore();
+    // A heading, then a large code block (should not be split mid-block),
+    // then prose paragraphs that push total over maxChunkBytes
+    const codeBlock = "```typescript\n" + "const x = 1;\n".repeat(100) + "```";
+    const prose = Array.from({ length: 10 }, (_, i) =>
+      `Paragraph ${i}. ${"Text content here. ".repeat(20)}`
+    ).join("\n\n");
+    const content = `# Code Section\n\n${codeBlock}\n\n${prose}`;
+
+    const result = store.index({ content, source: "code-chunk-test" });
+    assert.ok(result.totalChunks >= 2, `Expected >=2 chunks, got ${result.totalChunks}`);
+
+    // Search for code — should find the code block intact
+    const codeResults = store.search("const x", 5, "code-chunk-test");
+    assert.ok(codeResults.length > 0, "Should find the code block");
+    assert.ok(
+      codeResults[0].content.includes("```typescript"),
+      "Code block should be intact with opening fence",
+    );
+    store.close();
+  });
+
+  // ===== JSON CHUNKING — OBJECTS =====
+  console.log("\n--- JSON Chunking (Objects) ---\n");
+
+  await test("chunks JSON object by top-level keys", () => {
+    const store = createStore();
+    const json = JSON.stringify({
+      authentication: {
+        oauth: { clientId: "abc", scopes: ["read", "write"] },
+        jwt: { algorithm: "RS256", expiry: "1h" },
+      },
+      database: {
+        host: "localhost",
+        port: 5432,
+      },
+    });
+
+    const result = store.indexJSON(json, "config");
+    assert.ok(result.totalChunks >= 2, `Expected >=2 chunks, got ${result.totalChunks}`);
+
+    // Search should find auth config by key path
+    const authResults = store.search("oauth clientId", 5, "config");
+    assert.ok(authResults.length > 0, "Should find oauth config");
+    assert.ok(
+      authResults[0].title.includes("authentication"),
+      `Expected 'authentication' in title, got: ${authResults[0].title}`,
+    );
+    store.close();
+  });
+
+  await test("small JSON object becomes single chunk", () => {
+    const store = createStore();
+    const json = JSON.stringify({ name: "Alice", role: "admin" });
+    const result = store.indexJSON(json, "small");
+    assert.equal(result.totalChunks, 1);
+    store.close();
+  });
+
+  await test("chunks nested JSON with path titles", () => {
+    const store = createStore();
+    // Build a deeply nested object where each leaf is small but the total is large
+    const endpoints: Record<string, unknown> = {};
+    for (let i = 0; i < 30; i++) {
+      endpoints[`/api/v1/resource${i}`] = {
+        method: "GET",
+        description: `Get resource ${i}. ${"Details. ".repeat(50)}`,
+        params: { id: "string", limit: "number" },
+      };
+    }
+    const json = JSON.stringify({ endpoints });
+
+    const result = store.indexJSON(json, "api-spec");
+    assert.ok(result.totalChunks > 1, `Expected >1 chunk, got ${result.totalChunks}`);
+
+    // Should be able to search for a specific endpoint
+    const results = store.search("resource15", 5, "api-spec");
+    assert.ok(results.length > 0, "Should find resource15");
+    store.close();
+  });
+
+  await test("handles invalid JSON gracefully by falling back to plain text", () => {
+    const store = createStore();
+    const result = store.indexJSON("not valid json {{{", "bad-json");
+    assert.ok(result.totalChunks >= 1, "Should still index as plain text");
+    store.close();
+  });
+
+  // ===== JSON CHUNKING — ARRAYS =====
+  console.log("\n--- JSON Chunking (Arrays) ---\n");
+
+  await test("top-level array of objects uses identity field in titles", () => {
+    const store = createStore();
+    const users = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1,
+      name: `User ${i + 1}`,
+      email: `user${i + 1}@example.com`,
+      bio: `Bio for user ${i + 1}. ${"Some details. ".repeat(10)}`,
+    }));
+    const json = JSON.stringify(users);
+
+    const result = store.indexJSON(json, "users-api");
+    assert.ok(result.totalChunks > 1, `Expected >1 chunk, got ${result.totalChunks}`);
+
+    // Search for a specific user — should find them
+    const results = store.search("User 25", 5, "users-api");
+    assert.ok(results.length > 0, "Should find User 25");
+    store.close();
+  });
+
+  await test("identity field appears in chunk titles", () => {
+    const store = createStore();
+    const items = [
+      { name: "Alice", role: "admin", data: "x".repeat(2000) },
+      { name: "Bob", role: "user", data: "y".repeat(2000) },
+      { name: "Carol", role: "user", data: "z".repeat(2000) },
+    ];
+    const json = JSON.stringify(items);
+
+    const result = store.indexJSON(json, "people");
+    // Items are ~2KB each, maxChunkBytes is 4KB, so expect multiple chunks
+    assert.ok(result.totalChunks >= 2, `Expected >=2 chunks, got ${result.totalChunks}`);
+
+    // Search and check titles contain the name field
+    const results = store.search("Alice admin", 5, "people");
+    assert.ok(results.length > 0, "Should find Alice");
+    assert.ok(
+      results[0].title.includes("Alice"),
+      `Expected 'Alice' in title, got: ${results[0].title}`,
+    );
+    store.close();
+  });
+
+  await test("array of primitives becomes batched chunks", () => {
+    const store = createStore();
+    const longStrings = Array.from({ length: 100 }, (_, i) =>
+      `Item ${i}: ${"content ".repeat(50)}`
+    );
+    const json = JSON.stringify(longStrings);
+
+    const result = store.indexJSON(json, "primitives");
+    assert.ok(result.totalChunks >= 2, `Expected >=2 chunks, got ${result.totalChunks}`);
+    store.close();
+  });
+
+  await test("nested array within object uses full key path", () => {
+    const store = createStore();
+    const json = JSON.stringify({
+      api: {
+        endpoints: Array.from({ length: 20 }, (_, i) => ({
+          path: `/api/v1/resource${i}`,
+          method: "GET",
+          description: `Resource ${i}. ${"Details ".repeat(30)}`,
+        })),
+      },
+    });
+
+    const result = store.indexJSON(json, "nested-api");
+    assert.ok(result.totalChunks > 1, `Expected >1 chunk, got ${result.totalChunks}`);
+
+    const results = store.search("resource10", 5, "nested-api");
+    assert.ok(results.length > 0, "Should find resource10");
+    // Title should include the full path: api > endpoints > ...
+    assert.ok(
+      results[0].title.includes("api") && results[0].title.includes("endpoints"),
+      `Expected path in title, got: ${results[0].title}`,
+    );
+    store.close();
+  });
+
+  // ===== CONTENT-TYPE ROUTING =====
+  console.log("\n--- Content-Type Routing ---\n");
+
+  await test("indexJSON produces searchable chunks from pretty-printed JSON", () => {
+    const store = createStore();
+    // Simulate what fetch_and_index would receive from a JSON API
+    const apiResponse = JSON.stringify({
+      data: {
+        users: [
+          { id: 1, name: "Alice", email: "alice@example.com" },
+          { id: 2, name: "Bob", email: "bob@example.com" },
+        ],
+        pagination: { page: 1, total: 100 },
+      },
+    });
+
+    const result = store.indexJSON(apiResponse, "api-response");
+    assert.ok(result.totalChunks >= 1, `Expected >=1 chunks, got ${result.totalChunks}`);
+
+    const results = store.search("Alice email", 5, "api-response");
+    assert.ok(results.length > 0, "Should find Alice's email via search");
+    store.close();
+  });
+
+  await test("indexPlainText handles non-JSON non-HTML content", () => {
+    const store = createStore();
+    // Simulate a plain text response (e.g., a text file or CSV)
+    const plainText = "name,email,role\nAlice,alice@example.com,admin\nBob,bob@example.com,user";
+    const result = store.indexPlainText(plainText, "csv-response");
+    assert.ok(result.totalChunks >= 1);
+    store.close();
+  });
+
   // ===== SUMMARY =====
   console.log("\n" + "=".repeat(60));
   console.log(
