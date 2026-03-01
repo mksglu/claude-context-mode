@@ -51,6 +51,7 @@ export interface SearchResult {
   rank: number;
   contentType: "code" | "prose";
   matchLayer?: "porter" | "trigram" | "fuzzy";
+  highlighted?: string;
 }
 
 export interface StoreStats {
@@ -355,7 +356,8 @@ export class ContentStore {
         chunks.content,
         chunks.content_type,
         sources.label,
-        bm25(chunks, 2.0, 1.0) AS rank
+        bm25(chunks, 2.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
       FROM chunks
       JOIN sources ON sources.id = chunks.source_id
       WHERE chunks MATCH ? ${sourceFilter}
@@ -373,6 +375,7 @@ export class ContentStore {
       content_type: string;
       label: string;
       rank: number;
+      highlighted: string;
     }>;
 
     return rows.map((r) => ({
@@ -381,6 +384,7 @@ export class ContentStore {
       source: r.label,
       rank: r.rank,
       contentType: r.content_type as "code" | "prose",
+      highlighted: r.highlighted,
     }));
   }
 
@@ -401,7 +405,8 @@ export class ContentStore {
         chunks_trigram.content,
         chunks_trigram.content_type,
         sources.label,
-        bm25(chunks_trigram, 2.0, 1.0) AS rank
+        bm25(chunks_trigram, 2.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
       FROM chunks_trigram
       JOIN sources ON sources.id = chunks_trigram.source_id
       WHERE chunks_trigram MATCH ? ${sourceFilter}
@@ -419,6 +424,7 @@ export class ContentStore {
       content_type: string;
       label: string;
       rank: number;
+      highlighted: string;
     }>;
 
     return rows.map((r) => ({
@@ -427,6 +433,7 @@ export class ContentStore {
       source: r.label,
       rank: r.rank,
       contentType: r.content_type as "code" | "prose",
+      highlighted: r.highlighted,
     }));
   }
 
