@@ -464,55 +464,54 @@ async function upgrade() {
     });
     s.stop("Dependencies ready");
 
-    // Step 2.5: Spawn post-upgrade from NEW code on disk to update registry & clean cache
-    // This ensures even users upgrading from old versions get the fix
+    // Step 2.5: Write temp script and spawn to update registry & clean cache
+    // Uses a file instead of node -e to avoid shell escaping issues
     s.start("Updating plugin registry");
     try {
-      const postUpgradeScript = `
-        const fs = require("fs");
-        const path = require("path");
-        const home = require("os").homedir();
-        const pluginRoot = ${JSON.stringify(pluginRoot)};
-        const newVersion = ${JSON.stringify(newVersion)};
-
-        // Update installed_plugins.json
-        const ipPath = path.resolve(home, ".claude", "plugins", "installed_plugins.json");
-        try {
-          const ipRaw = JSON.parse(fs.readFileSync(ipPath, "utf-8"));
-          const plugins = ipRaw.plugins || {};
-          let updated = false;
-          for (const [key, entries] of Object.entries(plugins)) {
-            if (!key.toLowerCase().includes("context-mode")) continue;
-            for (const entry of entries) {
-              entry.installPath = pluginRoot;
-              entry.version = newVersion;
-              entry.lastUpdated = new Date().toISOString();
-              updated = true;
-            }
-          }
-          if (updated) {
-            fs.writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\\n", "utf-8");
-            console.log("REGISTRY_UPDATED");
-          }
-        } catch (e) { console.error("REGISTRY_FAILED:" + e.message); }
-
-        // Clean old cache directories
-        const m = pluginRoot.match(/^(.*\\/plugins\\/cache\\/[^/]+\\/[^/]+\\/)([^/]+)$/);
-        if (m) {
-          try {
-            const dirs = fs.readdirSync(m[1]).filter(d => d !== m[2]);
-            for (const old of dirs) {
-              try { fs.rmSync(path.resolve(m[1], old), { recursive: true, force: true }); } catch {}
-            }
-            if (dirs.length > 0) console.log("CLEANED:" + dirs.length);
-          } catch {}
-        }
-      `;
-      const result = execSync(`node -e ${JSON.stringify(postUpgradeScript)}`, {
+      const scriptPath = resolve(tmpDir + "-post-upgrade.mjs");
+      const scriptContent = [
+        `import { readFileSync, writeFileSync, readdirSync, rmSync } from "fs";`,
+        `import { resolve } from "path";`,
+        `import { homedir } from "os";`,
+        `const pluginRoot = ${JSON.stringify(pluginRoot)};`,
+        `const newVersion = ${JSON.stringify(newVersion)};`,
+        `const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");`,
+        `try {`,
+        `  const ipRaw = JSON.parse(readFileSync(ipPath, "utf-8"));`,
+        `  const plugins = ipRaw.plugins || {};`,
+        `  let updated = false;`,
+        `  for (const [key, entries] of Object.entries(plugins)) {`,
+        `    if (!key.toLowerCase().includes("context-mode")) continue;`,
+        `    for (const entry of entries) {`,
+        `      entry.installPath = pluginRoot;`,
+        `      entry.version = newVersion;`,
+        `      entry.lastUpdated = new Date().toISOString();`,
+        `      updated = true;`,
+        `    }`,
+        `  }`,
+        `  if (updated) {`,
+        `    writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\\n", "utf-8");`,
+        `    console.log("REGISTRY_UPDATED");`,
+        `  }`,
+        `} catch (e) { console.error("REGISTRY_FAILED:" + e.message); }`,
+        `const m = pluginRoot.match(/^(.*[\\\\/]plugins[\\\\/]cache[\\\\/][^\\\\/]+[\\\\/][^\\\\/]+[\\\\/])([^\\\\/]+)$/);`,
+        `if (m) {`,
+        `  try {`,
+        `    const dirs = readdirSync(m[1]).filter(d => d !== m[2]);`,
+        `    for (const old of dirs) {`,
+        `      try { rmSync(resolve(m[1], old), { recursive: true, force: true }); } catch {}`,
+        `    }`,
+        `    if (dirs.length > 0) console.log("CLEANED:" + dirs.length);`,
+        `  } catch {}`,
+        `}`,
+      ].join("\n");
+      writeFileSync(scriptPath, scriptContent, "utf-8");
+      const result = execSync(`node ${scriptPath}`, {
         stdio: "pipe",
         timeout: 10000,
         encoding: "utf-8",
       });
+      try { rmSync(scriptPath, { force: true }); } catch { /* ignore */ }
       if (result.includes("REGISTRY_UPDATED")) {
         s.stop(color.green("Plugin registry updated"));
         changes.push("Updated plugin registry");
