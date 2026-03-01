@@ -28,15 +28,18 @@ interface ExecuteFileOptions extends ExecuteOptions {
 
 export class PolyglotExecutor {
   #maxOutputBytes: number;
+  #hardCapBytes: number;
   #projectRoot: string;
   #runtimes: RuntimeMap;
 
   constructor(opts?: {
     maxOutputBytes?: number;
+    hardCapBytes?: number;
     projectRoot?: string;
     runtimes?: RuntimeMap;
   }) {
     this.#maxOutputBytes = opts?.maxOutputBytes ?? 102_400;
+    this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     this.#projectRoot = opts?.projectRoot ?? process.cwd();
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
   }
@@ -198,25 +201,43 @@ export class PolyglotExecutor {
         proc.kill("SIGKILL");
       }, timeout);
 
-      // Collect ALL output in full — smart truncation happens after
-      // process exits so we can keep head + tail.
-      // OOM is bounded by timeout (default 30s) and maxOutputBytes
-      // (used only for truncation threshold, not stream limiting).
+      // Stream-level byte cap: kill the process once combined stdout+stderr
+      // exceeds hardCapBytes. Without this, a command like `yes` or
+      // `cat /dev/urandom | base64` can accumulate gigabytes in memory
+      // before the timeout fires.
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
+      let totalBytes = 0;
+      let capExceeded = false;
 
       proc.stdout!.on("data", (chunk: Buffer) => {
-        stdoutChunks.push(chunk);
+        totalBytes += chunk.length;
+        if (totalBytes <= this.#hardCapBytes) {
+          stdoutChunks.push(chunk);
+        } else if (!capExceeded) {
+          capExceeded = true;
+          proc.kill("SIGKILL");
+        }
       });
 
       proc.stderr!.on("data", (chunk: Buffer) => {
-        stderrChunks.push(chunk);
+        totalBytes += chunk.length;
+        if (totalBytes <= this.#hardCapBytes) {
+          stderrChunks.push(chunk);
+        } else if (!capExceeded) {
+          capExceeded = true;
+          proc.kill("SIGKILL");
+        }
       });
 
       proc.on("close", (exitCode) => {
         clearTimeout(timer);
         const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
-        const rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
+        let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
+
+        if (capExceeded) {
+          rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB — process killed]`;
+        }
 
         const max = this.#maxOutputBytes;
         const stdout = PolyglotExecutor.#smartTruncate(rawStdout, max);
