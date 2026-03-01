@@ -72,31 +72,89 @@ const bunNote = hasBunRuntime()
 // ─────────────────────────────────────────────────────────
 // Helper: smart snippet extraction — returns windows around
 // matching query terms instead of dumb truncation
+//
+// When `highlighted` is provided (from FTS5 `highlight()` with
+// STX/ETX markers), match positions are derived from the markers.
+// This is the authoritative source — FTS5 uses the exact same
+// tokenizer that produced the BM25 match, so stemmed variants
+// like "configuration" matching query "configure" are found
+// correctly. Falls back to indexOf on raw terms when highlighted
+// is absent (non-FTS codepath).
 // ─────────────────────────────────────────────────────────
-function extractSnippet(
-  content: string,
-  query: string,
-  maxLen = 1500,
-): string {
-  if (content.length <= maxLen) return content;
 
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length > 2);
-  const lower = content.toLowerCase();
+const STX = "\x02";
+const ETX = "\x03";
 
-  // Find all positions where query terms appear
+/**
+ * Parse FTS5 highlight markers to find match positions in the
+ * original (marker-free) text. Returns character offsets into the
+ * stripped content where each matched token begins.
+ */
+export function positionsFromHighlight(highlighted: string): number[] {
   const positions: number[] = [];
-  for (const term of terms) {
-    let idx = lower.indexOf(term);
-    while (idx !== -1) {
-      positions.push(idx);
-      idx = lower.indexOf(term, idx + 1);
+  let cleanOffset = 0;
+
+  let i = 0;
+  while (i < highlighted.length) {
+    if (highlighted[i] === STX) {
+      // Record position of this match in the clean text
+      positions.push(cleanOffset);
+      i++; // skip STX
+      // Advance through matched text until ETX
+      while (i < highlighted.length && highlighted[i] !== ETX) {
+        cleanOffset++;
+        i++;
+      }
+      if (i < highlighted.length) i++; // skip ETX
+    } else {
+      cleanOffset++;
+      i++;
     }
   }
 
-  // No term matches — return start (BM25 matched on stems/variants)
+  return positions;
+}
+
+/** Strip STX/ETX markers to recover original content. */
+function stripMarkers(highlighted: string): string {
+  return highlighted.replaceAll(STX, "").replaceAll(ETX, "");
+}
+
+export function extractSnippet(
+  content: string,
+  query: string,
+  maxLen = 1500,
+  highlighted?: string,
+): string {
+  if (content.length <= maxLen) return content;
+
+  // Derive match positions from FTS5 highlight markers when available
+  const positions: number[] = [];
+
+  if (highlighted) {
+    for (const pos of positionsFromHighlight(highlighted)) {
+      positions.push(pos);
+    }
+  }
+
+  // Fallback: indexOf on raw query terms (non-FTS codepath)
+  if (positions.length === 0) {
+    const terms = query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((t) => t.length > 2);
+    const lower = content.toLowerCase();
+
+    for (const term of terms) {
+      let idx = lower.indexOf(term);
+      while (idx !== -1) {
+        positions.push(idx);
+        idx = lower.indexOf(term, idx + 1);
+      }
+    }
+  }
+
+  // No matches at all — return prefix
   if (positions.length === 0) {
     return content.slice(0, maxLen) + "\n…";
   }
@@ -653,7 +711,7 @@ server.registerTool(
           .map((r, i) => {
             const header = `--- [${r.source}] ---`;
             const heading = `### ${r.title}`;
-            const snippet = extractSnippet(r.content, q);
+            const snippet = extractSnippet(r.content, q, 1500, r.highlighted);
             return `${header}\n${heading}\n\n${snippet}`;
           })
           .join("\n\n");
@@ -979,7 +1037,7 @@ server.registerTool(
         queryResults.push("");
         if (results.length > 0) {
           for (const r of results) {
-            const snippet = extractSnippet(r.content, query);
+            const snippet = extractSnippet(r.content, query, 1500, r.highlighted);
             queryResults.push(`### ${r.title}`);
             queryResults.push(snippet);
             queryResults.push("");
