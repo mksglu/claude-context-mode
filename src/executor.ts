@@ -211,11 +211,14 @@ export class PolyglotExecutor {
     timeout: number,
   ): Promise<ExecResult> {
     return new Promise((res) => {
+      // Only .cmd/.bat shims need shell on Windows; real executables don't.
+      // Using shell: true globally causes process-tree kill issues with MSYS2/Git Bash.
+      const needsShell = isWin && ["tsx", "ts-node", "elixir"].includes(cmd[0]);
       const proc = spawn(cmd[0], cmd.slice(1), {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         env: this.#buildSafeEnv(cwd),
-        shell: isWin,
+        shell: needsShell,
       });
 
       let timedOut = false;
