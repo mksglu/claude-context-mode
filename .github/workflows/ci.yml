@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/cross-platform-ci]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.os }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx tsx tests/executor.test.ts
+
+      - name: Store tests
+        run: npx tsx tests/store.test.ts
+
+      - name: Fuzzy search tests
+        run: npx tsx tests/fuzzy-search.test.ts
+
+      - name: Stream cap tests
+        run: npx tsx tests/stream-cap.test.ts
+
+      - name: Doctor (verify server starts)
+        run: npx tsx src/cli.ts doctor
