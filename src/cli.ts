@@ -458,50 +458,41 @@ async function upgrade() {
     });
     s.stop("Built successfully");
 
-    // Step 3: Clean old cache dirs (not our own - we're running from it), then install fresh
+    // Step 3: Update in-place (same directory, no registry changes needed)
+    s.start("Updating files in-place");
+
+    // Clean stale version dirs from previous upgrade attempts
     const cacheParentMatch = pluginRoot.match(
       /^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/,
     );
     if (cacheParentMatch) {
       const cacheParent = cacheParentMatch[1];
-      const myDir = pluginRoot.replace(cacheParent, "");
+      const myDir = pluginRoot.replace(cacheParent, "").replace(/[\\/]/g, "");
       try {
         const oldDirs = readdirSync(cacheParent).filter(d => d !== myDir);
         for (const d of oldDirs) {
           try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
         }
         if (oldDirs.length > 0) {
-          p.log.info(color.dim(`  Cleaned ${oldDirs.length} old cache dir(s)`));
+          p.log.info(color.dim(`  Cleaned ${oldDirs.length} stale cache dir(s)`));
         }
       } catch { /* parent may not exist */ }
     }
 
-    s.start("Installing fresh");
-    const freshDir = cacheParentMatch
-      ? resolve(cacheParentMatch[1], newVersion)
-      : pluginRoot;
-
-    // If fresh dir is different from current, create it. Otherwise update in-place.
-    if (freshDir !== pluginRoot) {
-      rmSync(freshDir, { recursive: true, force: true });
-      cpSync(srcDir, freshDir, { recursive: true });
-      pluginRoot = freshDir;
-    } else {
-      // Same dir — copy files in-place
-      const items = [
-        "build", "src", "hooks", "skills", ".claude-plugin",
-        "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
-      ];
-      for (const item of items) {
-        try {
-          rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
-          cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
-        } catch { /* some files may not exist */ }
-      }
+    // Copy new files over old ones — same path, no registry update needed
+    const items = [
+      "build", "src", "hooks", "skills", ".claude-plugin",
+      "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
+    ];
+    for (const item of items) {
+      try {
+        rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
+        cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
+      } catch { /* some files may not exist in source */ }
     }
-    s.stop(color.green(`Installed to ${freshDir.split("/").pop() ?? newVersion}`));
+    s.stop(color.green(`Updated in-place to v${newVersion}`));
 
-    // Install production deps in fresh dir
+    // Install production deps (rebuild native modules if needed)
     s.start("Installing production dependencies");
     execSync("npm install --production --no-audit --no-fund", {
       cwd: pluginRoot,
@@ -509,54 +500,6 @@ async function upgrade() {
       timeout: 60000,
     });
     s.stop("Dependencies ready");
-
-    // Step 4: Update installed_plugins.json via spawned script (works from any old version)
-    s.start("Updating plugin registry");
-    try {
-      const scriptPath = resolve(tmpDir + "-post-upgrade.mjs");
-      const scriptContent = [
-        `import { readFileSync, writeFileSync } from "fs";`,
-        `import { resolve } from "path";`,
-        `import { homedir } from "os";`,
-        `const pluginRoot = ${JSON.stringify(pluginRoot)};`,
-        `const newVersion = ${JSON.stringify(newVersion)};`,
-        `const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");`,
-        `try {`,
-        `  const ipRaw = JSON.parse(readFileSync(ipPath, "utf-8"));`,
-        `  const plugins = ipRaw.plugins || {};`,
-        `  let updated = false;`,
-        `  for (const [key, entries] of Object.entries(plugins)) {`,
-        `    if (!key.toLowerCase().includes("context-mode")) continue;`,
-        `    for (const entry of entries) {`,
-        `      entry.installPath = pluginRoot;`,
-        `      entry.version = newVersion;`,
-        `      entry.lastUpdated = new Date().toISOString();`,
-        `      updated = true;`,
-        `    }`,
-        `  }`,
-        `  if (updated) {`,
-        `    writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\\n", "utf-8");`,
-        `    console.log("REGISTRY_UPDATED");`,
-        `  }`,
-        `} catch (e) { console.error("REGISTRY_FAILED:" + e.message); }`,
-      ].join("\n");
-      writeFileSync(scriptPath, scriptContent, "utf-8");
-      const result = execSync(`node ${scriptPath}`, {
-        stdio: "pipe",
-        timeout: 10000,
-        encoding: "utf-8",
-      });
-      try { rmSync(scriptPath, { force: true }); } catch { /* ignore */ }
-      if (result.includes("REGISTRY_UPDATED")) {
-        s.stop(color.green("Plugin registry updated"));
-        changes.push("Updated plugin registry");
-      } else {
-        s.stop(color.yellow("Plugin registry unchanged"));
-      }
-    } catch (err) {
-      s.stop(color.yellow("Plugin registry update skipped"));
-      p.log.warn(color.yellow("Could not update plugin registry") + color.dim(` — ${err instanceof Error ? err.message : String(err)}`));
-    }
 
     // Update global npm package from same GitHub source
     s.start("Updating npm global package");
@@ -685,13 +628,12 @@ async function upgrade() {
     p.log.info(color.dim("No changes were needed."));
   }
 
-  // Step 7: Run doctor from NEW pluginRoot (not old __dirname)
+  // Step 7: Run doctor from updated pluginRoot
   p.log.step("Running doctor to verify...");
   console.log();
 
   try {
-    const doctorScript = resolve(pluginRoot, "build", "cli.js");
-    execSync(`node "${doctorScript}" doctor`, {
+    execSync(`node "${resolve(pluginRoot, "build", "cli.js")}" doctor`, {
       stdio: "inherit",
       timeout: 30000,
       cwd: pluginRoot,

@@ -6,6 +6,44 @@
  * Cross-platform (Windows/macOS/Linux) — no bash/jq dependency.
  */
 
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { resolve, dirname, basename } from "node:path";
+import { fileURLToPath } from "node:url";
+import { homedir, tmpdir } from "node:os";
+
+// ─── Self-heal registry (runs once per session via marker file) ───
+try {
+  const marker = resolve(tmpdir(), "context-mode-registry-healed");
+  if (!existsSync(marker)) {
+    const hookDir = dirname(fileURLToPath(import.meta.url));
+    const myRoot = resolve(hookDir, "..");
+    const myVersion = basename(myRoot);
+
+    if (/^\d+\.\d+\.\d+/.test(myVersion)) {
+      const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+      const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
+      let fixed = false;
+
+      for (const [key, entries] of Object.entries(ip.plugins || {})) {
+        if (!key.toLowerCase().includes("context-mode")) continue;
+        for (const entry of entries) {
+          if (entry.installPath !== myRoot) {
+            entry.installPath = myRoot;
+            entry.version = myVersion;
+            entry.lastUpdated = new Date().toISOString();
+            fixed = true;
+          }
+        }
+      }
+
+      if (fixed) {
+        writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+      }
+      writeFileSync(marker, Date.now().toString(), "utf-8");
+    }
+  }
+} catch { /* best effort — don't block hook */ }
+
 let raw = "";
 process.stdin.setEncoding("utf-8");
 for await (const chunk of process.stdin) raw += chunk;
