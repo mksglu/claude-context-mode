@@ -441,21 +441,32 @@ async function upgrade() {
     });
     s.stop("Built successfully");
 
-    // Step 3: Copy to plugin root
-    s.start("Installing files");
-    const items = [
-      "build", "src", "hooks", "skills", ".claude-plugin",
-      "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
-    ];
-    for (const item of items) {
-      try {
-        rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
-        cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
-      } catch { /* some files may not exist */ }
-    }
-    s.stop(color.green("Files installed"));
+    // Step 3: Nuke entire cache parent and install fresh with correct version dir
+    s.start("Installing fresh");
+    const cacheParentMatch = pluginRoot.match(
+      /^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/,
+    );
+    const freshDir = cacheParentMatch
+      ? resolve(cacheParentMatch[1], newVersion)
+      : pluginRoot;
 
-    // Install production deps in plugin root
+    // Wipe all old cache directories
+    if (cacheParentMatch) {
+      const cacheParent = cacheParentMatch[1];
+      try {
+        const oldDirs = readdirSync(cacheParent);
+        for (const d of oldDirs) {
+          try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
+        }
+      } catch { /* parent may not exist */ }
+    }
+
+    // Copy entire built source to fresh version directory
+    cpSync(srcDir, freshDir, { recursive: true });
+    pluginRoot = freshDir;
+    s.stop(color.green(`Installed to ${newVersion}`));
+
+    // Install production deps in fresh dir
     s.start("Installing production dependencies");
     execSync("npm install --production --no-audit --no-fund", {
       cwd: pluginRoot,
@@ -464,13 +475,12 @@ async function upgrade() {
     });
     s.stop("Dependencies ready");
 
-    // Step 2.5: Write temp script and spawn to update registry & clean cache
-    // Uses a file instead of node -e to avoid shell escaping issues
+    // Step 4: Update installed_plugins.json via spawned script (works from any old version)
     s.start("Updating plugin registry");
     try {
       const scriptPath = resolve(tmpDir + "-post-upgrade.mjs");
       const scriptContent = [
-        `import { readFileSync, writeFileSync, readdirSync, rmSync } from "fs";`,
+        `import { readFileSync, writeFileSync } from "fs";`,
         `import { resolve } from "path";`,
         `import { homedir } from "os";`,
         `const pluginRoot = ${JSON.stringify(pluginRoot)};`,
@@ -494,16 +504,6 @@ async function upgrade() {
         `    console.log("REGISTRY_UPDATED");`,
         `  }`,
         `} catch (e) { console.error("REGISTRY_FAILED:" + e.message); }`,
-        `const m = pluginRoot.match(/^(.*[\\\\/]plugins[\\\\/]cache[\\\\/][^\\\\/]+[\\\\/][^\\\\/]+[\\\\/])([^\\\\/]+)$/);`,
-        `if (m) {`,
-        `  try {`,
-        `    const dirs = readdirSync(m[1]).filter(d => d !== m[2]);`,
-        `    for (const old of dirs) {`,
-        `      try { rmSync(resolve(m[1], old), { recursive: true, force: true }); } catch {}`,
-        `    }`,
-        `    if (dirs.length > 0) console.log("CLEANED:" + dirs.length);`,
-        `  } catch {}`,
-        `}`,
       ].join("\n");
       writeFileSync(scriptPath, scriptContent, "utf-8");
       const result = execSync(`node ${scriptPath}`, {
@@ -517,10 +517,6 @@ async function upgrade() {
         changes.push("Updated plugin registry");
       } else {
         s.stop(color.yellow("Plugin registry unchanged"));
-      }
-      const cleanMatch = result.match(/CLEANED:(\d+)/);
-      if (cleanMatch) {
-        p.log.info(color.dim(`  Cleaned ${cleanMatch[1]} old cache dir(s)`));
       }
     } catch (err) {
       s.stop(color.yellow("Plugin registry update skipped"));
