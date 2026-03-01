@@ -756,6 +756,26 @@ puts "Users: #{data['users'].length}"
     });
   }
 
+  // --- execute_file: shell $ expansion in paths ---
+
+  const dollarDir = join(testDir, "path$SHOULD_NOT_EXPAND");
+  mkdirSync(dollarDir, { recursive: true });
+  const dollarFile = join(dollarDir, "data.txt");
+  writeFileSync(dollarFile, "dollar-sign-content", "utf-8");
+
+  await test("execute_file: Shell path with $ is not expanded", async () => {
+    const r = await executor.executeFile({
+      path: dollarFile,
+      language: "shell",
+      code: 'echo "content: $FILE_CONTENT"',
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(
+      r.stdout.includes("content: dollar-sign-content"),
+      `Expected literal file content, got: ${r.stdout}`,
+    );
+  });
+
   rmSync(testDir, { recursive: true, force: true });
 
   // ===== CONCURRENCY =====

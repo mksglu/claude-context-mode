@@ -310,8 +310,11 @@ export class PolyglotExecutor {
         return `const FILE_CONTENT_PATH = ${escaped};\nconst FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
       case "python":
         return `FILE_CONTENT_PATH = ${escaped}\nwith open(FILE_CONTENT_PATH, "r") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
-      case "shell":
-        return `FILE_CONTENT_PATH=${escaped}\nFILE_CONTENT=$(cat ${escaped})\n${code}`;
+      case "shell": {
+        // Single-quote the path to prevent $, backtick, and ! expansion
+        const sq = "'" + absolutePath.replace(/'/g, "'\\''") + "'";
+        return `FILE_CONTENT_PATH=${sq}\nFILE_CONTENT=$(cat ${sq})\n${code}`;
+      }
       case "ruby":
         return `FILE_CONTENT_PATH = ${escaped}\nFILE_CONTENT = File.read(FILE_CONTENT_PATH)\n${code}`;
       case "go":
