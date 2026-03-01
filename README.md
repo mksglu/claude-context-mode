@@ -201,11 +201,9 @@ npm run test:all      # full suite
 
 ## Contributors
 
-<a href="https://github.com/rjkaes"><img src="https://github.com/rjkaes.png" width="60" height="60" style="border-radius:50%" alt="rjkaes" /></a>
-<a href="https://github.com/ekosz"><img src="https://github.com/ekosz.png" width="60" height="60" style="border-radius:50%" alt="ekosz" /></a>
-<a href="https://github.com/dunika"><img src="https://github.com/dunika.png" width="60" height="60" style="border-radius:50%" alt="dunika" /></a>
-<a href="https://github.com/amoslives"><img src="https://github.com/amoslives.png" width="60" height="60" style="border-radius:50%" alt="amoslives" /></a>
-<a href="https://github.com/InTheCloudDan"><img src="https://github.com/InTheCloudDan.png" width="60" height="60" style="border-radius:50%" alt="InTheCloudDan" /></a>
+<a href="https://github.com/mksglu/claude-context-mode/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=mksglu/claude-context-mode" />
+</a>
 
 ## License
 
