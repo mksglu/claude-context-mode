@@ -29,6 +29,7 @@
     "build",
     "hooks",
     "server.bundle.mjs",
+    "cli.bundle.mjs",
     "skills",
     ".claude-plugin",
     ".mcp.json",
@@ -39,7 +40,8 @@
   "scripts": {
     "build": "tsc",
     "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --minify",
-    "prepublishOnly": "npm run build",
+    "bundle:cli": "esbuild src/cli.ts --bundle --platform=node --target=node18 --format=esm --outfile=cli.bundle.mjs --external:better-sqlite3 --minify",
+    "prepublishOnly": "npm run build && npm run bundle && npm run bundle:cli",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
     "doctor": "npx tsx src/cli.ts doctor",
