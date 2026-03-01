@@ -26,6 +26,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+
       - name: Install dependencies
         run: npm install
 

@@ -123,14 +123,16 @@ export class PolyglotExecutor {
     cwd: string,
     timeout: number,
   ): Promise<ExecResult> {
-    const binPath = srcPath.replace(/\.rs$/, "");
+    const binSuffix = process.platform === "win32" ? ".exe" : "";
+    const binPath = srcPath.replace(/\.rs$/, "") + binSuffix;
 
     // Compile
     try {
-      execSync(`rustc ${srcPath} -o ${binPath} 2>&1`, {
+      execSync(`rustc ${srcPath} -o ${binPath}`, {
         cwd,
         timeout: Math.min(timeout, 30_000),
         encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? (err as any).stderr || err.message : String(err);
@@ -200,6 +202,7 @@ export class PolyglotExecutor {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         env: this.#buildSafeEnv(cwd),
+        shell: process.platform === "win32",
       });
 
       let timedOut = false;
@@ -307,8 +310,9 @@ export class PolyglotExecutor {
       "XDG_DATA_HOME",
     ];
 
+    const isWin = process.platform === "win32";
     const env: Record<string, string> = {
-      PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+      PATH: process.env.PATH ?? (isWin ? "" : "/usr/local/bin:/usr/bin:/bin"),
       HOME: realHome,
       TMPDIR: tmpDir,
       LANG: "en_US.UTF-8",
@@ -316,6 +320,18 @@ export class PolyglotExecutor {
       PYTHONUNBUFFERED: "1",
       NO_COLOR: "1",
     };
+
+    // Windows-critical env vars
+    if (isWin) {
+      const winVars = [
+        "SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT",
+        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
+        "GOROOT", "GOPATH",
+      ];
+      for (const key of winVars) {
+        if (process.env[key]) env[key] = process.env[key]!;
+      }
+    }
 
     for (const key of passthrough) {
       if (process.env[key]) {
