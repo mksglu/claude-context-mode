@@ -444,7 +444,7 @@ async function upgrade() {
     // Step 3: Copy to plugin root
     s.start("Installing files");
     const items = [
-      "build", "hooks", "skills", ".claude-plugin",
+      "build", "src", "hooks", "skills", ".claude-plugin",
       "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
     ];
     for (const item of items) {
