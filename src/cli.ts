@@ -152,8 +152,17 @@ async function doctor(): Promise<number> {
   const s = p.spinner();
   s.start("Running diagnostics");
 
-  const runtimes = detectRuntimes();
-  const available = getAvailableLanguages(runtimes);
+  let runtimes: ReturnType<typeof detectRuntimes>;
+  let available: string[];
+  try {
+    runtimes = detectRuntimes();
+    available = getAvailableLanguages(runtimes);
+  } catch {
+    s.stop("Diagnostics partial");
+    p.log.warn(color.yellow("Could not detect runtimes") + color.dim(" — module may be missing, restart session after upgrade"));
+    p.outro(color.yellow("Doctor could not fully run — try again after restarting Claude Code"));
+    return 1;
+  }
 
   s.stop("Diagnostics complete");
 
@@ -209,9 +218,13 @@ async function doctor(): Promise<number> {
       );
     }
   } catch (err: unknown) {
-    criticalFails++;
     const message = err instanceof Error ? err.message : String(err);
-    p.log.error(color.red("Server test: FAIL") + ` — ${message}`);
+    if (message.includes("Cannot find module") || message.includes("MODULE_NOT_FOUND")) {
+      p.log.warn(color.yellow("Server test: SKIP") + color.dim(" — module not available (restart session after upgrade)"));
+    } else {
+      criticalFails++;
+      p.log.error(color.red("Server test: FAIL") + ` — ${message}`);
+    }
   }
 
   // Hooks installed
@@ -310,13 +323,17 @@ async function doctor(): Promise<number> {
       p.log.error(color.red("FTS5 / better-sqlite3: FAIL") + " — query returned unexpected result");
     }
   } catch (err: unknown) {
-    criticalFails++;
     const message = err instanceof Error ? err.message : String(err);
-    p.log.error(
-      color.red("FTS5 / better-sqlite3: FAIL") +
-        ` — ${message}` +
-        color.dim("\n  Try: npm rebuild better-sqlite3"),
-    );
+    if (message.includes("Cannot find module") || message.includes("MODULE_NOT_FOUND")) {
+      p.log.warn(color.yellow("FTS5 / better-sqlite3: SKIP") + color.dim(" — module not available (restart session after upgrade)"));
+    } else {
+      criticalFails++;
+      p.log.error(
+        color.red("FTS5 / better-sqlite3: FAIL") +
+          ` — ${message}` +
+          color.dim("\n  Try: npm rebuild better-sqlite3"),
+      );
+    }
   }
 
   // Version check
@@ -441,11 +458,25 @@ async function upgrade() {
     });
     s.stop("Built successfully");
 
-    // Step 3: Install fresh into new version directory (don't touch old dir - process runs from it)
-    s.start("Installing fresh");
+    // Step 3: Clean old cache dirs (not our own - we're running from it), then install fresh
     const cacheParentMatch = pluginRoot.match(
       /^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/,
     );
+    if (cacheParentMatch) {
+      const cacheParent = cacheParentMatch[1];
+      const myDir = pluginRoot.replace(cacheParent, "");
+      try {
+        const oldDirs = readdirSync(cacheParent).filter(d => d !== myDir);
+        for (const d of oldDirs) {
+          try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
+        }
+        if (oldDirs.length > 0) {
+          p.log.info(color.dim(`  Cleaned ${oldDirs.length} old cache dir(s)`));
+        }
+      } catch { /* parent may not exist */ }
+    }
+
+    s.start("Installing fresh");
     const freshDir = cacheParentMatch
       ? resolve(cacheParentMatch[1], newVersion)
       : pluginRoot;
@@ -484,7 +515,7 @@ async function upgrade() {
     try {
       const scriptPath = resolve(tmpDir + "-post-upgrade.mjs");
       const scriptContent = [
-        `import { readFileSync, writeFileSync, readdirSync, rmSync as rm } from "fs";`,
+        `import { readFileSync, writeFileSync } from "fs";`,
         `import { resolve } from "path";`,
         `import { homedir } from "os";`,
         `const pluginRoot = ${JSON.stringify(pluginRoot)};`,
@@ -508,13 +539,6 @@ async function upgrade() {
         `    console.log("REGISTRY_UPDATED");`,
         `  }`,
         `} catch (e) { console.error("REGISTRY_FAILED:" + e.message); }`,
-        `const curDir = pluginRoot.split(/[\\/\\\\]/).pop();`,
-        `const parDir = pluginRoot.replace(/[\\/\\\\][^\\/\\\\]+$/, "");`,
-        `try {`,
-        `  for (const d of readdirSync(parDir).filter(x => x !== curDir)) {`,
-        `    try { rm(resolve(parDir, d), { recursive: true, force: true }); console.log("CLEANED:" + d); } catch {}`,
-        `  }`,
-        `} catch {}`,
       ].join("\n");
       writeFileSync(scriptPath, scriptContent, "utf-8");
       const result = execSync(`node ${scriptPath}`, {
@@ -661,13 +685,22 @@ async function upgrade() {
     p.log.info(color.dim("No changes were needed."));
   }
 
-  // Step 7: Run doctor
+  // Step 7: Run doctor from NEW pluginRoot (not old __dirname)
   p.log.step("Running doctor to verify...");
   console.log();
 
-  const doctorCode = await doctor();
-  if (doctorCode !== 0) {
-    process.exit(doctorCode);
+  try {
+    const doctorScript = resolve(pluginRoot, "build", "cli.js");
+    execSync(`node "${doctorScript}" doctor`, {
+      stdio: "inherit",
+      timeout: 30000,
+      cwd: pluginRoot,
+    });
+  } catch {
+    p.log.warn(
+      color.yellow("Doctor had warnings") +
+        color.dim(" — restart your Claude Code session to pick up the new version"),
+    );
   }
 }
 

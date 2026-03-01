@@ -1,14 +1,65 @@
 #!/usr/bin/env node
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 process.chdir(__dirname);
 
 if (!process.env.CLAUDE_PROJECT_DIR) {
   process.env.CLAUDE_PROJECT_DIR = process.cwd();
+}
+
+// Self-heal: if a newer version dir exists, update registry so next session uses it
+const cacheMatch = __dirname.match(
+  /^(.*[\/\\]plugins[\/\\]cache[\/\\][^\/\\]+[\/\\][^\/\\]+[\/\\])([^\/\\]+)$/,
+);
+if (cacheMatch) {
+  try {
+    const cacheParent = cacheMatch[1];
+    const myVersion = cacheMatch[2];
+    const dirs = readdirSync(cacheParent).filter((d) =>
+      /^\d+\.\d+\.\d+/.test(d),
+    );
+    if (dirs.length > 1) {
+      dirs.sort((a, b) => {
+        const pa = a.split(".").map(Number);
+        const pb = b.split(".").map(Number);
+        for (let i = 0; i < 3; i++) {
+          if ((pa[i] ?? 0) !== (pb[i] ?? 0))
+            return (pa[i] ?? 0) - (pb[i] ?? 0);
+        }
+        return 0;
+      });
+      const newest = dirs[dirs.length - 1];
+      if (newest && newest !== myVersion) {
+        const ipPath = resolve(
+          homedir(),
+          ".claude",
+          "plugins",
+          "installed_plugins.json",
+        );
+        const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
+        for (const [key, entries] of Object.entries(ip.plugins || {})) {
+          if (!key.toLowerCase().includes("context-mode")) continue;
+          for (const entry of entries) {
+            entry.installPath = resolve(cacheParent, newest);
+            entry.version = newest;
+            entry.lastUpdated = new Date().toISOString();
+          }
+        }
+        writeFileSync(
+          ipPath,
+          JSON.stringify(ip, null, 2) + "\n",
+          "utf-8",
+        );
+      }
+    }
+  } catch {
+    /* best effort — don't block server startup */
+  }
 }
 
 // Ensure native module is available
