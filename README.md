@@ -205,6 +205,10 @@ npm run test:all      # full suite
   <img src="https://contrib.rocks/image?repo=mksglu/claude-context-mode&columns=8&anon=1" />
 </a>
 
+### Special Thanks
+
+<a href="https://github.com/mksglu/claude-context-mode/issues/15"><img src="https://github.com/vaban-ru.png" width="32" /></a>
+
 ## License
 
 MIT
