@@ -464,50 +464,68 @@ async function upgrade() {
     });
     s.stop("Dependencies ready");
 
-    // Step 2.5: Update installed_plugins.json to point to current directory with new version
-    const installedPluginsPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    // Step 2.5: Spawn post-upgrade from NEW code on disk to update registry & clean cache
+    // This ensures even users upgrading from old versions get the fix
     s.start("Updating plugin registry");
     try {
-      const ipRaw = JSON.parse(readFileSync(installedPluginsPath, "utf-8"));
-      const plugins = ipRaw.plugins ?? {};
-      let updated = false;
-      for (const [key, entries] of Object.entries(plugins)) {
-        if (!key.toLowerCase().includes("context-mode")) continue;
-        for (const entry of entries as Array<Record<string, unknown>>) {
-          entry.installPath = pluginRoot;
-          entry.version = newVersion;
-          entry.lastUpdated = new Date().toISOString();
-          updated = true;
+      const postUpgradeScript = `
+        const fs = require("fs");
+        const path = require("path");
+        const home = require("os").homedir();
+        const pluginRoot = ${JSON.stringify(pluginRoot)};
+        const newVersion = ${JSON.stringify(newVersion)};
+
+        // Update installed_plugins.json
+        const ipPath = path.resolve(home, ".claude", "plugins", "installed_plugins.json");
+        try {
+          const ipRaw = JSON.parse(fs.readFileSync(ipPath, "utf-8"));
+          const plugins = ipRaw.plugins || {};
+          let updated = false;
+          for (const [key, entries] of Object.entries(plugins)) {
+            if (!key.toLowerCase().includes("context-mode")) continue;
+            for (const entry of entries) {
+              entry.installPath = pluginRoot;
+              entry.version = newVersion;
+              entry.lastUpdated = new Date().toISOString();
+              updated = true;
+            }
+          }
+          if (updated) {
+            fs.writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\\n", "utf-8");
+            console.log("REGISTRY_UPDATED");
+          }
+        } catch (e) { console.error("REGISTRY_FAILED:" + e.message); }
+
+        // Clean old cache directories
+        const m = pluginRoot.match(/^(.*\\/plugins\\/cache\\/[^/]+\\/[^/]+\\/)([^/]+)$/);
+        if (m) {
+          try {
+            const dirs = fs.readdirSync(m[1]).filter(d => d !== m[2]);
+            for (const old of dirs) {
+              try { fs.rmSync(path.resolve(m[1], old), { recursive: true, force: true }); } catch {}
+            }
+            if (dirs.length > 0) console.log("CLEANED:" + dirs.length);
+          } catch {}
         }
-      }
-      if (updated) {
-        writeFileSync(installedPluginsPath, JSON.stringify(ipRaw, null, 2) + "\n", "utf-8");
+      `;
+      const result = execSync(`node -e ${JSON.stringify(postUpgradeScript)}`, {
+        stdio: "pipe",
+        timeout: 10000,
+        encoding: "utf-8",
+      });
+      if (result.includes("REGISTRY_UPDATED")) {
         s.stop(color.green("Plugin registry updated"));
         changes.push("Updated plugin registry");
       } else {
-        s.stop(color.yellow("No context-mode entry found in plugin registry"));
+        s.stop(color.yellow("Plugin registry unchanged"));
+      }
+      const cleanMatch = result.match(/CLEANED:(\d+)/);
+      if (cleanMatch) {
+        p.log.info(color.dim(`  Cleaned ${cleanMatch[1]} old cache dir(s)`));
       }
     } catch (err) {
       s.stop(color.yellow("Plugin registry update skipped"));
-      p.log.warn(color.yellow("Could not update installed_plugins.json") + color.dim(` — ${err instanceof Error ? err.message : String(err)}`));
-    }
-
-    // Clean up old cache directories (keep only current)
-    const cacheMatch = pluginRoot.match(
-      /^(.*\/plugins\/cache\/[^/]+\/[^/]+\/)([^/]+)$/,
-    );
-    if (cacheMatch) {
-      const cacheParent = cacheMatch[1];
-      const currentDir = cacheMatch[2];
-      try {
-        const dirs = readdirSync(cacheParent).filter(d => d !== currentDir);
-        for (const old of dirs) {
-          try { rmSync(resolve(cacheParent, old), { recursive: true, force: true }); } catch { /* skip */ }
-        }
-        if (dirs.length > 0) {
-          p.log.info(color.dim(`  Cleaned ${dirs.length} old cache dir(s)`));
-        }
-      } catch { /* parent doesn't exist or not readable */ }
+      p.log.warn(color.yellow("Could not update plugin registry") + color.dim(` — ${err instanceof Error ? err.message : String(err)}`));
     }
 
     // Update global npm package from same GitHub source
