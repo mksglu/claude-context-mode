@@ -21,8 +21,8 @@
   ],
   "mcpServers": {
     "context-mode": {
-      "command": "sh",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/start.sh"]
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/start.mjs"]
     }
   },
   "skills": "./skills/"

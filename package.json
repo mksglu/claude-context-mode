@@ -32,7 +32,7 @@
     "skills",
     ".claude-plugin",
     ".mcp.json",
-    "start.sh",
+    "start.mjs",
     "README.md",
     "LICENSE"
   ],

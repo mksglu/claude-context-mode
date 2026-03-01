@@ -13,7 +13,7 @@
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, copyFileSync, chmodSync, accessSync, readdirSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, cpSync, chmodSync, accessSync, readdirSync, rmSync, constants } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -416,12 +416,12 @@ async function upgrade() {
 
     // Step 2: Install dependencies + build
     s.start("Installing dependencies & building");
-    execSync("npm install --no-audit --no-fund 2>/dev/null", {
+    execSync("npm install --no-audit --no-fund", {
       cwd: srcDir,
       stdio: "pipe",
       timeout: 60000,
     });
-    execSync("npm run build 2>/dev/null", {
+    execSync("npm run build", {
       cwd: srcDir,
       stdio: "pipe",
       timeout: 30000,
@@ -432,19 +432,19 @@ async function upgrade() {
     s.start("Installing files");
     const items = [
       "build", "hooks", "skills", ".claude-plugin",
-      "start.sh", "server.bundle.mjs", "package.json", ".mcp.json",
+      "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
     ];
     for (const item of items) {
       try {
-        execSync(`rm -rf "${pluginRoot}/${item}"`, { stdio: "pipe" });
-        execSync(`cp -r "${srcDir}/${item}" "${pluginRoot}/"`, { stdio: "pipe" });
+        rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
+        cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
       } catch { /* some files may not exist */ }
     }
     s.stop(color.green("Files installed"));
 
     // Install production deps in plugin root
     s.start("Installing production dependencies");
-    execSync("npm install --production --no-audit --no-fund 2>/dev/null", {
+    execSync("npm install --production --no-audit --no-fund", {
       cwd: pluginRoot,
       stdio: "pipe",
       timeout: 60000,
@@ -460,8 +460,9 @@ async function upgrade() {
       const newCacheDir = cacheMatch[1] + newVersion;
       s.start(`Migrating cache: ${oldDirVersion} → ${newVersion}`);
       try {
-        execSync(`rm -rf "${newCacheDir}"`, { stdio: "pipe" });
-        execSync(`mv "${pluginRoot}" "${newCacheDir}"`, { stdio: "pipe" });
+        rmSync(newCacheDir, { recursive: true, force: true });
+        cpSync(pluginRoot, newCacheDir, { recursive: true });
+        rmSync(pluginRoot, { recursive: true, force: true });
         pluginRoot = newCacheDir;
         s.stop(color.green(`Cache directory: ${newVersion}`));
         changes.push(`Migrated cache: ${oldDirVersion} → ${newVersion}`);
@@ -485,7 +486,7 @@ async function upgrade() {
     }
 
     // Cleanup
-    execSync(`rm -rf "${tmpDir}"`, { stdio: "pipe" });
+    rmSync(tmpDir, { recursive: true, force: true });
 
     changes.push(
       newVersion !== localVersion
@@ -502,7 +503,7 @@ async function upgrade() {
     p.log.error(color.red("GitHub pull failed") + ` — ${message}`);
     p.log.info(color.dim("Continuing with hooks/settings fix..."));
     // Cleanup on failure
-    try { execSync(`rm -rf "${tmpDir}"`, { stdio: "pipe" }); } catch { /* ignore */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
   // Step 3: Backup settings.json
