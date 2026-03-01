@@ -441,7 +441,7 @@ async function upgrade() {
     });
     s.stop("Built successfully");
 
-    // Step 3: Nuke entire cache parent and install fresh with correct version dir
+    // Step 3: Install fresh into new version directory (don't touch old dir - process runs from it)
     s.start("Installing fresh");
     const cacheParentMatch = pluginRoot.match(
       /^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/,
@@ -450,21 +450,25 @@ async function upgrade() {
       ? resolve(cacheParentMatch[1], newVersion)
       : pluginRoot;
 
-    // Wipe all old cache directories
-    if (cacheParentMatch) {
-      const cacheParent = cacheParentMatch[1];
-      try {
-        const oldDirs = readdirSync(cacheParent);
-        for (const d of oldDirs) {
-          try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
-        }
-      } catch { /* parent may not exist */ }
+    // If fresh dir is different from current, create it. Otherwise update in-place.
+    if (freshDir !== pluginRoot) {
+      rmSync(freshDir, { recursive: true, force: true });
+      cpSync(srcDir, freshDir, { recursive: true });
+      pluginRoot = freshDir;
+    } else {
+      // Same dir — copy files in-place
+      const items = [
+        "build", "src", "hooks", "skills", ".claude-plugin",
+        "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
+      ];
+      for (const item of items) {
+        try {
+          rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
+          cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
+        } catch { /* some files may not exist */ }
+      }
     }
-
-    // Copy entire built source to fresh version directory
-    cpSync(srcDir, freshDir, { recursive: true });
-    pluginRoot = freshDir;
-    s.stop(color.green(`Installed to ${newVersion}`));
+    s.stop(color.green(`Installed to ${freshDir.split("/").pop() ?? newVersion}`));
 
     // Install production deps in fresh dir
     s.start("Installing production dependencies");
@@ -480,7 +484,7 @@ async function upgrade() {
     try {
       const scriptPath = resolve(tmpDir + "-post-upgrade.mjs");
       const scriptContent = [
-        `import { readFileSync, writeFileSync } from "fs";`,
+        `import { readFileSync, writeFileSync, readdirSync, rmSync as rm } from "fs";`,
         `import { resolve } from "path";`,
         `import { homedir } from "os";`,
         `const pluginRoot = ${JSON.stringify(pluginRoot)};`,
@@ -504,6 +508,13 @@ async function upgrade() {
         `    console.log("REGISTRY_UPDATED");`,
         `  }`,
         `} catch (e) { console.error("REGISTRY_FAILED:" + e.message); }`,
+        `const curDir = pluginRoot.split(/[\\/\\\\]/).pop();`,
+        `const parDir = pluginRoot.replace(/[\\/\\\\][^\\/\\\\]+$/, "");`,
+        `try {`,
+        `  for (const d of readdirSync(parDir).filter(x => x !== curDir)) {`,
+        `    try { rm(resolve(parDir, d), { recursive: true, force: true }); console.log("CLEANED:" + d); } catch {}`,
+        `  }`,
+        `} catch {}`,
       ].join("\n");
       writeFileSync(scriptPath, scriptContent, "utf-8");
       const result = execSync(`node ${scriptPath}`, {
