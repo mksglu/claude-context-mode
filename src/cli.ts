@@ -29,7 +29,7 @@ const args = process.argv.slice(2);
 if (args[0] === "setup") {
   setup();
 } else if (args[0] === "doctor") {
-  doctor();
+  doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
   upgrade();
 } else {
@@ -129,10 +129,12 @@ function semverGt(a: string, b: string): boolean {
  * Doctor
  * ------------------------------------------------------- */
 
-async function doctor() {
+async function doctor(): Promise<number> {
   if (process.stdout.isTTY) console.clear();
 
   p.intro(color.bgMagenta(color.white(" context-mode doctor ")));
+
+  let criticalFails = 0;
 
   const s = p.spinner();
   s.start("Running diagnostics");
@@ -161,10 +163,19 @@ async function doctor() {
   // Language coverage
   const total = 11;
   const pct = ((available.length / total) * 100).toFixed(0);
-  p.log.info(
-    `Language coverage: ${available.length}/${total} (${pct}%)` +
-      color.dim(` — ${available.join(", ")}`),
-  );
+  if (available.length < 2) {
+    criticalFails++;
+    p.log.error(
+      color.red(`Language coverage: ${available.length}/${total} (${pct}%)`) +
+        " — too few runtimes detected" +
+        color.dim(` — ${available.join(", ") || "none"}`),
+    );
+  } else {
+    p.log.info(
+      `Language coverage: ${available.length}/${total} (${pct}%)` +
+        color.dim(` — ${available.join(", ")}`),
+    );
+  }
 
   // Server test
   p.log.step("Testing server initialization...");
@@ -179,11 +190,13 @@ async function doctor() {
     if (result.exitCode === 0 && result.stdout.trim() === "ok") {
       p.log.success(color.green("Server test: PASS"));
     } else {
+      criticalFails++;
       p.log.error(
         color.red("Server test: FAIL") + ` — exit ${result.exitCode}`,
       );
     }
   } catch (err: unknown) {
+    criticalFails++;
     const message = err instanceof Error ? err.message : String(err);
     p.log.error(color.red("Server test: FAIL") + ` — ${message}`);
   }
@@ -280,9 +293,11 @@ async function doctor() {
     if (row && row.content === "hello world") {
       p.log.success(color.green("FTS5 / better-sqlite3: PASS") + " — native module works");
     } else {
+      criticalFails++;
       p.log.error(color.red("FTS5 / better-sqlite3: FAIL") + " — query returned unexpected result");
     }
   } catch (err: unknown) {
+    criticalFails++;
     const message = err instanceof Error ? err.message : String(err);
     p.log.error(
       color.red("FTS5 / better-sqlite3: FAIL") +
@@ -341,11 +356,19 @@ async function doctor() {
   }
 
   // Summary
+  if (criticalFails > 0) {
+    p.outro(
+      color.red(`Diagnostics failed — ${criticalFails} critical issue(s) found`),
+    );
+    return 1;
+  }
+
   p.outro(
     available.length >= 4
       ? color.green("Diagnostics complete!")
       : color.yellow("Some checks need attention — see above for details"),
   );
+  return 0;
 }
 
 /* -------------------------------------------------------
@@ -578,7 +601,10 @@ async function upgrade() {
   p.log.step("Running doctor to verify...");
   console.log();
 
-  await doctor();
+  const doctorCode = await doctor();
+  if (doctorCode !== 0) {
+    process.exit(doctorCode);
+  }
 }
 
 /* -------------------------------------------------------
