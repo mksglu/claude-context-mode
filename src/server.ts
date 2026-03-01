@@ -19,7 +19,10 @@ const server = new McpServer({
   version: VERSION,
 });
 
-const executor = new PolyglotExecutor({ runtimes });
+const executor = new PolyglotExecutor({
+  runtimes,
+  projectRoot: process.env.CLAUDE_PROJECT_DIR,
+});
 
 // Lazy singleton — no DB overhead unless index/search is used
 let _store: ContentStore | null = null;
