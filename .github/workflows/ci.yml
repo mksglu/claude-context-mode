@@ -29,11 +29,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "stable"
+          cache: false
 
       - uses: erlef/setup-beam@v1
+        if: runner.os != 'Windows'
         with:
           elixir-version: "1.17"
           otp-version: "27"
+
+      - name: Install Elixir (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install elixir --yes --no-progress
 
       - name: Install dependencies
         run: npm install

@@ -582,8 +582,8 @@ cat("sum:", sum(nums), "\\n")
         code: `
 nums = Enum.to_list(1..10)
 evens = Enum.filter(nums, fn n -> rem(n, 2) == 0 end)
-IO.puts("evens: \${Enum.join(evens, ", ")}")
-IO.puts("sum: \${Enum.sum(evens)}")
+IO.puts("evens: #{Enum.join(evens, ", ")}")
+IO.puts("sum: #{Enum.sum(evens)}")
         `,
       });
       assert.equal(r.exitCode, 0);
@@ -596,7 +596,7 @@ IO.puts("sum: \${Enum.sum(evens)}")
         code: `
 users = [%{name: "Alice", role: "admin"}, %{name: "Bob", role: "user"}]
 admins = Enum.filter(users, fn %{role: role} -> role == "admin" end)
-IO.puts("admins: \${length(admins)}")
+IO.puts("admins: #{length(admins)}")
         `,
       });
       assert.equal(r.exitCode, 0);
@@ -934,8 +934,8 @@ puts "Users: #{data['users'].length}"
         path: testFile,
         language: "elixir",
         code: `
-IO.puts("file size: \${byte_size(file_content)}")
-IO.puts("has users: \${String.contains?(file_content, "users")}")
+IO.puts("file size: #{byte_size(file_content)}")
+IO.puts("has users: #{String.contains?(file_content, "users")}")
         `,
       });
       assert.equal(r.exitCode, 0);
