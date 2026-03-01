@@ -53,7 +53,10 @@
     "test:fuzzy": "npx tsx tests/fuzzy-search.test.ts",
     "test:hooks": "npx tsx tests/hook-integration.test.ts",
     "test:project-dir": "npx tsx tests/project-dir.test.ts",
-    "test:all": "npx tsx tests/executor.test.ts && npx tsx tests/store.test.ts && npx tsx tests/fuzzy-search.test.ts && npx tsx tests/hook-integration.test.ts && npx tsx tests/project-dir.test.ts && npx tsx tests/use-cases.ts && npx tsx tests/context-comparison.ts && npx tsx tests/benchmark.ts && npx tsx tests/ecosystem-benchmark.ts"
+    "test:stream-cap": "npx tsx tests/stream-cap.test.ts",
+    "test:search-wiring": "npx tsx tests/search-wiring.test.ts",
+    "test:search-fallback": "npx tsx tests/search-fallback-integration.test.ts",
+    "test:all": "npx tsx tests/executor.test.ts && npx tsx tests/store.test.ts && npx tsx tests/fuzzy-search.test.ts && npx tsx tests/hook-integration.test.ts && npx tsx tests/project-dir.test.ts && npx tsx tests/stream-cap.test.ts && npx tsx tests/search-wiring.test.ts && npx tsx tests/search-fallback-integration.test.ts && npx tsx tests/use-cases.ts && npx tsx tests/context-comparison.ts && npx tsx tests/benchmark.ts && npx tsx tests/ecosystem-benchmark.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
