@@ -62,15 +62,17 @@ if (cacheMatch) {
   }
 }
 
-// Ensure native module is available
-if (!existsSync(resolve(__dirname, "node_modules", "better-sqlite3"))) {
-  try {
-    execSync("npm install better-sqlite3 --no-package-lock --no-save --silent", {
-      cwd: __dirname,
-      stdio: "pipe",
-      timeout: 60000,
-    });
-  } catch { /* best effort */ }
+// Ensure external dependencies are available
+for (const pkg of ["better-sqlite3", "turndown", "turndown-plugin-gfm", "@mixmark-io/domino"]) {
+  if (!existsSync(resolve(__dirname, "node_modules", pkg))) {
+    try {
+      execSync(`npm install ${pkg} --no-package-lock --no-save --silent`, {
+        cwd: __dirname,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+    } catch { /* best effort */ }
+  }
 }
 
 // Bundle exists (CI-built) — start instantly

@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "0.9.16",
+  "version": "0.9.17",
   "type": "module",
   "description": "Claude Code MCP plugin that saves 98% of your context window. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
   "author": "Mert Koseoğlu",
@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --minify",
+    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
@@ -56,18 +56,23 @@
     "test:stream-cap": "npx tsx tests/stream-cap.test.ts",
     "test:search-wiring": "npx tsx tests/search-wiring.test.ts",
     "test:search-fallback": "npx tsx tests/search-fallback-integration.test.ts",
+    "test:turndown": "npx tsx tests/turndown.test.ts",
     "test:all": "for f in tests/*.test.ts; do npx tsx \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
+    "@mixmark-io/domino": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "better-sqlite3": "^12.6.2",
     "picocolors": "^1.1.1",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.11",
+    "@types/turndown": "^5.0.5",
     "esbuild": "^0.27.3",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0"

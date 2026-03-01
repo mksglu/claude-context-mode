@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createRequire } from "node:module";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { ContentStore, cleanupStaleDBs, type SearchResult } from "./store.js";
@@ -753,76 +754,53 @@ server.registerTool(
 );
 
 // ─────────────────────────────────────────────────────────
+// Turndown path resolution (external dep, like better-sqlite3)
+// ─────────────────────────────────────────────────────────
+
+let _turndownPath: string | null = null;
+let _gfmPluginPath: string | null = null;
+
+function resolveTurndownPath(): string {
+  if (!_turndownPath) {
+    const require = createRequire(import.meta.url);
+    _turndownPath = require.resolve("turndown");
+  }
+  return _turndownPath;
+}
+
+function resolveGfmPluginPath(): string {
+  if (!_gfmPluginPath) {
+    const require = createRequire(import.meta.url);
+    _gfmPluginPath = require.resolve("turndown-plugin-gfm");
+  }
+  return _gfmPluginPath;
+}
+
+// ─────────────────────────────────────────────────────────
 // Tool: fetch_and_index
 // ─────────────────────────────────────────────────────────
 
-const HTML_TO_MARKDOWN_CODE = `
-const url = process.argv[1];
-if (!url) { console.error("No URL provided"); process.exit(1); }
+function buildFetchCode(url: string): string {
+  const turndownPath = JSON.stringify(resolveTurndownPath());
+  const gfmPath = JSON.stringify(resolveGfmPluginPath());
+  return `
+const TurndownService = require(${turndownPath});
+const { gfm } = require(${gfmPath});
+const url = ${JSON.stringify(url)};
 
 async function main() {
   const resp = await fetch(url);
   if (!resp.ok) { console.error("HTTP " + resp.status); process.exit(1); }
+  const html = await resp.text();
 
-  let html = await resp.text();
-
-  // Strip script, style, nav, header, footer tags with content
-  html = html.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, "");
-  html = html.replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, "");
-  html = html.replace(/<nav[^>]*>[\\s\\S]*?<\\/nav>/gi, "");
-  html = html.replace(/<header[^>]*>[\\s\\S]*?<\\/header>/gi, "");
-  html = html.replace(/<footer[^>]*>[\\s\\S]*?<\\/footer>/gi, "");
-
-  // Convert headings to markdown
-  html = html.replace(/<h1[^>]*>(.*?)<\\/h1>/gi, "\\n# $1\\n");
-  html = html.replace(/<h2[^>]*>(.*?)<\\/h2>/gi, "\\n## $1\\n");
-  html = html.replace(/<h3[^>]*>(.*?)<\\/h3>/gi, "\\n### $1\\n");
-  html = html.replace(/<h4[^>]*>(.*?)<\\/h4>/gi, "\\n#### $1\\n");
-
-  // Convert code blocks
-  html = html.replace(/<pre[^>]*><code[^>]*class="[^"]*language-(\\w+)"[^>]*>([\\s\\S]*?)<\\/code><\\/pre>/gi,
-    (_, lang, code) => "\\n\\\`\\\`\\\`" + lang + "\\n" + decodeEntities(code) + "\\n\\\`\\\`\\\`\\n");
-  html = html.replace(/<pre[^>]*><code[^>]*>([\\s\\S]*?)<\\/code><\\/pre>/gi,
-    (_, code) => "\\n\\\`\\\`\\\`\\n" + decodeEntities(code) + "\\n\\\`\\\`\\\`\\n");
-  html = html.replace(/<code[^>]*>([^<]*)<\\/code>/gi, "\\\`$1\\\`");
-
-  // Convert links
-  html = html.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\\/a>/gi, "[$2]($1)");
-
-  // Convert lists
-  html = html.replace(/<li[^>]*>(.*?)<\\/li>/gi, "- $1\\n");
-
-  // Convert paragraphs and line breaks
-  html = html.replace(/<p[^>]*>(.*?)<\\/p>/gi, "\\n$1\\n");
-  html = html.replace(/<br\\s*\\/?>/gi, "\\n");
-  html = html.replace(/<hr\\s*\\/?>/gi, "\\n---\\n");
-
-  // Strip remaining HTML tags
-  html = html.replace(/<[^>]+>/g, "");
-
-  // Decode HTML entities
-  html = decodeEntities(html);
-
-  // Clean up whitespace
-  html = html.replace(/\\n{3,}/g, "\\n\\n").trim();
-
-  console.log(html);
+  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+  td.use(gfm);
+  td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
+  console.log(td.turndown(html));
 }
-
-function decodeEntities(s) {
-  return s
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/g, "'")
-    .replace(/&#x2F;/g, "/")
-    .replace(/&nbsp;/g, " ");
-}
-
 main();
 `;
+}
 
 server.registerTool(
   "fetch_and_index",
@@ -845,7 +823,7 @@ server.registerTool(
   async ({ url, source }) => {
     try {
       // Execute fetch inside subprocess — raw HTML never enters context
-      const fetchCode = `process.argv[1] = ${JSON.stringify(url)};\n${HTML_TO_MARKDOWN_CODE}`;
+      const fetchCode = buildFetchCode(url);
       const result = await executor.execute({
         language: "javascript",
         code: fetchCode,
