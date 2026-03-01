@@ -130,7 +130,7 @@ function semverGt(a: string, b: string): boolean {
  * ------------------------------------------------------- */
 
 async function doctor() {
-  console.clear();
+  if (process.stdout.isTTY) console.clear();
 
   p.intro(color.bgMagenta(color.white(" context-mode doctor ")));
 
@@ -159,7 +159,7 @@ async function doctor() {
   }
 
   // Language coverage
-  const total = 10;
+  const total = 11;
   const pct = ((available.length / total) * 100).toFixed(0);
   p.log.info(
     `Language coverage: ${available.length}/${total} (${pct}%)` +
@@ -353,7 +353,7 @@ async function doctor() {
  * ------------------------------------------------------- */
 
 async function upgrade() {
-  console.clear();
+  if (process.stdout.isTTY) console.clear();
 
   p.intro(color.bgCyan(color.black(" context-mode upgrade ")));
 
@@ -586,7 +586,7 @@ async function upgrade() {
  * ------------------------------------------------------- */
 
 async function setup() {
-  console.clear();
+  if (process.stdout.isTTY) console.clear();
 
   p.intro(color.bgCyan(color.black(" context-mode setup ")));
 
