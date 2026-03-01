@@ -6,41 +6,68 @@
  * Cross-platform (Windows/macOS/Linux) — no bash/jq dependency.
  */
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync, cpSync, readdirSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 
-// ─── Self-heal registry (runs once per session via marker file) ───
+// ─── Self-heal: copy new code to registry's installPath + nuke stale cache ───
 try {
-  const marker = resolve(tmpdir(), "context-mode-registry-healed");
-  if (!existsSync(marker)) {
-    const hookDir = dirname(fileURLToPath(import.meta.url));
-    const myRoot = resolve(hookDir, "..");
-    const myVersion = basename(myRoot);
+  const hookDir = dirname(fileURLToPath(import.meta.url));
+  const myRoot = resolve(hookDir, "..");
+  const myPkg = JSON.parse(readFileSync(resolve(myRoot, "package.json"), "utf-8"));
+  const myVersion = myPkg.version ?? "unknown";
+  const marker = resolve(tmpdir(), `context-mode-healed-${myVersion}`);
 
-    if (/^\d+\.\d+\.\d+/.test(myVersion)) {
-      const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-      const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
-      let fixed = false;
+  if (myVersion !== "unknown" && !existsSync(marker)) {
+    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
 
-      for (const [key, entries] of Object.entries(ip.plugins || {})) {
-        if (!key.toLowerCase().includes("context-mode")) continue;
-        for (const entry of entries) {
-          if (entry.installPath !== myRoot) {
-            entry.installPath = myRoot;
-            entry.version = myVersion;
-            entry.lastUpdated = new Date().toISOString();
-            fixed = true;
+    for (const [key, entries] of Object.entries(ip.plugins || {})) {
+      if (!key.toLowerCase().includes("context-mode")) continue;
+      for (const entry of entries) {
+        const regPath = entry.installPath;
+
+        // Copy new code to registry's installPath if it's a different dir
+        if (regPath && regPath !== myRoot && existsSync(regPath)) {
+          const items = [
+            "build", "hooks", "skills", ".claude-plugin",
+            "start.mjs", "server.bundle.mjs", "package.json", ".mcp.json",
+          ];
+          for (const item of items) {
+            const src = resolve(myRoot, item);
+            if (existsSync(src)) {
+              try {
+                rmSync(resolve(regPath, item), { recursive: true, force: true });
+                cpSync(src, resolve(regPath, item), { recursive: true });
+              } catch { /* skip */ }
+            }
           }
         }
-      }
 
-      if (fixed) {
-        writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+        // Update version in registry
+        if (entry.version !== myVersion) {
+          entry.version = myVersion;
+          entry.lastUpdated = new Date().toISOString();
+        }
+
+        // Nuke all stale version dirs (keep only registry's installPath)
+        if (regPath) {
+          const cacheParent = dirname(regPath);
+          const keepDir = basename(regPath);
+          try {
+            for (const d of readdirSync(cacheParent)) {
+              if (d !== keepDir) {
+                try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
+              }
+            }
+          } catch { /* skip */ }
+        }
       }
-      writeFileSync(marker, Date.now().toString(), "utf-8");
     }
+
+    writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+    writeFileSync(marker, Date.now().toString(), "utf-8");
   }
 } catch { /* best effort — don't block hook */ }
 
