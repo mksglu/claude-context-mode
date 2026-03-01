@@ -9,6 +9,19 @@ import {
   type Language,
 } from "./runtime.js";
 
+const isWin = process.platform === "win32";
+
+/** Kill process tree — on Windows, proc.kill() only kills the shell, not children. */
+function killTree(proc: ReturnType<typeof spawn>): void {
+  if (isWin && proc.pid) {
+    try {
+      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
+    } catch { /* already dead */ }
+  } else {
+    proc.kill("SIGKILL");
+  }
+}
+
 export interface ExecResult {
   stdout: string;
   stderr: string;
@@ -123,7 +136,7 @@ export class PolyglotExecutor {
     cwd: string,
     timeout: number,
   ): Promise<ExecResult> {
-    const binSuffix = process.platform === "win32" ? ".exe" : "";
+    const binSuffix = isWin ? ".exe" : "";
     const binPath = srcPath.replace(/\.rs$/, "") + binSuffix;
 
     // Compile
@@ -202,13 +215,13 @@ export class PolyglotExecutor {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         env: this.#buildSafeEnv(cwd),
-        shell: process.platform === "win32",
+        shell: isWin,
       });
 
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        proc.kill("SIGKILL");
+        killTree(proc);
       }, timeout);
 
       // Stream-level byte cap: kill the process once combined stdout+stderr
@@ -226,7 +239,7 @@ export class PolyglotExecutor {
           stdoutChunks.push(chunk);
         } else if (!capExceeded) {
           capExceeded = true;
-          proc.kill("SIGKILL");
+          killTree(proc);
         }
       });
 
@@ -236,7 +249,7 @@ export class PolyglotExecutor {
           stderrChunks.push(chunk);
         } else if (!capExceeded) {
           capExceeded = true;
-          proc.kill("SIGKILL");
+          killTree(proc);
         }
       });
 
@@ -310,7 +323,6 @@ export class PolyglotExecutor {
       "XDG_DATA_HOME",
     ];
 
-    const isWin = process.platform === "win32";
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? (isWin ? "" : "/usr/local/bin:/usr/bin:/bin"),
       HOME: realHome,
