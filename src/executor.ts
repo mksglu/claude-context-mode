@@ -1,5 +1,5 @@
 import { spawn, execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -90,6 +90,7 @@ export class PolyglotExecutor {
       php: "php",
       perl: "pl",
       r: "R",
+      elixir: "exs",
     };
 
     // Go needs a main package wrapper if not present
@@ -100,6 +101,12 @@ export class PolyglotExecutor {
     // PHP needs opening tag if not present
     if (language === "php" && !code.trimStart().startsWith("<?")) {
       code = `<?php\n${code}`;
+    }
+
+    // Elixir: prepend compiled BEAM paths when inside a Mix project
+    if (language === "elixir" && existsSync(join(this.#projectRoot, "mix.exs"))) {
+      const escaped = JSON.stringify(join(this.#projectRoot, "_build/dev/lib"));
+      code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
     const fp = join(tmpDir, `script.${extMap[language]}`);
@@ -348,6 +355,8 @@ export class PolyglotExecutor {
         return `my $FILE_CONTENT_PATH = ${escaped};\nopen(my $fh, '<', $FILE_CONTENT_PATH) or die "Cannot open: $!";\nmy $FILE_CONTENT = do { local $/; <$fh> };\nclose($fh);\n${code}`;
       case "r":
         return `FILE_CONTENT_PATH <- ${escaped}\nFILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE)\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
+      case "elixir":
+        return `file_content_path = ${escaped}\nfile_content = File.read!(file_content_path)\n${code}`;
     }
   }
 }

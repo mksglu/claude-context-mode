@@ -10,7 +10,8 @@ export type Language =
   | "rust"
   | "php"
   | "perl"
-  | "r";
+  | "r"
+  | "elixir";
 
 export interface RuntimeInfo {
   command: string;
@@ -30,6 +31,7 @@ export interface RuntimeMap {
   php: string | null;
   perl: string | null;
   r: string | null;
+  elixir: string | null;
 }
 
 function commandExists(cmd: string): boolean {
@@ -82,6 +84,7 @@ export function detectRuntimes(): RuntimeMap {
       : commandExists("r")
         ? "r"
         : null,
+    elixir: commandExists("elixir") ? "elixir" : null,
   };
 }
 
@@ -140,6 +143,10 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
     );
   if (runtimes.r)
     lines.push(`  R:          ${runtimes.r} (${getVersion(runtimes.r)})`);
+  if (runtimes.elixir)
+    lines.push(
+      `  Elixir:     ${runtimes.elixir} (${getVersion(runtimes.elixir)})`,
+    );
 
   if (!bunPreferred) {
     lines.push("");
@@ -161,6 +168,7 @@ export function getAvailableLanguages(runtimes: RuntimeMap): Language[] {
   if (runtimes.php) langs.push("php");
   if (runtimes.perl) langs.push("perl");
   if (runtimes.r) langs.push("r");
+  if (runtimes.elixir) langs.push("elixir");
   return langs;
 }
 
@@ -235,5 +243,11 @@ export function buildCommand(
         throw new Error("R not available. Install R / Rscript.");
       }
       return [runtimes.r, filePath];
+
+    case "elixir":
+      if (!runtimes.elixir) {
+        throw new Error( "Elixir not available. Install elixir.");
+      }
+      return ["elixir", filePath];
   }
 }

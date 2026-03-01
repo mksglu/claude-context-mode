@@ -928,6 +928,21 @@ puts "Users: #{data['users'].length}"
     );
   });
 
+  if (runtimes.elixir) {
+    await test("execute_file: Elixir reads file_content", async () => {
+      const r = await executor.executeFile({
+        path: testFile,
+        language: "elixir",
+        code: `
+IO.puts("file size: \${byte_size(file_content)}")
+IO.puts("has users: \${String.contains?(file_content, "users")}")
+        `,
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("has users: true"));
+    });
+  }
+
   rmSync(testDir, { recursive: true, force: true });
 
   // ===== CONCURRENCY =====
