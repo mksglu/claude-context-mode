@@ -67,6 +67,27 @@ try {
     }
 
     writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+
+    // Create start.mjs if missing (old versions used start.sh)
+    const startMjs = resolve(myRoot, "start.mjs");
+    if (!existsSync(startMjs)) {
+      const shim = [
+        '#!/usr/bin/env node',
+        'import { existsSync } from "node:fs";',
+        'import { dirname, resolve } from "node:path";',
+        'import { fileURLToPath } from "node:url";',
+        'const __dirname = dirname(fileURLToPath(import.meta.url));',
+        'process.chdir(__dirname);',
+        'if (!process.env.CLAUDE_PROJECT_DIR) process.env.CLAUDE_PROJECT_DIR = process.cwd();',
+        'if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {',
+        '  await import("./server.bundle.mjs");',
+        '} else if (existsSync(resolve(__dirname, "build", "server.js"))) {',
+        '  await import("./build/server.js");',
+        '}',
+      ].join("\n");
+      writeFileSync(startMjs, shim, "utf-8");
+    }
+
     writeFileSync(marker, Date.now().toString(), "utf-8");
   }
 } catch { /* best effort — don't block hook */ }
