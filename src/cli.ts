@@ -61,7 +61,7 @@ function readSettings(): Record<string, unknown> | null {
 }
 
 function getHookScriptPath(): string {
-  return resolve(getPluginRoot(), "hooks", "pretooluse.sh");
+  return resolve(getPluginRoot(), "hooks", "pretooluse.mjs");
 }
 
 function getLocalVersion(): string {
@@ -212,14 +212,14 @@ async function doctor(): Promise<number> {
 
     if (preToolUse && preToolUse.length > 0) {
       const hasCorrectHook = preToolUse.some((entry) =>
-        entry.hooks?.some((h) => h.command?.includes("pretooluse.sh")),
+        entry.hooks?.some((h) => h.command?.includes("pretooluse.mjs")),
       );
       if (hasCorrectHook) {
         p.log.success(color.green("Hooks installed: PASS") + " — PreToolUse hook configured");
       } else {
         p.log.error(
           color.red("Hooks installed: FAIL") +
-            " — PreToolUse exists but does not point to pretooluse.sh" +
+            " — PreToolUse exists but does not point to pretooluse.mjs" +
             color.dim("\n  Run: npx context-mode upgrade"),
         );
       }
@@ -523,7 +523,7 @@ async function upgrade() {
 
   // Step 4: Fix hooks
   p.log.step("Configuring PreToolUse hooks...");
-  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.sh");
+  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
   const settings = readSettings() ?? {};
 
   const desiredHookEntry = {
@@ -531,7 +531,7 @@ async function upgrade() {
     hooks: [
       {
         type: "command",
-        command: "bash " + hookScriptPath,
+        command: "node " + hookScriptPath,
       },
     ],
   };
@@ -542,7 +542,7 @@ async function upgrade() {
   if (existingPreToolUse && Array.isArray(existingPreToolUse)) {
     const existingIdx = existingPreToolUse.findIndex((entry) => {
       const entryHooks = entry.hooks as Array<{ command?: string }> | undefined;
-      return entryHooks?.some((h) => h.command?.includes("pretooluse.sh"));
+      return entryHooks?.some((h) => h.command?.includes("pretooluse.mjs"));
     });
 
     if (existingIdx >= 0) {
@@ -580,7 +580,7 @@ async function upgrade() {
     accessSync(hookScriptPath, constants.R_OK);
     chmodSync(hookScriptPath, 0o755);
     p.log.success(color.green("Permissions set") + color.dim(" — chmod +x " + hookScriptPath));
-    changes.push("Set pretooluse.sh as executable");
+    changes.push("Set pretooluse.mjs as executable");
   } catch {
     p.log.error(
       color.red("Hook script not found") +

@@ -1,7 +1,7 @@
 /**
- * Hook Integration Tests -- pretooluse.sh
+ * Hook Integration Tests -- pretooluse.mjs
  *
- * Directly invokes the pretooluse.sh hook script by piping simulated
+ * Directly invokes the pretooluse.mjs hook script by piping simulated
  * JSON stdin (the same JSON that Claude Code sends) and asserts correct output.
  */
 
@@ -11,7 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK_PATH = join(__dirname, "..", "hooks", "pretooluse.sh");
+const HOOK_PATH = join(__dirname, "..", "hooks", "pretooluse.mjs");
 
 let passed = 0;
 let failed = 0;
@@ -46,7 +46,7 @@ interface HookResult {
 }
 
 function runHook(input: Record<string, unknown>): HookResult {
-  const result = spawnSync("bash", [HOOK_PATH], {
+  const result = spawnSync("node", [HOOK_PATH], {
     input: JSON.stringify(input),
     encoding: "utf-8",
     timeout: 5000,
@@ -108,7 +108,7 @@ function assertHookSpecificOutput(result: HookResult, key: string) {
 }
 
 async function main() {
-  console.log("\nContext Mode — Hook Integration Tests (pretooluse.sh)");
+  console.log("\nContext Mode — Hook Integration Tests (pretooluse.mjs)");
   console.log("======================================================\n");
 
   // ===== BASH: REDIRECTED COMMANDS =====

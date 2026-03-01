@@ -2,7 +2,7 @@
  * Subagent Output Budget Tests
  *
  * Tests the full subagent context protection pipeline:
- * 1. Hook injection: pretooluse.sh injects OUTPUT FORMAT into Task prompts
+ * 1. Hook injection: pretooluse.mjs injects OUTPUT FORMAT into Task prompts
  * 2. Shared KB: subagent index() → main agent search() via same ContentStore
  * 3. LLM compliance: real subagent respects word budget (requires `claude` CLI)
  *
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { ContentStore } from "../src/store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const HOOK_PATH = join(__dirname, "..", "hooks", "pretooluse.sh");
+const HOOK_PATH = join(__dirname, "..", "hooks", "pretooluse.mjs");
 const LIVE = process.argv.includes("--live");
 
 let passed = 0;
@@ -38,7 +38,7 @@ async function test(name: string, fn: () => void | Promise<void>) {
   }
 }
 
-// ─── ROUTING_BLOCK (identical to hooks/pretooluse.sh) ───
+// ─── ROUTING_BLOCK (identical to hooks/pretooluse.mjs) ───
 const ROUTING_BLOCK = `
 
 ---
@@ -75,7 +75,7 @@ The parent agent context window is precious. Your full response gets injected in
 ---`;
 
 /**
- * TypeScript mock of hooks/pretooluse.sh routing logic.
+ * TypeScript mock of hooks/pretooluse.mjs routing logic.
  * Replicates Task branch behavior without bash/jq dependency.
  */
 function runHook(input: Record<string, unknown>): string {

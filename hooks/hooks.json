@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs"
           }
         ]
       },
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs"
           }
         ]
       },
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs"
           }
         ]
       },
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs"
           }
         ]
       },
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs"
           }
         ]
       }
