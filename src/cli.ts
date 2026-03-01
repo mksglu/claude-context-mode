@@ -492,6 +492,22 @@ async function upgrade() {
     }
     s.stop(color.green(`Updated in-place to v${newVersion}`));
 
+    // Fix registry to point back to this pluginRoot (self-heal may have changed it)
+    try {
+      const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+      const ipRaw = JSON.parse(readFileSync(ipPath, "utf-8"));
+      for (const [key, entries] of Object.entries(ipRaw.plugins || {})) {
+        if (!key.toLowerCase().includes("context-mode")) continue;
+        for (const entry of (entries as Array<Record<string, unknown>>)) {
+          entry.installPath = pluginRoot;
+          entry.version = newVersion;
+          entry.lastUpdated = new Date().toISOString();
+        }
+      }
+      writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\n", "utf-8");
+      p.log.info(color.dim("  Registry synced to " + pluginRoot));
+    } catch { /* best effort */ }
+
     // Install production deps (rebuild native modules if needed)
     s.start("Installing production dependencies");
     execSync("npm install --production --no-audit --no-fund", {
