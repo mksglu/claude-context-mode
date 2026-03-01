@@ -38,13 +38,80 @@ async function test(name: string, fn: () => void | Promise<void>) {
   }
 }
 
+// ─── ROUTING_BLOCK (identical to hooks/pretooluse.sh) ───
+const ROUTING_BLOCK = `
+
+---
+CONTEXT WINDOW PROTECTION — USE CONTEXT-MODE MCP TOOLS
+
+Raw Bash/Read/WebFetch output floods your context. You have context-mode tools that keep data in sandbox.
+
+STEP 1 — GATHER: mcp__context-mode__batch_execute(commands, queries)
+  commands: [{label: "Name", command: "shell cmd"}, ...]
+  queries: ["query1", "query2", ...] — put 5-8 queries covering everything you need.
+  Runs all commands, indexes output, returns search results. ONE call, no follow-ups.
+
+STEP 2 — FOLLOW-UP: mcp__context-mode__search(queries: ["q1", "q2", "q3", ...])
+  Pass ALL follow-up questions as queries array. ONE call, not separate calls.
+
+OTHER: execute(language, code) | execute_file(path, language, code) | fetch_and_index(url) + search
+
+FORBIDDEN: Bash for output, Read for files, WebFetch. Bash is ONLY for git/mkdir/rm/mv.
+
+OUTPUT FORMAT — KEEP YOUR FINAL RESPONSE UNDER 500 WORDS:
+The parent agent context window is precious. Your full response gets injected into it.
+
+1. ARTIFACTS (PRDs, configs, code files) → Write to FILES, never return as inline text.
+   Return only: file path + 1-line description.
+2. DETAILED FINDINGS → Index into knowledge base:
+   mcp__context-mode__index(content: "...", source: "descriptive-label")
+   The parent agent shares the SAME knowledge base and can search() your indexed content.
+3. YOUR RESPONSE must be a concise summary:
+   - What you did (2-3 bullets)
+   - File paths created/modified (if any)
+   - Source labels you indexed (so parent can search)
+   - Key findings in bullet points
+   Do NOT return raw data, full file contents, or lengthy explanations.
+---`;
+
+/**
+ * TypeScript mock of hooks/pretooluse.sh routing logic.
+ * Replicates Task branch behavior without bash/jq dependency.
+ */
 function runHook(input: Record<string, unknown>): string {
-  const result = spawnSync("bash", [HOOK_PATH], {
-    input: JSON.stringify(input),
-    encoding: "utf-8",
-    timeout: 5000,
-  });
-  return result.stdout;
+  const toolName = (input as any).tool_name ?? "";
+  const toolInput = (input as any).tool_input ?? {};
+
+  if (toolName === "Task") {
+    const subagentType = toolInput.subagent_type ?? "";
+    const prompt = toolInput.prompt ?? "";
+
+    if (subagentType === "Bash") {
+      return JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          updatedInput: {
+            ...toolInput,
+            prompt: prompt + ROUTING_BLOCK,
+            subagent_type: "general-purpose",
+          },
+        },
+      });
+    }
+
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: {
+          ...toolInput,
+          prompt: prompt + ROUTING_BLOCK,
+        },
+      },
+    });
+  }
+
+  // Non-Task tools return empty (passthrough)
+  return "";
 }
 
 async function main() {

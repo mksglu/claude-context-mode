@@ -66,5 +66,8 @@ jobs:
       - name: Search fallback tests
         run: npx tsx tests/search-fallback-integration.test.ts
 
+      - name: Subagent budget tests
+        run: npx tsx tests/subagent-budget.test.ts
+
       - name: Doctor (verify server starts)
         run: npx tsx src/cli.ts doctor
