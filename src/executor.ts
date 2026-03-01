@@ -1,5 +1,5 @@
 import { spawn, execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -28,15 +28,18 @@ interface ExecuteFileOptions extends ExecuteOptions {
 
 export class PolyglotExecutor {
   #maxOutputBytes: number;
+  #hardCapBytes: number;
   #projectRoot: string;
   #runtimes: RuntimeMap;
 
   constructor(opts?: {
     maxOutputBytes?: number;
+    hardCapBytes?: number;
     projectRoot?: string;
     runtimes?: RuntimeMap;
   }) {
     this.#maxOutputBytes = opts?.maxOutputBytes ?? 102_400;
+    this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     this.#projectRoot = opts?.projectRoot ?? process.cwd();
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
   }
@@ -87,6 +90,7 @@ export class PolyglotExecutor {
       php: "php",
       perl: "pl",
       r: "R",
+      elixir: "exs",
     };
 
     // Go needs a main package wrapper if not present
@@ -97,6 +101,12 @@ export class PolyglotExecutor {
     // PHP needs opening tag if not present
     if (language === "php" && !code.trimStart().startsWith("<?")) {
       code = `<?php\n${code}`;
+    }
+
+    // Elixir: prepend compiled BEAM paths when inside a Mix project
+    if (language === "elixir" && existsSync(join(this.#projectRoot, "mix.exs"))) {
+      const escaped = JSON.stringify(join(this.#projectRoot, "_build/dev/lib"));
+      code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
     const fp = join(tmpDir, `script.${extMap[language]}`);
@@ -198,25 +208,43 @@ export class PolyglotExecutor {
         proc.kill("SIGKILL");
       }, timeout);
 
-      // Collect ALL output in full — smart truncation happens after
-      // process exits so we can keep head + tail.
-      // OOM is bounded by timeout (default 30s) and maxOutputBytes
-      // (used only for truncation threshold, not stream limiting).
+      // Stream-level byte cap: kill the process once combined stdout+stderr
+      // exceeds hardCapBytes. Without this, a command like `yes` or
+      // `cat /dev/urandom | base64` can accumulate gigabytes in memory
+      // before the timeout fires.
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
+      let totalBytes = 0;
+      let capExceeded = false;
 
       proc.stdout!.on("data", (chunk: Buffer) => {
-        stdoutChunks.push(chunk);
+        totalBytes += chunk.length;
+        if (totalBytes <= this.#hardCapBytes) {
+          stdoutChunks.push(chunk);
+        } else if (!capExceeded) {
+          capExceeded = true;
+          proc.kill("SIGKILL");
+        }
       });
 
       proc.stderr!.on("data", (chunk: Buffer) => {
-        stderrChunks.push(chunk);
+        totalBytes += chunk.length;
+        if (totalBytes <= this.#hardCapBytes) {
+          stderrChunks.push(chunk);
+        } else if (!capExceeded) {
+          capExceeded = true;
+          proc.kill("SIGKILL");
+        }
       });
 
       proc.on("close", (exitCode) => {
         clearTimeout(timer);
         const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
-        const rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
+        let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
+
+        if (capExceeded) {
+          rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB — process killed]`;
+        }
 
         const max = this.#maxOutputBytes;
         const stdout = PolyglotExecutor.#smartTruncate(rawStdout, max);
@@ -310,8 +338,11 @@ export class PolyglotExecutor {
         return `const FILE_CONTENT_PATH = ${escaped};\nconst FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
       case "python":
         return `FILE_CONTENT_PATH = ${escaped}\nwith open(FILE_CONTENT_PATH, "r") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
-      case "shell":
-        return `FILE_CONTENT_PATH=${escaped}\nFILE_CONTENT=$(cat ${escaped})\n${code}`;
+      case "shell": {
+        // Single-quote the path to prevent $, backtick, and ! expansion
+        const sq = "'" + absolutePath.replace(/'/g, "'\\''") + "'";
+        return `FILE_CONTENT_PATH=${sq}\nFILE_CONTENT=$(cat ${sq})\n${code}`;
+      }
       case "ruby":
         return `FILE_CONTENT_PATH = ${escaped}\nFILE_CONTENT = File.read(FILE_CONTENT_PATH)\n${code}`;
       case "go":
@@ -324,6 +355,8 @@ export class PolyglotExecutor {
         return `my $FILE_CONTENT_PATH = ${escaped};\nopen(my $fh, '<', $FILE_CONTENT_PATH) or die "Cannot open: $!";\nmy $FILE_CONTENT = do { local $/; <$fh> };\nclose($fh);\n${code}`;
       case "r":
         return `FILE_CONTENT_PATH <- ${escaped}\nFILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE)\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
+      case "elixir":
+        return `file_content_path = ${escaped}\nfile_content = File.read!(file_content_path)\n${code}`;
     }
   }
 }

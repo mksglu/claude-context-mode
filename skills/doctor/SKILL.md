@@ -16,7 +16,7 @@ Run diagnostics and display results directly in the conversation.
 1. Derive the **plugin root** from this skill's base directory (go up 2 levels — remove `/skills/doctor`).
 2. Run with Bash:
    ```
-   node "<PLUGIN_ROOT>/build/cli.js" doctor
+   npx tsx "<PLUGIN_ROOT>/src/cli.ts" doctor
    ```
 3. **IMPORTANT**: After the Bash tool completes, re-display the key results as markdown text directly in the conversation so the user sees them without expanding the tool output. Format as a checklist:
    ```

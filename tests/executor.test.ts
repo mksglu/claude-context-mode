@@ -95,6 +95,7 @@ async function main() {
       php: null,
       perl: null,
       r: null,
+      elixir: null,
     };
     assert.throws(
       () => buildCommand(noRuntimes, "typescript", "/tmp/t.ts"),
@@ -107,6 +108,10 @@ async function main() {
     assert.throws(
       () => buildCommand(noRuntimes, "ruby", "/tmp/t.rb"),
       /Ruby not available/,
+    );
+    assert.throws(
+      () => buildCommand(noRuntimes, "elixir", "/tmp/t.exs"),
+      /Elixir not available/,
     );
   });
 
@@ -558,6 +563,74 @@ cat("sum:", sum(nums), "\\n")
     skip("R tests", "R / Rscript not available");
   }
 
+  // ===== ELIXIR =====
+  console.log("\n--- Elixir Execution ---\n");
+
+  if (runtimes.elixir) {
+    await test("Elixir: hello world", async () => {
+      const r = await executor.execute({
+        language: "elixir",
+        code: 'IO.puts("hello from elixir")',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("hello from elixir"));
+    });
+
+    await test("Elixir: list operations + Enum", async () => {
+      const r = await executor.execute({
+        language: "elixir",
+        code: `
+nums = Enum.to_list(1..10)
+evens = Enum.filter(nums, fn n -> rem(n, 2) == 0 end)
+IO.puts("evens: \${Enum.join(evens, ", ")}")
+IO.puts("sum: \${Enum.sum(evens)}")
+        `,
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("sum: 30"));
+    });
+
+    await test("Elixir: map + pattern matching", async () => {
+      const r = await executor.execute({
+        language: "elixir",
+        code: `
+users = [%{name: "Alice", role: "admin"}, %{name: "Bob", role: "user"}]
+admins = Enum.filter(users, fn %{role: role} -> role == "admin" end)
+IO.puts("admins: \${length(admins)}")
+        `,
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("admins: 1"));
+    });
+
+    await test("Elixir: pipe operator + String functions", async () => {
+      const r = await executor.execute({
+        language: "elixir",
+        code: `
+result =
+  "hello world from elixir"
+  |> String.split()
+  |> Enum.map(&String.upcase/1)
+  |> Enum.join(" ")
+IO.puts(result)
+        `,
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("HELLO WORLD FROM ELIXIR"));
+    });
+
+    await test("Elixir: error raises non-zero exit", async () => {
+      const r = await executor.execute({
+        language: "elixir",
+        code: 'raise "intentional error"',
+      });
+      assert.notEqual(r.exitCode, 0);
+      assert.ok(r.stderr.length > 0 || r.stdout.includes("intentional error"));
+    });
+  } else {
+    skip("Elixir tests", "Elixir not available");
+  }
+
   // ===== ERROR HANDLING =====
   console.log("\n--- Error Handling ---\n");
 
@@ -753,6 +826,120 @@ puts "Users: #{data['users'].length}"
       });
       assert.equal(r.exitCode, 0);
       assert.ok(r.stdout.includes("Users: 3"));
+    });
+  }
+
+  // --- execute_file: shell $ expansion in paths ---
+
+  const dollarDir = join(testDir, "path$SHOULD_NOT_EXPAND");
+  mkdirSync(dollarDir, { recursive: true });
+  const dollarFile = join(dollarDir, "data.txt");
+  writeFileSync(dollarFile, "dollar-sign-content", "utf-8");
+
+  await test("execute_file: Shell path with $ is not expanded", async () => {
+    const r = await executor.executeFile({
+      path: dollarFile,
+      language: "shell",
+      code: 'echo "content: $FILE_CONTENT"',
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(
+      r.stdout.includes("content: dollar-sign-content"),
+      `Expected literal file content, got: ${r.stdout}`,
+    );
+  });
+  // --- execute_file: shell paths with spaces ---
+
+  const spaceDir = join(testDir, "path with spaces");
+  mkdirSync(spaceDir, { recursive: true });
+  const spaceFile = join(spaceDir, "space file.txt");
+  writeFileSync(spaceFile, "space-content", "utf-8");
+
+  await test("execute_file: Shell path with spaces works correctly", async () => {
+    const r = await executor.executeFile({
+      path: spaceFile,
+      language: "shell",
+      code: 'echo "content: $FILE_CONTENT"',
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(
+      r.stdout.includes("content: space-content"),
+      `Expected literal file content, got: ${r.stdout}`,
+    );
+  });
+
+  // --- execute_file: shell paths with single quotes ---
+
+  const quoteDir = join(testDir, "it's-a-dir");
+  mkdirSync(quoteDir, { recursive: true });
+  const quoteFile = join(quoteDir, "quote.txt");
+  writeFileSync(quoteFile, "quote-content", "utf-8");
+
+  await test("execute_file: Shell path with single quotes works correctly", async () => {
+    const r = await executor.executeFile({
+      path: quoteFile,
+      language: "shell",
+      code: 'echo "content: $FILE_CONTENT"',
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(
+      r.stdout.includes("content: quote-content"),
+      `Expected literal file content, got: ${r.stdout}`,
+    );
+  });
+
+  // --- execute_file: shell paths with backticks ---
+
+  const backtickDir = join(testDir, "dir`tick");
+  mkdirSync(backtickDir, { recursive: true });
+  const backtickFile = join(backtickDir, "bt.txt");
+  writeFileSync(backtickFile, "backtick-content", "utf-8");
+
+  await test("execute_file: Shell path with backticks is not executed", async () => {
+    const r = await executor.executeFile({
+      path: backtickFile,
+      language: "shell",
+      code: 'echo "content: $FILE_CONTENT"',
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(
+      r.stdout.includes("content: backtick-content"),
+      `Expected literal file content, got: ${r.stdout}`,
+    );
+  });
+
+  // --- execute_file: shell paths with combined special characters ---
+
+  const comboDir = join(testDir, "$HOME has `spaces` & 'quotes'");
+  mkdirSync(comboDir, { recursive: true });
+  const comboFile = join(comboDir, "combo.txt");
+  writeFileSync(comboFile, "combo-content", "utf-8");
+
+  await test("execute_file: Shell path with combined special chars works", async () => {
+    const r = await executor.executeFile({
+      path: comboFile,
+      language: "shell",
+      code: 'echo "content: $FILE_CONTENT"',
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(
+      r.stdout.includes("content: combo-content"),
+      `Expected literal file content, got: ${r.stdout}`,
+    );
+  });
+
+  if (runtimes.elixir) {
+    await test("execute_file: Elixir reads file_content", async () => {
+      const r = await executor.executeFile({
+        path: testFile,
+        language: "elixir",
+        code: `
+IO.puts("file size: \${byte_size(file_content)}")
+IO.puts("has users: \${String.contains?(file_content, "users")}")
+        `,
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("has users: true"));
     });
   }
 

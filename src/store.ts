@@ -567,14 +567,15 @@ export class ContentStore {
     const minAppearances = 2;
     const maxAppearances = Math.max(3, Math.ceil(totalChunks * 0.4));
 
-    const rows = this.#db
-      .prepare("SELECT content FROM chunks WHERE source_id = ?")
-      .all(sourceId) as Array<{ content: string }>;
+    // Stream chunks one at a time to avoid loading all content into memory
+    const stmt = this.#db.prepare(
+      "SELECT content FROM chunks WHERE source_id = ?",
+    );
 
     // Count document frequency (how many sections contain each word)
     const docFreq = new Map<string, number>();
 
-    for (const row of rows) {
+    for (const row of stmt.iterate(sourceId) as Iterable<{ content: string }>) {
       const words = new Set(
         row.content
           .toLowerCase()
@@ -653,9 +654,11 @@ export class ContentStore {
       "INSERT OR IGNORE INTO vocabulary (word) VALUES (?)",
     );
 
-    for (const word of unique) {
-      insert.run(word);
-    }
+    this.#db.transaction(() => {
+      for (const word of unique) {
+        insert.run(word);
+      }
+    })();
   }
 
   // ── Chunking ──

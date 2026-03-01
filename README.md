@@ -68,7 +68,7 @@ Code Mode showed that tool definitions can be compressed by 99.9%. Context Mode 
 
 Each `execute` call spawns an isolated subprocess with its own process boundary. Scripts can't access each other's memory or state. The subprocess runs your code, captures stdout, and only that stdout enters the conversation context. The raw data — log files, API responses, snapshots — never leaves the sandbox.
 
-Ten language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R. Bun is auto-detected for 3-5x faster JS/TS execution.
+Eleven language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R, and Elixir. Bun is auto-detected for 3-5x faster JS/TS execution.
 
 Authenticated CLIs work through credential passthrough — `gh`, `aws`, `gcloud`, `kubectl`, `docker` inherit environment variables and config paths without exposing them to the conversation.
 
@@ -198,6 +198,12 @@ cd claude-context-mode && npm install
 npm test              # run tests
 npm run test:all      # full suite
 ```
+
+## Contributors
+
+<a href="https://github.com/mksglu/claude-context-mode/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=mksglu/claude-context-mode" />
+</a>
 
 ## License
 
