@@ -23,7 +23,7 @@
   "homepage": "https://github.com/mksglu/claude-context-mode#readme",
   "bugs": "https://github.com/mksglu/claude-context-mode/issues",
   "bin": {
-    "context-mode": "./build/server.js"
+    "context-mode": "./server.bundle.mjs"
   },
   "files": [
     "build",
@@ -40,7 +40,7 @@
     "build": "tsc",
     "bundle": "esbuild src/cli.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --minify",
     "prepublishOnly": "npm run build && npm run bundle",
-    "dev": "npx tsx src/server.ts",
+    "dev": "npx tsx src/cli.ts",
     "setup": "npx tsx src/cli.ts setup",
     "doctor": "npx tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
