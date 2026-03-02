@@ -1033,6 +1033,37 @@ IO.puts("has users: #{String.contains?(file_content, "users")}")
     assert.ok(r.stdout.includes("Hello"));
   });
 
+  // ===== SANDBOX INTEGRATION =====
+  console.log("\n--- Sandbox Integration ---\n");
+
+  await test("accepts wrapCommand option", async () => {
+    let wrappedCmd = "";
+    const sandboxedExecutor = new PolyglotExecutor({
+      runtimes,
+      wrapCommand: async (cmd: string) => {
+        wrappedCmd = cmd;
+        return cmd; // passthrough — just record what was passed
+      },
+    });
+    const r = await sandboxedExecutor.execute({
+      language: "shell",
+      code: 'echo "sandboxed"',
+    });
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes("sandboxed"));
+    assert.ok(wrappedCmd.length > 0, "wrapCommand should have been called");
+    assert.ok(wrappedCmd.includes("script.sh"), `Expected script path in: ${wrappedCmd}`);
+  });
+
+  await test("wrapCommand not called when not provided", async () => {
+    const r = await executor.execute({
+      language: "shell",
+      code: 'echo "no sandbox"',
+    });
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes("no sandbox"));
+  });
+
   // ===== SUMMARY =====
   console.log("\n" + "=".repeat(60));
   console.log(
