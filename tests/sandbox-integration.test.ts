@@ -64,15 +64,15 @@ async function main() {
     assert.ok(r.stdout.includes("hello"));
   });
 
-  await test("allows write to /tmp", async () => {
-    const tmpFile = join(tmpdir(), `sandbox-test-${Date.now()}.txt`);
+  await test("allows write to sandbox TMPDIR (/tmp/claude)", async () => {
+    // The seatbelt profile blocks direct writes to /tmp but allows writing
+    // under /tmp/claude (the TMPDIR that wrapWithSandbox injects).
     const r = await executor.execute({
       language: "shell",
-      code: `echo "tmpwrite" > "${tmpFile}" && cat "${tmpFile}"`,
+      code: `mkdir -p /tmp/claude && echo "tmpwrite" > /tmp/claude/sandbox-test.txt && cat /tmp/claude/sandbox-test.txt`,
     });
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.includes("tmpwrite"));
-    try { rmSync(tmpFile, { force: true }); } catch {}
   });
 
   await test("blocks write to home directory", async () => {

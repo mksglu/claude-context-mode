@@ -334,16 +334,25 @@ export class PolyglotExecutor {
       "NPM_TOKEN",
       "NODE_AUTH_TOKEN",
       "npm_config_registry",
-      // General
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NO_PROXY",
-      "SSL_CERT_FILE",
-      "CURL_CA_BUNDLE",
       // XDG (config paths for gh, gcloud, etc.)
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
     ];
+
+    // When sandbox wrapping is active, wrapWithSandbox() injects its own proxy
+    // env vars (HTTP_PROXY, HTTPS_PROXY, etc.) via the `env` command prefix.
+    // Passing through the parent's proxy/cert vars would be redundant at best
+    // and harmful at worst — e.g. SSL_CERT_FILE may point to a CA bundle that
+    // the seatbelt/bwrap profile blocks, causing TLS verification failures.
+    if (!this.#wrapCommand) {
+      passthrough.push(
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "CURL_CA_BUNDLE",
+      );
+    }
 
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? (isWin ? "" : "/usr/local/bin:/usr/bin:/bin"),
