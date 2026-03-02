@@ -324,6 +324,12 @@ export class PolyglotExecutor {
       // XDG (config paths for gh, gcloud, etc.)
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
+      // SSH agent socket — required for git/jj operations that use SSH remotes.
+      // Without this, subprocesses cannot reach the agent and fall back to
+      // prompting for the key passphrase directly on the TTY, which corrupts
+      // Claude Code's PTY ownership.
+      "SSH_AUTH_SOCK",
+      "SSH_AGENT_PID",
     ];
 
     const env: Record<string, string> = {
