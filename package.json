@@ -57,6 +57,7 @@
     "test:search-wiring": "npx tsx tests/search-wiring.test.ts",
     "test:search-fallback": "npx tsx tests/search-fallback-integration.test.ts",
     "test:turndown": "npx tsx tests/turndown.test.ts",
+    "test:sandbox": "npx tsx tests/sandbox-integration.test.ts",
     "test:all": "for f in tests/*.test.ts; do npx tsx \"$f\" || exit 1; done"
   },
   "dependencies": {
