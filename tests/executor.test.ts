@@ -7,6 +7,7 @@ import {
   detectRuntimes,
   buildCommand,
   getRuntimeSummary,
+  getAvailableLanguages,
   type RuntimeMap,
 } from "../src/runtime.js";
 
@@ -1031,6 +1032,48 @@ IO.puts("has users: #{String.contains?(file_content, "users")}")
     });
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.includes("Hello"));
+  });
+
+  // ===== WINDOWS SHELL SUPPORT =====
+  console.log("\n--- Windows Shell Support ---\n");
+
+  await test("execute returns error when shell runtime is null (not ENOENT crash)", async () => {
+    const noShellRuntimes: RuntimeMap = { ...runtimes, shell: null };
+    const noShellExecutor = new PolyglotExecutor({ runtimes: noShellRuntimes });
+    const r = await noShellExecutor.execute({
+      language: "shell",
+      code: 'echo "hello"',
+    });
+    // Should get a non-zero exit code with a meaningful error, NOT an unhandled ENOENT
+    assert.notEqual(r.exitCode, 0, "Should fail when shell is null");
+    assert.ok(
+      r.stderr.toLowerCase().includes("shell") || r.stderr.toLowerCase().includes("not available"),
+      `Expected meaningful error about shell, got: ${r.stderr}`,
+    );
+  });
+
+  await test("getAvailableLanguages excludes shell when runtime is null", async () => {
+    const noShellRuntimes: RuntimeMap = { ...runtimes, shell: null };
+    const { getAvailableLanguages } = await import("../src/runtime.js");
+    const langs = getAvailableLanguages(noShellRuntimes);
+    assert.ok(!langs.includes("shell"), `shell should not be in available languages when null, got: ${langs}`);
+  });
+
+  await test("buildCommand throws for null shell", async () => {
+    const noShellRuntimes: RuntimeMap = { ...runtimes, shell: null };
+    let threw = false;
+    let errorMsg = "";
+    try {
+      buildCommand(noShellRuntimes, "shell", "/tmp/script.sh");
+    } catch (err: unknown) {
+      threw = true;
+      errorMsg = err instanceof Error ? err.message : String(err);
+    }
+    assert.ok(threw, "buildCommand should throw when shell is null");
+    assert.ok(
+      errorMsg.toLowerCase().includes("no shell") || errorMsg.toLowerCase().includes("not available"),
+      `Expected shell-related error, got: ${errorMsg}`,
+    );
   });
 
   // ===== SUMMARY =====

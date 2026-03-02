@@ -24,7 +24,7 @@ export interface RuntimeMap {
   javascript: string;
   typescript: string | null;
   python: string | null;
-  shell: string;
+  shell: string | null;
   ruby: string | null;
   go: string | null;
   rust: string | null;
@@ -77,7 +77,15 @@ export function detectRuntimes(): RuntimeMap {
       : commandExists("python")
         ? "python"
         : null,
-    shell: commandExists("bash") ? "bash" : "sh",
+    shell: commandExists("bash")
+      ? "bash"
+      : commandExists("sh")
+        ? "sh"
+        : commandExists("powershell")
+          ? "powershell"
+          : commandExists("cmd.exe")
+            ? "cmd.exe"
+            : null,
     ruby: commandExists("ruby") ? "ruby" : null,
     go: commandExists("go") ? "go" : null,
     rust: commandExists("rustc") ? "rustc" : null,
@@ -122,9 +130,13 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
     lines.push(`  Python:     not available`);
   }
 
-  lines.push(
-    `  Shell:      ${runtimes.shell} (${getVersion(runtimes.shell)})`,
-  );
+  if (runtimes.shell) {
+    lines.push(
+      `  Shell:      ${runtimes.shell} (${getVersion(runtimes.shell)})`,
+    );
+  } else {
+    lines.push(`  Shell:      not available`);
+  }
 
   // Optional runtimes — only show if available
   if (runtimes.ruby)
@@ -163,7 +175,8 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
 }
 
 export function getAvailableLanguages(runtimes: RuntimeMap): Language[] {
-  const langs: Language[] = ["javascript", "shell"];
+  const langs: Language[] = ["javascript"];
+  if (runtimes.shell) langs.push("shell");
   if (runtimes.typescript) langs.push("typescript");
   if (runtimes.python) langs.push("python");
   if (runtimes.ruby) langs.push("ruby");
@@ -206,6 +219,11 @@ export function buildCommand(
       return [runtimes.python, filePath];
 
     case "shell":
+      if (!runtimes.shell) {
+        throw new Error(
+          "No shell runtime available. Install bash, sh, powershell, or cmd.",
+        );
+      }
       return [runtimes.shell, filePath];
 
     case "ruby":
