@@ -23,7 +23,11 @@ description: |
 
 ## MANDATORY RULE
 
-**Default to context-mode for ALL commands. Only use Bash for guaranteed-small-output operations.**
+<context_mode_logic>
+  <mandatory_rule>
+    Default to context-mode for ALL commands. Only use Bash for guaranteed-small-output operations.
+  </mandatory_rule>
+</context_mode_logic>
 
 Bash whitelist (safe to run directly):
 - **File mutations**: `mkdir`, `mv`, `cp`, `rm`, `touch`, `chmod`
@@ -149,6 +153,21 @@ Use context-mode for ANY of these, without being asked:
 6. **Never use `index(content: large_data)`.** Use `index(path: ...)` to read files server-side. The `content` parameter sends data through context as a tool parameter — use it only for small inline text.
 7. **Always use `filename` parameter** on Playwright tools (`browser_snapshot`, `browser_console_messages`, `browser_network_requests`). Without it, the full output enters context.
 8. **Don't re-index data already in context.** If an MCP tool returned data in a previous response, it's already loaded — use it directly or save to file first.
+
+## Sandboxed Data Workflow
+
+<sandboxed_data_workflow>
+  <critical_rule>
+    When using tools that support saving to a file: ALWAYS use the 'filename' parameter.
+    NEVER return large raw datasets directly to context.
+  </critical_rule>
+  <workflow>
+    LargeDataTool(filename: "path") → mcp__context-mode__index(path: "path") → search()
+  </workflow>
+</sandboxed_data_workflow>
+
+This is the universal pattern for context preservation regardless of
+the source tool (Playwright, GitHub API, AWS CLI, etc.).
 
 ## Examples
 
