@@ -209,11 +209,6 @@ if (tool === "Grep") {
   process.exit(0);
 }
 
-// ─── Glob: passthrough ───
-if (tool === "Glob") {
-  process.exit(0);
-}
-
 // ─── WebFetch: deny + redirect to sandbox ───
 if (tool === "WebFetch") {
   const url = toolInput.url ?? "";
@@ -224,11 +219,6 @@ if (tool === "WebFetch") {
       reason: `context-mode: WebFetch blocked. Use mcp__context-mode__fetch_and_index(url: "${url}", source: "...") to fetch this URL in sandbox. Then use mcp__context-mode__search(queries: [...]) to query results. Do NOT use curl/wget — they are also blocked.`,
     },
   }));
-  process.exit(0);
-}
-
-// ─── WebSearch: passthrough ───
-if (tool === "WebSearch") {
   process.exit(0);
 }
 
