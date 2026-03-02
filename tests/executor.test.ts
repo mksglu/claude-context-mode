@@ -945,6 +945,65 @@ IO.puts("has users: #{String.contains?(file_content, "users")}")
 
   rmSync(testDir, { recursive: true, force: true });
 
+  // ===== ENVIRONMENT PASSTHROUGH =====
+  console.log("\n--- Environment Passthrough ---\n");
+
+  await test("SSH_AUTH_SOCK is passed through to subprocess when set", async () => {
+    const original = process.env.SSH_AUTH_SOCK;
+    process.env.SSH_AUTH_SOCK = "/tmp/test-ssh-agent.sock";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(
+        r.stdout.includes("/tmp/test-ssh-agent.sock"),
+        `Expected SSH_AUTH_SOCK to be passed through, got: ${r.stdout}`,
+      );
+    } finally {
+      if (original === undefined) delete process.env.SSH_AUTH_SOCK;
+      else process.env.SSH_AUTH_SOCK = original;
+    }
+  });
+
+  await test("SSH_AGENT_PID is passed through to subprocess when set", async () => {
+    const original = process.env.SSH_AGENT_PID;
+    process.env.SSH_AGENT_PID = "99999";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'echo "SSH_AGENT_PID=$SSH_AGENT_PID"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(
+        r.stdout.includes("99999"),
+        `Expected SSH_AGENT_PID to be passed through, got: ${r.stdout}`,
+      );
+    } finally {
+      if (original === undefined) delete process.env.SSH_AGENT_PID;
+      else process.env.SSH_AGENT_PID = original;
+    }
+  });
+
+  await test("SSH_AUTH_SOCK is absent from subprocess when not set in parent", async () => {
+    const original = process.env.SSH_AUTH_SOCK;
+    delete process.env.SSH_AUTH_SOCK;
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'if [ -z "${SSH_AUTH_SOCK+x}" ]; then echo "unset"; else echo "set=$SSH_AUTH_SOCK"; fi',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(
+        r.stdout.includes("unset"),
+        `Expected SSH_AUTH_SOCK to be absent, got: ${r.stdout}`,
+      );
+    } finally {
+      if (original !== undefined) process.env.SSH_AUTH_SOCK = original;
+    }
+  });
+
   // ===== CONCURRENCY =====
   console.log("\n--- Concurrent Execution ---\n");
 
