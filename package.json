@@ -31,6 +31,8 @@
     "server.bundle.mjs",
     "skills",
     ".claude-plugin",
+    ".cursor-plugin",
+    "assets",
     ".mcp.json",
     "start.mjs",
     "README.md",

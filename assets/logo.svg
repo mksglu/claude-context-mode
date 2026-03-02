@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#c4b5fd"/>
+      <stop offset="100%" style="stop-color:#a78bfa"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- Window frame -->
+  <rect x="96" y="120" width="320" height="272" rx="20" fill="white" fill-opacity="0.15" stroke="white" stroke-opacity="0.3" stroke-width="3"/>
+  <line x1="96" y1="168" x2="416" y2="168" stroke="white" stroke-opacity="0.3" stroke-width="3"/>
+
+  <!-- Window dots -->
+  <circle cx="124" cy="144" r="8" fill="#f87171"/>
+  <circle cx="152" cy="144" r="8" fill="#fbbf24"/>
+  <circle cx="180" cy="144" r="8" fill="#34d399"/>
+
+  <!-- Code lines (left - faded, representing raw data) -->
+  <rect x="120" y="192" width="120" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="212" width="96" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="232" width="140" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="252" width="80" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="272" width="110" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="292" width="90" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="312" width="130" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="332" width="70" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+  <rect x="120" y="352" width="100" height="8" rx="4" fill="white" fill-opacity="0.12"/>
+
+  <!-- Arrow (compression symbol) -->
+  <path d="M280 256 L320 240 L320 250 L360 250 L360 262 L320 262 L320 272 Z" fill="url(#accent)"/>
+
+  <!-- Compressed output (right - bright, representing summary) -->
+  <rect x="340" y="232" width="56" height="10" rx="5" fill="white" fill-opacity="0.9"/>
+  <rect x="340" y="256" width="48" height="10" rx="5" fill="white" fill-opacity="0.9"/>
+  <rect x="340" y="280" width="52" height="10" rx="5" fill="white" fill-opacity="0.9"/>
+
+  <!-- 98% badge -->
+  <rect x="310" y="336" width="96" height="40" rx="20" fill="white" fill-opacity="0.95"/>
+  <text x="358" y="362" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="700" fill="#6366f1">98%</text>
+</svg>
