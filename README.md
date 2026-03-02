@@ -190,7 +190,9 @@ with code examples. Then run /context-mode:stats.
 - **Claude Code** with MCP support
 - Optional: Bun (auto-detected, 3-5x faster JS/TS)
 
-## Development
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local development workflow, TDD guidelines, and how to test your changes in a live Claude Code session.
 
 ```bash
 git clone https://github.com/mksglu/claude-context-mode.git
