@@ -67,7 +67,14 @@ export class PolyglotExecutor {
 
     try {
       const filePath = this.#writeScript(tmpDir, code, language);
-      const cmd = buildCommand(this.#runtimes, language, filePath);
+
+      let cmd: string[];
+      try {
+        cmd = buildCommand(this.#runtimes, language, filePath);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { exitCode: 1, stdout: "", stderr: msg, timedOut: false };
+      }
 
       // Rust: compile then run
       if (cmd[0] === "__rust_compile_run__") {
