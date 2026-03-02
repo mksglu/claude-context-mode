@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/cross-platform-ci]
+    branches: [main, next, feat/cross-platform-ci]
   pull_request:
-    branches: [main]
+    branches: [main, next]
 
 jobs:
   test:
