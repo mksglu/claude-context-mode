@@ -9,7 +9,7 @@ import { strict as assert } from "node:assert";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildSandboxConfig, type SandboxConfig } from "../src/sandbox.js";
+import { buildSandboxConfig, initSandbox, type SandboxConfig } from "../src/sandbox.js";
 
 let passed = 0;
 let failed = 0;
@@ -226,6 +226,29 @@ async function main() {
     assert.ok(Array.isArray(config.filesystem.denyWrite));
     assert.ok(Array.isArray(config.network.allowedDomains));
     assert.ok(Array.isArray(config.network.deniedDomains));
+  });
+
+  // ===== initSandbox() LIFECYCLE =====
+  console.log("\n--- initSandbox() Lifecycle ---\n");
+
+  await test("initSandbox returns a SandboxHandle", async () => {
+    cleanEnv();
+    const result = await initSandbox("/tmp/test-project");
+    assert.equal(typeof result.wrapCommand, "function");
+    assert.equal(typeof result.cleanup, "function");
+    assert.equal(typeof result.sandboxed, "boolean");
+    await result.cleanup();
+  });
+
+  await test("initSandbox with NO_SANDBOX returns passthrough wrapper", async () => {
+    cleanEnv();
+    process.env.CONTEXT_MODE_NO_SANDBOX = "1";
+    const result = await initSandbox("/tmp/test-project");
+    assert.equal(result.sandboxed, false);
+    const wrapped = await result.wrapCommand("echo hello");
+    assert.equal(wrapped, "echo hello");
+    await result.cleanup();
+    delete process.env.CONTEXT_MODE_NO_SANDBOX;
   });
 
   // ===== CLEANUP & SUMMARY =====

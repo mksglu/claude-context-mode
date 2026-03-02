@@ -29,6 +29,15 @@ export interface SandboxConfig {
   };
 }
 
+export interface SandboxHandle {
+  /** Whether OS-level sandboxing is active. */
+  sandboxed: boolean;
+  /** Wraps a shell command string with sandbox restrictions. */
+  wrapCommand: (cmd: string) => Promise<string>;
+  /** Cleans up proxy servers and sandbox state. */
+  cleanup: () => Promise<void>;
+}
+
 // ==============================================================================
 // Constants
 // ==============================================================================
@@ -137,4 +146,67 @@ export function buildSandboxConfig(
       deniedDomains: [],
     },
   };
+}
+
+// ==============================================================================
+// Sandbox Lifecycle Manager
+// ==============================================================================
+
+/** Passthrough handle used when sandboxing is disabled or unavailable. */
+const PASSTHROUGH_HANDLE: SandboxHandle = {
+  sandboxed: false,
+  wrapCommand: async (cmd: string) => cmd,
+  cleanup: async () => {},
+};
+
+/**
+ * Initializes the sandbox runtime and returns a handle for wrapping commands.
+ *
+ * Designed to be called once at startup. The returned `wrapCommand` callback
+ * is threaded into the executor so every user-triggered shell invocation is
+ * sandboxed transparently.
+ *
+ * Gracefully degrades to a passthrough (no sandboxing) when:
+ *   - The user opted out via CONTEXT_MODE_NO_SANDBOX=1
+ *   - The optional `@anthropic-ai/sandbox-runtime` package is not installed
+ *   - The platform lacks bubblewrap or another runtime prerequisite
+ */
+export async function initSandbox(projectRoot: string): Promise<SandboxHandle> {
+  const config = buildSandboxConfig(projectRoot);
+
+  // User explicitly disabled sandboxing — respect that immediately.
+  if (config.disabled) {
+    process.stderr.write("[sandbox] Sandboxing disabled via CONTEXT_MODE_NO_SANDBOX\n");
+    return PASSTHROUGH_HANDLE;
+  }
+
+  // Attempt to load the optional sandbox runtime. Dynamic import keeps the
+  // dependency optional — the server still works on platforms where bubblewrap
+  // (or the npm package) is unavailable.
+  try {
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+
+    // Build the runtime config from our policy. The runtime expects the same
+    // shape we already produce, so we can pass it through directly.
+    const runtimeConfig = {
+      filesystem: config.filesystem,
+      network: config.network,
+    };
+
+    await SandboxManager.initialize(runtimeConfig);
+
+    process.stderr.write("[sandbox] Sandbox runtime initialized successfully\n");
+    return {
+      sandboxed: true,
+      wrapCommand: (cmd: string) => SandboxManager.wrapWithSandbox(cmd),
+      cleanup: () => SandboxManager.reset(),
+    };
+  } catch (err: unknown) {
+    // Missing package, unsupported platform, or initialization failure.
+    // This is expected on macOS, Windows, and CI environments without
+    // bubblewrap — degrade gracefully rather than crashing the server.
+    const reason = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[sandbox] Sandbox unavailable, running without restrictions: ${reason}\n`);
+    return PASSTHROUGH_HANDLE;
+  }
 }
