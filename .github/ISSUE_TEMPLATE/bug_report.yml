@@ -1,0 +1,111 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! context-mode is in a fast release cycle -- please make sure you're on the latest version before filing.
+
+        **Before you file:**
+        1. [Search existing issues](https://github.com/mksglu/claude-context-mode/issues) to make sure this hasn't been reported already
+        2. Run `/context-mode:upgrade` to pull the latest version
+        3. Restart your Claude Code session (`Ctrl+C` then relaunch)
+        4. Run `/context-mode:doctor` to verify all checks PASS
+        5. If the issue persists on the latest version, file this report
+
+  - type: input
+    id: version
+    attributes:
+      label: context-mode version
+      description: |
+        Run `/context-mode:doctor` and paste the version here.
+        Must be the latest. If not, upgrade first: `/context-mode:upgrade` then restart.
+      placeholder: "e.g. 0.9.17"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor-output
+    attributes:
+      label: Doctor output
+      description: |
+        Paste the full output of `/context-mode:doctor`.
+        This helps us verify your environment is healthy.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Prompt that triggered the bug
+      description: |
+        Paste the exact prompt (message) you sent to Claude Code when the bug occurred.
+        This is critical for reproduction.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Clear description of the bug. What went wrong?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal steps to reproduce the issue.
+      placeholder: |
+        1. Send prompt: "..."
+        2. Claude calls tool `execute` with ...
+        3. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug-logs
+    attributes:
+      label: Debug logs
+      description: |
+        Paste any error messages, MCP server logs, or tool output.
+
+        **Tip:** Press `Ctrl+O` in Claude Code to see background tool calls and MCP communication.
+        Copy anything relevant from there.
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: JS Runtime
+      description: "Bun or Node version (shown in doctor output)"
+      placeholder: "e.g. bun 1.3.4"
+    validations:
+      required: false

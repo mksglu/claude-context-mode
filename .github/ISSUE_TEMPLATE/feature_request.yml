@@ -1,0 +1,39 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: context-mode version
+      description: |
+        Run `/context-mode:doctor` to check. Make sure you're on the latest before requesting -- it may already be implemented.
+        Also [search existing issues](https://github.com/mksglu/claude-context-mode/issues) to avoid duplicates.
+      placeholder: "e.g. 0.9.17"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this solve? What's the current limitation?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should it work? Include example usage if possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you've thought about?
+    validations:
+      required: false
