@@ -34,6 +34,11 @@ import {
   readBashPolicies,
   evaluateCommand,
   evaluateCommandDenyOnly,
+  parseToolPattern,
+  readToolDenyPatterns,
+  fileGlobToRegex,
+  evaluateFilePath,
+  extractShellCommands,
 } from "../build/security.js";
 
 async function main() {
@@ -249,6 +254,194 @@ async function main() {
     const result = evaluateCommandDenyOnly("npm install", policies, false);
     assert.equal(result.decision, "allow");
     assert.equal(result.matchedPattern, undefined);
+  });
+
+  // ── parseToolPattern ──
+
+  await test("parseToolPattern: Read(.env)", () => {
+    const result = parseToolPattern("Read(.env)");
+    assert.deepEqual(result, { tool: "Read", glob: ".env" });
+  });
+
+  await test("parseToolPattern: Grep(**/*.ts)", () => {
+    const result = parseToolPattern("Grep(**/*.ts)");
+    assert.deepEqual(result, { tool: "Grep", glob: "**/*.ts" });
+  });
+
+  await test("parseToolPattern: Bash(sudo *)", () => {
+    const result = parseToolPattern("Bash(sudo *)");
+    assert.deepEqual(result, { tool: "Bash", glob: "sudo *" });
+  });
+
+  await test("parseToolPattern: returns null for bare string", () => {
+    assert.equal(parseToolPattern("notapattern"), null);
+  });
+
+  // ── readToolDenyPatterns ──
+
+  // Create a temp settings file with mixed Read/Bash/Grep deny patterns
+  const toolDenyTmpBase = join(tmpdir(), `tool-deny-test-${Date.now()}`);
+  const toolDenyGlobalDir = join(toolDenyTmpBase, "global-home", ".claude");
+  const toolDenyGlobalPath = join(toolDenyGlobalDir, "settings.json");
+
+  mkdirSync(toolDenyGlobalDir, { recursive: true });
+  writeFileSync(
+    toolDenyGlobalPath,
+    JSON.stringify({
+      permissions: {
+        deny: [
+          "Read(.env)",
+          "Read(**/.env)",
+          "Read(**/*credentials*)",
+          "Bash(sudo *)",
+          "Bash(rm -rf /*)",
+        ],
+        allow: [],
+      },
+    }),
+  );
+
+  await test("readToolDenyPatterns: returns only Read globs for Read", () => {
+    const result = readToolDenyPatterns("Read", undefined, toolDenyGlobalPath);
+    assert.equal(result.length, 1, "should have 1 settings file");
+    assert.deepEqual(result[0], [".env", "**/.env", "**/*credentials*"]);
+  });
+
+  await test("readToolDenyPatterns: returns only Bash globs for Bash", () => {
+    const result = readToolDenyPatterns("Bash", undefined, toolDenyGlobalPath);
+    assert.equal(result.length, 1);
+    assert.deepEqual(result[0], ["sudo *", "rm -rf /*"]);
+  });
+
+  await test("readToolDenyPatterns: returns empty for Grep (no patterns)", () => {
+    const result = readToolDenyPatterns("Grep", undefined, toolDenyGlobalPath);
+    // The settings file exists but has no Grep patterns, so we get an
+    // array with one empty sub-array (one settings file, zero matches).
+    assert.equal(result.length, 1);
+    assert.deepEqual(result[0], []);
+  });
+
+  rmSync(toolDenyTmpBase, { recursive: true, force: true });
+
+  // ── fileGlobToRegex ──
+
+  await test("fileGlobToRegex: '.env' matches exactly '.env'", () => {
+    assert.ok(fileGlobToRegex(".env").test(".env"));
+  });
+
+  await test("fileGlobToRegex: '.env' does not match 'src/.env'", () => {
+    assert.ok(!fileGlobToRegex(".env").test("src/.env"));
+  });
+
+  await test("fileGlobToRegex: '**/.env' matches 'deep/nested/.env'", () => {
+    assert.ok(fileGlobToRegex("**/.env").test("deep/nested/.env"));
+  });
+
+  await test("fileGlobToRegex: '**/.env' matches '.env' at root", () => {
+    assert.ok(fileGlobToRegex("**/.env").test(".env"));
+  });
+
+  await test("fileGlobToRegex: '**/*credentials*' matches nested path", () => {
+    assert.ok(fileGlobToRegex("**/*credentials*").test("secrets/credentials.json"));
+  });
+
+  await test("fileGlobToRegex: '**/*credentials*' does not match 'readme.md'", () => {
+    assert.ok(!fileGlobToRegex("**/*credentials*").test("readme.md"));
+  });
+
+  // ── evaluateFilePath ──
+
+  await test("evaluateFilePath: .env denied by ['.env']", () => {
+    const result = evaluateFilePath(".env", [[".env"]], false);
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, ".env");
+  });
+
+  await test("evaluateFilePath: src/config.ts not denied by ['.env']", () => {
+    const result = evaluateFilePath("src/config.ts", [[".env"]], false);
+    assert.equal(result.denied, false);
+    assert.equal(result.matchedPattern, undefined);
+  });
+
+  await test("evaluateFilePath: deep/nested/.env denied by ['**/.env']", () => {
+    const result = evaluateFilePath("deep/nested/.env", [["**/.env"]], false);
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "**/.env");
+  });
+
+  await test("evaluateFilePath: credentials file denied by ['**/*credentials*']", () => {
+    const result = evaluateFilePath(
+      "secrets/credentials.json",
+      [["**/*credentials*"]],
+      false,
+    );
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "**/*credentials*");
+  });
+
+  await test("evaluateFilePath: readme.md not denied by ['**/*credentials*']", () => {
+    const result = evaluateFilePath("readme.md", [["**/*credentials*"]], false);
+    assert.equal(result.denied, false);
+  });
+
+  await test("evaluateFilePath: Windows path with backslashes", () => {
+    const result = evaluateFilePath(
+      "C:\\Users\\.env",
+      [["**/.env"]],
+      true,
+    );
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "**/.env");
+  });
+
+  // ── extractShellCommands ──
+
+  await test("extractShellCommands: Python os.system", () => {
+    const result = extractShellCommands(
+      'os.system("sudo rm -rf /")',
+      "python",
+    );
+    assert.deepEqual(result, ["sudo rm -rf /"]);
+  });
+
+  await test("extractShellCommands: Python subprocess.run", () => {
+    const result = extractShellCommands(
+      'subprocess.run("sudo apt install vim")',
+      "python",
+    );
+    assert.deepEqual(result, ["sudo apt install vim"]);
+  });
+
+  await test("extractShellCommands: JS execSync", () => {
+    const cmds = extractShellCommands(
+      'const r = execSync("sudo apt update")',
+      "javascript",
+    );
+    assert.deepEqual(cmds, ["sudo apt update"]);
+  });
+
+  await test("extractShellCommands: Ruby system()", () => {
+    const result = extractShellCommands(
+      'system("sudo rm -rf /tmp")',
+      "ruby",
+    );
+    assert.deepEqual(result, ["sudo rm -rf /tmp"]);
+  });
+
+  await test("extractShellCommands: safe JS code returns empty", () => {
+    const result = extractShellCommands(
+      'console.log("hello")',
+      "javascript",
+    );
+    assert.deepEqual(result, []);
+  });
+
+  await test("extractShellCommands: unknown language returns empty", () => {
+    const result = extractShellCommands(
+      'os.system("rm -rf /")',
+      "haskell",
+    );
+    assert.deepEqual(result, []);
   });
 
   // Clean up temp files
