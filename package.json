@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify",
+    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --external:@anthropic-ai/sandbox-runtime --minify",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
@@ -60,6 +60,7 @@
     "test:all": "for f in tests/*.test.ts; do npx tsx \"$f\" || exit 1; done"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.39",
     "@clack/prompts": "^1.0.1",
     "@mixmark-io/domino": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
