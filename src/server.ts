@@ -20,9 +20,16 @@ const server = new McpServer({
   version: VERSION,
 });
 
+// Support both Claude Code and opencode environment variables
+// Priority: CLAUDE_PROJECT_DIR > OPENCODE_PROJECT_DIR > cwd
+const projectRoot = process.env.CLAUDE_PROJECT_DIR 
+  || process.env.OPENCODE_PROJECT_DIR 
+  || process.env.PROJECT_ROOT
+  || process.cwd();
+
 const executor = new PolyglotExecutor({
   runtimes,
-  projectRoot: process.env.CLAUDE_PROJECT_DIR,
+  projectRoot,
 });
 
 // Lazy singleton — no DB overhead unless index/search is used

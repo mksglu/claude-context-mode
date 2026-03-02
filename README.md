@@ -45,7 +45,30 @@ claude --plugin-dir ./path/to/context-mode
 
 </details>
 
+---
+
+## opencode
+
+Add to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "context-mode": {
+      "type": "local",
+      "command": ["npx", "-y", "github:mksglu/claude-context-mode"],
+      "enabled": true,
+      "timeout": 15000
+    }
+  }
+}
+```
+
+[→ Full opencode integration guide](OPENCODE.md)
+
 ## The Problem
+
 
 MCP has become the standard way for AI agents to use external tools. But there is a tension at its core: every tool interaction fills the context window from both sides — definitions on the way in, raw output on the way out.
 
