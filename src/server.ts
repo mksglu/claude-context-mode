@@ -11,6 +11,7 @@ import {
   getAvailableLanguages,
   hasBunRuntime,
 } from "./runtime.js";
+import { initSandbox } from "./sandbox.js";
 
 const VERSION = "0.8.1";
 const runtimes = detectRuntimes();
@@ -20,10 +21,9 @@ const server = new McpServer({
   version: VERSION,
 });
 
-const executor = new PolyglotExecutor({
-  runtimes,
-  projectRoot: process.env.CLAUDE_PROJECT_DIR,
-});
+// Assigned in main() before the server accepts connections.
+// eslint-disable-next-line prefer-const
+let executor!: PolyglotExecutor;
 
 // Lazy singleton — no DB overhead unless index/search is used
 let _store: ContentStore | null = null;
@@ -1159,14 +1159,24 @@ server.registerTool(
 // ─────────────────────────────────────────────────────────
 
 async function main() {
-  // Clean up stale DB files from previous sessions
   const cleaned = cleanupStaleDBs();
   if (cleaned > 0) {
     console.error(`Cleaned up ${cleaned} stale DB file(s) from previous sessions`);
   }
 
-  // Clean up own DB on shutdown
+  // Initialize OS-level sandbox before creating the executor
+  const projectRoot = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const sandbox = await initSandbox(projectRoot);
+
+  executor = new PolyglotExecutor({
+    runtimes,
+    projectRoot,
+    wrapCommand: sandbox.sandboxed ? sandbox.wrapCommand : undefined,
+  });
+
+  // Clean up sandbox + DB on shutdown
   const shutdown = () => {
+    sandbox.cleanup().catch(() => {});
     if (_store) _store.cleanup();
   };
   process.on("exit", shutdown);
@@ -1175,12 +1185,14 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`Context Mode MCP server v${VERSION} running on stdio`);
+
+  const sandboxStatus = sandbox.sandboxed
+    ? "OS sandbox active"
+    : "running without OS sandbox";
+  console.error(`Context Mode MCP server v${VERSION} running on stdio (${sandboxStatus})`);
   console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
   if (!hasBunRuntime()) {
-    console.error(
-      "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
-    );
+    console.error("\nPerformance tip: Install Bun for 3-5x faster JS/TS execution");
     console.error("  curl -fsSL https://bun.sh/install | bash");
   }
 }

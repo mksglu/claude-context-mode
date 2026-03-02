@@ -44,17 +44,20 @@ export class PolyglotExecutor {
   #hardCapBytes: number;
   #projectRoot: string;
   #runtimes: RuntimeMap;
+  #wrapCommand: ((cmd: string) => Promise<string>) | null;
 
   constructor(opts?: {
     maxOutputBytes?: number;
     hardCapBytes?: number;
     projectRoot?: string;
     runtimes?: RuntimeMap;
+    wrapCommand?: (cmd: string) => Promise<string>;
   }) {
     this.#maxOutputBytes = opts?.maxOutputBytes ?? 102_400;
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     this.#projectRoot = opts?.projectRoot ?? process.cwd();
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
+    this.#wrapCommand = opts?.wrapCommand ?? null;
   }
 
   get runtimes(): RuntimeMap {
@@ -139,7 +142,8 @@ export class PolyglotExecutor {
     const binSuffix = isWin ? ".exe" : "";
     const binPath = srcPath.replace(/\.rs$/, "") + binSuffix;
 
-    // Compile
+    // TODO: Rust compile via execSync is not sandboxed. It writes to /tmp
+    // which is in the allowWrite list, so the risk is limited.
     try {
       execSync(`rustc ${srcPath} -o ${binPath}`, {
         cwd,
@@ -210,16 +214,31 @@ export class PolyglotExecutor {
     cwd: string,
     timeout: number,
   ): Promise<ExecResult> {
-    return new Promise((res) => {
-      // Only .cmd/.bat shims need shell on Windows; real executables don't.
-      // Using shell: true globally causes process-tree kill issues with MSYS2/Git Bash.
-      const needsShell = isWin && ["tsx", "ts-node", "elixir"].includes(cmd[0]);
-      const proc = spawn(cmd[0], cmd.slice(1), {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: this.#buildSafeEnv(cwd),
-        shell: needsShell,
-      });
+    return new Promise(async (res) => {
+      let proc: ReturnType<typeof spawn>;
+      if (this.#wrapCommand) {
+        // Join command array into a shell string, properly quoting each argument.
+        // The sandbox wrapper (sandbox-exec/bwrap) produces a single string that
+        // must be executed via shell.
+        const shellCmd = cmd.map(c => `'${c.replace(/'/g, "'\\''")}'`).join(" ");
+        const wrapped = await this.#wrapCommand(shellCmd);
+        proc = spawn(wrapped, {
+          cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: this.#buildSafeEnv(cwd),
+          shell: true,
+        });
+      } else {
+        // Only .cmd/.bat shims need shell on Windows; real executables don't.
+        // Using shell: true globally causes process-tree kill issues with MSYS2/Git Bash.
+        const needsShell = isWin && ["tsx", "ts-node", "elixir"].includes(cmd[0]);
+        proc = spawn(cmd[0], cmd.slice(1), {
+          cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: this.#buildSafeEnv(cwd),
+          shell: needsShell,
+        });
+      }
 
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -315,16 +334,25 @@ export class PolyglotExecutor {
       "NPM_TOKEN",
       "NODE_AUTH_TOKEN",
       "npm_config_registry",
-      // General
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NO_PROXY",
-      "SSL_CERT_FILE",
-      "CURL_CA_BUNDLE",
       // XDG (config paths for gh, gcloud, etc.)
       "XDG_CONFIG_HOME",
       "XDG_DATA_HOME",
     ];
+
+    // When sandbox wrapping is active, wrapWithSandbox() injects its own proxy
+    // env vars (HTTP_PROXY, HTTPS_PROXY, etc.) via the `env` command prefix.
+    // Passing through the parent's proxy/cert vars would be redundant at best
+    // and harmful at worst — e.g. SSL_CERT_FILE may point to a CA bundle that
+    // the seatbelt/bwrap profile blocks, causing TLS verification failures.
+    if (!this.#wrapCommand) {
+      passthrough.push(
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "CURL_CA_BUNDLE",
+      );
+    }
 
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? (isWin ? "" : "/usr/local/bin:/usr/bin:/bin"),
