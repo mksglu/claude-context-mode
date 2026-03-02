@@ -95,7 +95,7 @@ function sanitizeQuery(query: string): string {
     );
 
   if (words.length === 0) return '""';
-  return words.map((w) => `"${w}"`).join(" OR ");
+  return words.map((w) => `"${w}"`).join(" AND ");
 }
 
 function sanitizeTrigramQuery(query: string): string {

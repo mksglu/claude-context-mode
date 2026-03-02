@@ -511,6 +511,29 @@ async function main() {
     store.close();
   });
 
+  await test("multi-word query requires all terms (AND semantics)", () => {
+    const store = createStore();
+    store.index({
+      content: "# Full Match\n\nuseEffect cleanup function example",
+      source: "doc-with-all-words",
+    });
+    store.index({
+      content: "# Partial Match\n\nfunction example only",
+      source: "doc-with-partial-words",
+    });
+
+    const results = store.search("useEffect cleanup function", 10);
+    assert.ok(
+      results.some((r) => r.source === "doc-with-all-words"),
+      "Should include document that contains all query terms",
+    );
+    assert.ok(
+      !results.some((r) => r.source === "doc-with-partial-words"),
+      "Should not include document missing query terms",
+    );
+    store.close();
+  });
+
   await test("empty query returns empty results", () => {
     const store = createStore();
     store.index({
