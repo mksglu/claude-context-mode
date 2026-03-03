@@ -338,3 +338,5 @@ npm run test:all      # full suite
 ## License
 
 [Elastic License 2.0 (ELv2)](LICENSE) — free to use, modify, and share. You may not rebrand and redistribute this software as a competing plugin, product, or managed service.
+
+[![Discord](https://img.shields.io/discord/1346261559814422528?label=Discord&logo=discord&color=5865f2)](https://discord.gg/UkNZFHdrJy)
