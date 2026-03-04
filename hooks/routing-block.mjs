@@ -10,19 +10,19 @@ export const ROUTING_BLOCK = `
   </priority_instructions>
 
   <tool_selection_hierarchy>
-    1. GATHER: mcp__context-mode__batch_execute(commands, queries)
+    1. GATHER: mcp__plugin_context-mode_context-mode__batch_execute(commands, queries)
        - Primary tool for research. Runs all commands, auto-indexes, and searches.
        - ONE call replaces many individual steps.
-    2. FOLLOW-UP: mcp__context-mode__search(queries: ["q1", "q2", ...])
+    2. FOLLOW-UP: mcp__plugin_context-mode_context-mode__search(queries: ["q1", "q2", ...])
        - Use for all follow-up questions. ONE call, many queries.
-    3. PROCESSING: mcp__context-mode__execute(language, code) | mcp__context-mode__execute_file(path, language, code)
+    3. PROCESSING: mcp__plugin_context-mode_context-mode__execute(language, code) | mcp__plugin_context-mode_context-mode__execute_file(path, language, code)
        - Use for API calls, log analysis, and data processing.
   </tool_selection_hierarchy>
 
   <forbidden_actions>
     - DO NOT use Bash for commands producing >20 lines of output.
     - DO NOT use Read for analysis (use execute_file). Read IS correct for files you intend to Edit.
-    - DO NOT use WebFetch (use mcp__context-mode__fetch_and_index instead).
+    - DO NOT use WebFetch (use mcp__plugin_context-mode_context-mode__fetch_and_index instead).
     - Bash is ONLY for git/mkdir/rm/mv/navigation.
   </forbidden_actions>
 
@@ -42,6 +42,6 @@ export const ROUTING_BLOCK = `
   </output_constraints>
 </context_window_protection>`;
 
-export const READ_GUIDANCE = '<context_guidance>\n  <tip>\n    If you are reading this file to Edit it, Read is the correct tool — Edit needs file content in context.\n    If you are reading to analyze or explore, use mcp__context-mode__execute_file(path, language, code) instead — only your printed summary will enter the context.\n  </tip>\n</context_guidance>';
+export const READ_GUIDANCE = '<context_guidance>\n  <tip>\n    If you are reading this file to Edit it, Read is the correct tool — Edit needs file content in context.\n    If you are reading to analyze or explore, use mcp__plugin_context-mode_context-mode__execute_file(path, language, code) instead — only your printed summary will enter the context.\n  </tip>\n</context_guidance>';
 
-export const GREP_GUIDANCE = '<context_guidance>\n  <tip>\n    This operation may flood your context window. To stay efficient:\n    - Use mcp__context-mode__execute(language: "shell", code: "...") to run searches in the sandbox.\n    - Only your final printed summary will enter the context.\n  </tip>\n</context_guidance>';
+export const GREP_GUIDANCE = '<context_guidance>\n  <tip>\n    This operation may flood your context window. To stay efficient:\n    - Use mcp__plugin_context-mode_context-mode__execute(language: "shell", code: "...") to run searches in the sandbox.\n    - Only your final printed summary will enter the context.\n  </tip>\n</context_guidance>';

@@ -482,6 +482,66 @@ async function main() {
   try { rmSync(ISOLATED_HOME, { recursive: true, force: true }); } catch {}
   try { rmSync(MOCK_PROJECT_DIR, { recursive: true, force: true }); } catch {}
 
+
+  // ===== PLUGIN TOOL NAME FORMAT =====
+  // When installed via Claude Code plugin marketplace, tool names follow:
+  //   mcp__plugin_<plugin-id>_<server-name>__<tool-name>
+  // For context-mode: mcp__plugin_context-mode_context-mode__<tool-name>
+  // The short form mcp__context-mode__* only works for direct MCP registration.
+  console.log("\n--- Plugin Tool Name Format in ROUTING_BLOCK ---\n");
+
+  const PLUGIN_PREFIX = "mcp__plugin_context-mode_context-mode__";
+  const SHORT_PREFIX = "mcp__context-mode__";
+
+  await test("Task routing block uses plugin-format tool names", () => {
+    const result = runHook({ tool_name: "Task", tool_input: { prompt: "Do something." } });
+    assert.equal(result.exitCode, 0);
+    const parsed = JSON.parse(result.stdout);
+    const prompt = parsed.hookSpecificOutput.updatedInput.prompt;
+    assert.ok(prompt.includes(PLUGIN_PREFIX + "batch_execute"), "Expected plugin-format batch_execute");
+    assert.ok(prompt.includes(PLUGIN_PREFIX + "search"), "Expected plugin-format search");
+    assert.ok(prompt.includes(PLUGIN_PREFIX + "execute"), "Expected plugin-format execute");
+    assert.ok(prompt.includes(PLUGIN_PREFIX + "fetch_and_index"), "Expected plugin-format fetch_and_index");
+    assert.ok(!prompt.includes(SHORT_PREFIX + "batch_execute"), "Must not contain short-form batch_execute");
+  });
+
+  await test("Read nudge uses plugin-format execute_file tool name", () => {
+    const result = runHook({ tool_name: "Read", tool_input: { file_path: "/some/file.ts" } });
+    assert.equal(result.exitCode, 0);
+    const parsed = JSON.parse(result.stdout);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes(PLUGIN_PREFIX + "execute_file"), "Expected plugin-format execute_file in Read nudge");
+    assert.ok(!ctx.includes(SHORT_PREFIX + "execute_file"), "Read nudge must not contain short-form execute_file");
+  });
+
+  await test("Grep nudge uses plugin-format execute tool name", () => {
+    const result = runHook({ tool_name: "Grep", tool_input: { pattern: "TODO" } });
+    assert.equal(result.exitCode, 0);
+    const parsed = JSON.parse(result.stdout);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    assert.ok(ctx.includes(PLUGIN_PREFIX + "execute"), "Expected plugin-format execute in Grep nudge");
+    assert.ok(!ctx.includes(SHORT_PREFIX + "execute"), "Grep nudge must not contain short-form execute");
+  });
+
+  await test("WebFetch deny reason uses plugin-format fetch_and_index tool name", () => {
+    const result = runHook({ tool_name: "WebFetch", tool_input: { url: "https://example.com" } });
+    assert.equal(result.exitCode, 0);
+    const parsed = JSON.parse(result.stdout);
+    const reason = parsed.hookSpecificOutput.reason;
+    assert.ok(reason.includes(PLUGIN_PREFIX + "fetch_and_index"), "Expected plugin-format fetch_and_index in WebFetch deny");
+    assert.ok(!reason.includes(SHORT_PREFIX + "fetch_and_index"), "WebFetch deny must not contain short-form");
+  });
+
+  await test("Bash inline-HTTP redirect uses plugin-format execute tool name", () => {
+    const bashCmd = "python3 -c 'import requests; requests.get(url)'";
+    const result = runHook({ tool_name: "Bash", tool_input: { command: bashCmd } });
+    assert.equal(result.exitCode, 0);
+    const parsed = JSON.parse(result.stdout);
+    const cmd = parsed.hookSpecificOutput.updatedInput.command;
+    assert.ok(cmd.includes(PLUGIN_PREFIX + "execute"), "Expected plugin-format execute in inline-HTTP redirect");
+    assert.ok(!cmd.includes(SHORT_PREFIX + "execute"), "Inline-HTTP redirect must not contain short-form execute");
+  });
+
   // ===== SUMMARY =====
   console.log("\n" + "=".repeat(60));
   console.log(
