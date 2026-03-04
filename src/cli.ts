@@ -41,6 +41,11 @@ if (args[0] === "setup") {
  * Shared helpers
  * ------------------------------------------------------- */
 
+/** Normalize Windows backslash paths to forward slashes for Bash (MSYS2) compatibility. */
+export function toUnixPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
 function getPluginRoot(): string {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
@@ -592,7 +597,7 @@ async function upgrade() {
 
   // Step 4: Fix hooks
   p.log.step("Configuring PreToolUse hooks...");
-  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
+  const hookScriptPath = toUnixPath(resolve(pluginRoot, "hooks", "pretooluse.mjs"));
   const settings = readSettings() ?? {};
 
   const desiredHookEntry = {
