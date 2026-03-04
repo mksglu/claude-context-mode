@@ -185,7 +185,7 @@ function route() {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           updatedInput: {
-            command: 'echo "context-mode: curl/wget blocked. You MUST use mcp__context-mode__fetch_and_index(url, source) to fetch URLs, or mcp__context-mode__execute(language, code) to run HTTP calls in sandbox. Do NOT retry with curl/wget."',
+            command: 'echo "context-mode: curl/wget blocked. You MUST use mcp__plugin_context-mode_context-mode__fetch_and_index(url, source) to fetch URLs, or mcp__plugin_context-mode_context-mode__execute(language, code) to run HTTP calls in sandbox. Do NOT retry with curl/wget."',
           },
         },
       };
@@ -201,7 +201,7 @@ function route() {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
           updatedInput: {
-            command: 'echo "context-mode: Inline HTTP blocked. Use mcp__context-mode__execute(language, code) to run HTTP calls in sandbox, or mcp__context-mode__fetch_and_index(url, source) for web pages. Do NOT retry with Bash."',
+            command: 'echo "context-mode: Inline HTTP blocked. Use mcp__plugin_context-mode_context-mode__execute(language, code) to run HTTP calls in sandbox, or mcp__plugin_context-mode_context-mode__fetch_and_index(url, source) for web pages. Do NOT retry with Bash."',
           },
         },
       };
@@ -238,7 +238,7 @@ function route() {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        reason: `context-mode: WebFetch blocked. Use mcp__context-mode__fetch_and_index(url: "${url}", source: "...") to fetch this URL in sandbox. Then use mcp__context-mode__search(queries: [...]) to query results. Do NOT use curl/wget — they are also blocked.`,
+        reason: `context-mode: WebFetch blocked. Use mcp__plugin_context-mode_context-mode__fetch_and_index(url: "${url}", source: "...") to fetch this URL in sandbox. Then use mcp__plugin_context-mode_context-mode__search(queries: [...]) to query results. Do NOT use curl/wget — they are also blocked.`,
       },
     };
   }
