@@ -18,7 +18,7 @@ import { execSync } from "node:child_process";
 import { readFileSync, cpSync, accessSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir, devNull } from "node:os";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import {
   detectRuntimes,
   getRuntimeSummary,
@@ -82,27 +82,15 @@ async function hookDispatch(platform: string, event: string): Promise<void> {
 
 const args = process.argv.slice(2);
 
-// Guard: only run CLI entry point when this file is executed directly.
-// When another package (e.g. OpenCode plugin) does `import("context-mode")`,
-// the package.json "." export resolves here. Without this guard the MCP
-// server's stdio transport would bind stdin/stdout and crash with EALREADY.
-// Compare as URLs to avoid Windows path normalization issues.
-const __cliURL = import.meta.url.replace(/\.ts$/, ".js");
-const isDirectExecution =
-  process.argv[1] &&
-  pathToFileURL(resolve(process.argv[1])).href === __cliURL;
-
-if (isDirectExecution) {
-  if (args[0] === "doctor") {
-    doctor().then((code) => process.exit(code));
-  } else if (args[0] === "upgrade") {
-    upgrade();
-  } else if (args[0] === "hook") {
-    hookDispatch(args[1], args[2]);
-  } else {
-    // Default: start MCP server
-    import("./server.js");
-  }
+if (args[0] === "doctor") {
+  doctor().then((code) => process.exit(code));
+} else if (args[0] === "upgrade") {
+  upgrade();
+} else if (args[0] === "hook") {
+  hookDispatch(args[1], args[2]);
+} else {
+  // Default: start MCP server
+  import("./server.js");
 }
 
 /* -------------------------------------------------------

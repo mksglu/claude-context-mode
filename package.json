@@ -26,9 +26,9 @@
   },
   "homepage": "https://github.com/mksglu/context-mode#readme",
   "bugs": "https://github.com/mksglu/context-mode/issues",
-  "main": "./build/cli.js",
+  "main": "./build/opencode-plugin.js",
   "exports": {
-    ".": "./build/cli.js",
+    ".": "./build/opencode-plugin.js",
     "./plugin": "./build/opencode-plugin.js"
   },
   "bin": {
