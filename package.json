@@ -48,7 +48,7 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x build/cli.js",
-    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify",
+    "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:sql.js --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
@@ -65,11 +65,14 @@
     "@clack/prompts": "^1.0.1",
     "@mixmark-io/domino": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "better-sqlite3": "^12.6.2",
     "picocolors": "^1.1.1",
+    "sql.js": "^1.14.1",
     "turndown": "^7.2.0",
     "turndown-plugin-gfm": "^1.0.2",
     "zod": "^3.25.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.6.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

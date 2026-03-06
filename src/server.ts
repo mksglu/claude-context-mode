@@ -10,6 +10,7 @@ import { homedir, tmpdir } from "node:os";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { ContentStore, cleanupStaleDBs, type SearchResult, type IndexResult } from "./store.js";
+import { isFallbackMode, ensureDatabaseReady } from "./db-base.js";
 import {
   readBashPolicies,
   evaluateCommandDenyOnly,
@@ -73,7 +74,21 @@ function maybeIndexSessionEvents(store: ContentStore): void {
 }
 
 function getStore(): ContentStore {
-  if (!_store) _store = new ContentStore();
+  if (!_store) {
+    try {
+      _store = new ContentStore();
+    } catch (err) {
+      // In fallback mode (sql.js), FTS5 is unavailable so ContentStore
+      // schema creation will fail. Re-throw with a clear message.
+      if (isFallbackMode()) {
+        throw new Error(
+          "ContentStore requires FTS5 which is not available in sql.js fallback mode. " +
+          "Install better-sqlite3 for full functionality: npm install better-sqlite3",
+        );
+      }
+      throw err;
+    }
+  }
   maybeIndexSessionEvents(_store);
   return _store;
 }
@@ -1710,6 +1725,9 @@ server.registerTool(
 
 async function main() {
   // Clean up stale DB files from previous sessions
+  // Initialize database backend (better-sqlite3 or sql.js fallback)
+  await ensureDatabaseReady();
+
   const cleaned = cleanupStaleDBs();
   if (cleaned > 0) {
     console.error(`Cleaned up ${cleaned} stale DB file(s) from previous sessions`);

@@ -9,8 +9,9 @@
  */
 
 import type { Database as DatabaseInstance } from "better-sqlite3";
-import { loadDatabase, applyWALPragmas } from "./db-base.js";
+import { loadDatabase, applyWALPragmas, isFallbackMode } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
+import { SqlJsDatabaseWrapper } from "./sqljs-wrapper.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -168,10 +169,20 @@ export class ContentStore {
   #stmtStats!: PreparedStatement;
 
   constructor(dbPath?: string) {
-    const Database = loadDatabase();
     this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
-    this.#db = new Database(this.#dbPath, { timeout: 5000 });
+
+    const Database = loadDatabase();
+    if (Database) {
+      // Native better-sqlite3 path
+      this.#db = new Database(this.#dbPath, { timeout: 5000 });
+    } else {
+      // sql.js fallback — FTS5 will fail at schema init, which is expected.
+      // ContentStore cannot function without FTS5; callers should check
+      // isFallbackMode() and degrade gracefully.
+      this.#db = new SqlJsDatabaseWrapper(this.#dbPath) as unknown as DatabaseInstance;
+    }
+
     applyWALPragmas(this.#db);
     this.#initSchema();
     this.#prepareStatements();

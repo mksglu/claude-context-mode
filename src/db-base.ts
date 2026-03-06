@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SqlJsDatabaseWrapper, initSqlJsEngine } from "./sqljs-wrapper.js";
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -34,18 +35,52 @@ export interface PreparedStatement {
 // ─────────────────────────────────────────────────────────
 
 let _Database: typeof DatabaseConstructor | null = null;
+let _useFallback = false;
+
+/**
+ * Returns true if the sql.js fallback is active (better-sqlite3 unavailable).
+ * Useful for feature checks — e.g., FTS5 is not available in fallback mode.
+ */
+export function isFallbackMode(): boolean {
+  return _useFallback;
+}
 
 /**
  * Lazy-load better-sqlite3. Only resolves the native module on first call.
  * This allows the MCP server to start instantly even when the native addon
  * is not yet installed (marketplace first-run scenario).
+ *
+ * If better-sqlite3 fails to load (missing build tools, old glibc, etc.),
+ * sets fallback mode so that callers use SqlJsDatabaseWrapper instead.
  */
-export function loadDatabase(): typeof DatabaseConstructor {
-  if (!_Database) {
+export function loadDatabase(): typeof DatabaseConstructor | null {
+  if (_Database || _useFallback) {
+    return _Database;
+  }
+  try {
     const require = createRequire(import.meta.url);
     _Database = require("better-sqlite3") as typeof DatabaseConstructor;
+  } catch {
+    _useFallback = true;
+    _Database = null;
   }
   return _Database;
+}
+
+/**
+ * Initialize the database backend. Must be called (and awaited) once
+ * before constructing any SQLiteBase subclass.
+ *
+ * - If better-sqlite3 is available, this is a no-op.
+ * - If better-sqlite3 fails, initializes the sql.js fallback engine.
+ *
+ * The MCP server startup path (server.ts) calls this automatically.
+ */
+export async function ensureDatabaseReady(): Promise<void> {
+  loadDatabase();
+  if (_useFallback) {
+    await initSqlJsEngine();
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -125,13 +160,21 @@ export function defaultDBPath(prefix: string = "context-mode"): string {
  */
 export abstract class SQLiteBase {
   readonly #dbPath: string;
-  readonly #db: DatabaseInstance;
+  readonly #db: DatabaseInstance | SqlJsDatabaseWrapper;
 
   constructor(dbPath: string) {
     const Database = loadDatabase();
     this.#dbPath = dbPath;
-    this.#db = new Database(dbPath, { timeout: 5000 });
-    applyWALPragmas(this.#db);
+
+    if (Database) {
+      // Native better-sqlite3 path (fast)
+      this.#db = new Database(dbPath, { timeout: 5000 });
+    } else {
+      // sql.js fallback path (WASM/asm.js)
+      this.#db = new SqlJsDatabaseWrapper(dbPath);
+    }
+
+    applyWALPragmas(this.#db as DatabaseInstance);
     this.initSchema();
     this.prepareStatements();
   }
@@ -144,7 +187,7 @@ export abstract class SQLiteBase {
 
   /** Raw database instance — available to subclasses only. */
   protected get db(): DatabaseInstance {
-    return this.#db;
+    return this.#db as DatabaseInstance;
   }
 
   /** The path this database was opened from. */
@@ -154,7 +197,7 @@ export abstract class SQLiteBase {
 
   /** Close the database connection without deleting files. */
   close(): void {
-    closeDB(this.#db);
+    closeDB(this.#db as DatabaseInstance);
   }
 
   /**
@@ -162,7 +205,7 @@ export abstract class SQLiteBase {
    * Call on process exit or at end of session lifecycle.
    */
   cleanup(): void {
-    closeDB(this.#db);
+    closeDB(this.#db as DatabaseInstance);
     deleteDBFiles(this.#dbPath);
   }
 }
