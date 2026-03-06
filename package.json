@@ -29,7 +29,8 @@
   "main": "./build/opencode-plugin.js",
   "exports": {
     ".": "./build/opencode-plugin.js",
-    "./plugin": "./build/opencode-plugin.js"
+    "./plugin": "./build/opencode-plugin.js",
+    "./cli": "./build/cli.js"
   },
   "bin": {
     "context-mode": "./build/cli.js"
