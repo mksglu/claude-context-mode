@@ -18,6 +18,17 @@ https://github.com/user-attachments/assets/07013dbf-07c0-4ef1-974a-33ea1207637b
 
 ## Install
 
+### Quick Install (All Platforms)
+
+```bash
+npx context-mode-install
+```
+
+Supports: Claude Code, Gemini CLI, OpenCode, Codex, VS Code Copilot.  
+See [INSTALL.md](./INSTALL.md) for all options.
+
+---
+
 <details open>
 <summary><strong>Claude Code</strong></summary>
 
@@ -26,6 +37,7 @@ https://github.com/user-attachments/assets/07013dbf-07c0-4ef1-974a-33ea1207637b
 ```bash
 /plugin marketplace add mksglu/context-mode
 /plugin install context-mode@context-mode
+npx context-mode-install --claude
 ```
 
 **Step 2 — Restart Claude Code.**
@@ -58,9 +70,10 @@ This gives you the 6 sandbox tools but without automatic routing. The model can 
 <details>
 <summary><strong>Gemini CLI</strong> <sup>(Beta)</sup></summary>
 
-**Step 1 — Install globally:**
+**Step 1 — Install:**
 
 ```bash
+npx context-mode-install --gemini
 npm install -g context-mode
 ```
 
@@ -114,9 +127,10 @@ Full hook config including PreCompress: [`configs/gemini-cli/settings.json`](con
 <details>
 <summary><strong>VS Code Copilot</strong> <sup>(Beta)</sup></summary>
 
-**Step 1 — Install globally:**
+**Step 1 — Install:**
 
 ```bash
+npx context-mode-install --vscode
 npm install -g context-mode
 ```
 
@@ -161,9 +175,10 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 <details>
 <summary><strong>OpenCode</strong> <sup>(Beta)</sup></summary>
 
-**Step 1 — Install globally:**
+**Step 1 — Install:**
 
 ```bash
+npx context-mode-install --opencode
 npm install -g context-mode
 ```
 
@@ -195,9 +210,10 @@ The `mcp` entry gives you the 6 sandbox tools. The `plugin` entry enables hooks 
 <details>
 <summary><strong>Codex CLI</strong> <sup>(Beta)</sup></summary>
 
-**Step 1 — Install globally:**
+**Step 1 — Install:**
 
 ```bash
+npx context-mode-install --codex
 npm install -g context-mode
 ```
 

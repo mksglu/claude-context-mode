@@ -32,7 +32,8 @@
     "./plugin": "./build/opencode-plugin.js"
   },
   "bin": {
-    "context-mode": "./build/cli.js"
+    "context-mode": "./build/cli.js",
+    "context-mode-install": "./build/install-https.js"
   },
   "files": [
     "build",
@@ -44,15 +45,17 @@
     ".mcp.json",
     "start.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "INSTALL.md"
   ],
   "scripts": {
-    "build": "tsc && chmod +x build/cli.js",
+    "build": "tsc && chmod +x build/cli.js && chmod +x build/install-https.js",
     "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
     "doctor": "npx tsx src/cli.ts doctor",
+    "install": "npx tsx src/install-https.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
