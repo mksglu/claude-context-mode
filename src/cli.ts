@@ -16,6 +16,7 @@ import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execSync } from "node:child_process";
 import { readFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
+import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir, devNull } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -122,14 +123,30 @@ function getLocalVersion(): string {
 }
 
 async function fetchLatestVersion(): Promise<string> {
-  try {
-    const resp = await fetch("https://registry.npmjs.org/context-mode/latest");
-    if (!resp.ok) return "unknown";
-    const data = (await resp.json()) as { version?: string };
-    return data.version ?? "unknown";
-  } catch {
-    return "unknown";
-  }
+  // Use node:https instead of global fetch to avoid a Windows libuv assertion
+  // (UV_HANDLE_CLOSING) caused by undici's connection-pool background threads
+  // racing with process.exit() teardown on Node.js v24+.
+  return new Promise((resolve) => {
+    const req = httpsRequest(
+      "https://registry.npmjs.org/context-mode/latest",
+      { headers: { Connection: "close" } },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk: Buffer) => { raw += chunk; });
+        res.on("end", () => {
+          try {
+            const data = JSON.parse(raw) as { version?: string };
+            resolve(data.version ?? "unknown");
+          } catch {
+            resolve("unknown");
+          }
+        });
+      },
+    );
+    req.on("error", () => resolve("unknown"));
+    req.setTimeout(5000, () => { req.destroy(); resolve("unknown"); });
+    req.end();
+  });
 }
 
 /* -------------------------------------------------------
