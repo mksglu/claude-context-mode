@@ -456,9 +456,76 @@ describe("Subagent Events", () => {
     };
 
     const events = extractEvents(input);
-    const subagentEvents = events.filter(e => e.type === "subagent");
+    const subagentEvents = events.filter(e => e.category === "subagent");
     assert.equal(subagentEvents.length, 1);
-    assert.equal(subagentEvents[0].priority, 3);
+    // Has tool_response → completed → priority 2
+    assert.equal(subagentEvents[0].priority, 2);
+  });
+
+  // ── Bug fix: Agent completion results must be captured ──
+
+  test("captures tool_response in subagent event when Agent completes", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research Cursor env vars" },
+      tool_response: "Found CURSOR_TRACE_DIR and CURSOR_CHANNEL env vars. Cursor also sets VSCODE_PID.",
+    };
+
+    const events = extractEvents(input);
+    const subagentEvents = events.filter(e => e.category === "subagent");
+    assert.equal(subagentEvents.length, 1);
+    // The event data MUST include the response, not just the prompt
+    assert.ok(
+      subagentEvents[0].data.includes("CURSOR_TRACE_DIR") || subagentEvents[0].data.includes("Found"),
+      `subagent event data should include tool_response content, got: "${subagentEvents[0].data}"`,
+    );
+  });
+
+  test("distinguishes completed agents from launched-only agents", () => {
+    const completedInput = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research VS Code env vars" },
+      tool_response: "VSCODE_PID is set by VS Code for all child processes.",
+    };
+
+    const launchedInput = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research Codex CLI env vars" },
+      // No tool_response — agent was launched but hasn't completed
+    };
+
+    const completedEvents = extractEvents(completedInput);
+    const launchedEvents = extractEvents(launchedInput);
+
+    const completed = completedEvents.filter(e => e.category === "subagent");
+    const launched = launchedEvents.filter(e => e.category === "subagent");
+
+    assert.equal(completed.length, 1);
+    assert.equal(launched.length, 1);
+
+    // Completed agents should have higher priority (P2) than launched (P3)
+    assert.ok(
+      completed[0].priority < launched[0].priority,
+      `completed priority (${completed[0].priority}) should be lower (=higher importance) than launched (${launched[0].priority})`,
+    );
+  });
+
+  test("completed agent event type indicates completion status", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Audit all adapter env vars" },
+      tool_response: "Completed audit. Gemini CLI sets GEMINI_PROJECT_DIR. Codex has no env detection.",
+    };
+
+    const events = extractEvents(input);
+    const subagentEvents = events.filter(e => e.category === "subagent");
+    assert.equal(subagentEvents.length, 1);
+
+    // Event type must distinguish completed from launched
+    assert.ok(
+      subagentEvents[0].type.includes("completed") || subagentEvents[0].type.includes("complete"),
+      `completed agent event type should indicate completion, got: "${subagentEvents[0].type}"`,
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import {
   renderEnvironment,
   renderErrors,
   renderIntent,
+  renderSubagents,
   type StoredEvent,
 } from "../../src/session/snapshot.js";
 
@@ -560,5 +561,87 @@ describe("Edge Cases", () => {
     const xml = renderDecisions(events);
     const itemCount = (xml.match(/    - /g) || []).length;
     assert.equal(itemCount, 1, `expected 1 unique decision, got ${itemCount}`);
+  });
+});
+
+// ════════════════════════════════════════════
+// SLICE 14: SUBAGENT EVENTS -> <subagents>
+// ════════════════════════════════════════════
+
+describe("Slice 14: Subagent Rendering", () => {
+  test("renderSubagents produces valid XML from subagent events", () => {
+    const events: StoredEvent[] = [
+      makeEvent({
+        type: "subagent_completed",
+        category: "subagent",
+        data: "[completed] Research Cursor env vars → Found CURSOR_TRACE_DIR",
+        priority: 2,
+      }),
+    ];
+    const xml = renderSubagents(events);
+    assert.ok(xml.includes("<subagents>"), "should open <subagents> tag");
+    assert.ok(xml.includes("</subagents>"), "should close </subagents> tag");
+    assert.ok(xml.includes("CURSOR_TRACE_DIR"), "should include agent result data");
+  });
+
+  test("renderSubagents returns empty string for no events", () => {
+    assert.equal(renderSubagents([]), "", "should return empty string with no subagent events");
+  });
+
+  test("renderSubagents renders multiple agents", () => {
+    const events: StoredEvent[] = [
+      makeEvent({
+        type: "subagent_completed",
+        category: "subagent",
+        data: "[completed] Research Gemini CLI → GEMINI_PROJECT_DIR confirmed",
+        priority: 2,
+      }),
+      makeEvent({
+        type: "subagent_completed",
+        category: "subagent",
+        data: "[completed] Research Codex CLI → No env var detection exists",
+        priority: 2,
+      }),
+    ];
+    const xml = renderSubagents(events);
+    assert.ok(xml.includes("Gemini CLI"), "should include first agent");
+    assert.ok(xml.includes("Codex CLI"), "should include second agent");
+  });
+});
+
+// ════════════════════════════════════════════
+// SLICE 15: buildResumeSnapshot includes <subagents>
+// ════════════════════════════════════════════
+
+describe("Slice 15: Snapshot includes subagents", () => {
+  test("buildResumeSnapshot with subagent events includes <subagents> section", () => {
+    const events: StoredEvent[] = [
+      makeEvent({
+        type: "subagent_completed",
+        category: "subagent",
+        data: "[completed] Research env vars → Found VSCODE_PID",
+        priority: 2,
+      }),
+    ];
+    const xml = buildResumeSnapshot(events, { maxBytes: 4096 });
+    assert.ok(
+      xml.includes("<subagents>"),
+      `snapshot should include <subagents> section, got: ${xml}`,
+    );
+    assert.ok(xml.includes("VSCODE_PID"), "snapshot should include subagent data");
+  });
+
+  test("buildResumeSnapshot with 4 completed agents preserves all results", () => {
+    const events: StoredEvent[] = [
+      makeEvent({ type: "subagent_completed", category: "subagent", data: "[completed] Cursor → CURSOR_TRACE_DIR", priority: 2 }),
+      makeEvent({ type: "subagent_completed", category: "subagent", data: "[completed] Gemini → GEMINI_PROJECT_DIR", priority: 2 }),
+      makeEvent({ type: "subagent_completed", category: "subagent", data: "[completed] Codex → no detection", priority: 2 }),
+      makeEvent({ type: "subagent_completed", category: "subagent", data: "[completed] VS Code → VSCODE_PID", priority: 2 }),
+    ];
+    const xml = buildResumeSnapshot(events, { maxBytes: 4096 });
+    assert.ok(xml.includes("Cursor"), "should include Cursor agent result");
+    assert.ok(xml.includes("Gemini"), "should include Gemini agent result");
+    assert.ok(xml.includes("Codex"), "should include Codex agent result");
+    assert.ok(xml.includes("VS Code"), "should include VS Code agent result");
   });
 });

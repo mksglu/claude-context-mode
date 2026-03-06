@@ -237,6 +237,24 @@ export function renderIntent(intentEvent: StoredEvent): string {
 }
 
 /**
+ * Render <subagents> from subagent events.
+ * Shows agent dispatch status (launched/completed) and result summaries.
+ */
+export function renderSubagents(subagentEvents: StoredEvent[]): string {
+  if (subagentEvents.length === 0) return "";
+
+  const lines: string[] = ["  <subagents>"];
+  for (const ev of subagentEvents) {
+    const status = ev.type === "subagent_completed" ? "completed"
+      : ev.type === "subagent_launched" ? "launched"
+      : "unknown";
+    lines.push(`    <agent status="${status}">${escapeXML(truncateString(ev.data, 200))}</agent>`);
+  }
+  lines.push("  </subagents>");
+  return lines.join("\n");
+}
+
+/**
  * Render <mcp_tools> from MCP tool call events.
  * Deduplicates by tool name, shows usage count.
  */
@@ -323,7 +341,7 @@ export function buildResumeSnapshot(
   const rules = renderRules(ruleEvents);
   if (rules) p1Sections.push(rules);
 
-  // P2 sections (35% budget): decisions, environment, errors_resolved
+  // P2 sections (35% budget): decisions, environment, errors_resolved, completed subagents
   const p2Sections: string[] = [];
   const decisions = renderDecisions(decisionEvents);
   if (decisions) p2Sections.push(decisions);
@@ -333,8 +351,12 @@ export function buildResumeSnapshot(
   if (environment) p2Sections.push(environment);
   const errors = renderErrors(errorEvents);
   if (errors) p2Sections.push(errors);
+  // Completed subagents are P2 — their results must survive budget trimming
+  const completedSubagents = subagentEvents.filter(e => e.type === "subagent_completed");
+  const subagentsP2 = renderSubagents(completedSubagents);
+  if (subagentsP2) p2Sections.push(subagentsP2);
 
-  // P3-P4 sections (15% budget): intent, mcp_tools
+  // P3-P4 sections (15% budget): intent, mcp_tools, launched subagents
   const p3Sections: string[] = [];
   if (intentEvents.length > 0) {
     const lastIntent = intentEvents[intentEvents.length - 1];
@@ -342,6 +364,9 @@ export function buildResumeSnapshot(
   }
   const mcpTools = renderMcpTools(mcpEvents);
   if (mcpTools) p3Sections.push(mcpTools);
+  const launchedSubagents = subagentEvents.filter(e => e.type === "subagent_launched");
+  const subagentsP3 = renderSubagents(launchedSubagents);
+  if (subagentsP3) p3Sections.push(subagentsP3);
 
   // ── Assemble with budget trimming ──
   const header = `<session_resume compact_count="${compactCount}" events_captured="${events.length}" generated_at="${now}">`;

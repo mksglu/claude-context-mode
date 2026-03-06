@@ -24,7 +24,7 @@ import {
   hasBunRuntime,
 } from "./runtime.js";
 
-const VERSION = "1.0.5";
+const VERSION = "1.0.6";
 
 // Prevent silent server death from unhandled async errors
 process.on("unhandledRejection", (err) => {

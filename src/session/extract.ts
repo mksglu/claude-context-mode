@@ -305,17 +305,24 @@ function extractSkill(input: HookInput): SessionEvent[] {
 
 /**
  * Category 9: subagent
- * Agent tool calls (subagent dispatches).
+ * Agent tool calls — tracks both launch and completion.
+ * When tool_response is present, the agent has completed and the result
+ * is captured at higher priority (P2) so it survives budget trimming.
  */
 function extractSubagent(input: HookInput): SessionEvent[] {
   if (input.tool_name !== "Agent") return [];
 
-  const prompt = String(input.tool_input["prompt"] ?? input.tool_input["description"] ?? "");
+  const prompt = truncate(String(input.tool_input["prompt"] ?? input.tool_input["description"] ?? ""), 200);
+  const response = input.tool_response ? truncate(String(input.tool_response), 300) : "";
+  const isCompleted = response.length > 0;
+
   return [{
-    type: "subagent",
+    type: isCompleted ? "subagent_completed" : "subagent_launched",
     category: "subagent",
-    data: truncate(prompt, 300),
-    priority: 3,
+    data: isCompleted
+      ? truncate(`[completed] ${prompt} → ${response}`, 300)
+      : truncate(`[launched] ${prompt}`, 300),
+    priority: isCompleted ? 2 : 3,
   }];
 }
 
