@@ -151,6 +151,40 @@ export function routePreToolUse(toolName, toolInput, projectDir) {
       };
     }
 
+    // Verbose command patterns → redirect to ctx_execute sandbox.
+    // These commands typically produce >20 lines of output that floods context.
+    const VERBOSE_CMD_PATTERNS = [
+      // Test runners
+      /(^|\s|&&|\||\;)(npm\s+test|npm\s+run\s+test|npx\s+(jest|vitest|mocha|playwright|cypress))/i,
+      /(^|\s|&&|\||\;)(pytest|python\s+-m\s+(pytest|unittest)|cargo\s+test|go\s+test)/i,
+      /(^|\s|&&|\||\;)(jest|vitest|mocha|ava)\b/i,
+      // Build commands
+      /(^|\s|&&|\||\;)(npm\s+run\s+build|npm\s+run\s+dev|npx\s+tsc|npx\s+next)/i,
+      /(^|\s|&&|\||\;)(cargo\s+build|go\s+build|make\b(?!\s+-q))/i,
+      // Package managers (install/audit)
+      /(^|\s|&&|\||\;)(npm\s+(install|ci|audit|ls|outdated)|yarn\s+(install|add)|pnpm\s+(install|add))/i,
+      /(^|\s|&&|\||\;)(pip\s+install|pip\s+list|pip\s+freeze|poetry\s+install)/i,
+      // Docker/k8s
+      /(^|\s|&&|\||\;)(docker\s+(build|logs|ps|images)|kubectl\s+(logs|describe|get))/i,
+      // Analysis commands that dump large output
+      /(^|\s|&&|\||\;)(find\s+\S+|tree\s|du\s|df\s|ps\s+aux|top\s|wc\s+-l\s+\S+\s+\S+)/i,
+      // Linters/formatters with full output
+      /(^|\s|&&|\||\;)(eslint|prettier\s+--check|pylint|flake8|rubocop|clippy)\b/i,
+      // cat/head/tail piped or on multiple files (likely large output)
+      /(^|\s|&&|\||\;)(cat|head|tail)\s+\S+\s*\|/i,
+      /(^|\s|&&|\||\;)(cat|head|tail)\s+\S+\s+\S+/i,
+    ];
+
+    if (VERBOSE_CMD_PATTERNS.some(p => p.test(stripped))) {
+      const safeCmd = command.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      return {
+        action: "modify",
+        updatedInput: {
+          command: `echo "context-mode: This command typically produces verbose output. Use mcp__plugin_context-mode_context-mode__ctx_execute(language: \\"shell\\", code: \\"${safeCmd}\\") to run in sandbox. Do NOT retry with Bash."`,
+        },
+      };
+    }
+
     // allow all other Bash commands, but inject routing nudge
     return { action: "context", additionalContext: BASH_GUIDANCE };
   }
