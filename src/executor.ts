@@ -42,14 +42,24 @@ function isBinary(buf: Buffer): boolean {
   return false;
 }
 
-/** Kill process tree — on Windows, proc.kill() only kills the shell, not children. */
+/**
+ * Kill process tree.
+ *
+ * Windows: taskkill /F /T kills the shell and all its children.
+ * Unix: process.kill(-pid, SIGKILL) sends SIGKILL to the entire process group
+ * (the shell was spawned with detached:true, making it a process group leader).
+ * This is critical — killing only the shell leaves children (curl, docker exec, etc.)
+ * alive with open pipe handles, causing the "close" event to never fire (hang).
+ */
 function killTree(proc: ReturnType<typeof spawn>): void {
   if (isWin && proc.pid) {
     try {
       execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
     } catch { /* already dead */ }
-  } else {
-    proc.kill("SIGKILL");
+  } else if (proc.pid) {
+    try {
+      process.kill(-proc.pid, "SIGKILL"); // kill entire process group
+    } catch { /* already dead */ }
   }
 }
 
@@ -101,7 +111,8 @@ export class PolyglotExecutor {
   cleanupBackgrounded(): void {
     for (const pid of this.#backgroundedPids) {
       try {
-        process.kill(pid, "SIGTERM");
+        // Unix: kill the process group (negative pid) to also terminate children.
+        isWin ? process.kill(pid, "SIGTERM") : process.kill(-pid, "SIGTERM");
       } catch { /* already dead */ }
     }
     this.#backgroundedPids.clear();
@@ -445,6 +456,11 @@ export class PolyglotExecutor {
         stdio: ["ignore", "pipe", "pipe"],
         env: this.#buildSafeEnv(cwd),
         shell: needsShell,
+        // Unix: create a new process group so killTree can send SIGKILL to the
+        // entire group (shell + curl/docker/etc.) via process.kill(-pid).
+        // Without this, killing the shell leaves children holding pipe handles
+        // open, and the "close" event never fires — causing an indefinite hang.
+        detached: !isWin,
       });
 
       let timedOut = false;
