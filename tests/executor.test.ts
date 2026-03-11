@@ -1,7 +1,7 @@
 import { describe, test, expect, afterAll } from "vitest";
 import { strict as assert } from "node:assert";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { PolyglotExecutor } from "../src/executor.js";
 import {
@@ -1127,7 +1127,7 @@ files.each { |_path, content| puts JSON.parse(content)["name"] }
     assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
     assert.ok(Array.isArray(r.resolvedPaths), "resolvedPaths should be an array");
     assert.equal(r.resolvedPaths!.length, 2);
-    assert.ok(r.resolvedPaths!.every((p) => p.startsWith("/")), "Should be absolute paths");
+    assert.ok(r.resolvedPaths!.every((p) => isAbsolute(p)), "Should be absolute paths");
   });
 
   test("paths: binary files are skipped", async () => {
