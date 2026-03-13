@@ -315,7 +315,7 @@ Each `ctx_execute` call spawns an isolated subprocess with its own process bound
 
 Eleven language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R, and Elixir. Bun is auto-detected for 3-5x faster JS/TS execution.
 
-Authenticated CLIs work through credential passthrough — `gh`, `aws`, `gcloud`, `kubectl`, `docker` inherit environment variables and config paths without exposing them to the conversation.
+Authenticated CLIs work through credential passthrough — `gh`, `aws`, `gcloud`, `kubectl`, `docker` inherit environment variables and config paths without exposing them to the conversation. For custom environment variables, see [Environment Variable Passthrough](#environment-variable-passthrough).
 
 When output exceeds 5 KB and an `intent` is provided, Context Mode switches to intent-driven filtering: it indexes the full output into the knowledge base, searches for sections matching your intent, and returns only the relevant matches with a vocabulary of searchable terms for follow-up queries.
 
@@ -588,6 +588,33 @@ The pattern is `Tool(what to match)` where `*` means "anything".
 Commands chained with `&&`, `;`, or `|` are split — each part is checked separately. `echo hello && sudo rm -rf /tmp` is blocked because the `sudo` part matches the deny rule.
 
 **deny** always wins over **allow**. More specific (project-level) rules override global ones.
+
+## Environment Variable Passthrough
+
+By default, sandboxed processes only receive a curated whitelist of environment variables (credentials for `gh`, `aws`, `gcloud`, `kubectl`, `docker`, etc.). If your workflow injects secrets via a secret manager (Infisical, Vault, Doppler) or custom env vars, you can pass them through to the sandbox.
+
+**Option 1 — Environment variable** (no code changes):
+
+```bash
+# Pass specific patterns (comma-separated)
+export CONTEXT_MODE_ENV_PASSTHROUGH="SLACK_*,LINEAR_*,MY_TOKEN"
+
+# Pass ALL env vars (use with caution — see warning below)
+export CONTEXT_MODE_ENV_PASSTHROUGH="*"
+```
+
+**Option 2 — Constructor option** (takes precedence over env var):
+
+```typescript
+const executor = new PolyglotExecutor({
+  envPassthrough: ["SLACK_*", "LINEAR_*"],  // wildcard patterns
+  // envPassthrough: true,                  // pass ALL vars
+});
+```
+
+Patterns support `*` as a wildcard (e.g. `SLACK_*` matches `SLACK_TOKEN`, `SLACK_COOKIE_WS1`). Exact names work too (`MY_TOKEN`). Built-in whitelist variables always take precedence — passthrough vars cannot override them.
+
+> **Warning:** `envPassthrough: true` / `CONTEXT_MODE_ENV_PASSTHROUGH=*` disables all env filtering. This may expose AWS credentials, SSH keys, database passwords, or other sensitive variables to sandboxed subprocesses. Prefer specific patterns unless you explicitly need full inheritance.
 
 ## Contributing
 

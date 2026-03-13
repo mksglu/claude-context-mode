@@ -56,13 +56,21 @@ export class PolyglotExecutor {
      * Additional environment variables to pass through to sandboxed processes.
      *
      * - `true` — inherit ALL parent environment variables (no filtering).
-     * - `string[]` — list of variable names or glob patterns (e.g. `"SLACK_*"`)
+     * - `string[]` — list of variable names or wildcard patterns (e.g. `"SLACK_*"`)
      *   to pass through in addition to the built-in whitelist.
+     *   Only `*` wildcards are supported (matched as `.*` regex).
      * - `undefined` (default) — only pass the built-in whitelist.
      *
      * Can also be configured via the `CONTEXT_MODE_ENV_PASSTHROUGH` env var:
      * - `"*"` — same as `true`
      * - Comma-separated patterns — e.g. `"SLACK_*,LINEAR_*,MY_TOKEN"`
+     *
+     * **Security warning:** `envPassthrough: true` (or `CONTEXT_MODE_ENV_PASSTHROUGH=*`)
+     * disables all environment filtering and exposes every variable in the parent
+     * process to sandboxed subprocesses. This may include AWS credentials, SSH keys,
+     * database passwords, or other secrets injected by CI, `.env` loaders, or secret
+     * managers. Use specific patterns (e.g. `["SLACK_*", "LINEAR_*"]`) instead of
+     * `true` unless you explicitly need full inheritance.
      */
     envPassthrough?: string[] | true;
   }) {
@@ -461,7 +469,7 @@ export class PolyglotExecutor {
 
     // Apply user-configured env passthrough
     if (this.#envPassthrough === true) {
-      // Inherit all parent env vars (user-set vars override base env)
+      // Inherit all parent env vars; built-in whitelist takes precedence on conflicts
       for (const [key, value] of Object.entries(process.env)) {
         if (key && value !== undefined && !(key in env)) {
           env[key] = value;
@@ -470,16 +478,16 @@ export class PolyglotExecutor {
     } else if (Array.isArray(this.#envPassthrough)) {
       for (const pattern of this.#envPassthrough) {
         if (pattern.includes("*")) {
-          // Glob pattern — match against all env var names
+          // Wildcard pattern — match against all env var names
           const regex = new RegExp(
-            "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"
+            "^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"
           );
           for (const [key, value] of Object.entries(process.env)) {
-            if (key && value !== undefined && regex.test(key)) {
+            if (key && value !== undefined && regex.test(key) && !(key in env)) {
               env[key] = value;
             }
           }
-        } else if (process.env[pattern]) {
+        } else if (process.env[pattern] && !(pattern in env)) {
           // Exact match
           env[pattern] = process.env[pattern]!;
         }
