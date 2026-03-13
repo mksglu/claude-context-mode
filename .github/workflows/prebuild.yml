@@ -68,64 +68,8 @@ jobs:
           name: prebuild-linux-x64-musl
           path: prebuilds/
 
-  prebuild-macos:
-    strategy:
-      matrix:
-        include:
-          - arch: x64
-            runner: macos-13
-          - arch: arm64
-            runner: macos-14
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Build better-sqlite3
-        run: |
-          npm install better-sqlite3 --build-from-source
-          mkdir -p prebuilds/darwin-${{ matrix.arch }}
-          cp node_modules/better-sqlite3/build/Release/better_sqlite3.node prebuilds/darwin-${{ matrix.arch }}/
-          strip prebuilds/darwin-${{ matrix.arch }}/better_sqlite3.node
-      - name: Verify binary
-        run: |
-          node -e "
-            const bs3 = require('better-sqlite3');
-            const db = new bs3(':memory:');
-            db.exec('CREATE VIRTUAL TABLE t USING fts5(c)');
-            db.prepare('INSERT INTO t VALUES(?)').run('hello');
-            console.log('FTS5 OK');
-            db.close();
-          "
-      - uses: actions/upload-artifact@v4
-        with:
-          name: prebuild-darwin-${{ matrix.arch }}
-          path: prebuilds/
-
-  prebuild-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Build better-sqlite3
-        run: |
-          npm install better-sqlite3 --build-from-source
-          mkdir -p prebuilds/win32-x64
-          cp node_modules/better-sqlite3/build/Release/better_sqlite3.node prebuilds/win32-x64/
-        shell: bash
-      - name: Verify binary
-        run: |
-          node -e "const bs3 = require('better-sqlite3'); const db = new bs3(':memory:'); db.exec('CREATE VIRTUAL TABLE t USING fts5(c)'); console.log('FTS5 OK'); db.close();"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: prebuild-win32-x64
-          path: prebuilds/
-
   package:
-    needs: [prebuild-linux-glibc, prebuild-linux-musl, prebuild-macos, prebuild-windows]
+    needs: [prebuild-linux-glibc, prebuild-linux-musl]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +82,7 @@ jobs:
           echo "=== Prebuilt binaries ==="
           find prebuilds/ -name '*.node' -exec ls -lh {} \;
           echo "=== Expected platforms ==="
-          for dir in linux-x64 linux-x64-musl darwin-x64 darwin-arm64 win32-x64; do
+          for dir in linux-x64 linux-x64-musl; do
             if [ -f "prebuilds/$dir/better_sqlite3.node" ]; then
               echo "  ✓ $dir"
             else
@@ -149,3 +93,30 @@ jobs:
         with:
           name: all-prebuilds
           path: prebuilds/
+
+  # CI publish on tag push (Option A)
+  # IMPORTANT: Requires NPM_TOKEN secret to be configured on the repo.
+  # @mksglu (repo owner) or @flightlesstux should add the NPM_TOKEN
+  # secret via: Settings → Secrets and variables → Actions → New repository secret
+  publish:
+    needs: [package]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-prebuilds
+          path: prebuilds/
+      - name: Verify prebuilds included
+        run: |
+          echo "=== Prebuilds to publish ==="
+          find prebuilds/ -name '*.node' -exec ls -lh {} \;
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
