@@ -635,6 +635,58 @@ describe("Timeout Handling", () => {
     assert.equal(r.timedOut, true);
   });
 
+  test("JS: infinite loop leaves no orphaned process after kill", async () => {
+    // Spawn a process that writes its PID then loops forever
+    const r = await executor.execute({
+      language: "javascript",
+      code: `process.stdout.write(String(process.pid)); while(true) {}`,
+      timeout: 1000,
+    });
+    assert.equal(r.timedOut, true);
+    const pid = parseInt(r.stdout.trim(), 10);
+    assert.ok(pid > 0, `Expected valid PID in stdout, got: "${r.stdout}"`);
+    // Give OS a moment to reap
+    await new Promise(r => setTimeout(r, 200));
+    let alive = false;
+    try {
+      process.kill(pid, 0); // signal 0 = check if alive
+      alive = true;
+    } catch { /* ESRCH = not found = good */ }
+    assert.equal(alive, false, `Process ${pid} should be dead after timeout kill`);
+  }, 10_000);
+
+  test("JS: child processes are killed with parent (no orphans)", async () => {
+    // Parent spawns a child that writes its PID to stderr, then both loop
+    const code = `
+      const { fork } = require("child_process");
+      if (process.env.__CHILD__) {
+        process.stderr.write(String(process.pid));
+        while(true) {}
+      } else {
+        process.stdout.write(String(process.pid));
+        const env = { ...process.env, __CHILD__: "1" };
+        fork(process.argv[1], { env });
+        while(true) {}
+      }
+    `;
+    const r = await executor.execute({
+      language: "javascript",
+      code,
+      timeout: 1500,
+    });
+    assert.equal(r.timedOut, true);
+    const parentPid = parseInt(r.stdout.trim(), 10);
+    const childPid = parseInt(r.stderr.trim(), 10);
+    assert.ok(parentPid > 0, `Expected parent PID, got: "${r.stdout}"`);
+    assert.ok(childPid > 0, `Expected child PID, got: "${r.stderr}"`);
+    await new Promise(r => setTimeout(r, 200));
+    for (const pid of [parentPid, childPid]) {
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch {}
+      assert.equal(alive, false, `Process ${pid} should be dead after group kill`);
+    }
+  }, 10_000);
+
   test("Shell: sleep times out", async () => {
     const r = await executor.execute({
       language: "shell",
