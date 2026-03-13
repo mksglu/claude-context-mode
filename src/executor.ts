@@ -14,14 +14,17 @@ import type { ExecResult } from "./types.js";
 
 const isWin = process.platform === "win32";
 
-/** Kill process tree — on Windows, proc.kill() only kills the shell, not children. */
+/** Kill process tree — on Windows uses taskkill /T; on Unix kills the process group. */
 function killTree(proc: ReturnType<typeof spawn>): void {
   if (isWin && proc.pid) {
     try {
       execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
     } catch { /* already dead */ }
-  } else {
-    proc.kill("SIGKILL");
+  } else if (proc.pid) {
+    try {
+      // Kill entire process group (negative PID) to prevent orphaned children
+      process.kill(-proc.pid, "SIGKILL");
+    } catch { /* already dead */ }
   }
 }
 
@@ -66,7 +69,8 @@ export class PolyglotExecutor {
   cleanupBackgrounded(): void {
     for (const pid of this.#backgroundedPids) {
       try {
-        process.kill(pid, "SIGTERM");
+        // Kill process group on Unix to catch all children
+        process.kill(isWin ? pid : -pid, "SIGTERM");
       } catch { /* already dead */ }
     }
     this.#backgroundedPids.clear();
@@ -218,6 +222,8 @@ export class PolyglotExecutor {
         stdio: ["ignore", "pipe", "pipe"],
         env: this.#buildSafeEnv(cwd),
         shell: needsShell,
+        // On Unix, create a new process group so killTree can kill all children
+        detached: !isWin,
       });
 
       let timedOut = false;
