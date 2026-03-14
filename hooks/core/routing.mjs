@@ -102,7 +102,15 @@ const TOOL_ALIASES = {
   "grep_search": "Grep",
   "search_file_content": "Grep",
   "web_fetch": "WebFetch",
-  "activate_skill": "Agent",
+  // Gemini CLI subagents
+  "generalist": "Agent",
+  "subagent_generalist": "Agent",
+  "codebase_investigator": "Agent",
+  "subagent_codebase_investigator": "Agent",
+  "cli_help": "Agent",
+  "subagent_cli_help": "Agent",
+  "code-reviewer": "Agent",
+  "subagent_code_reviewer": "Agent",
   // OpenCode
   "bash": "Bash",
   "view": "Read",
@@ -226,12 +234,14 @@ export function routePreToolUse(toolName, toolInput, projectDir) {
   // ─── Agent/Task: inject context-mode routing into subagent prompts ───
   if (canonical === "Agent" || canonical === "Task") {
     const subagentType = toolInput.subagent_type ?? "";
-    const prompt = toolInput.prompt ?? "";
+    // Detect the correct field name for the prompt/request/objective/question/query
+    const fieldName = ["prompt", "request", "objective", "question", "query", "task"].find(f => f in toolInput) ?? "prompt";
+    const prompt = toolInput[fieldName] ?? "";
 
     const updatedInput =
       subagentType === "Bash"
-        ? { ...toolInput, prompt: prompt + ROUTING_BLOCK, subagent_type: "general-purpose" }
-        : { ...toolInput, prompt: prompt + ROUTING_BLOCK };
+        ? { ...toolInput, [fieldName]: prompt + ROUTING_BLOCK, subagent_type: "general-purpose" }
+        : { ...toolInput, [fieldName]: prompt + ROUTING_BLOCK };
 
     return { action: "modify", updatedInput };
   }
