@@ -199,15 +199,15 @@ context-mode upgrade
 
 This configures Antigravity's soft-enforcement layer:
 - writes `.agent/workflows/context-mode.md`
-- keeps project `AGENTS.md` routing instructions ready to auto-write on first MCP server startup
+- keeps project `GEMINI.md` routing instructions ready to auto-write on first MCP server startup
 
 **Step 4 — Restart Antigravity.**
 
-> **Current limitation:** Antigravity does not expose native pre/post tool hooks yet. Enforcement is therefore softer than Claude Code, Gemini CLI, Cursor, or OpenCode. `context-mode` currently uses MCP registration plus the workflow file and `AGENTS.md` routing instructions to push the model toward sandbox tools.
+> **Current limitation:** Antigravity does not expose native pre/post tool hooks yet. Enforcement is therefore softer than Claude Code, Gemini CLI, Cursor, or OpenCode. `context-mode` currently uses MCP registration plus the workflow file and `GEMINI.md` routing instructions to push the model toward sandbox tools.
 
 Example MCP config: [`configs/antigravity/mcp_config.json`](configs/antigravity/mcp_config.json)  
 Workflow template: [`configs/antigravity/context-mode.md`](configs/antigravity/context-mode.md)  
-Routing rules: [`configs/antigravity/AGENTS.md`](configs/antigravity/AGENTS.md)
+Routing rules: [`configs/antigravity/GEMINI.md`](configs/antigravity/GEMINI.md)
 
 </details>
 
@@ -475,7 +475,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 **VS Code Copilot** — High coverage. Same as Gemini CLI — PostToolUse, PreCompact, and SessionStart all fire. User decisions aren't captured but all tool-level events are.
 
-**Antigravity** — Routing only for now. MCP registration works, and `context-mode upgrade` writes `.agent/workflows/context-mode.md` plus project `AGENTS.md` guidance, but there are no native hooks yet. That means no event capture, no compaction snapshots, and no automatic restore after session loss.
+**Antigravity** — Routing only for now. MCP registration works, and `context-mode upgrade` writes `.agent/workflows/context-mode.md` plus project `GEMINI.md` guidance, but there are no native hooks yet. That means no event capture, no compaction snapshots, and no automatic restore after session loss.
 
 **Cursor** — Partial coverage. Native `preToolUse` and `postToolUse` hooks capture tool events. `sessionStart` is documented by Cursor but currently rejected by their validator, so session restore is not available. Routing instructions are delivered via MCP server startup instead.
 
@@ -502,7 +502,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 > **OpenCode** uses a TypeScript plugin paradigm — hooks run as in-process functions via `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`, providing the same routing enforcement and session continuity as shell-based hooks. SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), but compaction recovery works via the plugin's compacting hook.
 >
-> **Antigravity** currently uses MCP registration plus `.agent/workflows/context-mode.md` and `AGENTS.md` for soft routing only. Native hook support is still missing.
+> **Antigravity** currently uses MCP registration plus `.agent/workflows/context-mode.md` and `GEMINI.md` for soft routing only. Native hook support is still missing.
 >
 > **Codex CLI** does not support hooks. It relies solely on routing instruction files (`AGENTS.md`) for enforcement (~60% compliance).
 
@@ -514,7 +514,7 @@ Hooks intercept tool calls programmatically — they can block dangerous command
 |---|:---:|---|:---:|:---:|
 | Claude Code | Yes (auto) | [`CLAUDE.md`](configs/claude-code/CLAUDE.md) | **~98% saved** | ~60% saved |
 | Gemini CLI | Yes | [`GEMINI.md`](configs/gemini-cli/GEMINI.md) | **~98% saved** | ~60% saved |
-| Antigravity | -- | [`AGENTS.md`](configs/antigravity/AGENTS.md) + [`context-mode.md`](configs/antigravity/context-mode.md) | -- | ~60% saved |
+| Antigravity | -- | [`GEMINI.md`](configs/antigravity/GEMINI.md) + [`context-mode.md`](configs/antigravity/context-mode.md) | -- | ~60% saved |
 | VS Code Copilot | Yes | [`copilot-instructions.md`](configs/vscode-copilot/copilot-instructions.md) | **~98% saved** | ~60% saved |
 | Cursor | Yes | -- | **~98% saved** | Manual tool choice |
 | OpenCode | Plugin | [`AGENTS.md`](configs/opencode/AGENTS.md) | **~98% saved** | ~60% saved |

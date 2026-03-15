@@ -17,18 +17,14 @@ import { tmpdir } from "node:os";
 
 describe("detectPlatform", () => {
   let savedEnv: NodeJS.ProcessEnv;
-  let savedCwd: string;
 
   beforeEach(() => {
     savedEnv = { ...process.env };
-    savedCwd = process.cwd();
     // Clear all platform-specific env vars to get a clean slate
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.CLAUDE_SESSION_ID;
     delete process.env.GEMINI_PROJECT_DIR;
     delete process.env.GEMINI_CLI;
-    delete process.env.ANTIGRAVITY_PROJECT_DIR;
-    delete process.env.ANTIGRAVITY;
     delete process.env.OPENCODE;
     delete process.env.OPENCODE_PID;
     delete process.env.CODEX_CI;
@@ -43,7 +39,7 @@ describe("detectPlatform", () => {
 
   afterEach(() => {
     process.env = savedEnv;
-    process.chdir(savedCwd);
+    vi.restoreAllMocks();
   });
 
   // ── Claude Code ────────────────────────────────────────
@@ -78,7 +74,7 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
-  it("returns antigravity when ANTIGRAVITY_PROJECT_DIR is set", () => {
+  it("returns antigravity when project .agent and ~/.gemini/antigravity are present", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "ctx-antigravity-detect-"));
     const tempHome = join(tempRoot, "home");
     const tempProject = join(tempRoot, "project");
@@ -86,14 +82,13 @@ describe("detectPlatform", () => {
     mkdirSync(join(tempHome, ".gemini", "antigravity"), { recursive: true });
     mkdirSync(join(tempProject, ".agent"), { recursive: true });
 
-    process.env.ANTIGRAVITY_PROJECT_DIR = tempProject;
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
-    process.chdir(tempProject);
+    vi.spyOn(process, "cwd").mockReturnValue(tempProject);
 
     const signal = detectPlatform();
     expect(signal.platform).toBe("antigravity");
-    expect(signal.confidence).toBe("high");
+    expect(signal.confidence).toBe("medium");
   });
 
   // ── OpenCode ───────────────────────────────────────────

@@ -7,9 +7,9 @@
  *   - No native pre/post tool hooks yet
  *   - MCP registration lives in ~/.gemini/antigravity/mcp_config.json
  *   - Project workflows live under .agent/workflows/
- *   - Project routing instructions live in AGENTS.md
+ *   - Project routing instructions live in GEMINI.md
  *   - Session/runtime artifacts live under ~/.gemini/antigravity/
- *   - Because hooks are unavailable, enforcement is soft (workflow + AGENTS.md)
+ *   - Because hooks are unavailable, enforcement is soft (workflow + GEMINI.md)
  */
 
 import { createHash } from "node:crypto";
@@ -183,7 +183,7 @@ export class AntigravityAdapter implements HookAdapter {
       check: "Hook support",
       status: "warn",
       message:
-        "Antigravity has no native pre/post tool hooks yet; routing is enforced via MCP, AGENTS.md, and project workflows.",
+        "Antigravity has no native pre/post tool hooks yet; routing is enforced via MCP, GEMINI.md, and project workflows.",
     });
 
     return results;
@@ -257,9 +257,9 @@ export class AntigravityAdapter implements HookAdapter {
 
   getRoutingInstructionsConfig(): RoutingInstructionsConfig {
     return {
-      fileName: "AGENTS.md",
-      globalPath: resolve(getAntigravityHome(), ".gemini", "antigravity", "AGENTS.md"),
-      projectRelativePath: "AGENTS.md",
+      fileName: "GEMINI.md",
+      globalPath: resolve(getAntigravityHome(), ".gemini", "GEMINI.md"),
+      projectRelativePath: "GEMINI.md",
     };
   }
 

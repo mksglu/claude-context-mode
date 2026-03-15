@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync,
   mkdirSync,
@@ -18,7 +18,6 @@ describe("AntigravityAdapter", () => {
   let tempProject: string;
   let pluginRoot: string;
   let savedEnv: NodeJS.ProcessEnv;
-  let savedCwd: string;
 
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), "ctx-antigravity-"));
@@ -26,7 +25,6 @@ describe("AntigravityAdapter", () => {
     tempProject = join(tempRoot, "project");
     pluginRoot = join(tempRoot, "plugin");
     savedEnv = { ...process.env };
-    savedCwd = process.cwd();
 
     mkdirSync(tempProject, { recursive: true });
     mkdirSync(join(pluginRoot, "configs", "antigravity"), { recursive: true });
@@ -37,19 +35,19 @@ describe("AntigravityAdapter", () => {
       "utf-8",
     );
     writeFileSync(
-      join(pluginRoot, "configs", "antigravity", "AGENTS.md"),
+      join(pluginRoot, "configs", "antigravity", "GEMINI.md"),
       "# context-mode — MANDATORY routing rules\n\nUse context-mode MCP tools.\n",
       "utf-8",
     );
 
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
-    process.chdir(tempProject);
+    vi.spyOn(process, "cwd").mockReturnValue(tempProject);
   });
 
   afterEach(() => {
     process.env = savedEnv;
-    process.chdir(savedCwd);
+    vi.restoreAllMocks();
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -86,5 +84,15 @@ describe("AntigravityAdapter", () => {
       mcpServers?: Record<string, { command?: string }>;
     };
     expect(settings.mcpServers?.["context-mode"]?.command).toBe("context-mode");
+  });
+
+  it("uses GEMINI.md routing instructions for Antigravity projects", () => {
+    const adapter = new AntigravityAdapter();
+    const written = adapter.writeRoutingInstructions(tempProject, pluginRoot);
+    const targetPath = resolve(tempProject, "GEMINI.md");
+
+    expect(written).toBe(targetPath);
+    expect(existsSync(targetPath)).toBe(true);
+    expect(readFileSync(targetPath, "utf-8")).toContain("context-mode");
   });
 });

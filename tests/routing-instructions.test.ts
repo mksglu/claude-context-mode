@@ -1,8 +1,8 @@
 /**
  * TDD tests for writeRoutingInstructions() auto-write at MCP server startup.
  *
- * Feature: hookless platforms (e.g. Codex CLI) receive routing instructions
- * via project-level files (AGENTS.md) since they lack hook support.
+ * Feature: hookless platforms receive routing instructions via the
+ * project-level file their host actually reads.
  *
  * Tests written BEFORE implementation (TDD).
  */
@@ -30,7 +30,7 @@ function createPluginRoot(base: string): string {
     "utf-8",
   );
   writeFileSync(
-    join(antigravityConfigDir, "AGENTS.md"),
+    join(antigravityConfigDir, "GEMINI.md"),
     "# context-mode — MANDATORY routing rules\n\nUse context-mode MCP tools.\n",
     "utf-8",
   );
@@ -58,7 +58,7 @@ describe("Routing instructions — platform capabilities", () => {
     expect(adapter.capabilities.sessionStart).toBe(true);
   });
 
-  test("Antigravity has sessionStart === false (workflow + AGENTS only)", async () => {
+  test("Antigravity has sessionStart === false (workflow + GEMINI only)", async () => {
     const { getAdapter } = await import("../src/adapters/detect.js");
     const adapter = await getAdapter("antigravity");
     expect(adapter.capabilities.sessionStart).toBe(false);
@@ -226,7 +226,7 @@ describe("Routing instructions — hookless platform gate", () => {
       adapter.writeRoutingInstructions(projectDir, pluginRoot);
     }
 
-    expect(existsSync(resolve(projectDir, "AGENTS.md"))).toBe(true);
+    expect(existsSync(resolve(projectDir, "GEMINI.md"))).toBe(true);
   });
 
   test("hook-capable platform (claude-code) does NOT trigger writeRoutingInstructions", async () => {

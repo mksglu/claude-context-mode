@@ -9,7 +9,7 @@
  * Verified env vars per platform (from source code audit):
  *   - Claude Code:    CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
- *   - Antigravity:    ANTIGRAVITY_PROJECT_DIR, ANTIGRAVITY | project .agent/ + ~/.gemini/antigravity/ (best-effort)
+ *   - Antigravity:    no verified env vars; detect via project .agent/ + ~/.gemini/antigravity/
  *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
@@ -22,11 +22,15 @@ import { homedir } from "node:os";
 
 import type { PlatformId, DetectionSignal, HookAdapter } from "./types.js";
 
-function getAntigravityHome(): string {
-  return process.env.ANTIGRAVITY_HOME
-    ?? process.env.HOME
+function getHomeDir(): string {
+  return process.env.HOME
     ?? process.env.USERPROFILE
     ?? homedir();
+}
+
+function getAntigravityHome(): string {
+  return process.env.ANTIGRAVITY_HOME
+    ?? getHomeDir();
 }
 
 /**
@@ -48,14 +52,6 @@ export function detectPlatform(): DetectionSignal {
       platform: "gemini-cli",
       confidence: "high",
       reason: "GEMINI_PROJECT_DIR or GEMINI_CLI env var set",
-    };
-  }
-
-  if (process.env.ANTIGRAVITY_PROJECT_DIR || process.env.ANTIGRAVITY) {
-    return {
-      platform: "antigravity",
-      confidence: "high",
-      reason: "ANTIGRAVITY_PROJECT_DIR or ANTIGRAVITY env var set",
     };
   }
 
@@ -93,7 +89,7 @@ export function detectPlatform(): DetectionSignal {
 
   // ── Medium confidence: config directory existence ──────
 
-  const home = homedir();
+  const home = getHomeDir();
   const antigravityHome = getAntigravityHome();
 
   if (existsSync(resolve(home, ".claude"))) {
