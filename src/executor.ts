@@ -319,113 +319,104 @@ export class PolyglotExecutor {
   #buildSafeEnv(tmpDir: string): Record<string, string> {
     const realHome = process.env.HOME ?? process.env.USERPROFILE ?? tmpDir;
 
-    // Pass through auth-related env vars so CLI tools (gh, aws, gcloud, etc.) work
-    const passthrough = [
-      // GitHub
-      "GH_TOKEN",
-      "GITHUB_TOKEN",
-      "GH_HOST",
-      // AWS
-      "AWS_ACCESS_KEY_ID",
-      "AWS_SECRET_ACCESS_KEY",
-      "AWS_SESSION_TOKEN",
-      "AWS_REGION",
-      "AWS_DEFAULT_REGION",
-      "AWS_PROFILE",
-      // Google Cloud
-      "GOOGLE_APPLICATION_CREDENTIALS",
-      "CLOUDSDK_CONFIG",
-      // Docker / K8s
-      "DOCKER_HOST",
-      "KUBECONFIG",
-      // Node / npm
-      "NPM_TOKEN",
-      "NODE_AUTH_TOKEN",
-      "npm_config_registry",
-      // General
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NO_PROXY",
-      "SSL_CERT_FILE",
-      "CURL_CA_BUNDLE",
-      "NODE_EXTRA_CA_CERTS",
-      "REQUESTS_CA_BUNDLE",
-      // XDG (config paths for gh, gcloud, etc.)
-      "XDG_CONFIG_HOME",
-      "XDG_DATA_HOME",
-      // SSH agent socket — required for git/jj operations that use SSH remotes.
-      // Without this, subprocesses cannot reach the agent and fall back to
-      // prompting for the key passphrase directly on the TTY, which corrupts
-      // Claude Code's PTY ownership.
-      "SSH_AUTH_SOCK",
-      "SSH_AGENT_PID",
-      // Virtual environments (direnv, nix devshells, asdf, mise, etc.)
-      "DIRENV_DIR",
-      "DIRENV_FILE",
-      "DIRENV_DIFF",
-      "DIRENV_WATCHES",
-      "DIRENV_LAYOUT_DIR",
-      "NIX_PATH",
-      "NIX_PROFILES",
-      "NIX_SSL_CERT_FILE",
-      "NIX_CC",
-      "NIX_STORE",
-      "NIX_BUILD_CORES",
-      "IN_NIX_SHELL",
-      "LOCALE_ARCHIVE",
-      "LD_LIBRARY_PATH",
-      "DYLD_LIBRARY_PATH",
-      "LIBRARY_PATH",
-      "C_INCLUDE_PATH",
-      "CPLUS_INCLUDE_PATH",
-      "PKG_CONFIG_PATH",
-      "CMAKE_PREFIX_PATH",
-      "GOPATH",
-      "GOROOT",
-      "CARGO_HOME",
-      "RUSTUP_HOME",
-      "ASDF_DIR",
-      "ASDF_DATA_DIR",
-      "MISE_DATA_DIR",
-      "VIRTUAL_ENV",
-      "CONDA_PREFIX",
-      "CONDA_DEFAULT_ENV",
-      "PYTHONPATH",
-      "GEM_HOME",
-      "GEM_PATH",
-      "BUNDLE_PATH",
-      "RBENV_ROOT",
-      "JAVA_HOME",
-      "SDKMAN_DIR",
-    ];
+    // Denylist: env vars that corrupt sandbox stdout, inject code, or break
+    // language runtimes. Each entry is backed by CVE, MITRE, or live testing.
+    // See: https://www.elttam.com/blog/env/, MITRE T1574.006
+    const DENIED = new Set([
+      // Shell — auto-execute scripts, override builtins
+      "BASH_ENV",             // sourced by non-interactive bash
+      "ENV",                  // sourced by sh/dash
+      "PROMPT_COMMAND",       // runs before each prompt
+      "PS4",                  // $(cmd) expansion in xtrace
+      "SHELLOPTS",            // enables xtrace/verbose, dumps to stdout
+      "BASHOPTS",             // bash-specific shell options
+      "CDPATH",               // makes cd print to stdout
+      "INPUTRC",              // readline key rebinding
+      "BASH_XTRACEFD",        // redirects debug output to stdout
+      // Node.js — require injection, inspector
+      "NODE_OPTIONS",         // --require, --loader, --inspect
+      "NODE_PATH",            // module search path injection
+      // Python — stdlib override, startup injection
+      "PYTHONSTARTUP",        // auto-executes in interactive mode
+      "PYTHONHOME",           // overrides stdlib location (breaks Python)
+      "PYTHONWARNINGS",       // triggers module import chain → RCE
+      "PYTHONBREAKPOINT",     // arbitrary callable
+      "PYTHONINSPECT",        // enters interactive mode after script
+      // Ruby — option/module injection
+      "RUBYOPT",              // injects CLI options (-r loads files)
+      "RUBYLIB",              // module search path injection
+      // Perl — option/module injection
+      "PERL5OPT",             // injects CLI options (-M runs code)
+      "PERL5LIB",             // module search path injection
+      "PERLLIB",              // legacy module search path
+      "PERL5DB",              // debugger command injection
+      // Elixir/Erlang — eval injection
+      "ERL_AFLAGS",           // prepends erl flags (-eval runs code)
+      "ERL_FLAGS",            // appends erl flags
+      "ELIXIR_ERL_OPTIONS",   // Elixir-specific erl flags
+      "ERL_LIBS",             // beam file loading
+      // Go — compiler/linker injection
+      "GOFLAGS",              // injects go command flags
+      "CGO_CFLAGS",           // C compiler flag injection
+      "CGO_LDFLAGS",          // linker flag injection
+      // Rust — compiler substitution
+      "RUSTC",                // arbitrary compiler binary
+      "RUSTC_WRAPPER",        // compiler wrapper injection
+      "RUSTC_WORKSPACE_WRAPPER",
+      "CARGO_BUILD_RUSTC",
+      "CARGO_BUILD_RUSTC_WRAPPER",
+      "RUSTFLAGS",            // compiler flag injection
+      // PHP — config injection
+      "PHPRC",                // auto_prepend_file → RCE
+      "PHP_INI_SCAN_DIR",     // additional .ini loading
+      // R — startup script injection
+      "R_PROFILE",            // site-wide R profile
+      "R_PROFILE_USER",       // user R profile
+      "R_HOME",               // R installation override
+      // Dynamic linker — shared library injection
+      "LD_PRELOAD",           // loads .so before all others (Linux)
+      "DYLD_INSERT_LIBRARIES", // macOS equivalent of LD_PRELOAD
+      // OpenSSL — engine loading
+      "OPENSSL_CONF",         // loads engine modules → .so exec
+      "OPENSSL_ENGINES",      // engine directory override
+      // Compiler — binary substitution
+      "CC",                   // C compiler override
+      "CXX",                  // C++ compiler override
+      "AR",                   // archiver override
+      // Git — command injection via hooks/config
+      "GIT_TEMPLATE_DIR",     // hook injection on git init
+      "GIT_CONFIG_GLOBAL",    // core.pager/editor runs commands
+      "GIT_CONFIG_SYSTEM",    // system-level config injection
+      "GIT_EXEC_PATH",        // substitute git subcommands
+      "GIT_SSH",              // arbitrary command instead of ssh
+      "GIT_SSH_COMMAND",      // arbitrary ssh command
+      "GIT_ASKPASS",          // arbitrary credential command
+    ]);
 
-    const env: Record<string, string> = {
-      PATH: process.env.PATH ?? (isWin ? "" : "/usr/local/bin:/usr/bin:/bin"),
-      HOME: realHome,
-      TMPDIR: tmpDir,
-      LANG: "en_US.UTF-8",
-      PYTHONDONTWRITEBYTECODE: "1",
-      PYTHONUNBUFFERED: "1",
-      PYTHONUTF8: "1",
-      NO_COLOR: "1",
-    };
-
-    // Windows-critical env vars
-    if (isWin) {
-      const winVars = [
-        "SYSTEMROOT", "SystemRoot", "COMSPEC", "PATHEXT",
-        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
-      ];
-      for (const key of winVars) {
-        if (process.env[key]) env[key] = process.env[key]!;
+    // Start with parent env, then strip dangerous vars and apply overrides
+    const env: Record<string, string> = {};
+    for (const [key, val] of Object.entries(process.env)) {
+      if (val !== undefined && !DENIED.has(key) && !key.startsWith("BASH_FUNC_")) {
+        env[key] = val;
       }
-      // Prevent MSYS2/Git Bash from converting non-ASCII Windows paths
-      // (e.g. Chinese characters in project paths) to POSIX paths.
+    }
+
+    // Sandbox overrides — forced values for correct sandbox behavior
+    env["TMPDIR"] = tmpDir;
+    env["HOME"] = realHome;
+    env["LANG"] = "en_US.UTF-8";
+    env["PYTHONDONTWRITEBYTECODE"] = "1";
+    env["PYTHONUNBUFFERED"] = "1";
+    env["PYTHONUTF8"] = "1";
+    env["NO_COLOR"] = "1";
+    if (!env["PATH"]) {
+      env["PATH"] = isWin ? "" : "/usr/local/bin:/usr/bin:/bin";
+    }
+
+    // Windows-critical env vars and path fixes
+    if (isWin) {
       env["MSYS_NO_PATHCONV"] = "1";
       env["MSYS2_ARG_CONV_EXCL"] = "*";
-      // Ensure Git Bash unix tools (cat, ls, head, etc.) are on PATH.
-      // The MCP server process may not inherit the full user PATH that
-      // includes Git's usr/bin directory.
       const gitUsrBin = "C:\\Program Files\\Git\\usr\\bin";
       const gitBin = "C:\\Program Files\\Git\\bin";
       if (!env["PATH"].includes(gitUsrBin)) {
@@ -433,15 +424,7 @@ export class PolyglotExecutor {
       }
     }
 
-    for (const key of passthrough) {
-      if (process.env[key]) {
-        env[key] = process.env[key]!;
-      }
-    }
-
     // Ensure SSL_CERT_FILE is set so Python/Ruby HTTPS works in sandbox.
-    // On macOS, it's typically unset (Python uses its own bundle or none),
-    // causing urllib/requests to fail with SSL cert verification errors.
     if (!env["SSL_CERT_FILE"]) {
       const certPaths = isWin ? [] : [
         "/etc/ssl/cert.pem",                         // macOS, some Linux

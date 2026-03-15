@@ -295,6 +295,40 @@ Global `~/.codex/AGENTS.md` applies to all projects. Project-level `./AGENTS.md`
 
 </details>
 
+<details>
+<summary><strong>Build Prerequisites</strong> <sup>(CentOS, RHEL, Alpine)</sup></summary>
+
+Context Mode uses [better-sqlite3](https://github.com/WiseLibs/better-sqlite3), which ships prebuilt native binaries for most platforms. On glibc >= 2.31 systems (Ubuntu 20.04+, Debian 11+, Fedora 34+, macOS, Windows), `npm install` works without any build tools.
+
+On older glibc systems (CentOS 7/8, RHEL 8, Debian 10), prebuilt binaries don't load and better-sqlite3 **automatically falls back to compiling from source** via `prebuild-install || node-gyp rebuild --release`. This requires a C++20 compiler (GCC 10+), Make, and Python with setuptools.
+
+**CentOS 8 / RHEL 8** (glibc 2.28):
+
+```bash
+dnf install -y gcc-toolset-10-gcc gcc-toolset-10-gcc-c++ make python3 python3-setuptools
+scl enable gcc-toolset-10 'npm install -g context-mode'
+```
+
+**CentOS 7 / RHEL 7** (glibc 2.17):
+
+```bash
+yum install -y centos-release-scl
+yum install -y devtoolset-10-gcc devtoolset-10-gcc-c++ make python3
+pip3 install setuptools
+scl enable devtoolset-10 'npm install -g context-mode'
+```
+
+**Alpine Linux:**
+
+Alpine prebuilt binaries (musl) are available in better-sqlite3 v12.8.0+. With the `^12.6.2` dependency range, `npm install` resolves to the latest 12.x and works without build tools on Alpine. If you pin an older version:
+
+```bash
+apk add build-base python3 py3-setuptools
+npm install -g context-mode
+```
+
+</details>
+
 ## Tools
 
 | Tool | What it does | Context saved |

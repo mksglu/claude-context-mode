@@ -1170,6 +1170,107 @@ describe("Environment Passthrough", () => {
   });
 });
 
+describe("Environment Denylist", () => {
+  test("dangerous vars are stripped from subprocess (BASH_ENV, NODE_OPTIONS)", async () => {
+    const origBash = process.env.BASH_ENV;
+    const origNode = process.env.NODE_OPTIONS;
+    process.env.BASH_ENV = "/tmp/evil.sh";
+    process.env.NODE_OPTIONS = "--inspect";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'echo "BASH_ENV=${BASH_ENV:-unset}" && echo "NODE_OPTIONS=${NODE_OPTIONS:-unset}"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("BASH_ENV=unset"), `BASH_ENV should be stripped, got: ${r.stdout}`);
+      assert.ok(r.stdout.includes("NODE_OPTIONS=unset"), `NODE_OPTIONS should be stripped, got: ${r.stdout}`);
+    } finally {
+      if (origBash === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = origBash;
+      if (origNode === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = origNode;
+    }
+  });
+
+  test("dangerous vars are stripped: PERL5OPT, RUBYOPT, LD_PRELOAD", async () => {
+    const origPerl = process.env.PERL5OPT;
+    const origRuby = process.env.RUBYOPT;
+    const origLD = process.env.LD_PRELOAD;
+    process.env.PERL5OPT = "-Mbase";
+    process.env.RUBYOPT = "-rmalicious";
+    process.env.LD_PRELOAD = "/tmp/evil.so";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'echo "PERL5OPT=${PERL5OPT:-unset}" && echo "RUBYOPT=${RUBYOPT:-unset}" && echo "LD_PRELOAD=${LD_PRELOAD:-unset}"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("PERL5OPT=unset"), `PERL5OPT should be stripped, got: ${r.stdout}`);
+      assert.ok(r.stdout.includes("RUBYOPT=unset"), `RUBYOPT should be stripped, got: ${r.stdout}`);
+      assert.ok(r.stdout.includes("LD_PRELOAD=unset"), `LD_PRELOAD should be stripped, got: ${r.stdout}`);
+    } finally {
+      if (origPerl === undefined) delete process.env.PERL5OPT;
+      else process.env.PERL5OPT = origPerl;
+      if (origRuby === undefined) delete process.env.RUBYOPT;
+      else process.env.RUBYOPT = origRuby;
+      if (origLD === undefined) delete process.env.LD_PRELOAD;
+      else process.env.LD_PRELOAD = origLD;
+    }
+  });
+
+  test("user env vars pass through by default (no allowlist needed)", async () => {
+    const origSlack = process.env.SLACK_BOT_TOKEN;
+    const origCustom = process.env.MY_CUSTOM_API_KEY;
+    process.env.SLACK_BOT_TOKEN = "xoxb-test-token";
+    process.env.MY_CUSTOM_API_KEY = "custom-12345";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'echo "SLACK=$SLACK_BOT_TOKEN" && echo "CUSTOM=$MY_CUSTOM_API_KEY"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("SLACK=xoxb-test-token"), `SLACK_BOT_TOKEN should pass through, got: ${r.stdout}`);
+      assert.ok(r.stdout.includes("CUSTOM=custom-12345"), `MY_CUSTOM_API_KEY should pass through, got: ${r.stdout}`);
+    } finally {
+      if (origSlack === undefined) delete process.env.SLACK_BOT_TOKEN;
+      else process.env.SLACK_BOT_TOKEN = origSlack;
+      if (origCustom === undefined) delete process.env.MY_CUSTOM_API_KEY;
+      else process.env.MY_CUSTOM_API_KEY = origCustom;
+    }
+  });
+
+  test("sandbox overrides take precedence over parent env", async () => {
+    const r = await executor.execute({
+      language: "shell",
+      code: 'echo "NO_COLOR=$NO_COLOR" && echo "PYTHONUNBUFFERED=$PYTHONUNBUFFERED"',
+    });
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes("NO_COLOR=1"), `NO_COLOR should be forced to 1, got: ${r.stdout}`);
+    assert.ok(r.stdout.includes("PYTHONUNBUFFERED=1"), `PYTHONUNBUFFERED should be forced to 1, got: ${r.stdout}`);
+  });
+
+  test("ERL_AFLAGS and ERL_FLAGS are stripped", async () => {
+    const origA = process.env.ERL_AFLAGS;
+    const origF = process.env.ERL_FLAGS;
+    process.env.ERL_AFLAGS = "-eval 'os:cmd(\"id\")'";
+    process.env.ERL_FLAGS = "-eval 'os:cmd(\"id\")'";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code: 'echo "ERL_AFLAGS=${ERL_AFLAGS:-unset}" && echo "ERL_FLAGS=${ERL_FLAGS:-unset}"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(r.stdout.includes("ERL_AFLAGS=unset"), `ERL_AFLAGS should be stripped, got: ${r.stdout}`);
+      assert.ok(r.stdout.includes("ERL_FLAGS=unset"), `ERL_FLAGS should be stripped, got: ${r.stdout}`);
+    } finally {
+      if (origA === undefined) delete process.env.ERL_AFLAGS;
+      else process.env.ERL_AFLAGS = origA;
+      if (origF === undefined) delete process.env.ERL_FLAGS;
+      else process.env.ERL_FLAGS = origF;
+    }
+  });
+});
+
 describe("Concurrent Execution", () => {
   test("5 concurrent JS executions", async () => {
     const promises = Array.from({ length: 5 }, (_, i) =>
