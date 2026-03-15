@@ -6,6 +6,7 @@ import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
 import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js";
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
+import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
 
 // ─────────────────────────────────────────────────────────
 // detectPlatform — env var detection
@@ -30,6 +31,8 @@ describe("detectPlatform", () => {
     delete process.env.CURSOR_TRACE_ID;
     delete process.env.VSCODE_PID;
     delete process.env.VSCODE_CWD;
+    delete process.env.ANTIGRAVITY_SESSION_ID;
+    delete process.env.ANTIGRAVITY_PROJECT_DIR;
     vi.restoreAllMocks();
   });
 
@@ -125,6 +128,30 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
+  // ── Antigravity ────────────────────────────────────────
+
+  it("returns antigravity when ANTIGRAVITY_SESSION_ID is set", () => {
+    process.env.ANTIGRAVITY_SESSION_ID = "session-abc-123";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("antigravity");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns antigravity when ANTIGRAVITY_PROJECT_DIR is set", () => {
+    process.env.ANTIGRAVITY_PROJECT_DIR = "/some/project";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("antigravity");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("prefers antigravity over gemini-cli when both env vars are set", () => {
+    process.env.ANTIGRAVITY_SESSION_ID = "session-abc";
+    process.env.GEMINI_CLI = "1";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("antigravity");
+    expect(signal.confidence).toBe("high");
+  });
+
   // ── VS Code Copilot ────────────────────────────────────
 
   it("returns vscode-copilot when VSCODE_PID is set", () => {
@@ -146,7 +173,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "antigravity"]).toContain(signal.platform);
   });
 });
 
@@ -183,6 +210,11 @@ describe("getAdapter", () => {
   it("returns CursorAdapter for cursor", async () => {
     const adapter = await getAdapter("cursor");
     expect(adapter).toBeInstanceOf(CursorAdapter);
+  });
+
+  it("returns AntigravityAdapter for antigravity", async () => {
+    const adapter = await getAdapter("antigravity");
+    expect(adapter).toBeInstanceOf(AntigravityAdapter);
   });
 
   it("returns ClaudeCodeAdapter for unknown platform", async () => {

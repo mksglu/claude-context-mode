@@ -8,6 +8,7 @@
  *
  * Verified env vars per platform (from source code audit):
  *   - Claude Code:    CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
+ *   - Antigravity:    ANTIGRAVITY_SESSION_ID, ANTIGRAVITY_PROJECT_DIR | ~/.gemini/antigravity/
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
  *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
@@ -32,6 +33,14 @@ export function detectPlatform(): DetectionSignal {
       platform: "claude-code",
       confidence: "high",
       reason: "CLAUDE_PROJECT_DIR or CLAUDE_SESSION_ID env var set",
+    };
+  }
+
+  if (process.env.ANTIGRAVITY_SESSION_ID || process.env.ANTIGRAVITY_PROJECT_DIR) {
+    return {
+      platform: "antigravity",
+      confidence: "high",
+      reason: "ANTIGRAVITY_SESSION_ID or ANTIGRAVITY_PROJECT_DIR env var set",
     };
   }
 
@@ -84,6 +93,14 @@ export function detectPlatform(): DetectionSignal {
       platform: "claude-code",
       confidence: "medium",
       reason: "~/.claude/ directory exists",
+    };
+  }
+
+  if (existsSync(resolve(home, ".gemini", "antigravity"))) {
+    return {
+      platform: "antigravity",
+      confidence: "medium",
+      reason: "~/.gemini/antigravity/ directory exists",
     };
   }
 
@@ -164,6 +181,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "cursor": {
       const { CursorAdapter } = await import("./cursor/index.js");
       return new CursorAdapter();
+    }
+
+    case "antigravity": {
+      const { AntigravityAdapter } = await import("./antigravity/index.js");
+      return new AntigravityAdapter();
     }
 
     default: {
