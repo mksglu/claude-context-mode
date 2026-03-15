@@ -7,10 +7,41 @@
  * configuration. Defaults to Claude Code settings for backward compatibility.
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+
+/**
+ * Returns the worktree suffix for session path isolation.
+ * Mirrors the logic in src/git.ts — kept in sync manually since
+ * hooks run as plain .mjs (no TypeScript build step).
+ */
+function getWorktreeSuffix() {
+  const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
+  if (envSuffix !== undefined) {
+    return envSuffix ? `__${envSuffix}` : "";
+  }
+  try {
+    const cwd = process.cwd();
+    const mainWorktree = execFileSync(
+      "git",
+      ["worktree", "list", "--porcelain"],
+      { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
+    )
+      .split(/\r?\n/)
+      .find((l) => l.startsWith("worktree "))
+      ?.replace("worktree ", "")
+      ?.trim();
+    if (mainWorktree && cwd !== mainWorktree) {
+      return `__${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+    }
+  } catch {
+    // git not available or not a git repo — no suffix
+  }
+  return "";
+}
 
 /** Claude Code platform options (default). */
 const CLAUDE_OPTS = {
@@ -104,7 +135,7 @@ export function getSessionDBPath(opts = CLAUDE_OPTS) {
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}.db`);
+  return join(dir, `${hash}${getWorktreeSuffix()}.db`);
 }
 
 /**
@@ -117,7 +148,7 @@ export function getSessionEventsPath(opts = CLAUDE_OPTS) {
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}-events.md`);
+  return join(dir, `${hash}${getWorktreeSuffix()}-events.md`);
 }
 
 /**
@@ -130,5 +161,5 @@ export function getCleanupFlagPath(opts = CLAUDE_OPTS) {
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}.cleanup`);
+  return join(dir, `${hash}${getWorktreeSuffix()}.cleanup`);
 }
