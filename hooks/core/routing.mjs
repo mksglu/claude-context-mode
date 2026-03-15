@@ -102,15 +102,6 @@ const TOOL_ALIASES = {
   "grep_search": "Grep",
   "search_file_content": "Grep",
   "web_fetch": "WebFetch",
-  // Gemini CLI subagents
-  "generalist": "Agent",
-  "subagent_generalist": "Agent",
-  "codebase_investigator": "Agent",
-  "subagent_codebase_investigator": "Agent",
-  "cli_help": "Agent",
-  "subagent_cli_help": "Agent",
-  "code-reviewer": "Agent",
-  "subagent_code_reviewer": "Agent",
   // OpenCode
   "bash": "Bash",
   "view": "Read",

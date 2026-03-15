@@ -3,25 +3,6 @@ import { routePreToolUse } from "../../hooks/core/routing.mjs";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
 
 describe("Routing: Subagents (Agent/Task)", () => {
-  it("maps Gemini CLI subagent tools to Agent canonical name", () => {
-    const tools = [
-      "generalist",
-      "subagent_generalist",
-      "codebase_investigator",
-      "subagent_codebase_investigator",
-      "cli_help",
-      "subagent_cli_help",
-      "code-reviewer",
-      "subagent_code_reviewer",
-    ];
-
-    for (const tool of tools) {
-      const decision = routePreToolUse(tool, { prompt: "test" }, "/test");
-      expect(decision.action).toBe("modify");
-      expect(decision.updatedInput.prompt).toBe("test" + ROUTING_BLOCK);
-    }
-  });
-
   it("detects prompt in different field names (request, objective, etc.)", () => {
     const fields = ["prompt", "request", "objective", "question", "query", "task"];
 
