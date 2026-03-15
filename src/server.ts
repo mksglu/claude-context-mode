@@ -25,6 +25,7 @@ import {
 } from "./runtime.js";
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
+import { getWorktreeSuffix } from "./git.js";
 const VERSION = "1.0.22";
 
 // Prevent silent server death from unhandled async errors
@@ -1523,7 +1524,11 @@ server.registerTool(
     try {
       const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
       const dbHash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
-      const sessionDbPath = join(homedir(), ".claude", "context-mode", "sessions", `${dbHash}.db`);
+      const worktreeSuffix = getWorktreeSuffix();
+      const sessionDbPath = join(
+        homedir(), ".claude", "context-mode", "sessions",
+        `${dbHash}${worktreeSuffix}.db`
+      );
 
       if (existsSync(sessionDbPath)) {
         const require = createRequire(import.meta.url);
