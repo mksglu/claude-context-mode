@@ -32,6 +32,7 @@ export interface StoredEvent {
 export interface SessionMeta {
   session_id: string;
   project_dir: string;
+  session_key: string | null;
   started_at: string;
   last_event_at: string | null;
   event_count: number;
@@ -79,6 +80,10 @@ const S = {
   deleteMeta: "deleteMeta",
   deleteResume: "deleteResume",
   getOldSessions: "getOldSessions",
+  getMostRecentSession: "getMostRecentSession",
+  renameSessionMeta: "renameSessionMeta",
+  renameSessionEvents: "renameSessionEvents",
+  renameSessionResume: "renameSessionResume",
 } as const;
 
 // ─────────────────────────────────────────────────────────
@@ -142,6 +147,7 @@ export class SessionDB extends SQLiteBase {
       CREATE TABLE IF NOT EXISTS session_meta (
         session_id TEXT PRIMARY KEY,
         project_dir TEXT NOT NULL,
+        session_key TEXT,
         started_at TEXT NOT NULL DEFAULT (datetime('now')),
         last_event_at TEXT,
         event_count INTEGER NOT NULL DEFAULT 0,
@@ -156,6 +162,18 @@ export class SessionDB extends SQLiteBase {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         consumed INTEGER NOT NULL DEFAULT 0
       );
+    `);
+
+    // ── Migration: add session_key column for existing DBs ──
+    try {
+      const cols = this.db.pragma("table_info(session_meta)") as Array<{ name: string }>;
+      if (!cols.some(c => c.name === "session_key")) {
+        this.db.exec(`ALTER TABLE session_meta ADD COLUMN session_key TEXT;`);
+      }
+    } catch { /* best effort */ }
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_session_meta_session_key ON session_meta(session_key);
     `);
   }
 
@@ -211,10 +229,10 @@ export class SessionDB extends SQLiteBase {
 
     // ── Meta ──
     p(S.ensureSession,
-      `INSERT OR IGNORE INTO session_meta (session_id, project_dir) VALUES (?, ?)`);
+      `INSERT OR IGNORE INTO session_meta (session_id, project_dir, session_key) VALUES (?, ?, ?)`);
 
     p(S.getSessionStats,
-      `SELECT session_id, project_dir, started_at, last_event_at, event_count, compact_count
+      `SELECT session_id, project_dir, session_key, started_at, last_event_at, event_count, compact_count
        FROM session_meta WHERE session_id = ?`);
 
     p(S.incrementCompactCount,
@@ -244,6 +262,14 @@ export class SessionDB extends SQLiteBase {
     // ── Cleanup ──
     p(S.getOldSessions,
       `SELECT session_id FROM session_meta WHERE started_at < datetime('now', ? || ' days')`);
+
+    p(S.getMostRecentSession,
+      `SELECT session_id FROM session_meta WHERE session_key = ?
+       ORDER BY started_at DESC, rowid DESC LIMIT 1`);
+
+    p(S.renameSessionMeta,   `UPDATE session_meta   SET session_id = ? WHERE session_id = ?`);
+    p(S.renameSessionEvents, `UPDATE session_events SET session_id = ? WHERE session_id = ?`);
+    p(S.renameSessionResume, `UPDATE session_resume SET session_id = ? WHERE session_id = ?`);
   }
 
   // ═══════════════════════════════════════════
@@ -336,8 +362,8 @@ export class SessionDB extends SQLiteBase {
   /**
    * Ensure a session metadata entry exists. Idempotent (INSERT OR IGNORE).
    */
-  ensureSession(sessionId: string, projectDir: string): void {
-    this.stmt(S.ensureSession).run(sessionId, projectDir);
+  ensureSession(sessionId: string, projectDir: string, sessionKey?: string): void {
+    this.stmt(S.ensureSession).run(sessionId, projectDir, sessionKey ?? null);
   }
 
   /**
@@ -384,6 +410,28 @@ export class SessionDB extends SQLiteBase {
   // ═══════════════════════════════════════════
   // Lifecycle
   // ═══════════════════════════════════════════
+
+  /**
+   * Get the session_id of the most recently started session for a given sessionKey.
+   * Returns null if no sessions exist for that key.
+   */
+  getMostRecentSession(sessionKey: string): string | null {
+    const row = this.stmt(S.getMostRecentSession).get(sessionKey) as { session_id: string } | undefined;
+    return row?.session_id ?? null;
+  }
+
+  /**
+   * Rename a session ID in-place across all tables, preserving all events,
+   * metadata, and resume snapshots. Used when OpenClaw re-keys session IDs
+   * on gateway restart so accumulated events survive the re-key.
+   */
+  renameSession(oldId: string, newId: string): void {
+    this.db.transaction(() => {
+      this.stmt(S.renameSessionMeta).run(newId, oldId);
+      this.stmt(S.renameSessionEvents).run(newId, oldId);
+      this.stmt(S.renameSessionResume).run(newId, oldId);
+    })();
+  }
 
   /**
    * Delete all data for a session (events, meta, resume).

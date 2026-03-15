@@ -13,6 +13,7 @@
     "gemini-cli",
     "vscode-copilot",
     "opencode",
+    "openclaw",
     "codex-cli",
     "context-window",
     "sandbox",
@@ -25,15 +26,22 @@
     "url": "https://github.com/mksglu/context-mode"
   },
   "homepage": "https://github.com/mksglu/context-mode#readme",
+  "openclaw": {
+    "extensions": [
+      "./build/openclaw-plugin.js"
+    ]
+  },
   "bugs": "https://github.com/mksglu/context-mode/issues",
   "main": "./build/opencode-plugin.js",
   "exports": {
     ".": "./build/opencode-plugin.js",
     "./plugin": "./build/opencode-plugin.js",
+    "./openclaw": "./build/openclaw-plugin.js",
     "./cli": "./build/cli.js"
   },
   "bin": {
-    "context-mode": "./build/cli.js"
+    "context-mode": "./build/cli.js",
+    "ctx": "./build/cli.js"
   },
   "files": [
     "build",
@@ -43,7 +51,9 @@
     "cli.bundle.mjs",
     "skills",
     ".claude-plugin",
+    ".openclaw-plugin",
     ".mcp.json",
+    "openclaw.plugin.json",
     "start.mjs",
     "README.md",
     "LICENSE"
@@ -61,7 +71,8 @@
     "benchmark": "npx tsx tests/benchmark.ts",
     "test:use-cases": "npx tsx tests/use-cases.ts",
     "test:compare": "npx tsx tests/context-comparison.ts",
-    "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts"
+    "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
+    "deploy": "npm run build && node scripts/deploy-openclaw.mjs"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",

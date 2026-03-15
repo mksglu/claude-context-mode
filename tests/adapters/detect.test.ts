@@ -3,6 +3,7 @@ import { detectPlatform, getAdapter } from "../../src/adapters/detect.js";
 import { ClaudeCodeAdapter } from "../../src/adapters/claude-code/index.js";
 import { GeminiCLIAdapter } from "../../src/adapters/gemini-cli/index.js";
 import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
+import { OpenClawAdapter } from "../../src/adapters/openclaw/index.js";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
 import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js";
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
@@ -23,6 +24,8 @@ describe("detectPlatform", () => {
     delete process.env.GEMINI_CLI;
     delete process.env.OPENCODE;
     delete process.env.OPENCODE_PID;
+    delete process.env.OPENCLAW_HOME;
+    delete process.env.OPENCLAW_PROJECT_DIR;
     delete process.env.CODEX_CI;
     delete process.env.CODEX_THREAD_ID;
     delete process.env.CURSOR_CWD;
@@ -82,6 +85,22 @@ describe("detectPlatform", () => {
     process.env.OPENCODE_PID = "12345";
     const signal = detectPlatform();
     expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("high");
+  });
+
+  // ── OpenClaw ───────────────────────────────────────────
+
+  it("returns openclaw when OPENCLAW_HOME is set", () => {
+    process.env.OPENCLAW_HOME = "/home/user/.openclaw";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("openclaw");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns openclaw when OPENCLAW_PROJECT_DIR is set", () => {
+    process.env.OPENCLAW_PROJECT_DIR = "/some/project";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("openclaw");
     expect(signal.confidence).toBe("high");
   });
 
@@ -146,7 +165,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "openclaw"]).toContain(signal.platform);
   });
 });
 
@@ -168,6 +187,11 @@ describe("getAdapter", () => {
   it("returns OpenCodeAdapter for opencode", async () => {
     const adapter = await getAdapter("opencode");
     expect(adapter).toBeInstanceOf(OpenCodeAdapter);
+  });
+
+  it("returns OpenClawAdapter for openclaw", async () => {
+    const adapter = await getAdapter("openclaw");
+    expect(adapter).toBeInstanceOf(OpenClawAdapter);
   });
 
   it("returns CodexAdapter for codex", async () => {

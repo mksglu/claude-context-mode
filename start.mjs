@@ -28,6 +28,7 @@ try {
     { env: ["GEMINI_PROJECT_DIR", "GEMINI_SESSION_ID"], dir: "gemini-cli", file: "GEMINI.md", target: "GEMINI.md" },
     { env: ["VSCODE_PID", "VSCODE_CWD"], dir: "vscode-copilot", file: "copilot-instructions.md", target: ".github/copilot-instructions.md" },
     { env: ["OPENCODE_PROJECT_DIR", "OPENCODE_SESSION_ID"], dir: "opencode", file: "AGENTS.md", target: "AGENTS.md" },
+    { env: ["OPENCLAW_HOME", "OPENCLAW_PROJECT_DIR"], dir: "openclaw", file: "AGENTS.md", target: "AGENTS.md" },
     { env: ["CODEX_HOME"], dir: "codex", file: "AGENTS.md", target: "AGENTS.md" },
   ];
 

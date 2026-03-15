@@ -10,6 +10,7 @@
  *   - Claude Code:    CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
  *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
+ *   - OpenClaw:       OPENCLAW_HOME, OPENCLAW_PROJECT_DIR | ~/.openclaw/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
  *   - VS Code Copilot: VSCODE_PID, VSCODE_CWD | ~/.vscode/
@@ -40,6 +41,14 @@ export function detectPlatform(): DetectionSignal {
       platform: "gemini-cli",
       confidence: "high",
       reason: "GEMINI_PROJECT_DIR or GEMINI_CLI env var set",
+    };
+  }
+
+  if (process.env.OPENCLAW_HOME || process.env.OPENCLAW_PROJECT_DIR) {
+    return {
+      platform: "openclaw",
+      confidence: "high",
+      reason: "OPENCLAW_HOME or OPENCLAW_PROJECT_DIR env var set",
     };
   }
 
@@ -111,6 +120,14 @@ export function detectPlatform(): DetectionSignal {
     };
   }
 
+  if (existsSync(resolve(home, ".openclaw"))) {
+    return {
+      platform: "openclaw",
+      confidence: "medium",
+      reason: "~/.openclaw/ directory exists",
+    };
+  }
+
   if (existsSync(resolve(home, ".config", "opencode"))) {
     return {
       platform: "opencode",
@@ -149,6 +166,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "opencode": {
       const { OpenCodeAdapter } = await import("./opencode/index.js");
       return new OpenCodeAdapter();
+    }
+
+    case "openclaw": {
+      const { OpenClawAdapter } = await import("./openclaw/index.js");
+      return new OpenClawAdapter();
     }
 
     case "codex": {
