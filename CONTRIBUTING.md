@@ -254,6 +254,30 @@ After rebuilding, restart your Claude Code session. The MCP server reloads on se
 
 We follow test-driven development. Every PR must include tests.
 
+## Antigravity Adapter Notes
+
+If your PR touches `src/adapters/antigravity/`, keep these constraints explicit:
+
+- Treat Antigravity as `mcp-only` until there is real evidence of hook support.
+- Use `~/.gemini/antigravity/mcp_config.json` for MCP registration.
+- Use project `GEMINI.md` plus `.agent/workflows/context-mode.md` for soft routing guidance.
+- Do not introduce Antigravity-specific env vars, tool names, or config paths unless you can verify them from a real Antigravity session or primary documentation.
+- Prefer filesystem- or config-based detection over guessed environment variables.
+
+Before opening or updating an Antigravity PR, run:
+
+```bash
+npm run typecheck
+npx vitest run tests/adapters/detect.test.ts tests/adapters/antigravity.test.ts tests/routing-instructions.test.ts
+```
+
+If you have live Antigravity access, include integration proof in the PR:
+- screenshot, log, or GIF showing context-mode MCP tools visible in Antigravity
+- one successful tool invocation such as `ctx_execute` or `ctx_search`
+- the actual `mcp_config.json` entry used for registration
+
+Do not claim full Antigravity support from unit tests alone.
+
 **We strongly recommend installing the [TDD skill](https://github.com/anthropics/claude-code-skills) for Claude Code** -- it enforces the red-green-refactor loop automatically.
 
 ### Red-Green-Refactor
