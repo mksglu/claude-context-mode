@@ -295,6 +295,7 @@ export interface DiagnosticResult {
 export type PlatformId =
   | "claude-code"
   | "gemini-cli"
+  | "antigravity"
   | "opencode"
   | "codex"
   | "vscode-copilot"

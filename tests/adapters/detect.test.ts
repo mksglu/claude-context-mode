@@ -2,10 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { detectPlatform, getAdapter } from "../../src/adapters/detect.js";
 import { ClaudeCodeAdapter } from "../../src/adapters/claude-code/index.js";
 import { GeminiCLIAdapter } from "../../src/adapters/gemini-cli/index.js";
+import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
 import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
 import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js";
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 // ─────────────────────────────────────────────────────────
 // detectPlatform — env var detection
@@ -13,14 +17,18 @@ import { CursorAdapter } from "../../src/adapters/cursor/index.js";
 
 describe("detectPlatform", () => {
   let savedEnv: NodeJS.ProcessEnv;
+  let savedCwd: string;
 
   beforeEach(() => {
     savedEnv = { ...process.env };
+    savedCwd = process.cwd();
     // Clear all platform-specific env vars to get a clean slate
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.CLAUDE_SESSION_ID;
     delete process.env.GEMINI_PROJECT_DIR;
     delete process.env.GEMINI_CLI;
+    delete process.env.ANTIGRAVITY_PROJECT_DIR;
+    delete process.env.ANTIGRAVITY;
     delete process.env.OPENCODE;
     delete process.env.OPENCODE_PID;
     delete process.env.CODEX_CI;
@@ -35,6 +43,7 @@ describe("detectPlatform", () => {
 
   afterEach(() => {
     process.env = savedEnv;
+    process.chdir(savedCwd);
   });
 
   // ── Claude Code ────────────────────────────────────────
@@ -66,6 +75,24 @@ describe("detectPlatform", () => {
     process.env.GEMINI_CLI = "1";
     const signal = detectPlatform();
     expect(signal.platform).toBe("gemini-cli");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns antigravity when ANTIGRAVITY_PROJECT_DIR is set", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "ctx-antigravity-detect-"));
+    const tempHome = join(tempRoot, "home");
+    const tempProject = join(tempRoot, "project");
+
+    mkdirSync(join(tempHome, ".gemini", "antigravity"), { recursive: true });
+    mkdirSync(join(tempProject, ".agent"), { recursive: true });
+
+    process.env.ANTIGRAVITY_PROJECT_DIR = tempProject;
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+    process.chdir(tempProject);
+
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("antigravity");
     expect(signal.confidence).toBe("high");
   });
 
@@ -146,7 +173,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "antigravity", "codex", "cursor", "opencode"]).toContain(signal.platform);
   });
 });
 
@@ -163,6 +190,11 @@ describe("getAdapter", () => {
   it("returns GeminiCLIAdapter for gemini-cli", async () => {
     const adapter = await getAdapter("gemini-cli");
     expect(adapter).toBeInstanceOf(GeminiCLIAdapter);
+  });
+
+  it("returns AntigravityAdapter for antigravity", async () => {
+    const adapter = await getAdapter("antigravity");
+    expect(adapter).toBeInstanceOf(AntigravityAdapter);
   });
 
   it("returns OpenCodeAdapter for opencode", async () => {

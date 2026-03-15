@@ -18,12 +18,19 @@ function createTempDir(prefix: string): string {
 }
 
 function createPluginRoot(base: string): string {
-  // Simulate a plugin root with configs/codex/AGENTS.md
+  // Simulate a plugin root with configs for hookless adapters.
   const pluginRoot = join(base, "plugin");
-  const configDir = join(pluginRoot, "configs", "codex");
-  mkdirSync(configDir, { recursive: true });
+  const codexConfigDir = join(pluginRoot, "configs", "codex");
+  const antigravityConfigDir = join(pluginRoot, "configs", "antigravity");
+  mkdirSync(codexConfigDir, { recursive: true });
+  mkdirSync(antigravityConfigDir, { recursive: true });
   writeFileSync(
-    join(configDir, "AGENTS.md"),
+    join(codexConfigDir, "AGENTS.md"),
+    "# context-mode — MANDATORY routing rules\n\nUse context-mode MCP tools.\n",
+    "utf-8",
+  );
+  writeFileSync(
+    join(antigravityConfigDir, "AGENTS.md"),
     "# context-mode — MANDATORY routing rules\n\nUse context-mode MCP tools.\n",
     "utf-8",
   );
@@ -49,6 +56,12 @@ describe("Routing instructions — platform capabilities", () => {
     const { getAdapter } = await import("../src/adapters/detect.js");
     const adapter = await getAdapter("gemini-cli");
     expect(adapter.capabilities.sessionStart).toBe(true);
+  });
+
+  test("Antigravity has sessionStart === false (workflow + AGENTS only)", async () => {
+    const { getAdapter } = await import("../src/adapters/detect.js");
+    const adapter = await getAdapter("antigravity");
+    expect(adapter.capabilities.sessionStart).toBe(false);
   });
 
   test("OpenCode has sessionStart === true (has hooks)", async () => {
@@ -198,6 +211,17 @@ describe("Routing instructions — hookless platform gate", () => {
     const adapter = await getAdapter("codex");
 
     // Simulate startup gate
+    if (!adapter.capabilities.sessionStart) {
+      adapter.writeRoutingInstructions(projectDir, pluginRoot);
+    }
+
+    expect(existsSync(resolve(projectDir, "AGENTS.md"))).toBe(true);
+  });
+
+  test("hookless platform (antigravity) triggers writeRoutingInstructions", async () => {
+    const { getAdapter } = await import("../src/adapters/detect.js");
+    const adapter = await getAdapter("antigravity");
+
     if (!adapter.capabilities.sessionStart) {
       adapter.writeRoutingInstructions(projectDir, pluginRoot);
     }

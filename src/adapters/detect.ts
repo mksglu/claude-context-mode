@@ -9,6 +9,7 @@
  * Verified env vars per platform (from source code audit):
  *   - Claude Code:    CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
+ *   - Antigravity:    ANTIGRAVITY_PROJECT_DIR, ANTIGRAVITY | project .agent/ + ~/.gemini/antigravity/ (best-effort)
  *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
@@ -20,6 +21,13 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 
 import type { PlatformId, DetectionSignal, HookAdapter } from "./types.js";
+
+function getAntigravityHome(): string {
+  return process.env.ANTIGRAVITY_HOME
+    ?? process.env.HOME
+    ?? process.env.USERPROFILE
+    ?? homedir();
+}
 
 /**
  * Detect the current platform by checking env vars and config dirs.
@@ -40,6 +48,14 @@ export function detectPlatform(): DetectionSignal {
       platform: "gemini-cli",
       confidence: "high",
       reason: "GEMINI_PROJECT_DIR or GEMINI_CLI env var set",
+    };
+  }
+
+  if (process.env.ANTIGRAVITY_PROJECT_DIR || process.env.ANTIGRAVITY) {
+    return {
+      platform: "antigravity",
+      confidence: "high",
+      reason: "ANTIGRAVITY_PROJECT_DIR or ANTIGRAVITY env var set",
     };
   }
 
@@ -78,6 +94,7 @@ export function detectPlatform(): DetectionSignal {
   // ── Medium confidence: config directory existence ──────
 
   const home = homedir();
+  const antigravityHome = getAntigravityHome();
 
   if (existsSync(resolve(home, ".claude"))) {
     return {
@@ -88,6 +105,17 @@ export function detectPlatform(): DetectionSignal {
   }
 
   if (existsSync(resolve(home, ".gemini"))) {
+    if (
+      existsSync(resolve(antigravityHome, ".gemini", "antigravity")) &&
+      existsSync(resolve(process.cwd(), ".agent"))
+    ) {
+      return {
+        platform: "antigravity",
+        confidence: "medium",
+        reason: "~/.gemini/antigravity/ and project .agent/ directory exist",
+      };
+    }
+
     return {
       platform: "gemini-cli",
       confidence: "medium",
@@ -144,6 +172,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "gemini-cli": {
       const { GeminiCLIAdapter } = await import("./gemini-cli/index.js");
       return new GeminiCLIAdapter();
+    }
+
+    case "antigravity": {
+      const { AntigravityAdapter } = await import("./antigravity/index.js");
+      return new AntigravityAdapter();
     }
 
     case "opencode": {

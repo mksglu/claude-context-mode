@@ -171,6 +171,47 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 </details>
 
 <details>
+<summary><strong>Antigravity</strong> <sup>(Beta)</sup></summary>
+
+**Step 1 — Install globally:**
+
+```bash
+npm install -g context-mode
+```
+
+**Step 2 — Register the MCP server.** Add to `~/.gemini/antigravity/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "context-mode": {
+      "command": "context-mode"
+    }
+  }
+}
+```
+
+**Step 3 — Run the upgrade once inside your project.**
+
+```bash
+context-mode upgrade
+```
+
+This configures Antigravity's soft-enforcement layer:
+- writes `.agent/workflows/context-mode.md`
+- keeps project `AGENTS.md` routing instructions ready to auto-write on first MCP server startup
+
+**Step 4 — Restart Antigravity.**
+
+> **Current limitation:** Antigravity does not expose native pre/post tool hooks yet. Enforcement is therefore softer than Claude Code, Gemini CLI, Cursor, or OpenCode. `context-mode` currently uses MCP registration plus the workflow file and `AGENTS.md` routing instructions to push the model toward sandbox tools.
+
+Example MCP config: [`configs/antigravity/mcp_config.json`](configs/antigravity/mcp_config.json)  
+Workflow template: [`configs/antigravity/context-mode.md`](configs/antigravity/context-mode.md)  
+Routing rules: [`configs/antigravity/AGENTS.md`](configs/antigravity/AGENTS.md)
+
+</details>
+
+<details>
 <summary><strong>Cursor</strong> <sup>(Beta)</sup></summary>
 
 **Step 1 — Install globally:**
@@ -351,15 +392,15 @@ Context Mode captures every meaningful event during your session and persists th
 
 Session continuity requires 4 hooks working together:
 
-| Hook | Role | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | Codex CLI |
-|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Plugin | -- |
-| **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | -- |
-| **PreCompact** | Builds snapshot before compaction | Yes | Yes | Yes | -- | Plugin | -- |
-| **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | -- | -- | -- |
-| | **Session completeness** | **Full** | **High** | **High** | **Partial** | **High** | **--** |
+| Hook | Role | Claude Code | Gemini CLI | Antigravity | VS Code Copilot | Cursor | OpenCode | Codex CLI |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **PostToolUse** | Captures events after each tool call | Yes | Yes | -- | Yes | Yes | Plugin | -- |
+| **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | -- | -- |
+| **PreCompact** | Builds snapshot before compaction | Yes | Yes | -- | Yes | -- | Plugin | -- |
+| **SessionStart** | Restores state after compaction or resume | Yes | Yes | -- | Yes | -- | -- | -- |
+| | **Session completeness** | **Full** | **High** | **--** | **High** | **Partial** | **High** | **--** |
 
-> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, and **OpenCode**. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenCode** uses the `experimental.session.compacting` plugin hook for compaction recovery, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), so startup/resume is not supported. Codex CLI has no hook support, so session tracking is not available.
+> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, and **OpenCode**. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenCode** uses the `experimental.session.compacting` plugin hook for compaction recovery, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), so startup/resume is not supported. **Antigravity** currently has no hook support, so session tracking is not available yet. Codex CLI also has no hook support, so session tracking is not available.
 
 <details>
 <summary><strong>What gets captured</strong></summary>
@@ -434,6 +475,8 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 **VS Code Copilot** — High coverage. Same as Gemini CLI — PostToolUse, PreCompact, and SessionStart all fire. User decisions aren't captured but all tool-level events are.
 
+**Antigravity** — Routing only for now. MCP registration works, and `context-mode upgrade` writes `.agent/workflows/context-mode.md` plus project `AGENTS.md` guidance, but there are no native hooks yet. That means no event capture, no compaction snapshots, and no automatic restore after session loss.
+
 **Cursor** — Partial coverage. Native `preToolUse` and `postToolUse` hooks capture tool events. `sessionStart` is documented by Cursor but currently rejected by their validator, so session restore is not available. Routing instructions are delivered via MCP server startup instead.
 
 **OpenCode** — Partial. The TypeScript plugin captures PostToolUse events via `tool.execute.after`, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)). Events are stored but not automatically restored after compaction. The `AGENTS.md` routing instructions file compensates by re-teaching tool preferences at each session start.
@@ -444,20 +487,22 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 ## Platform Compatibility
 
-| Feature | Claude Code | Gemini CLI <sup>(Beta)</sup> | VS Code Copilot <sup>(Beta)</sup> | Cursor <sup>(Beta)</sup> | OpenCode <sup>(Beta)</sup> | Codex CLI <sup>(Beta)</sup> |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes |
-| PreToolUse Hook | Yes | Yes | Yes | Yes | Plugin | -- |
-| PostToolUse Hook | Yes | Yes | Yes | Yes | Plugin | -- |
-| SessionStart Hook | Yes | Yes | Yes | -- | -- | -- |
-| PreCompact Hook | Yes | Yes | Yes | -- | Plugin | -- |
-| Can Modify Args | Yes | Yes | Yes | Yes | Plugin | -- |
-| Can Block Tools | Yes | Yes | Yes | Yes | Plugin | -- |
-| Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes |
-| Slash Commands | Yes | -- | -- | -- | -- | -- |
-| Plugin Marketplace | Yes | -- | -- | -- | -- | -- |
+| Feature | Claude Code | Gemini CLI <sup>(Beta)</sup> | Antigravity <sup>(Beta)</sup> | VS Code Copilot <sup>(Beta)</sup> | Cursor <sup>(Beta)</sup> | OpenCode <sup>(Beta)</sup> | Codex CLI <sup>(Beta)</sup> |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| PreToolUse Hook | Yes | Yes | -- | Yes | Yes | Plugin | -- |
+| PostToolUse Hook | Yes | Yes | -- | Yes | Yes | Plugin | -- |
+| SessionStart Hook | Yes | Yes | -- | Yes | -- | -- | -- |
+| PreCompact Hook | Yes | Yes | -- | Yes | -- | Plugin | -- |
+| Can Modify Args | Yes | Yes | -- | Yes | Yes | Plugin | -- |
+| Can Block Tools | Yes | Yes | -- | Yes | Yes | Plugin | -- |
+| Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Slash Commands | Yes | -- | -- | -- | -- | -- | -- |
+| Plugin Marketplace | Yes | -- | -- | -- | -- | -- | -- |
 
 > **OpenCode** uses a TypeScript plugin paradigm — hooks run as in-process functions via `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`, providing the same routing enforcement and session continuity as shell-based hooks. SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), but compaction recovery works via the plugin's compacting hook.
+>
+> **Antigravity** currently uses MCP registration plus `.agent/workflows/context-mode.md` and `AGENTS.md` for soft routing only. Native hook support is still missing.
 >
 > **Codex CLI** does not support hooks. It relies solely on routing instruction files (`AGENTS.md`) for enforcement (~60% compliance).
 
@@ -469,6 +514,7 @@ Hooks intercept tool calls programmatically — they can block dangerous command
 |---|:---:|---|:---:|:---:|
 | Claude Code | Yes (auto) | [`CLAUDE.md`](configs/claude-code/CLAUDE.md) | **~98% saved** | ~60% saved |
 | Gemini CLI | Yes | [`GEMINI.md`](configs/gemini-cli/GEMINI.md) | **~98% saved** | ~60% saved |
+| Antigravity | -- | [`AGENTS.md`](configs/antigravity/AGENTS.md) + [`context-mode.md`](configs/antigravity/context-mode.md) | -- | ~60% saved |
 | VS Code Copilot | Yes | [`copilot-instructions.md`](configs/vscode-copilot/copilot-instructions.md) | **~98% saved** | ~60% saved |
 | Cursor | Yes | -- | **~98% saved** | Manual tool choice |
 | OpenCode | Plugin | [`AGENTS.md`](configs/opencode/AGENTS.md) | **~98% saved** | ~60% saved |
