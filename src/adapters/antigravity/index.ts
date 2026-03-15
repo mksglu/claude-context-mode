@@ -6,11 +6,11 @@
  * Antigravity specifics:
  *   - NO hook support (standalone Electron IDE, no public plugin API)
  *   - No hook injection points in the daemon process
- *   - Config: ~/.gemini/antigravity/settings.json (JSON format)
- *   - MCP: full support via mcpServers in settings
+ *   - Config: ~/.gemini/antigravity/mcp_config.json (JSON format)
+ *   - MCP: full support via mcpServers in mcp_config.json
  *   - All capabilities are false — MCP is the only integration path
  *   - Session dir: ~/.gemini/antigravity/context-mode/sessions/
- *   - Detection: ANTIGRAVITY_SESSION_ID or ANTIGRAVITY_PROJECT_DIR env vars
+ *   - Detection: ~/.gemini/antigravity/ directory + Antigravity daemon process
  */
 
 import { createHash } from "node:crypto";
@@ -103,7 +103,7 @@ export class AntigravityAdapter implements HookAdapter {
     // ── Configuration ──────────────────────────────────────
 
     getSettingsPath(): string {
-        return resolve(homedir(), ".gemini", "antigravity", "settings.json");
+        return resolve(homedir(), ".gemini", "antigravity", "mcp_config.json");
     }
 
     getSessionDir(): string {
@@ -167,14 +167,14 @@ export class AntigravityAdapter implements HookAdapter {
     }
 
     checkPluginRegistration(): DiagnosticResult {
-        // Check for context-mode in mcpServers section of settings.json
+        // Check for context-mode in mcpServers section of mcp_config.json
         try {
             const settings = this.readSettings();
             if (!settings) {
                 return {
                     check: "MCP registration",
                     status: "warn",
-                    message: "Could not read ~/.gemini/antigravity/settings.json",
+                    message: "Could not read ~/.gemini/antigravity/mcp_config.json",
                 };
             }
 
@@ -192,21 +192,21 @@ export class AntigravityAdapter implements HookAdapter {
                     check: "MCP registration",
                     status: "fail",
                     message: "mcpServers section exists but context-mode not found",
-                    fix: "Add context-mode to mcpServers in ~/.gemini/antigravity/settings.json",
+                    fix: "Add context-mode to mcpServers in ~/.gemini/antigravity/mcp_config.json",
                 };
             }
 
             return {
                 check: "MCP registration",
                 status: "fail",
-                message: "No mcpServers section in settings.json",
-                fix: "Add mcpServers.context-mode to ~/.gemini/antigravity/settings.json",
+                message: "No mcpServers section in mcp_config.json",
+                fix: "Add mcpServers.context-mode to ~/.gemini/antigravity/mcp_config.json",
             };
         } catch {
             return {
                 check: "MCP registration",
                 status: "warn",
-                message: "Could not read ~/.gemini/antigravity/settings.json",
+                message: "Could not read ~/.gemini/antigravity/mcp_config.json",
             };
         }
     }

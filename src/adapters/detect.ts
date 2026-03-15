@@ -8,7 +8,7 @@
  *
  * Verified env vars per platform (from source code audit):
  *   - Claude Code:    CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
- *   - Antigravity:    ANTIGRAVITY_SESSION_ID, ANTIGRAVITY_PROJECT_DIR | ~/.gemini/antigravity/
+ *   - Antigravity:    ~/.gemini/antigravity/mcp_config.json (no known env vars)
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
  *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
@@ -36,11 +36,14 @@ export function detectPlatform(): DetectionSignal {
     };
   }
 
-  if (process.env.ANTIGRAVITY_SESSION_ID || process.env.ANTIGRAVITY_PROJECT_DIR) {
+  // Antigravity — check for config file BEFORE Gemini CLI (both share ~/.gemini/)
+  // Antigravity uses ~/.gemini/antigravity/mcp_config.json for MCP configuration.
+  // No known env vars are set by the Antigravity daemon.
+  if (existsSync(resolve(homedir(), ".gemini", "antigravity", "mcp_config.json"))) {
     return {
       platform: "antigravity",
       confidence: "high",
-      reason: "ANTIGRAVITY_SESSION_ID or ANTIGRAVITY_PROJECT_DIR env var set",
+      reason: "~/.gemini/antigravity/mcp_config.json exists",
     };
   }
 
@@ -96,6 +99,7 @@ export function detectPlatform(): DetectionSignal {
     };
   }
 
+  // Antigravity directory check (without mcp_config.json — medium confidence)
   if (existsSync(resolve(home, ".gemini", "antigravity"))) {
     return {
       platform: "antigravity",

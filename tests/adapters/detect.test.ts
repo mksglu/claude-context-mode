@@ -7,6 +7,22 @@ import { CodexAdapter } from "../../src/adapters/codex/index.js";
 import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js";
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
 import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
+import { existsSync } from "node:fs";
+
+// Mock existsSync to prevent local ~/.gemini/antigravity/ from interfering with detection tests.
+// vi.mock is hoisted to the top, so we capture the real existsSync inside the factory.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const realExistsSync = actual.existsSync;
+  return {
+    ...actual,
+    existsSync: vi.fn((p: unknown) => {
+      // Block antigravity config detection so env-var tests aren't corrupted
+      if (typeof p === "string" && p.includes("antigravity")) return false;
+      return realExistsSync(p as string);
+    }),
+  };
+});
 
 // ─────────────────────────────────────────────────────────
 // detectPlatform — env var detection
@@ -31,9 +47,6 @@ describe("detectPlatform", () => {
     delete process.env.CURSOR_TRACE_ID;
     delete process.env.VSCODE_PID;
     delete process.env.VSCODE_CWD;
-    delete process.env.ANTIGRAVITY_SESSION_ID;
-    delete process.env.ANTIGRAVITY_PROJECT_DIR;
-    vi.restoreAllMocks();
   });
 
   afterEach(() => {
@@ -129,28 +142,9 @@ describe("detectPlatform", () => {
   });
 
   // ── Antigravity ────────────────────────────────────────
-
-  it("returns antigravity when ANTIGRAVITY_SESSION_ID is set", () => {
-    process.env.ANTIGRAVITY_SESSION_ID = "session-abc-123";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("antigravity");
-    expect(signal.confidence).toBe("high");
-  });
-
-  it("returns antigravity when ANTIGRAVITY_PROJECT_DIR is set", () => {
-    process.env.ANTIGRAVITY_PROJECT_DIR = "/some/project";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("antigravity");
-    expect(signal.confidence).toBe("high");
-  });
-
-  it("prefers antigravity over gemini-cli when both env vars are set", () => {
-    process.env.ANTIGRAVITY_SESSION_ID = "session-abc";
-    process.env.GEMINI_CLI = "1";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("antigravity");
-    expect(signal.confidence).toBe("high");
-  });
+  // Antigravity detection is file-based (~/.gemini/antigravity/mcp_config.json),
+  // not env-var based. Tested via config directory checks below and in
+  // antigravity.test.ts.
 
   // ── VS Code Copilot ────────────────────────────────────
 

@@ -5,7 +5,7 @@ You have context-mode MCP tools available. These rules are NOT optional — they
 ## BLOCKED commands — do NOT use these
 
 ### curl / wget — FORBIDDEN
-Do NOT use `curl` or `wget` via `run_command` or `mcp_nudger_nudge shell_exec`. They dump raw HTTP responses directly into your context window.
+Do NOT use `curl` or `wget` via `run_command`. They dump raw HTTP responses directly into your context window.
 Instead use:
 - `mcp__context-mode__ctx_fetch_and_index(url, source)` to fetch and index web pages
 - `mcp__context-mode__ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
@@ -23,13 +23,13 @@ Instead use:
 ## REDIRECTED tools — use sandbox equivalents
 
 ### Shell (>20 lines output)
-`run_command` and `mcp_nudger_nudge shell_exec` are ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
+`run_command` is ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
 For everything else, use:
 - `mcp__context-mode__ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
 - `mcp__context-mode__ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
 
 ### File reading (for analysis)
-If you are reading a file to **edit** it → `view_file` is correct (edit needs content in context).
+If you are reading a file to **edit** it → `view_file` / `read_file` is correct (edit needs content in context).
 If you are reading to **analyze, explore, or summarize** → use `mcp__context-mode__ctx_execute_file(path, language, code)` instead. Only your printed summary enters context. The raw file stays in the sandbox.
 
 ### grep / search (large results)
