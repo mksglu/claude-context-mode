@@ -6,6 +6,23 @@ import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
 import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js";
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
+import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
+import { existsSync } from "node:fs";
+
+// Mock existsSync to prevent local ~/.gemini/antigravity/ from interfering with detection tests.
+// vi.mock is hoisted to the top, so we capture the real existsSync inside the factory.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const realExistsSync = actual.existsSync;
+  return {
+    ...actual,
+    existsSync: vi.fn((p: unknown) => {
+      // Block antigravity config detection so env-var tests aren't corrupted
+      if (typeof p === "string" && p.includes("antigravity")) return false;
+      return realExistsSync(p as string);
+    }),
+  };
+});
 
 // ─────────────────────────────────────────────────────────
 // detectPlatform — env var detection
@@ -30,7 +47,6 @@ describe("detectPlatform", () => {
     delete process.env.CURSOR_TRACE_ID;
     delete process.env.VSCODE_PID;
     delete process.env.VSCODE_CWD;
-    vi.restoreAllMocks();
   });
 
   afterEach(() => {
@@ -125,6 +141,11 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
+  // ── Antigravity ────────────────────────────────────────
+  // Antigravity detection is file-based (~/.gemini/antigravity/mcp_config.json),
+  // not env-var based. Tested via config directory checks below and in
+  // antigravity.test.ts.
+
   // ── VS Code Copilot ────────────────────────────────────
 
   it("returns vscode-copilot when VSCODE_PID is set", () => {
@@ -146,7 +167,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "antigravity"]).toContain(signal.platform);
   });
 });
 
@@ -183,6 +204,11 @@ describe("getAdapter", () => {
   it("returns CursorAdapter for cursor", async () => {
     const adapter = await getAdapter("cursor");
     expect(adapter).toBeInstanceOf(CursorAdapter);
+  });
+
+  it("returns AntigravityAdapter for antigravity", async () => {
+    const adapter = await getAdapter("antigravity");
+    expect(adapter).toBeInstanceOf(AntigravityAdapter);
   });
 
   it("returns ClaudeCodeAdapter for unknown platform", async () => {
