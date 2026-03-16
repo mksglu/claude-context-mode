@@ -11,7 +11,9 @@ Context Mode is not a CLI output filter or a cloud analytics dashboard. It opera
 
 **Nothing leaves your machine.** No telemetry, no cloud sync, no usage tracking, no account required. Your code, your prompts, your session data — all local. The SQLite databases live in your home directory and die when you're done.
 
-This is a deliberate architectural choice, not a missing feature. Context optimization should happen at the source, not in a dashboard behind a per-seat subscription. Licensed under [Elastic License 2.0](LICENSE) — use it, fork it, modify it, ship it in your product. The only thing you can't do is strip the author's name and resell it as your own. We chose ELv2 over MIT specifically because MIT allows exactly that — someone can take the entire codebase, remove all attribution, and sell it as a closed-source SaaS. ELv2 keeps the code open and the community protected.
+This is a deliberate architectural choice, not a missing feature. Context optimization should happen at the source, not in a dashboard behind a per-seat subscription. This is our philosophy — and every design decision follows from it.
+
+Licensed under [Elastic License 2.0](LICENSE) (source-available). You can use it, fork it, modify it, and distribute it — including in commercial products. Two things you can't do: offer it as a hosted/managed service, or remove the licensing notices. We chose ELv2 over MIT because MIT permits repackaging the code as a competing closed-source SaaS — ELv2 prevents that while keeping everything else permissive.
 
 ## The Problem
 
