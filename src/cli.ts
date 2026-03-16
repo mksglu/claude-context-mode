@@ -15,7 +15,7 @@
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execSync } from "node:child_process";
-import { readFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir, devNull } from "node:os";
@@ -471,7 +471,7 @@ async function upgrade() {
 
     const items = [
       "build", "src", "hooks", "skills", ".claude-plugin",
-      "start.mjs", "server.bundle.mjs", "cli.bundle.mjs", "package.json", ".mcp.json",
+      "start.mjs", "server.bundle.mjs", "cli.bundle.mjs", "package.json",
     ];
     for (const item of items) {
       try {
@@ -479,6 +479,21 @@ async function upgrade() {
         cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
       } catch { /* some files may not exist in source */ }
     }
+
+    // Write .mcp.json with resolved absolute path (fixes #132)
+    const mcpConfig = {
+      mcpServers: {
+        "context-mode": {
+          command: "node",
+          args: [resolve(pluginRoot, "start.mjs")],
+        },
+      },
+    };
+    writeFileSync(
+      resolve(pluginRoot, ".mcp.json"),
+      JSON.stringify(mcpConfig, null, 2) + "\n",
+    );
+
     s.stop(color.green(`Updated in-place to v${newVersion}`));
 
     // Fix registry — adapter-aware
@@ -493,6 +508,26 @@ async function upgrade() {
       timeout: 60000,
     });
     s.stop("Dependencies ready");
+
+    // Rebuild native addons for current Node.js ABI (fixes #131)
+    s.start("Rebuilding native addons");
+    try {
+      execSync("npm rebuild better-sqlite3", {
+        cwd: pluginRoot,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+      s.stop(color.green("Native addons rebuilt"));
+      changes.push("Rebuilt better-sqlite3 for current Node.js");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      s.stop(color.yellow("Native addon rebuild warning"));
+      p.log.warn(
+        color.yellow("better-sqlite3 rebuild issue") +
+          ` — ${message}` +
+          color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
+      );
+    }
 
     // Update global npm
     s.start("Updating npm global package");

@@ -73,6 +73,24 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(src).toContain("existsSync");
   });
 
+  it("cli.ts upgrade rebuilds better-sqlite3 native addon after deps install", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    // Extract only the upgrade function body (starts with "async function upgrade")
+    const upgradeStart = src.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeSrc = src.slice(upgradeStart);
+    // Must rebuild native addons between production deps and global install
+    const depsIdx = upgradeSrc.indexOf("npm install --production");
+    const rebuildIdx = upgradeSrc.indexOf('execSync("npm rebuild better-sqlite3"');
+    const globalIdx = upgradeSrc.indexOf("npm install -g");
+    expect(depsIdx).toBeGreaterThan(-1);
+    expect(rebuildIdx).toBeGreaterThan(-1);
+    expect(globalIdx).toBeGreaterThan(-1);
+    // rebuild must come after deps and before global install
+    expect(rebuildIdx).toBeGreaterThan(depsIdx);
+    expect(rebuildIdx).toBeLessThan(globalIdx);
+  });
+
   it("cli.ts upgrade chmod handles both cli binaries", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     // Must chmod both build/cli.js and cli.bundle.mjs
@@ -102,6 +120,29 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     const gitignore = readFileSync(resolve(ROOT, ".gitignore"), "utf-8");
     expect(gitignore).toContain("server.bundle.mjs");
     expect(gitignore).toContain("cli.bundle.mjs");
+  });
+});
+
+// ── .mcp.json — MCP server config ────────────────────────────────────
+
+describe(".mcp.json — MCP server config", () => {
+  it("upgrade writes .mcp.json with resolved absolute path, not ${CLAUDE_PLUGIN_ROOT}", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const upgradeStart = src.indexOf("async function upgrade");
+    const upgradeSrc = src.slice(upgradeStart);
+    // items array must NOT include .mcp.json (it's written dynamically)
+    const itemsMatch = upgradeSrc.match(/const items\s*=\s*\[([\s\S]*?)\];/);
+    expect(itemsMatch).not.toBeNull();
+    expect(itemsMatch![1]).not.toContain(".mcp.json");
+    // Must write .mcp.json dynamically with resolve()
+    expect(upgradeSrc).toContain('resolve(pluginRoot, "start.mjs")');
+    expect(upgradeSrc).toContain('resolve(pluginRoot, ".mcp.json")');
+  });
+
+  it("template .mcp.json keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {
+    const mcp = JSON.parse(readFileSync(resolve(ROOT, ".mcp.json"), "utf-8"));
+    const args = mcp.mcpServers["context-mode"].args;
+    expect(args[0]).toContain("CLAUDE_PLUGIN_ROOT");
   });
 });
 
