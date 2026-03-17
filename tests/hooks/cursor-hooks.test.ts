@@ -19,9 +19,10 @@ interface HookResult {
   stderr: string;
 }
 
-function runHook(hookFile: string, input: Record<string, unknown>, env?: Record<string, string>): HookResult {
+function runHook(hookFile: string, input: Record<string, unknown>, env?: Record<string, string>, { bom = false } = {}): HookResult {
+  const json = JSON.stringify(input);
   const result = spawnSync("node", [join(HOOKS_DIR, hookFile)], {
-    input: JSON.stringify(input),
+    input: bom ? "\uFEFF" + json : json,
     encoding: "utf-8",
     timeout: 10000,
     env: { ...process.env, ...env },
@@ -234,6 +235,45 @@ describe("Cursor hooks", () => {
       expect(startResult.exitCode).toBe(0);
       const payload = JSON.parse(startResult.stdout) as Record<string, unknown>;
       expect(String(payload.additional_context)).toContain("session_knowledge");
+    });
+  });
+
+  describe("UTF-8 BOM handling", () => {
+    test("pretooluse.mjs parses BOM-prefixed stdin without error", () => {
+      const result = runHook("pretooluse.mjs", {
+        tool_name: "Write",
+        tool_input: { file_path: `${tempDir}/test.md`, content: "hello" },
+        conversation_id: "cursor-bom-test-1",
+        workspace_roots: [tempDir],
+      }, {}, { bom: true });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("{\"agent_message\":\"\"}");
+    });
+
+    test("posttooluse.mjs parses BOM-prefixed stdin without error", () => {
+      const result = runHook("posttooluse.mjs", {
+        tool_name: "Shell",
+        tool_input: { command: "echo ok" },
+        tool_output: "ok",
+        conversation_id: "cursor-bom-test-2",
+        cwd: tempDir,
+      }, cursorEnv(), { bom: true });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("{\"additional_context\":\"\"}");
+    });
+
+    test("sessionstart.mjs parses BOM-prefixed stdin without error", () => {
+      const result = runHook("sessionstart.mjs", {
+        source: "startup",
+        conversation_id: "cursor-bom-test-3",
+        cwd: tempDir,
+      }, cursorEnv(), { bom: true });
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(String(payload.additional_context)).toContain("context-mode");
     });
   });
 });
