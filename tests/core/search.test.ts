@@ -2141,3 +2141,148 @@ describe("Reciprocal Rank Fusion", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 11. Proximity Reranking
+// ═══════════════════════════════════════════════════════════
+
+describe("Proximity reranking", () => {
+  test("adjacent terms rank higher than distant terms", () => {
+    const store = createStore();
+    try {
+      // Terms are adjacent: "error handling" close together
+      store.indexPlainText(
+        "The error handling middleware catches all exceptions and returns proper HTTP status codes.",
+        "close-terms",
+      );
+      // Terms are far apart: "error" at start, "handling" much later
+      store.indexPlainText(
+        "When an error occurs in the system, the logger records it. " +
+        "After extensive processing and validation of the request parameters, " +
+        "the response formatting and status code handling takes place.",
+        "distant-terms",
+      );
+
+      const results = store.searchWithFallback("error handling", 5);
+      assert.ok(results.length >= 2, "Should find both chunks");
+      // The chunk with adjacent terms should rank first
+      assert.ok(
+        results[0].source === "close-terms",
+        `Expected close-terms first, got: ${results[0].source}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("single-term queries are not affected by proximity", () => {
+    const store = createStore();
+    try {
+      store.indexPlainText(
+        "The authentication system validates user credentials.",
+        "source-a",
+      );
+      store.indexPlainText(
+        "Authentication is required for all API endpoints.",
+        "source-b",
+      );
+
+      const results = store.searchWithFallback("authentication", 5);
+      assert.ok(results.length > 0, "Should find results");
+      // Single term: proximity should not change ordering
+      // Just verify results are returned (RRF ordering preserved)
+    } finally {
+      store.close();
+    }
+  });
+
+  test("tightest span wins for multi-term query", () => {
+    const store = createStore();
+    try {
+      // Span of ~5 chars between "cache" and "invalidation"
+      store.indexPlainText(
+        "The cache invalidation strategy ensures data consistency across all nodes.",
+        "tight-span",
+      );
+      // Span of ~80+ chars between "cache" and "invalidation"
+      store.indexPlainText(
+        "The cache layer stores frequently accessed data in memory for fast retrieval. " +
+        "When data changes, the system triggers invalidation of affected entries.",
+        "wide-span",
+      );
+
+      const results = store.searchWithFallback("cache invalidation", 5);
+      assert.ok(results.length >= 2, "Should find both");
+      assert.ok(
+        results[0].source === "tight-span",
+        `Expected tight-span first, got: ${results[0].source}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("proximity with source filter still works", () => {
+    const store = createStore();
+    try {
+      store.indexPlainText(
+        "The error handling middleware catches exceptions.",
+        "filtered-source",
+      );
+      store.indexPlainText(
+        "Error recovery and handling procedures are documented.",
+        "other-source",
+      );
+
+      const results = store.searchWithFallback("error handling", 5, "filtered-source");
+      assert.ok(results.length > 0);
+      for (const r of results) {
+        assert.ok(r.source.includes("filtered-source"));
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("three-term query proximity", () => {
+    const store = createStore();
+    try {
+      // All three terms close together
+      store.indexPlainText(
+        "The user authentication token validation ensures secure access to protected resources.",
+        "all-close",
+      );
+      // Terms spread out
+      store.indexPlainText(
+        "The user profile page displays account information. " +
+        "For security, authentication is checked on every request. " +
+        "Additionally, token expiration and validation rules apply to API calls.",
+        "spread-out",
+      );
+
+      const results = store.searchWithFallback("user authentication token", 5);
+      assert.ok(results.length >= 2, "Should find both");
+      assert.ok(
+        results[0].source === "all-close",
+        `Expected all-close first, got: ${results[0].source}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("proximity does not eliminate results, only reorders", () => {
+    const store = createStore();
+    try {
+      store.indexPlainText("Error handling is important.", "chunk-a");
+      store.indexPlainText("Proper error and exception handling.", "chunk-b");
+      store.indexPlainText("Error recovery handling procedures.", "chunk-c");
+
+      const results = store.searchWithFallback("error handling", 10);
+      // All chunks should still be present (proximity only reorders, never removes)
+      assert.ok(results.length >= 2, "Should not eliminate any results");
+    } finally {
+      store.close();
+    }
+  });
+});

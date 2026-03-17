@@ -133,6 +133,57 @@ export function cleanupStaleDBs(): number {
   return cleaned;
 }
 
+// ── Proximity helpers (pure functions) ──
+
+/** Find all positions of a term in text. */
+function findAllPositions(text: string, term: string): number[] {
+  const positions: number[] = [];
+  let idx = text.indexOf(term);
+  while (idx !== -1) {
+    positions.push(idx);
+    idx = text.indexOf(term, idx + 1);
+  }
+  return positions;
+}
+
+/**
+ * Find minimum span (window) covering at least one position from each list.
+ * Uses a sweep-line approach: advance the pointer at the current minimum.
+ */
+function findMinSpan(positionLists: number[][]): number {
+  if (positionLists.length === 0) return Infinity;
+  if (positionLists.length === 1) return 0;
+
+  const sorted = positionLists.map((p) => [...p].sort((a, b) => a - b));
+  const ptrs = new Array(sorted.length).fill(0);
+  let minSpan = Infinity;
+
+  while (true) {
+    let curMin = Infinity;
+    let curMax = -Infinity;
+    let minIdx = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const val = sorted[i][ptrs[i]];
+      if (val < curMin) {
+        curMin = val;
+        minIdx = i;
+      }
+      if (val > curMax) {
+        curMax = val;
+      }
+    }
+
+    const span = curMax - curMin;
+    if (span < minSpan) minSpan = span;
+
+    ptrs[minIdx]++;
+    if (ptrs[minIdx] >= sorted[minIdx].length) break;
+  }
+
+  return minSpan;
+}
+
 export class ContentStore {
   #db: DatabaseInstance;
   #dbPath: string;
@@ -693,6 +744,38 @@ export class ContentStore {
       .map(({ result, score }) => ({ ...result, rank: -score }));
   }
 
+  // ── Proximity Reranking ──
+
+  #applyProximityReranking(
+    results: SearchResult[],
+    query: string,
+  ): SearchResult[] {
+    const terms = query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length >= 2);
+
+    // Single-term queries: no reranking needed
+    if (terms.length < 2) return results;
+
+    return results
+      .map((r) => {
+        const content = r.content.toLowerCase();
+        const positions = terms.map((t) => findAllPositions(content, t));
+
+        // If any term is missing from content, no proximity boost
+        if (positions.some((p) => p.length === 0)) {
+          return { result: r, boost: 0 };
+        }
+
+        const minSpan = findMinSpan(positions);
+        const boost = 1 / (1 + minSpan / Math.max(content.length, 1));
+        return { result: r, boost };
+      })
+      .sort((a, b) => b.boost - a.boost || a.result.rank - b.result.rank)
+      .map(({ result }) => result);
+  }
+
   // ── Unified Fallback Search ──
 
   searchWithFallback(
@@ -704,7 +787,8 @@ export class ContentStore {
     // Step 1: RRF fusion (porter OR + trigram OR → merge)
     const rrfResults = this.#rrfSearch(query, limit, source, contentType);
     if (rrfResults.length > 0) {
-      return rrfResults.map((r) => ({ ...r, matchLayer: "rrf" as const }));
+      const reranked = this.#applyProximityReranking(rrfResults, query);
+      return reranked.map((r) => ({ ...r, matchLayer: "rrf" as const }));
     }
 
     // Step 2: Fuzzy correction → RRF re-run
@@ -720,7 +804,8 @@ export class ContentStore {
     if (correctedQuery !== original) {
       const fuzzyResults = this.#rrfSearch(correctedQuery, limit, source, contentType);
       if (fuzzyResults.length > 0) {
-        return fuzzyResults.map((r) => ({ ...r, matchLayer: "rrf-fuzzy" as const }));
+        const reranked = this.#applyProximityReranking(fuzzyResults, correctedQuery);
+        return reranked.map((r) => ({ ...r, matchLayer: "rrf-fuzzy" as const }));
       }
     }
 
