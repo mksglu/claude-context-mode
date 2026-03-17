@@ -1,4 +1,6 @@
 {
+  "name": "context-mode",
+  "description": "Context-mode hooks for context window protection",
   "hooks": {
     "preToolUse": [
       {

@@ -387,9 +387,28 @@ npm install -g context-mode
 }
 ```
 
-**Step 3 — Restart Kiro.** On first MCP server startup, a `KIRO.md` routing instructions file is auto-created in your project root. Kiro reads `KIRO.md` automatically and learns to prefer context-mode sandbox tools.
+**Step 3 — Add hooks.** Without hooks, the model can bypass routing and dump raw output into your context. Hooks intercept every tool call and enforce sandbox routing programmatically. Create `.kiro/hooks/context-mode.json` (or copy from [`configs/kiro/agent.json`](configs/kiro/agent.json)):
 
-**About hooks:** Kiro hook-based session continuity will be added once Kiro CLI hooks are fully tested. The `KIRO.md` routing instructions file is the current enforcement method (~60% compliance).
+```json
+{
+  "name": "context-mode",
+  "description": "Context-mode hooks for context window protection",
+  "hooks": {
+    "preToolUse": [
+      { "matcher": "*", "command": "context-mode hook kiro pretooluse" }
+    ],
+    "postToolUse": [
+      { "matcher": "*", "command": "context-mode hook kiro posttooluse" }
+    ]
+  }
+}
+```
+
+**Step 4 — Restart Kiro.** On first session start, the pretooluse hook automatically manages `KIRO.md` routing instructions in your project root:
+
+- **File does not exist** — the routing instructions file is written.
+- **File exists without context-mode rules** — routing instructions are appended after your existing content.
+- **File already contains context-mode rules** — skipped (idempotent, no duplicate content).
 
 **Auto-detection:** context-mode detects Kiro automatically via the MCP protocol handshake (`clientInfo.name`). No environment variables or manual platform configuration needed.
 
@@ -487,11 +506,11 @@ Session continuity requires 4 hooks working together:
 
 | Hook | Role | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | OpenClaw | Codex CLI | Antigravity | Kiro |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | -- |
+| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes |
 | **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | -- | -- | -- | -- |
 | **PreCompact** | Builds snapshot before compaction | Yes | Yes | Yes | -- | Plugin | Plugin | -- | -- | -- |
 | **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | -- | -- | Plugin | -- | -- | -- |
-| | **Session completeness** | **Full** | **High** | **High** | **Partial** | **High** | **High** | **--** | **--** | **--** |
+| | **Session completeness** | **Full** | **High** | **High** | **Partial** | **High** | **High** | **--** | **--** | **Partial** |
 
 > **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, and **OpenCode**. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenCode** uses the `experimental.session.compacting` plugin hook for compaction recovery, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), so startup/resume is not supported. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Codex CLI**, **Antigravity**, and **Kiro** have no hook support in the current release, so session tracking is not available.
 
@@ -578,7 +597,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 **Antigravity** — No session support. Same as Codex CLI — no hooks, no event capture. The `GEMINI.md` routing instructions file is auto-written on first MCP server startup. Auto-detected via MCP protocol handshake (`clientInfo.name`).
 
-**Kiro** — No session support in the current release. MCP-only. The `KIRO.md` routing instructions file is auto-written on first MCP server startup. Hook-based session continuity will be added once Kiro CLI hooks are fully tested. Auto-detected via MCP protocol handshake (`clientInfo.name`).
+**Kiro** — Partial coverage. Native `preToolUse` and `postToolUse` hooks capture tool events and enforce sandbox routing. `agentSpawn` (the Kiro equivalent of SessionStart) is not yet implemented, so session restore after compaction is not available. The `KIRO.md` routing instructions file is auto-written on first session start. Auto-detected via MCP protocol handshake (`clientInfo.name`).
 
 </details>
 
@@ -587,12 +606,12 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 | Feature | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | OpenClaw | Codex CLI | Antigravity | Kiro |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| PreToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | -- |
-| PostToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | -- |
+| PreToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes |
+| PostToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes |
 | SessionStart Hook | Yes | Yes | Yes | -- | -- | Plugin | -- | -- | -- |
 | PreCompact Hook | Yes | Yes | Yes | -- | Plugin | Plugin | -- | -- | -- |
-| Can Modify Args | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | -- |
-| Can Block Tools | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | -- |
+| Can Modify Args | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes |
+| Can Block Tools | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes |
 | Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Slash Commands | Yes | -- | -- | -- | -- | -- | -- | -- | -- |
 | Plugin Marketplace | Yes | -- | -- | -- | -- | -- | -- | -- | -- |
@@ -603,7 +622,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 >
 > **Codex CLI** and **Antigravity** do not support hooks. They rely solely on routing instruction files (`AGENTS.md` / `GEMINI.md`) for enforcement (~60% compliance). Antigravity is auto-detected via MCP protocol handshake — no manual platform configuration needed.
 >
-> **Kiro** is MCP-only in the current release. Hook-based enforcement will be added once Kiro CLI hooks are fully tested. Kiro is auto-detected via MCP protocol handshake (`clientInfo.name`).
+> **Kiro** supports native `preToolUse` and `postToolUse` hooks for routing enforcement and tool event capture. `agentSpawn` (SessionStart equivalent) and `stop` are not yet wired. Kiro is auto-detected via MCP protocol handshake (`clientInfo.name`).
 
 ### Routing Enforcement
 
@@ -619,7 +638,7 @@ Hooks intercept tool calls programmatically — they can block dangerous command
 | OpenClaw | Plugin | [`AGENTS.md`](configs/openclaw/AGENTS.md) | **~98% saved** | ~60% saved |
 | Codex CLI | -- | [`AGENTS.md`](configs/codex/AGENTS.md) | -- | ~60% saved |
 | Antigravity | -- | [`GEMINI.md`](configs/antigravity/GEMINI.md) | -- | ~60% saved |
-| Kiro | -- | [`KIRO.md`](configs/kiro/KIRO.md) | -- | ~60% saved |
+| Kiro | Yes | [`KIRO.md`](configs/kiro/KIRO.md) | **~98% saved** | ~60% saved |
 
 Without hooks, one unrouted `curl` or Playwright snapshot can dump 56 KB into context — wiping out an entire session's worth of savings.
 
