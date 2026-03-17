@@ -589,3 +589,113 @@ describe("Shell-Escape Scanner", () => {
     assert.deepEqual(result, []);
   });
 });
+
+// ==============================================================================
+// Edge Case Tests
+// ==============================================================================
+
+describe("parseBashPattern edge cases", () => {
+  test("nested parentheses: non-greedy captures correctly", () => {
+    assert.equal(parseBashPattern("Bash(echo (foo))"), "echo (foo)");
+  });
+
+  test("dangerous command preserved verbatim", () => {
+    assert.equal(parseBashPattern("Bash(sudo rm -rf /)"), "sudo rm -rf /");
+  });
+
+  test("single-quoted arguments preserved", () => {
+    assert.equal(parseBashPattern("Bash(echo 'hello world')"), "echo 'hello world'");
+  });
+
+  test("empty Bash() returns null", () => {
+    assert.equal(parseBashPattern("Bash()"), null);
+  });
+
+  test("wrong prefix NotBash returns null", () => {
+    assert.equal(parseBashPattern("NotBash(echo)"), null);
+  });
+});
+
+describe("parseToolPattern edge cases", () => {
+  test("Read with absolute path", () => {
+    assert.deepEqual(parseToolPattern("Read(/etc/passwd)"), {
+      tool: "Read",
+      glob: "/etc/passwd",
+    });
+  });
+
+  test("Grep with wildcard glob", () => {
+    assert.deepEqual(parseToolPattern("Grep(pattern*)"), {
+      tool: "Grep",
+      glob: "pattern*",
+    });
+  });
+
+  test("Edit with nested parentheses captures full content", () => {
+    // Non-greedy regex captures up to the last closing paren
+    assert.deepEqual(parseToolPattern("Edit(some(path).ts)"), {
+      tool: "Edit",
+      glob: "some(path).ts",
+    });
+  });
+
+  test("empty string returns null", () => {
+    assert.equal(parseToolPattern(""), null);
+  });
+
+  test("bare string without parentheses returns null", () => {
+    assert.equal(parseToolPattern("NoParen"), null);
+  });
+});
+
+describe("evaluateCommand with chained commands edge cases", () => {
+  test("deny on chained segment with &&", () => {
+    const result = evaluateCommand(
+      "echo ok && sudo rm -rf /",
+      [{ deny: ["Bash(sudo *)"], allow: [], ask: [] }],
+      false,
+    );
+    assert.equal(result.decision, "deny");
+  });
+
+  test("no deny match on any segment returns ask (default)", () => {
+    const result = evaluateCommand(
+      "ls && echo hello",
+      [{ deny: ["Bash(sudo *)"], allow: [], ask: [] }],
+      false,
+    );
+    // Default decision when nothing matches is "ask"
+    assert.equal(result.decision, "ask");
+  });
+
+  test("deny on semicolon-chained segment", () => {
+    const result = evaluateCommand(
+      "echo ok; sudo rm -rf /",
+      [{ deny: ["Bash(sudo *)"], allow: [], ask: [] }],
+      false,
+    );
+    assert.equal(result.decision, "deny");
+  });
+});
+
+describe("evaluateFilePath edge cases", () => {
+  test("bare .env denied by '*.env' glob", () => {
+    const result = evaluateFilePath(".env", [["*.env"]], false);
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, "*.env");
+  });
+
+  test("safe file not denied by '*.env' glob", () => {
+    const result = evaluateFilePath("/safe/file.txt", [["*.env"]], false);
+    assert.equal(result.denied, false);
+  });
+
+  test("nested .env.local denied by globstar '**/.env*'", () => {
+    const result = evaluateFilePath(
+      "/path/to/.env.local",
+      [["**/.env*"]],
+      false,
+    );
+    assert.equal(result.denied, true);
+  });
+});
