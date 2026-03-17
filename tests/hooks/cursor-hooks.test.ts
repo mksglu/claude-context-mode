@@ -34,6 +34,21 @@ function runHook(hookFile: string, input: Record<string, unknown>, env?: Record<
   };
 }
 
+function runHookWithBOM(hookFile: string, input: Record<string, unknown>, env?: Record<string, string>): HookResult {
+  const result = spawnSync("node", [join(HOOKS_DIR, hookFile)], {
+    input: "\uFEFF" + JSON.stringify(input),
+    encoding: "utf-8",
+    timeout: 10000,
+    env: { ...process.env, ...env },
+  });
+
+  return {
+    exitCode: result.status ?? 1,
+    stdout: (result.stdout ?? "").trim(),
+    stderr: (result.stderr ?? "").trim(),
+  };
+}
+
 describe("Cursor hooks", () => {
   let tempDir: string;
   let dbPath: string;
@@ -234,6 +249,45 @@ describe("Cursor hooks", () => {
       expect(startResult.exitCode).toBe(0);
       const payload = JSON.parse(startResult.stdout) as Record<string, unknown>;
       expect(String(payload.additional_context)).toContain("session_knowledge");
+    });
+  });
+
+  describe("UTF-8 BOM handling", () => {
+    test("pretooluse.mjs parses BOM-prefixed stdin without error", () => {
+      const result = runHookWithBOM("pretooluse.mjs", {
+        tool_name: "Write",
+        tool_input: { file_path: `${tempDir}/test.md`, content: "hello" },
+        conversation_id: "cursor-bom-test-1",
+        workspace_roots: [tempDir],
+      }, {});
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("{\"agent_message\":\"\"}");
+    });
+
+    test("posttooluse.mjs parses BOM-prefixed stdin without error", () => {
+      const result = runHookWithBOM("posttooluse.mjs", {
+        tool_name: "Shell",
+        tool_input: { command: "echo ok" },
+        tool_output: "ok",
+        conversation_id: "cursor-bom-test-2",
+        cwd: tempDir,
+      }, cursorEnv());
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("{\"additional_context\":\"\"}");
+    });
+
+    test("sessionstart.mjs parses BOM-prefixed stdin without error", () => {
+      const result = runHookWithBOM("sessionstart.mjs", {
+        source: "startup",
+        conversation_id: "cursor-bom-test-3",
+        cwd: tempDir,
+      }, cursorEnv());
+
+      expect(result.exitCode).toBe(0);
+      const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(String(payload.additional_context)).toContain("context-mode");
     });
   });
 });

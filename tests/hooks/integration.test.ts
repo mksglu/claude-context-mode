@@ -57,6 +57,20 @@ function runHook(input: Record<string, unknown>, env?: Record<string, string>): 
   };
 }
 
+function runHookWithBOM(input: Record<string, unknown>, env?: Record<string, string>): HookResult {
+  const result = spawnSync("node", [HOOK_PATH], {
+    input: "\uFEFF" + JSON.stringify(input),
+    encoding: "utf-8",
+    timeout: 5000,
+    env: { ...process.env, ...env },
+  });
+  return {
+    exitCode: result.status ?? 1,
+    stdout: (result.stdout ?? "").trim(),
+    stderr: (result.stderr ?? "").trim(),
+  };
+}
+
 /** Assert hook redirects Bash command to an echo message via updatedInput */
 function assertRedirect(result: HookResult, substringInEcho: string) {
   assert.equal(result.exitCode, 0, `Expected exit 0, got ${result.exitCode}`);
@@ -818,5 +832,23 @@ describe("Routing instructions — hookless platform gate", () => {
     }
 
     expect(existsSync(resolve(projectDir, "AGENTS.md"))).toBe(false);
+  });
+});
+
+describe("UTF-8 BOM handling (core/stdin.mjs path)", () => {
+  test("pretooluse.mjs parses BOM-prefixed stdin without error", () => {
+    const result = runHookWithBOM({
+      tool_name: "Glob",
+      tool_input: { pattern: "**/*.ts" },
+    });
+    assertPassthrough(result);
+  });
+
+  test("pretooluse.mjs handles BOM-prefixed Bash input correctly", () => {
+    const result = runHookWithBOM({
+      tool_name: "Bash",
+      tool_input: { command: "curl -s http://example.com" },
+    });
+    assertRedirect(result, "context-mode");
   });
 });
