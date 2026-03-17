@@ -40,27 +40,26 @@ export function registerBatchExecuteTool(server: McpServer, deps: ToolDeps): voi
           .preprocess(
             (v) => coerceCommandsArray(v),
             z.array(
-            z.object({
-              label: z
-                .string()
-                .describe(
-                  "Section header for this command's output (e.g., 'README', 'Package.json', 'Source Tree')",
-                ),
-              command: z
-                .string()
-                .describe("Shell command to execute"),
-            }),
+              z.object({
+                label: z
+                  .string()
+                  .describe(
+                    "Section header for this command's output (e.g., 'README', 'Package.json', 'Source Tree')",
+                  ),
+                command: z
+                  .string()
+                  .describe("Shell command to execute"),
+              }),
+            ).min(1),
           )
-          .min(1)
           .describe(
             "Commands to execute as a batch. Each runs sequentially, output is labeled with the section header.",
           ),
         queries: z
           .preprocess(
             (v) => coerceJsonArray(v),
-            z.array(z.string())
+            z.array(z.string()).min(1)
           )
-          .min(1)
           .describe(
             "Search queries to extract information from indexed output. Use 5-8 comprehensive queries. " +
             "Each returns top 5 matching sections with full content. " +

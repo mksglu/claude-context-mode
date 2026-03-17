@@ -49,9 +49,6 @@ export class PolyglotExecutor {
   /** PIDs of backgrounded processes — killed on cleanup to prevent zombies. */
   #backgroundedPids = new Set<number>();
 
-  /** Maximum number of backgrounded processes before oldest is evicted. */
-  static #MAX_BACKGROUND_PIDS = 10;
-
   constructor(opts?: {
     maxOutputBytes?: number;
     hardCapBytes?: number;
@@ -236,18 +233,7 @@ export class PolyglotExecutor {
         if (background) {
           // Background mode: detach process, return partial output, keep running
           resolved = true;
-          if (proc.pid) {
-            // Evict oldest backgrounded process if limit reached
-            if (this.#backgroundedPids.size >= PolyglotExecutor.#MAX_BACKGROUND_PIDS) {
-              const oldest = this.#backgroundedPids.values().next().value;
-              if (oldest !== undefined) {
-                try { process.kill(-oldest, "SIGTERM"); } catch { /* already dead */ }
-                try { process.kill(oldest, "SIGTERM"); } catch { /* already dead */ }
-                this.#backgroundedPids.delete(oldest);
-              }
-            }
-            this.#backgroundedPids.add(proc.pid);
-          }
+          if (proc.pid) this.#backgroundedPids.add(proc.pid);
           proc.unref();
           proc.stdout!.destroy();
           proc.stderr!.destroy();
