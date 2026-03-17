@@ -1893,3 +1893,100 @@ describe("BM25 field weight tuning", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 9. Content Type Filter
+// ═══════════════════════════════════════════════════════════
+
+describe("Content type filter", () => {
+  function createMixedStore(): ContentStore {
+    const store = createStore();
+    // Index content with code blocks (will get contentType="code")
+    store.index({
+      content: "# API Reference\n\n```javascript\nfunction authenticate(user, pass) {\n  return jwt.sign({ user }, SECRET);\n}\n```\n\nThis function handles user authentication.",
+      source: "api-docs",
+    });
+    // Index prose-only content (will get contentType="prose")
+    store.index({
+      content: "# Architecture Overview\n\nThe authentication flow uses JWT tokens for session management. Users authenticate via the login endpoint.",
+      source: "arch-docs",
+    });
+    return store;
+  }
+
+  test("search() with contentType='code' returns only code chunks", () => {
+    const store = createMixedStore();
+    try {
+      const results = store.search("authenticate", 10, undefined, "AND", "code");
+      assert.ok(results.length > 0, "Should find code chunks");
+      for (const r of results) {
+        assert.equal(r.contentType, "code", `Expected code, got ${r.contentType} in "${r.title}"`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("search() with contentType='prose' returns only prose chunks", () => {
+    const store = createMixedStore();
+    try {
+      const results = store.search("authentication", 10, undefined, "AND", "prose");
+      assert.ok(results.length > 0, "Should find prose chunks");
+      for (const r of results) {
+        assert.equal(r.contentType, "prose", `Expected prose, got ${r.contentType} in "${r.title}"`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("searchTrigram() respects contentType filter", () => {
+    const store = createMixedStore();
+    try {
+      const results = store.searchTrigram("authenticat", 10, undefined, "AND", "prose");
+      for (const r of results) {
+        assert.equal(r.contentType, "prose", `Trigram should respect contentType filter`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("searchWithFallback() passes contentType through all layers", () => {
+    const store = createMixedStore();
+    try {
+      const results = store.searchWithFallback("authenticate", 5, undefined, "code");
+      assert.ok(results.length > 0, "Should find results");
+      for (const r of results) {
+        assert.equal(r.contentType, "code", `searchWithFallback should filter by contentType`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("contentType + source combined filter", () => {
+    const store = createMixedStore();
+    try {
+      const results = store.searchWithFallback("authentication", 5, "arch-docs", "prose");
+      assert.ok(results.length > 0, "Should find results with both filters");
+      for (const r of results) {
+        assert.equal(r.contentType, "prose");
+        assert.ok(r.source.includes("arch-docs"), `Source should match filter`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("contentType undefined returns all types (backward compat)", () => {
+    const store = createMixedStore();
+    try {
+      const results = store.searchWithFallback("authentication", 10);
+      assert.ok(results.length > 0, "Should find results without contentType filter");
+      // Should include both code and prose chunks (no filter applied)
+    } finally {
+      store.close();
+    }
+  });
+});

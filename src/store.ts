@@ -159,6 +159,10 @@ export class ContentStore {
   #stmtSearchTrigram!: PreparedStatement;
   #stmtSearchTrigramFiltered!: PreparedStatement;
   #stmtFuzzyVocab!: PreparedStatement;
+  #stmtSearchPorterContentType!: PreparedStatement;
+  #stmtSearchPorterFilteredContentType!: PreparedStatement;
+  #stmtSearchTrigramContentType!: PreparedStatement;
+  #stmtSearchTrigramFilteredContentType!: PreparedStatement;
 
   // Read path
   #stmtListSources!: PreparedStatement;
@@ -305,6 +309,64 @@ export class ContentStore {
       FROM chunks_trigram
       JOIN sources ON sources.id = chunks_trigram.source_id
       WHERE chunks_trigram MATCH ? AND sources.label LIKE ?
+      ORDER BY rank
+      LIMIT ?
+    `);
+
+    // Content-type filtered variants
+    this.#stmtSearchPorterContentType = this.#db.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `);
+    this.#stmtSearchPorterFilteredContentType = this.#db.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label LIKE ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `);
+    this.#stmtSearchTrigramContentType = this.#db.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `);
+    this.#stmtSearchTrigramFilteredContentType = this.#db.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ? AND chunks_trigram.content_type = ?
       ORDER BY rank
       LIMIT ?
     `);
@@ -467,15 +529,31 @@ export class ContentStore {
 
   // ── Search ──
 
-  search(query: string, limit: number = 3, source?: string, mode: "AND" | "OR" = "AND"): SearchResult[] {
+  search(
+    query: string,
+    limit: number = 3,
+    source?: string,
+    mode: "AND" | "OR" = "AND",
+    contentType?: "code" | "prose",
+  ): SearchResult[] {
     const sanitized = sanitizeQuery(query, mode);
 
-    const stmt = source
-      ? this.#stmtSearchPorterFiltered
-      : this.#stmtSearchPorter;
-    const params = source
-      ? [sanitized, `%${source}%`, limit]
-      : [sanitized, limit];
+    let stmt: PreparedStatement;
+    let params: unknown[];
+
+    if (source && contentType) {
+      stmt = this.#stmtSearchPorterFilteredContentType;
+      params = [sanitized, `%${source}%`, contentType, limit];
+    } else if (source) {
+      stmt = this.#stmtSearchPorterFiltered;
+      params = [sanitized, `%${source}%`, limit];
+    } else if (contentType) {
+      stmt = this.#stmtSearchPorterContentType;
+      params = [sanitized, contentType, limit];
+    } else {
+      stmt = this.#stmtSearchPorter;
+      params = [sanitized, limit];
+    }
 
     const rows = stmt.all(...params) as Array<{
       title: string;
@@ -503,16 +581,27 @@ export class ContentStore {
     limit: number = 3,
     source?: string,
     mode: "AND" | "OR" = "AND",
+    contentType?: "code" | "prose",
   ): SearchResult[] {
     const sanitized = sanitizeTrigramQuery(query, mode);
     if (!sanitized) return [];
 
-    const stmt = source
-      ? this.#stmtSearchTrigramFiltered
-      : this.#stmtSearchTrigram;
-    const params = source
-      ? [sanitized, `%${source}%`, limit]
-      : [sanitized, limit];
+    let stmt: PreparedStatement;
+    let params: unknown[];
+
+    if (source && contentType) {
+      stmt = this.#stmtSearchTrigramFilteredContentType;
+      params = [sanitized, `%${source}%`, contentType, limit];
+    } else if (source) {
+      stmt = this.#stmtSearchTrigramFiltered;
+      params = [sanitized, `%${source}%`, limit];
+    } else if (contentType) {
+      stmt = this.#stmtSearchTrigramContentType;
+      params = [sanitized, contentType, limit];
+    } else {
+      stmt = this.#stmtSearchTrigram;
+      params = [sanitized, limit];
+    }
 
     const rows = stmt.all(...params) as Array<{
       title: string;
@@ -567,21 +656,22 @@ export class ContentStore {
     query: string,
     limit: number = 3,
     source?: string,
+    contentType?: "code" | "prose",
   ): SearchResult[] {
     // Layer 1a: Porter + AND (most precise)
-    const porterAnd = this.search(query, limit, source, "AND");
+    const porterAnd = this.search(query, limit, source, "AND", contentType);
     if (porterAnd.length > 0) {
       return porterAnd.map((r) => ({ ...r, matchLayer: "porter" as const }));
     }
 
     // Layer 1b: Porter + OR (fallback when AND finds nothing)
-    const porterOr = this.search(query, limit, source, "OR");
+    const porterOr = this.search(query, limit, source, "OR", contentType);
     if (porterOr.length > 0) {
       return porterOr.map((r) => ({ ...r, matchLayer: "porter" as const }));
     }
 
     // Layer 2a: Trigram + AND
-    const trigramAnd = this.searchTrigram(query, limit, source, "AND");
+    const trigramAnd = this.searchTrigram(query, limit, source, "AND", contentType);
     if (trigramAnd.length > 0) {
       return trigramAnd.map((r) => ({
         ...r,
@@ -590,7 +680,7 @@ export class ContentStore {
     }
 
     // Layer 2b: Trigram + OR
-    const trigramOr = this.searchTrigram(query, limit, source, "OR");
+    const trigramOr = this.searchTrigram(query, limit, source, "OR", contentType);
     if (trigramOr.length > 0) {
       return trigramOr.map((r) => ({
         ...r,
@@ -609,19 +699,19 @@ export class ContentStore {
     const correctedQuery = correctedWords.join(" ");
 
     if (correctedQuery !== original) {
-      const fuzzyPorterAnd = this.search(correctedQuery, limit, source, "AND");
+      const fuzzyPorterAnd = this.search(correctedQuery, limit, source, "AND", contentType);
       if (fuzzyPorterAnd.length > 0) {
         return fuzzyPorterAnd.map((r) => ({ ...r, matchLayer: "fuzzy" as const }));
       }
-      const fuzzyPorterOr = this.search(correctedQuery, limit, source, "OR");
+      const fuzzyPorterOr = this.search(correctedQuery, limit, source, "OR", contentType);
       if (fuzzyPorterOr.length > 0) {
         return fuzzyPorterOr.map((r) => ({ ...r, matchLayer: "fuzzy" as const }));
       }
-      const fuzzyTrigramAnd = this.searchTrigram(correctedQuery, limit, source, "AND");
+      const fuzzyTrigramAnd = this.searchTrigram(correctedQuery, limit, source, "AND", contentType);
       if (fuzzyTrigramAnd.length > 0) {
         return fuzzyTrigramAnd.map((r) => ({ ...r, matchLayer: "fuzzy" as const }));
       }
-      const fuzzyTrigramOr = this.searchTrigram(correctedQuery, limit, source, "OR");
+      const fuzzyTrigramOr = this.searchTrigram(correctedQuery, limit, source, "OR", contentType);
       if (fuzzyTrigramOr.length > 0) {
         return fuzzyTrigramOr.map((r) => ({ ...r, matchLayer: "fuzzy" as const }));
       }

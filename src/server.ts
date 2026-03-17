@@ -908,6 +908,10 @@ server.registerTool(
         .string()
         .optional()
         .describe("Filter to a specific indexed source (partial match)."),
+      contentType: z
+        .enum(["code", "prose"])
+        .optional()
+        .describe("Filter results by content type: 'code' or 'prose'."),
     }),
   },
   async (params) => {
@@ -930,7 +934,7 @@ server.registerTool(
         });
       }
 
-      const { limit = 3, source } = params as { limit?: number; source?: string };
+      const { limit = 3, source, contentType } = params as { limit?: number; source?: string; contentType?: "code" | "prose" };
 
       // Progressive throttling: track calls in time window
       const now = Date.now();
@@ -968,7 +972,7 @@ server.registerTool(
           continue;
         }
 
-        const results = store.searchWithFallback(q, effectiveLimit, source);
+        const results = store.searchWithFallback(q, effectiveLimit, source, contentType);
 
         if (results.length === 0) {
           sections.push(`## ${q}\nNo results found.`);
