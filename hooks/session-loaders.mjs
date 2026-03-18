@@ -6,11 +6,11 @@
  * No fallback to build/ — if the bundle is missing, the error surfaces immediately.
  */
 
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export function createSessionLoaders(hookDir) {
-  const bundleDir = hookDir.endsWith("vscode-copilot")
+  const bundleDir = basename(hookDir) === "vscode-copilot"
     ? join(hookDir, "..")
     : hookDir;
 
