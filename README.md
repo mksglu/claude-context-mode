@@ -128,6 +128,23 @@ Full hook config including PreCompress: [`configs/gemini-cli/settings.json`](con
 <details>
 <summary><strong>VS Code Copilot</strong></summary>
 
+**Quick setup (recommended):**
+
+```bash
+npm install -g context-mode
+context-mode install copilot
+```
+
+The installer prompts you to choose a scope:
+
+- **Global** — works in every workspace. Writes hooks to `~/.github/hooks/`, configures `chat.hookFilesLocations` in VS Code user settings, and registers the MCP server in user-level `mcp.json`. One command, all workspaces.
+- **Project** — this workspace only. Writes hooks to `.github/hooks/` and registers the MCP server in `.vscode/mcp.json`. No user settings changes.
+
+Restart VS Code after install.
+
+<details>
+<summary>Manual setup (step-by-step)</summary>
+
 **Step 1 — Install globally:**
 
 ```bash
@@ -175,6 +192,8 @@ This works alongside hooks as a parallel enforcement layer — hooks intercept t
 > **Why hooks matter:** Without hooks, `copilot-instructions.md` guides the model but can't block commands. A single unrouted Playwright snapshot (56 KB) or `gh issue list` (59 KB) wipes out minutes of context savings. With hooks, these calls are intercepted and redirected to the sandbox before they execute.
 
 Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](configs/vscode-copilot/hooks.json)
+
+</details>
 
 </details>
 
@@ -638,8 +657,9 @@ ctx upgrade     → update from GitHub, rebuild, reconfigure hooks
 **From your terminal** — run directly without an AI session:
 
 ```bash
-context-mode doctor
-context-mode upgrade
+context-mode doctor             # diagnose runtimes, hooks, FTS5, versions
+context-mode upgrade            # update from GitHub, rebuild, reconfigure hooks
+context-mode install copilot    # one-command setup (global or project scope)
 ```
 
 Works on **all platforms**. On Claude Code, slash commands (`/ctx-stats`, `/ctx-doctor`, `/ctx-upgrade`) are also available.

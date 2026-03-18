@@ -6,6 +6,7 @@
  *   context-mode                              → Start MCP server (stdio)
  *   context-mode doctor                       → Diagnose runtime issues, hooks, FTS5, version
  *   context-mode upgrade                      → Fix hooks, permissions, and settings
+ *   context-mode install <platform>           → One-command global setup (hooks + settings + MCP)
  *   context-mode hook <platform> <event>      → Dispatch a hook script (used by platform hook configs)
  *
  * Platform auto-detection: CLI detects which platform is running
@@ -15,10 +16,10 @@
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
-import { tmpdir, devNull } from "node:os";
+import { tmpdir, devNull, homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   detectRuntimes,
@@ -92,6 +93,8 @@ if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
   upgrade();
+} else if (args[0] === "install") {
+  install(args[1]);
 } else if (args[0] === "hook") {
   hookDispatch(args[1], args[2]);
 } else {
@@ -636,4 +639,211 @@ async function upgrade() {
         color.dim(` — restart your ${adapter.name} session to pick up the new version`),
     );
   }
+}
+
+/* -------------------------------------------------------
+ * install — one-command global setup for a platform
+ * `context-mode install copilot`
+ * ------------------------------------------------------- */
+
+function getVSCodeUserDirs(): Array<{ name: string; dir: string }> {
+  const results: Array<{ name: string; dir: string }> = [];
+  const plat = process.platform;
+
+  let baseDirs: Array<{ name: string; folder: string }>;
+  if (plat === "win32") {
+    const appData = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+    baseDirs = [
+      { name: "VS Code", folder: join(appData, "Code", "User") },
+      { name: "VS Code Insiders", folder: join(appData, "Code - Insiders", "User") },
+    ];
+  } else if (plat === "darwin") {
+    baseDirs = [
+      { name: "VS Code", folder: join(homedir(), "Library", "Application Support", "Code", "User") },
+      { name: "VS Code Insiders", folder: join(homedir(), "Library", "Application Support", "Code - Insiders", "User") },
+    ];
+  } else {
+    baseDirs = [
+      { name: "VS Code", folder: join(homedir(), ".config", "Code", "User") },
+      { name: "VS Code Insiders", folder: join(homedir(), ".config", "Code - Insiders", "User") },
+    ];
+  }
+
+  for (const { name, folder } of baseDirs) {
+    if (existsSync(folder)) {
+      results.push({ name, dir: folder });
+    }
+  }
+  return results;
+}
+
+async function install(platform: string): Promise<void> {
+  p.intro(color.bgCyan(color.black(" context-mode install ")));
+
+  const supportedPlatforms: Record<string, string> = {
+    copilot: "vscode-copilot",
+  };
+
+  if (!platform || !supportedPlatforms[platform]) {
+    p.log.error(
+      color.red(`Unknown platform: ${platform || "(none)"}`) +
+        color.dim(`\n  Supported: ${Object.keys(supportedPlatforms).join(", ")}`),
+    );
+    p.outro(color.red("Install aborted"));
+    return;
+  }
+
+  const adapterPlatform = supportedPlatforms[platform];
+
+  // ── Ask scope ──
+
+  const scope = await p.select({
+    message: "Install scope",
+    options: [
+      { value: "global", label: "Global", hint: "Works in every workspace — writes to ~/.github/hooks/ + VS Code user settings" },
+      { value: "project", label: "Project", hint: "This workspace only — writes to .github/hooks/ + .vscode/mcp.json" },
+    ],
+  });
+
+  if (p.isCancel(scope)) {
+    p.outro(color.dim("Cancelled"));
+    return;
+  }
+
+  const changes: string[] = [];
+
+  // ── Step 1: Write hooks ──
+
+  const hookTypes = ["PreToolUse", "PostToolUse", "PreCompact", "SessionStart"];
+  const hookConfig: Record<string, unknown> = { hooks: {} };
+  const hooks = hookConfig.hooks as Record<string, unknown>;
+
+  for (const hookType of hookTypes) {
+    hooks[hookType] = [
+      {
+        matcher: "",
+        hooks: [
+          {
+            type: "command",
+            command: `context-mode hook ${adapterPlatform} ${hookType.toLowerCase()}`,
+          },
+        ],
+      },
+    ];
+  }
+
+  if (scope === "global") {
+    p.log.step("Installing hooks globally...");
+    const globalHooksDir = join(homedir(), ".github", "hooks");
+    mkdirSync(globalHooksDir, { recursive: true });
+    const hookConfigPath = join(globalHooksDir, "context-mode.json");
+    writeFileSync(hookConfigPath, JSON.stringify(hookConfig, null, 2) + "\n", "utf-8");
+    p.log.success(color.green("Hooks installed") + color.dim(` → ${hookConfigPath}`));
+    changes.push("Installed hooks to ~/.github/hooks/context-mode.json");
+  } else {
+    p.log.step("Installing hooks for this project...");
+    const projectHooksDir = resolve(".github", "hooks");
+    mkdirSync(projectHooksDir, { recursive: true });
+    const hookConfigPath = resolve(projectHooksDir, "context-mode.json");
+    writeFileSync(hookConfigPath, JSON.stringify(hookConfig, null, 2) + "\n", "utf-8");
+    p.log.success(color.green("Hooks installed") + color.dim(` → ${hookConfigPath}`));
+    changes.push("Installed hooks to .github/hooks/context-mode.json");
+  }
+
+  // ── Step 2: Configure VS Code settings / MCP registration ──
+
+  if (adapterPlatform === "vscode-copilot") {
+    if (scope === "global") {
+      p.log.step("Configuring VS Code user settings...");
+
+      const vscodeDirs = getVSCodeUserDirs();
+      if (vscodeDirs.length === 0) {
+        p.log.warn(
+          color.yellow("No VS Code installation found") +
+            color.dim(" — skipping settings configuration"),
+        );
+      }
+
+      for (const { name, dir } of vscodeDirs) {
+        // Add chat.hookFilesLocations so VS Code discovers ~/.github/hooks/
+        const settingsPath = join(dir, "settings.json");
+        let settings: Record<string, unknown> = {};
+        try {
+          const raw = readFileSync(settingsPath, "utf-8");
+          settings = JSON.parse(raw);
+        } catch {
+          // New or unreadable file — start fresh
+        }
+
+        const hookLocations = (settings["chat.hookFilesLocations"] ?? {}) as Record<string, boolean>;
+        if (!hookLocations["~/.github/hooks"]) {
+          hookLocations["~/.github/hooks"] = true;
+          settings["chat.hookFilesLocations"] = hookLocations;
+          writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+          p.log.success(color.green(`${name} settings updated`) + color.dim(" → chat.hookFilesLocations"));
+          changes.push(`Added hookFilesLocations to ${name} settings`);
+        } else {
+          p.log.info(color.dim(`${name} hookFilesLocations already configured`));
+        }
+
+        // Register MCP server in user-level mcp.json
+        const mcpPath = join(dir, "mcp.json");
+        let mcpConfig: Record<string, unknown> = {};
+        try {
+          const raw = readFileSync(mcpPath, "utf-8");
+          mcpConfig = JSON.parse(raw);
+        } catch {
+          // New or unreadable file — start fresh
+        }
+
+        const servers = (mcpConfig.servers ?? {}) as Record<string, unknown>;
+        if (!servers["context-mode"]) {
+          servers["context-mode"] = { command: "context-mode" };
+          mcpConfig.servers = servers;
+          writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+          p.log.success(color.green(`${name} MCP server registered`) + color.dim(` → ${mcpPath}`));
+          changes.push(`Registered MCP server in ${name} mcp.json`);
+        } else {
+          p.log.info(color.dim(`${name} MCP server already registered`));
+        }
+      }
+    } else {
+      // Project scope — register in .vscode/mcp.json
+      p.log.step("Registering MCP server for this project...");
+      const mcpDir = resolve(".vscode");
+      mkdirSync(mcpDir, { recursive: true });
+      const mcpPath = resolve(mcpDir, "mcp.json");
+      let mcpConfig: Record<string, unknown> = {};
+      try {
+        const raw = readFileSync(mcpPath, "utf-8");
+        mcpConfig = JSON.parse(raw);
+      } catch {
+        // New or unreadable file — start fresh
+      }
+
+      const servers = (mcpConfig.servers ?? {}) as Record<string, unknown>;
+      if (!servers["context-mode"]) {
+        servers["context-mode"] = { command: "context-mode" };
+        mcpConfig.servers = servers;
+        writeFileSync(mcpPath, JSON.stringify(mcpConfig, null, 2) + "\n", "utf-8");
+        p.log.success(color.green("MCP server registered") + color.dim(` → ${mcpPath}`));
+        changes.push("Registered MCP server in .vscode/mcp.json");
+      } else {
+        p.log.info(color.dim("MCP server already registered in .vscode/mcp.json"));
+      }
+    }
+  }
+
+  // ── Summary ──
+
+  if (changes.length > 0) {
+    p.note(
+      changes.map((c) => color.green("  + ") + c).join("\n"),
+      "Changes Applied",
+    );
+  } else {
+    p.log.info(color.dim("Everything was already configured — no changes needed."));
+  }
+
+  p.outro(color.green("Done!") + color.dim(" Restart VS Code to activate."));
 }
