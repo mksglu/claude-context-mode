@@ -72,7 +72,9 @@
     "benchmark": "npx tsx tests/benchmark.ts",
     "test:use-cases": "npx tsx tests/use-cases.ts",
     "test:compare": "npx tsx tests/context-comparison.ts",
-    "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts"
+    "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
+    "install:openclaw": "bash scripts/install-openclaw-plugin.sh",
+    "postinstall": "[ -n \"$OPENCLAW_STATE_DIR\" ] && echo '\\n  OpenClaw detected. Run: npm run install:openclaw\\n' || true"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
