@@ -15,21 +15,40 @@ The context-mode adapter hooks into Pi Agent sessions specifically, intercepting
 
 ## Installation
 
-Use the one-shot installer:
+### Quick install
 
 ```bash
-scripts/install-openclaw-plugin.sh [OPENCLAW_STATE_DIR]
+npm run install:openclaw
 ```
 
-The script handles:
-1. Building the plugin (`npm run build`)
-2. Rebuilding `better-sqlite3` for the system Node version
-3. Creating the extension directory at `OPENCLAW_STATE_DIR/extensions/context-mode/`
-4. Registering the plugin in `runtime.json`
-5. Clearing the jiti cache
-6. Restarting the gateway
+This runs `scripts/install-openclaw-plugin.sh`, which handles building, extension setup, runtime registration, and gateway restart.
+
+### Prerequisites
+
+- **Node.js** must be in PATH (required for the build and registration steps)
+- **OpenClaw must have been started once** — the script needs `runtime/openclaw.runtime.json`, which OpenClaw creates on first launch
+- **`OPENCLAW_STATE_DIR`** must point to your OpenClaw state directory (default: `/openclaw`). Pass it as an argument: `npm run install:openclaw -- /path/to/state`
+
+### Manual install
+
+For advanced users or custom setups:
+
+```bash
+bash scripts/install-openclaw-plugin.sh [OPENCLAW_STATE_DIR]
+```
 
 See [`scripts/install-openclaw-plugin.sh`](../../scripts/install-openclaw-plugin.sh) for details.
+
+### Troubleshooting
+
+**"runtime/openclaw.runtime.json not found"**
+OpenClaw creates this file on first launch. Start OpenClaw once (`openclaw gateway start`), then re-run the install script. This is the most common issue for users who install context-mode before ever starting OpenClaw.
+
+**"OPENCLAW_STATE_DIR does not exist"**
+The state directory doesn't exist at the expected path. If you installed OpenClaw via npm (not git clone), check where it stores state — common locations are `~/.openclaw` or `/openclaw`. Pass the correct path: `npm run install:openclaw -- /path/to/state`.
+
+**Plugin installed but not loading**
+Clear the jiti cache (`rm -f /tmp/jiti/context-mode-*.cjs`) and restart the gateway. If the issue persists, verify the plugin appears in `openclaw plugins list`.
 
 ## Hook Registration
 
