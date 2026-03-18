@@ -68,32 +68,40 @@ fi
 
 # 5. Register in runtime config (idempotent)
 echo "→ registering in $RUNTIME_JSON..."
-python3 - "$RUNTIME_JSON" "$PLUGIN_ROOT" <<'PYEOF'
-import json, sys
-path, plugin_root = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    cfg = json.load(f)
-plugins = cfg.setdefault("plugins", {})
-# Remove plugins.load.paths entry for this plugin root — it causes duplicate registration
-load_cfg = plugins.get("load", {})
-paths = load_cfg.get("paths", [])
-if plugin_root in paths:
-    paths.remove(plugin_root)
-    if not paths:
-        load_cfg.pop("paths", None)
-    if not load_cfg:
-        plugins.pop("load", None)
-    print("  removed plugins.load.paths entry (caused duplicate registration)")
-allow = plugins.setdefault("allow", [])
-if "context-mode" not in allow:
-    allow.insert(0, "context-mode")
-entries = plugins.setdefault("entries", {})
-if "context-mode" not in entries:
-    entries["context-mode"] = {"enabled": True}
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-print("  plugins.allow:", allow)
-PYEOF
+node -e "
+const fs = require('fs');
+const [runtimePath, pluginRoot] = process.argv.slice(1);
+let cfg;
+try {
+  cfg = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+} catch (e) {
+  console.error('  ✗ Failed to parse ' + runtimePath + ' — is it valid JSON?');
+  process.exit(1);
+}
+const plugins = cfg.plugins ??= {};
+
+// Remove plugins.load.paths entry (causes duplicate registration)
+const load = plugins.load ?? {};
+const paths = load.paths ?? [];
+const idx = paths.indexOf(pluginRoot);
+if (idx !== -1) {
+  paths.splice(idx, 1);
+  if (!paths.length) delete load.paths;
+  if (!Object.keys(load).length) delete plugins.load;
+  console.log('  removed plugins.load.paths entry (caused duplicate registration)');
+}
+
+// Add to plugins.allow
+const allow = plugins.allow ??= [];
+if (!allow.includes('context-mode')) allow.unshift('context-mode');
+
+// Add to plugins.entries
+const entries = plugins.entries ??= {};
+if (!entries['context-mode']) entries['context-mode'] = { enabled: true };
+
+fs.writeFileSync(runtimePath, JSON.stringify(cfg, null, 2));
+console.log('  plugins.allow:', JSON.stringify(allow));
+" "$RUNTIME_JSON" "$PLUGIN_ROOT"
 
 # 6. Restart gateway
 echo "→ restarting openclaw gateway..."
