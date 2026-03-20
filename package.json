@@ -54,7 +54,7 @@
     ".mcp.json",
     "openclaw.plugin.json",
     "start.mjs",
-    "native-abi.mjs",
+    "scripts/postinstall.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -75,7 +75,7 @@
     "test:compare": "npx tsx tests/context-comparison.ts",
     "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
     "install:openclaw": "node -e \"if(process.platform==='win32'){console.error('OpenClaw install requires bash (Git Bash or WSL)');process.exit(1)}else{require('child_process').execSync('bash scripts/install-openclaw-plugin.sh',{stdio:'inherit'})}\"",
-    "postinstall": "node -e \"process.env.OPENCLAW_STATE_DIR && console.log('\\n  OpenClaw detected. Run: npm run install:openclaw\\n')\""
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
