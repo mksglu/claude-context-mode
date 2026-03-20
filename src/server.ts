@@ -951,6 +951,20 @@ server.registerTool(
   async (params) => {
     try {
       const store = getStore();
+
+      // Guard: refuse to search when the index is empty — the result would
+      // always be empty, and surfacing ctx_search to the model in this state
+      // leads to hallucinated "no results" answers in new sessions.
+      if (store.getStats().chunks === 0) {
+        return trackResponse("ctx_search", {
+          content: [{
+            type: "text" as const,
+            text: "No indexed content found. Use ctx_batch_execute or ctx_index to index content before searching.",
+          }],
+          isError: true,
+        });
+      }
+
       const raw = params as Record<string, unknown>;
 
       // Normalize: accept both query (string) and queries (array)
