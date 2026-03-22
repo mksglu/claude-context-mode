@@ -303,6 +303,46 @@ Full config: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 </details>
 
 <details>
+<summary><strong>KiloCode</strong> — TypeScript plugin with hooks</summary>
+
+**Prerequisites:** Node.js 18+, KiloCode installed.
+
+**Install:**
+
+1. Install context-mode globally:
+
+   ```bash
+   npm install -g context-mode
+   ```
+
+2. Add to `kilo.json` in your project root (or `~/.config/kilo/kilo.json` for global):
+
+   ```json
+   {
+     "$schema": "https://kilo.ai/config.json",
+     "mcp": {
+       "context-mode": {
+         "type": "local",
+         "command": ["context-mode"]
+       }
+     },
+     "plugin": ["context-mode"]
+   }
+   ```
+
+   The `mcp` entry registers the 6 sandbox tools. The `plugin` entry enables hooks — KiloCode calls the plugin's TypeScript functions directly before and after each tool execution, blocking dangerous commands and enforcing sandbox routing.
+
+3. Restart KiloCode.
+
+**Verify:** In the KiloCode session, type `ctx stats`. Context-mode tools should appear and respond.
+
+**Routing:** Automatic. The plugin intercepts tool calls at runtime via `tool.execute.before` and `tool.execute.after`. No routing file is written to your project. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts.
+
+> **Note:** KiloCode shares the same plugin architecture as OpenCode, using the OpenCodeAdapter with platform-specific configuration paths (`kilo.json` instead of `opencode.json`, `~/.config/kilo/` instead of `~/.config/opencode/`). SessionStart hook availability depends on KiloCode's implementation.
+
+</details>
+
+<details>
 <summary><strong>OpenClaw / Pi Agent</strong> — native gateway plugin</summary>
 
 **Prerequisites:** OpenClaw gateway running ([>2026.1.29](https://github.com/openclaw/openclaw/pull/9761)), Node.js 22+.
@@ -669,15 +709,15 @@ Context Mode captures every meaningful event during your session and persists th
 
 Session continuity requires 4 hooks working together:
 
-| Hook | Role | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi |
-|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes | -- | ✓ (via tool_result event) |
-| **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
-| **PreCompact** | Builds snapshot before compaction | Yes | Yes | Yes | -- | Plugin | Plugin | -- | -- | -- | -- | ✓ (via session_before_compact) |
-| **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | -- | -- | Plugin | -- | -- | -- | -- | ✓ (via session_start event) |
-| | **Session completeness** | **Full** | **High** | **High** | **Partial** | **High** | **High** | **--** | **--** | **Partial** | **--** | **High** |
+| Hook | Role | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | Yes | -- | ✓ (via tool_result event) |
+| **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| **PreCompact** | Builds snapshot before compaction | Yes | Yes | Yes | -- | Plugin | Plugin | Plugin | -- | -- | -- | -- | ✓ (via session_before_compact) |
+| **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | -- | -- | -- | Plugin | -- | -- | -- | -- | ✓ (via session_start event) |
+| | **Session completeness** | **Full** | **High** | **High** | **Partial** | **High** | **High** | **High** | **--** | **--** | **Partial** | **--** | **High** |
 
-> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, and **OpenCode**. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenCode** uses the `experimental.session.compacting` plugin hook for compaction recovery, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), so startup/resume is not supported. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Pi Coding Agent** provides high session continuity via extension hooks (`tool_call`, `tool_result`, `session_start`, `session_before_compact`). **Codex CLI**, **Antigravity**, **Kiro**, and **Zed** have no hook support in the current release, so session tracking is not available.
+> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, and **OpenCode**. **KiloCode** shares the same plugin architecture as OpenCode via the OpenCodeAdapter. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenCode** uses the `experimental.session.compacting` plugin hook for compaction recovery, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), so startup/resume is not supported. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Pi Coding Agent** provides high session continuity via extension hooks (`tool_call`, `tool_result`, `session_start`, `session_before_compact`). **Codex CLI**, **Antigravity**, **Kiro**, and **Zed** have no hook support in the current release, so session tracking is not available.
 
 <details>
 <summary><strong>What gets captured</strong></summary>
@@ -756,6 +796,8 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 **OpenCode** — Partial. The TypeScript plugin captures PostToolUse events via `tool.execute.after`, but SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)). Events are stored but not automatically restored after compaction.
 
+**KiloCode** — Partial. Shares the same plugin architecture as OpenCode via the OpenCodeAdapter. The TypeScript plugin captures PostToolUse events via `tool.execute.after`, but SessionStart availability depends on KiloCode's implementation. Events are stored but may not be automatically restored after compaction.
+
 **OpenClaw / Pi Agent** — High coverage. All tool lifecycle hooks (`after_tool_call`, `before_compaction`, `session_start`) fire via the native gateway plugin. User decisions aren't captured but file edits, git ops, errors, and tasks are fully tracked. Falls back to DB snapshot reconstruction if compaction hooks fail on older gateway versions. See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md).
 
 **Codex CLI** — No session support. No hooks means no event capture. Each compaction or new session starts fresh. Requires manually copying `AGENTS.md` to your project root.
@@ -772,20 +814,22 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 ## Platform Compatibility
 
-| Feature | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| PreToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes | -- | Yes (extension) |
-| PostToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes | -- | Yes (extension) |
-| SessionStart Hook | Yes | Yes | Yes | -- | -- | Plugin | -- | -- | -- | -- | Yes (extension) |
-| PreCompact Hook | Yes | Yes | Yes | -- | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) |
-| Can Modify Args | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) |
-| Can Block Tools | Yes | Yes | Yes | Yes | Plugin | Plugin | -- | -- | Yes | -- | Yes (extension) |
-| Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (/ctx-stats, /ctx-doctor) |
-| Slash Commands | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
-| Plugin Marketplace | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| Feature | Claude Code | Gemini CLI | VS Code Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| PreToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | Yes | -- | Yes (extension) |
+| PostToolUse Hook | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | Yes | -- | Yes (extension) |
+| SessionStart Hook | Yes | Yes | Yes | -- | -- | -- | Plugin | -- | -- | -- | -- | Yes (extension) |
+| PreCompact Hook | Yes | Yes | Yes | -- | Plugin | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) |
+| Can Modify Args | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) |
+| Can Block Tools | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | Yes | -- | Yes (extension) |
+| Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (/ctx-stats, /ctx-doctor) |
+| Slash Commands | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| Plugin Marketplace | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
 
 > **OpenCode** uses a TypeScript plugin paradigm — hooks run as in-process functions via `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`, providing the same routing enforcement and session continuity as shell-based hooks. SessionStart is not yet available ([#14808](https://github.com/sst/opencode/issues/14808)), but compaction recovery works via the plugin's compacting hook.
+>
+> **KiloCode** shares the same TypeScript plugin architecture as OpenCode via the OpenCodeAdapter, with platform-specific configuration paths (`kilo.json` instead of `opencode.json`, `~/.config/kilo/` instead of `~/.config/opencode/`). Hook capabilities depend on KiloCode's implementation of the plugin interface.
 >
 > **OpenClaw** runs context-mode as a native gateway plugin targeting Pi Agent sessions. Hooks register via `api.on()` (tool/lifecycle) and `api.registerHook()` (commands). All tool interception and compaction hooks are supported. See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md).
 >

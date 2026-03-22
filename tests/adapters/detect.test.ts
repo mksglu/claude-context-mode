@@ -24,6 +24,8 @@ describe("detectPlatform", () => {
     delete process.env.CLAUDE_SESSION_ID;
     delete process.env.GEMINI_PROJECT_DIR;
     delete process.env.GEMINI_CLI;
+    delete process.env.KILO;
+    delete process.env.KILO_PID;
     delete process.env.OPENCODE;
     delete process.env.OPENCODE_PID;
     delete process.env.OPENCLAW_HOME;
@@ -88,6 +90,22 @@ describe("detectPlatform", () => {
     process.env.OPENCODE_PID = "12345";
     const signal = detectPlatform();
     expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("high");
+  });
+
+  // ── Kilo ────────────────────────────────────────────────
+
+  it("returns kilo when KILO is set", () => {
+    process.env.KILO = "1";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("kilo");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns kilo when KILO_PID is set", () => {
+    process.env.KILO_PID = "12345";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("kilo");
     expect(signal.confidence).toBe("high");
   });
 
@@ -245,7 +263,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "openclaw", "vscode-copilot", "antigravity", "kiro", "pi", "zed"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "kilo", "openclaw", "vscode-copilot", "antigravity", "kiro", "pi", "zed"]).toContain(signal.platform);
   });
 });
 
@@ -267,6 +285,12 @@ describe("getAdapter", () => {
   it("returns OpenCodeAdapter for opencode", async () => {
     const adapter = await getAdapter("opencode");
     expect(adapter).toBeInstanceOf(OpenCodeAdapter);
+  });
+
+  it("returns OpenCodeAdapter for kilo", async () => {
+    const adapter = await getAdapter("kilo");
+    expect(adapter).toBeInstanceOf(OpenCodeAdapter);
+    expect(adapter.name).toBe("KiloCode");
   });
 
   it("returns OpenClawAdapter for openclaw", async () => {

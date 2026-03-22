@@ -296,6 +296,7 @@ export type PlatformId =
   | "claude-code"
   | "gemini-cli"
   | "opencode"
+  | "kilo"
   | "openclaw"
   | "codex"
   | "vscode-copilot"

@@ -4,11 +4,12 @@ import { join, resolve } from "node:path";
 import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
 
 describe("OpenCodeAdapter", () => {
-  let adapter: OpenCodeAdapter;
+  describe("OpenCode platform (default)", () => {
+    let adapter: OpenCodeAdapter;
 
-  beforeEach(() => {
-    adapter = new OpenCodeAdapter();
-  });
+    beforeEach(() => {
+      adapter = new OpenCodeAdapter();
+    });
 
   // ── Capabilities ──────────────────────────────────────
 
@@ -167,6 +168,57 @@ describe("OpenCodeAdapter", () => {
       expect(sessionDir).toBe(
         join(homedir(), ".config", "opencode", "context-mode", "sessions"),
       );
+    });
+  });
+  });
+});
+
+describe("OpenCodeAdapter for KiloCode", () => {
+  let adapter: OpenCodeAdapter;
+
+  beforeEach(() => {
+    adapter = new OpenCodeAdapter("kilo");
+  });
+
+  describe("constructor and name", () => {
+    it("accepts kilo platform parameter", () => {
+      expect(adapter).toBeInstanceOf(OpenCodeAdapter);
+    });
+
+    it("returns KiloCode as name when platform is kilo", () => {
+      expect(adapter.name).toBe("KiloCode");
+    });
+  });
+
+  describe("capabilities", () => {
+    it("has same capabilities as OpenCode", () => {
+      expect(adapter.capabilities.sessionStart).toBe(true);
+      expect(adapter.capabilities.canInjectSessionContext).toBe(false);
+      expect(adapter.capabilities.preToolUse).toBe(true);
+      expect(adapter.capabilities.postToolUse).toBe(true);
+      expect(adapter.paradigm).toBe("ts-plugin");
+    });
+  });
+
+  describe("config paths", () => {
+    it("settings path is kilo.json (relative)", () => {
+      expect(adapter.getSettingsPath()).toBe(resolve("kilo.json"));
+    });
+
+    it("session dir is under ~/.config/kilo/context-mode/sessions/", () => {
+      const sessionDir = adapter.getSessionDir();
+      expect(sessionDir).toBe(
+        join(homedir(), ".config", "kilo", "context-mode", "sessions"),
+      );
+    });
+  });
+
+  describe("config file paths", () => {
+    it("searches for kilo.json in project-local and global locations", () => {
+      const paths = adapter["getConfigFilePaths"]();
+      expect(paths[0]).toBe(resolve("kilo.json"));
+      expect(paths[1]).toBe(resolve(".kilocode", "kilo.json"));
+      expect(paths[2]).toBe(join(homedir(), ".config", "kilo", "kilo.json"));
     });
   });
 });
