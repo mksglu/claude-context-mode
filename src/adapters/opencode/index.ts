@@ -82,6 +82,7 @@ import { HOOK_TYPES as OPENCODE_HOOK_NAMES } from "./hooks.js";
 export class OpenCodeAdapter implements HookAdapter {
   readonly name = "OpenCode";
   readonly paradigm: HookParadigm = "ts-plugin";
+  private settingsPath?: string;
 
   readonly capabilities: PlatformCapabilities = {
     preToolUse: true,
@@ -205,8 +206,15 @@ export class OpenCodeAdapter implements HookAdapter {
   // ── Configuration ──────────────────────────────────────
 
   getSettingsPath(): string {
-    // OpenCode uses opencode.json in the project root or .opencode/opencode.json
-    return resolve("opencode.json");
+    return this.settingsPath ?? resolve("opencode.json");
+  }
+
+  private paths(): string[] {
+    return [
+      resolve("opencode.json"),
+      resolve(".opencode", "opencode.json"),
+      join(homedir(), ".config", "opencode", "opencode.json"),
+    ];
   }
 
   getSessionDir(): string {
@@ -273,15 +281,11 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   readSettings(): Record<string, unknown> | null {
-    // Try project-local paths first, then global config
-    const paths = [
-      resolve("opencode.json"),
-      resolve(".opencode", "opencode.json"),
-      join(homedir(), ".config", "opencode", "opencode.json"),
-    ];
-    for (const configPath of paths) {
+    this.settingsPath = undefined;
+    for (const configPath of this.paths()) {
       try {
         const raw = readFileSync(configPath, "utf-8");
+        this.settingsPath = configPath;
         return JSON.parse(raw) as Record<string, unknown>;
       } catch {
         continue;
@@ -291,10 +295,8 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   writeSettings(settings: Record<string, unknown>): void {
-    // Write to opencode.json in current directory
-    const configPath = resolve("opencode.json");
     writeFileSync(
-      configPath,
+      this.getSettingsPath(),
       JSON.stringify(settings, null, 2) + "\n",
       "utf-8",
     );
@@ -420,14 +422,11 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   backupSettings(): string | null {
-    const paths = [
-      resolve("opencode.json"),
-      resolve(".opencode", "opencode.json"),
-      join(homedir(), ".config", "opencode", "opencode.json"),
-    ];
-    for (const configPath of paths) {
+    this.settingsPath = undefined;
+    for (const configPath of this.paths()) {
       try {
         accessSync(configPath, constants.R_OK);
+        this.settingsPath = configPath;
         const backupPath = configPath + ".bak";
         copyFileSync(configPath, backupPath);
         return backupPath;

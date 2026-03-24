@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { homedir } from "node:os";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
 
 describe("OpenCodeAdapter", () => {
@@ -167,6 +169,112 @@ describe("OpenCodeAdapter", () => {
       expect(sessionDir).toBe(
         join(homedir(), ".config", "opencode", "context-mode", "sessions"),
       );
+    });
+
+    it("configureAllHooks writes back to the global config it read", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const file = join(conf, "opencode.json");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(file, JSON.stringify({ plugin: [] }, null, 2) + "\n");
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify({backup:a.backupSettings(),changes:a.configureAllHooks('/tmp/plugin')}))`,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, HOME: home },
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({
+        backup: file + ".bak",
+        changes: ["Added context-mode to plugin array"],
+      });
+      expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("configureAllHooks keeps project config precedence", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(join(conf, "opencode.json"), JSON.stringify({ plugin: [] }, null, 2) + "\n");
+      writeFileSync(resolve(dir, "opencode.json"), JSON.stringify({ plugin: [] }, null, 2) + "\n");
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.configureAllHooks('/tmp/plugin')))`,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, HOME: home },
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
+      expect(JSON.parse(readFileSync(resolve(dir, "opencode.json"), "utf-8"))).toEqual({
+        plugin: ["context-mode"],
+      });
+      expect(JSON.parse(readFileSync(join(conf, "opencode.json"), "utf-8"))).toEqual({
+        plugin: [],
+      });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("configureAllHooks writes back to .opencode/opencode.json when that is the selected config", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(dir, ".opencode");
+      const file = join(conf, "opencode.json");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(file, JSON.stringify({ plugin: [] }, null, 2) + "\n");
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.configureAllHooks('/tmp/plugin')))`,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, HOME: home },
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
+      expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+
+      rmSync(root, { recursive: true, force: true });
     });
   });
 });
