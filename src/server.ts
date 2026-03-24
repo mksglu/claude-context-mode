@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,7 +57,7 @@ export type FetchBackend = "fetch" | "browser" | { custom: string };
 
 export function detectBrowserCli(): boolean {
   try {
-    execSync("agent-browser --version", { stdio: "pipe", timeout: 5_000 });
+    execFileSync("agent-browser", ["--version"], { stdio: "pipe", timeout: 5_000 });
     return true;
   } catch {
     return false;
@@ -1282,7 +1282,8 @@ try {
   }
 
   // Attempt HTML-to-markdown conversion; if it looks like plain text, emit as-is
-  if (output.includes('<') && (output.includes('</') || output.includes('/>'))) {
+  const head = output.slice(0, 1000);
+  if (head.includes('<!DOCTYPE') || head.includes('<html') || /<[a-z][\\s>]/i.test(head)) {
     const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
     td.use(gfm);
     td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
@@ -1402,7 +1403,7 @@ server.registerTool(
         // Clean up temp file from failed attempt before retry
         try { rmSync(outputPath); } catch { /* already gone */ }
         const browserCode = buildBrowserFetchCode(url, outputPath);
-        const retryResult = await executeFetchCode(browserCode, outputPath, url, 45_000);
+        const retryResult = await executeFetchCode(browserCode, outputPath, url, 60_000);
         if (!("error" in retryResult)) {
           fetchResult = retryResult;
           effectiveBackend = "browser";
