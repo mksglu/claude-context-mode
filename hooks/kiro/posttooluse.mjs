@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "../suppress-stderr.mjs";
+import "../ensure-deps.mjs";
 /**
  * Kiro CLI PostToolUse hook — session event capture.
  * Must be fast (<20ms). No network, no LLM, just SQLite writes.

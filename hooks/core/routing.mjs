@@ -180,14 +180,52 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform) {
     // like `gh issue edit --body "text with curl in it"` (Issue #63).
     const stripped = stripQuotedContent(command);
 
-    // curl/wget → replace with echo redirect
+    // curl/wget — allow silent file-output downloads, block stdout floods (#166).
+    // Algorithm: split chained commands, evaluate each segment independently.
     if (/(^|\s|&&|\||\;)(curl|wget)\s/i.test(stripped)) {
-      return {
-        action: "modify",
-        updatedInput: {
-          command: `echo "context-mode: curl/wget blocked. You MUST use ${t("ctx_fetch_and_index")}(url, source) to fetch URLs, or ${t("ctx_execute")}(language, code) to run HTTP calls in sandbox. Do NOT retry with curl/wget."`,
-        },
-      };
+      // Split on chain operators (&&, ||, ;) to evaluate each segment
+      const segments = stripped.split(/\s*(?:&&|\|\||;)\s*/);
+      const hasDangerousSegment = segments.some(seg => {
+        const s = seg.trim();
+        // Only evaluate segments that contain curl or wget
+        if (!/(^|\s)(curl|wget)\s/i.test(s)) return false;
+
+        const isCurl = /\bcurl\b/i.test(s);
+        const isWget = /\bwget\b/i.test(s);
+
+        // Check for file output flags
+        const hasFileOutput = isCurl
+          ? /\s(-o|--output)\s/.test(s) || /\s*>\s*/.test(s) || /\s*>>\s*/.test(s)
+          : /\s(-O|--output-document)\s/.test(s) || /\s*>\s*/.test(s) || /\s*>>\s*/.test(s);
+
+        if (!hasFileOutput) return true; // no file output → dangerous
+
+        // Stdout aliases: -o -, -o /dev/stdout, -O -
+        if (isCurl && /\s(-o|--output)\s+(-|\/dev\/stdout)(\s|$)/.test(s)) return true;
+        if (isWget && /\s(-O|--output-document)\s+(-|\/dev\/stdout)(\s|$)/.test(s)) return true;
+
+        // Verbose/trace flags flood stderr → context
+        if (/\s(-v|--verbose|--trace|-D\s+-)\b/.test(s)) return true;
+
+        // Must be silent (curl: -s/--silent, wget: -q/--quiet) to prevent progress bar stderr flood
+        const isSilent = isCurl
+          ? /\s-[a-zA-Z]*s|--silent/.test(s)
+          : /\s-[a-zA-Z]*q|--quiet/.test(s);
+        if (!isSilent) return true;
+
+        return false; // safe: silent + file output + no verbose + no stdout alias
+      });
+
+      if (hasDangerousSegment) {
+        return {
+          action: "modify",
+          updatedInput: {
+            command: `echo "context-mode: curl/wget blocked. You MUST use ${t("ctx_fetch_and_index")}(url, source) to fetch URLs, or ${t("ctx_execute")}(language, code) to run HTTP calls in sandbox. Do NOT retry with curl/wget."`,
+          },
+        };
+      }
+      // All segments safe → allow through
+      return null;
     }
 
     // Inline HTTP detection: strip only heredocs (not quotes) so that

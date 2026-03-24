@@ -87,6 +87,7 @@ export class OpenCodeAdapter implements HookAdapter {
     return this.platform === "kilo" ? "KiloCode" : "OpenCode";
   }
   readonly paradigm: HookParadigm = "ts-plugin";
+  private settingsPath?: string;
 
   readonly capabilities: PlatformCapabilities = {
     preToolUse: true,
@@ -217,7 +218,22 @@ export class OpenCodeAdapter implements HookAdapter {
 
   getSettingsPath(): string {
     // OpenCode uses opencode.json in the project root or .opencode/opencode.json
-    return resolve(`${this.platform}.json`);
+    return this.settingsPath ?? resolve(`${this.platform}.json`);
+  }
+
+  private paths(): string[] {
+    if (this.platform === "kilo") {
+      return [
+        resolve("kilo.json"),
+        resolve(".kilocode", "kilo.json"),
+        join(homedir(), ".config", "kilo", "kilo.json"),
+      ];  
+    }
+    return [
+      resolve("opencode.json"),
+      resolve(".opencode", "opencode.json"),
+      join(homedir(), ".config", "opencode", "opencode.json"),
+    ];
   }
 
   getSessionDir(): string {
@@ -283,22 +299,15 @@ export class OpenCodeAdapter implements HookAdapter {
     };
   }
 
-  private getConfigFilePaths(): string[] {
-    const localPath = this.platform === "opencode" ? ".opencode" : ".kilocode";
-    const paths = [
-      resolve(`${this.platform}.json`),
-      resolve(localPath, `${this.platform}.json`),
-      join(homedir(), ".config", `${this.platform}`, `${this.platform}.json`),
-    ];
-    return paths;
-  }
-
   readSettings(): Record<string, unknown> | null {
     // Try project-local paths first, then global config
-    const paths = this.getConfigFilePaths();
-    for (const configPath of paths) {
+    // const paths = this.getConfigFilePaths();
+    // for (const configPath of paths) {
+    this.settingsPath = undefined;
+    for (const configPath of this.paths()) {
       try {
         const raw = readFileSync(configPath, "utf-8");
+        this.settingsPath = configPath;
         return JSON.parse(raw) as Record<string, unknown>;
       } catch {
         continue;
@@ -309,9 +318,8 @@ export class OpenCodeAdapter implements HookAdapter {
 
   writeSettings(settings: Record<string, unknown>): void {
     // Write to opencode.json/kilo.json in current directory
-    const configPath = resolve(`${this.platform}.json`);
     writeFileSync(
-      configPath,
+      this.getSettingsPath(),
       JSON.stringify(settings, null, 2) + "\n",
       "utf-8",
     );
@@ -437,10 +445,11 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   backupSettings(): string | null {
-    const paths = this.getConfigFilePaths();
-    for (const configPath of paths) {
+    this.settingsPath = undefined;
+    for (const configPath of this.paths()) {
       try {
         accessSync(configPath, constants.R_OK);
+        this.settingsPath = configPath;
         const backupPath = configPath + ".bak";
         copyFileSync(configPath, backupPath);
         return backupPath;

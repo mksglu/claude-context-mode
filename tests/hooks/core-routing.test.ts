@@ -59,6 +59,75 @@ describe("routePreToolUse", () => {
       );
     });
 
+    // ─── curl/wget file-output allow-list (#166) ────────────
+
+    it("allows curl -sLo file (silent + file output)", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -sL https://example.com/file.tar.gz -o /tmp/file.tar.gz",
+      });
+      expect(result).toBeNull(); // null = allow through
+    });
+
+    it("allows curl -s --output file", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -s --output /tmp/stripe.tar.gz https://github.com/stripe/stripe-cli/releases/download/v1.38.1/stripe.tar.gz",
+      });
+      expect(result).toBeNull();
+    });
+
+    it("allows wget -q -O file (quiet + file output)", () => {
+      const result = routePreToolUse("Bash", {
+        command: "wget -q -O /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.0.0/terraform_1.0.0_linux_amd64.zip",
+      });
+      expect(result).toBeNull();
+    });
+
+    it("allows curl -s > file (silent + shell redirect)", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -s https://example.com/data.json > /tmp/data.json",
+      });
+      expect(result).toBeNull();
+    });
+
+    it("blocks curl -o - (stdout alias)", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -s -o - https://example.com",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+    });
+
+    it("blocks curl -o file WITHOUT silent flag", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -L -o /tmp/file.tar.gz https://example.com/file.tar.gz",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+    });
+
+    it("blocks curl -o file with --verbose", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -s --verbose -o /tmp/file.tar.gz https://example.com/file.tar.gz",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+    });
+
+    it("blocks chained: curl -sLo file && curl url (second floods)", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -sL -o /tmp/file.tar.gz https://example.com/a.tar.gz && curl https://example.com/api",
+      });
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+    });
+
+    it("allows chained: curl -sLo file && tar xzf file (both safe)", () => {
+      const result = routePreToolUse("Bash", {
+        command: "curl -sL -o /tmp/file.tar.gz https://example.com/a.tar.gz && tar xzf /tmp/file.tar.gz -C /tmp",
+      });
+      expect(result).toBeNull();
+    });
+
     it("denies inline fetch() with modify action", () => {
       const result = routePreToolUse("Bash", {
         command: 'node -e "fetch(\'https://api.example.com/data\')"',

@@ -53,6 +53,15 @@ const server = new McpServer({
   version: VERSION,
 });
 
+// Register empty prompts/resources handlers so MCP clients don't get -32601 (#168).
+// OpenCode calls listPrompts()/listResources() unconditionally — the error can poison
+// the SDK transport layer, causing subsequent listTools() calls to fail permanently.
+import { ListPromptsRequestSchema, ListResourcesRequestSchema, ListResourceTemplatesRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+server.server.registerCapabilities({ prompts: { listChanged: false }, resources: { listChanged: false } });
+server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
+server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+
 const executor = new PolyglotExecutor({
   runtimes,
   projectRoot: process.env.CLAUDE_PROJECT_DIR,

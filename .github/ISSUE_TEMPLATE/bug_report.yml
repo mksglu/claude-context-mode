@@ -1,43 +1,40 @@
 name: Bug Report
-description: Report a bug — but read the manifesto first. PRs are strongly preferred over issues.
+description: Report a bug. PRs are STRONGLY preferred — see below.
 title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        ## 🛑 Stop. Read this first.
+        ## 🛑 Read this before filing.
 
-        **This project is maintained by one person across Windows, macOS, Linux, and 5+ agent adapters (Claude Code, Gemini CLI, VS Code Copilot, OpenCode, Codex CLI). It is not feasible to reproduce, debug, and fix every platform-specific edge case alone.**
+        **This is a developer tool that runs on 11 platforms (Claude Code, Gemini CLI, VS Code Copilot, OpenCode, Kiro, Cursor, Codex CLI, Zed, Antigravity, OpenClaw, Pi) across 3 operating systems (macOS, Linux, Windows). It is maintained by one person. I cannot reproduce every platform-specific edge case.**
 
-        ### PRs > Issues
+        ### 🔧 PRs > Issues. Always.
 
-        If you can open an issue, you can open a PR. context-mode is built for agentic engineering — use it:
+        You're using an AI coding agent. You have the most powerful debugging tool in history sitting right there. Use it:
 
-        1. **Install the [TDD skill](https://www.aihero.dev/skill-test-driven-development-claude-code):** `claude install-skill https://www.aihero.dev/skill-test-driven-development-claude-code`
-        2. **RED — Write a failing test** that reproduces the bug. If you can describe the bug, you can write a test for it. Let your AI agent help.
-        3. **GREEN — Fix the bug.** The codebase is straightforward TypeScript. Your AI agent can navigate it.
-        4. **Open a PR** following the [PR template](https://github.com/mksglu/context-mode/blob/main/.github/PULL_REQUEST_TEMPLATE.md) — red/green output required.
+        1. **Reproduce the bug** with a specific prompt (paste it below)
+        2. **Ask your agent to debug it**: _"Read the context-mode hooks source and find why this error occurs"_
+        3. **Write a failing test** (RED) and fix it (GREEN) — see [CONTRIBUTING.md](https://github.com/mksglu/context-mode/blob/main/CONTRIBUTING.md)
+        4. **Open a PR** against `main` branch — CI verifies on Ubuntu, macOS, and Windows
 
-        Our CI runs on **Ubuntu, macOS, and Windows**. Your PR will be automatically verified across all three.
+        **Opening an issue does NOT guarantee a fix.** I welcome issues for discussion and triage, but the fastest path to resolution is a PR. If you can describe the bug, your AI agent can fix it.
 
-        ### When to open an issue instead
+        ### When an issue (not PR) is acceptable
 
-        Only open an issue if **all of these are true:**
-        - You genuinely tried to fix it and couldn't
-        - The bug is in core architecture (not a platform-specific path/encoding edge case)
-        - You can provide a minimal, reproducible test case
+        - You genuinely tried to fix it and couldn't (show what you tried)
+        - The bug is in core architecture, not a platform-specific edge case
+        - You provide: exact prompt, full error log, doctor output, repro steps
 
-        Issues without reproduction steps or doctor output will be closed.
+        **Issues without reproduction steps will be closed.**
 
         ---
 
         **Before you file:**
-        1. [Search existing issues](https://github.com/mksglu/context-mode/issues) to make sure this hasn't been reported already
-        2. Run `/context-mode:ctx-upgrade` to pull the latest version
-        3. Restart your agent session
-        4. Run `/context-mode:ctx-doctor` or ask the model to call the `stats` tool
-        5. If the issue persists on the latest version, file this report
+        1. [Search existing issues](https://github.com/mksglu/context-mode/issues)
+        2. Run `/context-mode:ctx-upgrade` and restart your session
+        3. If the issue persists on the latest version, fill out every field below
 
   - type: dropdown
     id: platform
@@ -48,8 +45,14 @@ body:
         - Claude Code
         - Gemini CLI
         - VS Code Copilot
-        - OpenCode
+        - OpenCode / Kilo Code
+        - Cursor
+        - Kiro
         - Codex CLI
+        - Zed
+        - Google Antigravity
+        - OpenClaw / Pi Agent
+        - Other
     validations:
       required: true
 
@@ -67,10 +70,11 @@ body:
   - type: textarea
     id: doctor-output
     attributes:
-      label: Doctor output
+      label: Full doctor output (REQUIRED)
       description: |
-        Paste the full output of `/context-mode:ctx-doctor` or the stats tool output.
-        This helps us verify your environment is healthy.
+        Run `/context-mode:ctx-doctor` and paste the COMPLETE output here.
+        Must be on the LATEST version. If not latest, upgrade first.
+        **Issues without doctor output will be closed immediately.**
       render: text
     validations:
       required: true
@@ -78,67 +82,70 @@ body:
   - type: textarea
     id: prompt
     attributes:
-      label: Prompt that triggered the bug
+      label: Exact prompt that triggered the bug (REQUIRED)
       description: |
-        Paste the exact prompt (message) you sent to the agent when the bug occurred.
-        This is critical for reproduction.
+        Copy-paste the EXACT message you sent to the agent when the bug occurred.
+        Not a summary — the literal prompt text. Without this, we cannot reproduce.
+        **Issues without a prompt will be closed.**
+      placeholder: |
+        Example: "Read the file src/index.ts and explain what it does"
       render: text
     validations:
       required: true
 
   - type: textarea
-    id: description
+    id: error-output
     attributes:
-      label: What happened?
-      description: Clear description of the bug. What went wrong?
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-      description: What did you expect to happen instead?
+      label: Full error output (REQUIRED)
+      description: |
+        Expand the error with Ctrl+O (Claude Code) and paste the COMPLETE error.
+        Include tool name, error message, and any stack trace.
+        **"It doesn't work" is not an error output.**
+      render: text
     validations:
       required: true
 
   - type: textarea
     id: repro
     attributes:
-      label: Steps to reproduce
+      label: Steps to reproduce (REQUIRED)
       description: |
-        Minimal steps to reproduce the issue.
+        Minimal steps so anyone on your platform can reproduce this.
       placeholder: |
-        1. Send prompt: "..."
-        2. Agent calls tool `execute` with ...
-        3. See error ...
+        1. Install: npm install -g context-mode@1.0.50
+        2. Configure: (paste your mcp config)
+        3. Send prompt: "..."
+        4. See error: "..."
     validations:
       required: true
 
-  - type: checkboxgroup
-    id: setup
-    attributes:
-      label: Setup details
-      description: Which components are installed?
-      options:
-        - label: MCP server registered
-        - label: Hooks configured (PreToolUse, PostToolUse, SessionStart, etc.)
-        - label: Routing instruction file present (CLAUDE.md / GEMINI.md / AGENTS.md / copilot-instructions.md)
-    validations:
-      required: false
-
   - type: textarea
-    id: debug-logs
+    id: what-you-tried
     attributes:
-      label: Debug logs
+      label: What have you tried to fix it?
       description: |
-        Paste any error messages, MCP server logs, or tool output.
-
-        **Tip:** Press `Ctrl+O` in Claude Code to see background tool calls and MCP communication.
-        For other platforms, check the agent's debug/verbose output.
-      render: text
+        Did you try to debug it? What did you find?
+        Remember: your AI agent can read our source code. Ask it to help.
+      placeholder: |
+        - Upgraded to latest version
+        - Read hooks/pretooluse.mjs, found that...
+        - Tried running the hook manually: node hooks/pretooluse.mjs <<< '...'
     validations:
-      required: false
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I am on the LATEST version (ran ctx-upgrade)
+          required: true
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I tried to debug this myself (read source, ran hooks manually, etc.)
+          required: true
+        - label: I understand that PRs are preferred and issues don't guarantee a fix
+          required: true
 
   - type: dropdown
     id: os

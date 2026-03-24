@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "../suppress-stderr.mjs";
+import "../ensure-deps.mjs";
 /**
  * VS Code Copilot PreCompact hook — snapshot generation.
  *

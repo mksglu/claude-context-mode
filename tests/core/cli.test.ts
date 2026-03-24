@@ -482,6 +482,36 @@ describe("bun:sqlite adapter (#45)", () => {
   });
 });
 
+// ── Shared dep bootstrap (#172) ──────────────────────────────────────
+
+describe("hooks/ensure-deps.mjs — shared bootstrap", () => {
+  it("ensure-deps.mjs exists and exports ensureDeps function", async () => {
+    expect(existsSync(resolve(ROOT, "hooks", "ensure-deps.mjs"))).toBe(true);
+    const mod = await import("../../hooks/ensure-deps.mjs");
+    expect(typeof mod.ensureDeps).toBe("function");
+  });
+
+  it("start.mjs uses ensure-deps.mjs for native deps", () => {
+    const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
+    expect(src).toContain("ensure-deps.mjs");
+    // better-sqlite3 should NOT be in start.mjs inline loop (handled by ensure-deps)
+    expect(src).not.toMatch(/for.*\[.*"better-sqlite3"/s);
+  });
+
+  it("all session hooks import ensure-deps.mjs", () => {
+    const sessionHooks = [
+      "hooks/sessionstart.mjs",
+      "hooks/posttooluse.mjs",
+      "hooks/precompact.mjs",
+      "hooks/userpromptsubmit.mjs",
+    ];
+    for (const hook of sessionHooks) {
+      const src = readFileSync(resolve(ROOT, hook), "utf-8");
+      expect(src).toContain("ensure-deps.mjs");
+    }
+  });
+});
+
 // ── Cross-OS compatibility ────────────────────────────────────────────
 
 describe("Cross-OS compatibility", () => {
@@ -547,6 +577,17 @@ describe("Bin entry uses cli.bundle.mjs", () => {
     // ctx_upgrade handler must prefer cli.bundle.mjs
     const upgradeSection = src.slice(src.indexOf("ctx_upgrade"), src.indexOf("ctx_upgrade") + 800);
     expect(upgradeSection).toContain("cli.bundle.mjs");
+  });
+
+  it("server.ts registers empty prompts/resources handlers to avoid -32601 (#168)", () => {
+    const src = readFileSync(resolve(ROOT, "src", "server.ts"), "utf-8");
+    // Must register prompts capability so clients don't get Method not found
+    expect(src).toContain("ListPromptsRequestSchema");
+    // Must register resources capability
+    expect(src).toContain("ListResourcesRequestSchema");
+    // Must return empty arrays
+    expect(src).toContain("prompts: []");
+    expect(src).toContain("resources: []");
   });
 
   it("openclaw-plugin.ts doctor/upgrade use cli.bundle.mjs with fallback", () => {
