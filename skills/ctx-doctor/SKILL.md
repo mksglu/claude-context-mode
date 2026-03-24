@@ -1,15 +1,12 @@
 ---
 name: ctx-doctor
-description: |
-  Run context-mode diagnostics. Checks runtimes, hooks, FTS5,
-  plugin registration, npm and marketplace versions.
-  Trigger: /context-mode:ctx-doctor
+description: "Run context-mode diagnostics and display results."
 user-invocable: true
 ---
 
 # Context Mode Doctor
 
-Run diagnostics and display results directly in the conversation.
+Run diagnostics and display results directly in the conversation. Trigger: `/context-mode:ctx-doctor`
 
 ## Instructions
 

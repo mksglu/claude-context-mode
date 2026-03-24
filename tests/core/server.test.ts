@@ -1042,3 +1042,103 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     expect(serverSrc).toMatch(/existsSync\(fallbackPath\)/);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tool description length constraints (Issue #169)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Tool description length constraints", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  const toolNames = [
+    "ctx_execute",
+    "ctx_execute_file",
+    "ctx_index",
+    "ctx_search",
+    "ctx_fetch_and_index",
+    "ctx_batch_execute",
+    "ctx_stats",
+    "ctx_doctor",
+    "ctx_upgrade",
+  ];
+
+  for (const tool of toolNames) {
+    test(`${tool} description should not contain multi-paragraph text`, () => {
+      const blockPattern = new RegExp(
+        `registerTool\\(\\s*"${tool}"[\\s\\S]*?description:\\s*`,
+      );
+      const match = serverSrc.match(blockPattern);
+      expect(match).toBeTruthy();
+
+      const afterDesc = serverSrc.slice(
+        (match?.index ?? 0) + (match?.[0]?.length ?? 0),
+      );
+
+      // Extract the description value (handle template literals and concatenated strings)
+      let desc = "";
+      if (afterDesc.startsWith("`")) {
+        const end = afterDesc.indexOf("`", 1);
+        desc = afterDesc.slice(1, end);
+      } else if (afterDesc.startsWith('"')) {
+        // Handle concatenated strings: "..." + "..." + "..."
+        const lines: string[] = [];
+        let remaining = afterDesc;
+        while (remaining.startsWith('"')) {
+          const end = remaining.indexOf('"', 1);
+          lines.push(remaining.slice(1, end));
+          remaining = remaining.slice(end + 1).replace(/^\s*\+\s*/, "");
+        }
+        desc = lines.join("");
+      }
+
+      // Replace template variables with placeholder text
+      desc = desc.replace(/\$\{[^}]+\}/g, "PLACEHOLDER");
+      // Normalize escaped newlines
+      desc = desc.replace(/\\n/g, "\n");
+
+      // Must not contain double newlines (multi-paragraph)
+      expect(desc).not.toContain("\n\n");
+    });
+  }
+
+  test("descriptions do not contain verbose routing guidance", () => {
+    const verboseMarkers = [
+      "PREFER THIS OVER",
+      "WHEN TO USE:",
+      "One batch_execute call replaces",
+      "Better than WebFetch",
+      "You MUST run the returned command",
+    ];
+
+    for (const marker of verboseMarkers) {
+      const descRegex =
+        /registerTool\(\s*"ctx_\w+"[\s\S]*?description:\s*(?:`[^`]*`|"[^"]*(?:"\s*\+\s*"[^"]*)*")/g;
+      const matches = [...serverSrc.matchAll(descRegex)];
+      for (const m of matches) {
+        expect(m[0]).not.toContain(marker);
+      }
+    }
+  });
+});
+
+describe("Skill description format", () => {
+  const skillDir = resolve(__dirname, "../../skills");
+  const skills = ["context-mode", "ctx-doctor", "ctx-stats", "ctx-upgrade"];
+
+  for (const skill of skills) {
+    test(`${skill} SKILL.md has a concise single-line description`, () => {
+      const content = readFileSync(
+        resolve(skillDir, skill, "SKILL.md"),
+        "utf-8",
+      );
+      const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
+      expect(frontmatter).toBeTruthy();
+
+      // Description should NOT use YAML block scalar (| or >)
+      expect(frontmatter![1]).not.toMatch(/description:\s*[|>]/);
+    });
+  }
+});

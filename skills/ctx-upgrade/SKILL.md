@@ -1,15 +1,12 @@
 ---
 name: ctx-upgrade
-description: |
-  Update context-mode from GitHub and fix hooks/settings.
-  Pulls latest, builds, installs, updates npm global, configures hooks.
-  Trigger: /context-mode:ctx-upgrade
+description: "Upgrade context-mode to the latest version."
 user-invocable: true
 ---
 
 # Context Mode Upgrade
 
-Pull latest from GitHub and reinstall the plugin.
+Pull latest from GitHub and reinstall the plugin. Trigger: `/context-mode:ctx-upgrade`
 
 ## Instructions
 

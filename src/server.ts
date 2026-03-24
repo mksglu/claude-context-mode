@@ -385,7 +385,7 @@ server.registerTool(
   "ctx_execute",
   {
     title: "Execute Code",
-    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.`,
+    description: `Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays isolated. Available: ${langList}.`,
     inputSchema: z.object({
       language: z
         .enum([
@@ -680,7 +680,7 @@ server.registerTool(
   {
     title: "Execute File Processing",
     description:
-      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.",
+      "Process a file in a sandbox without loading contents into context. Only your printed summary enters context.",
     inputSchema: z.object({
       path: z
         .string()
@@ -811,18 +811,7 @@ server.registerTool(
   {
     title: "Index Content",
     description:
-      "Index documentation or knowledge content into a searchable BM25 knowledge base. " +
-      "Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. " +
-      "The full content does NOT stay in context — only a brief summary is returned.\n\n" +
-      "WHEN TO USE:\n" +
-      "- Documentation from Context7, Skills, or MCP tools (API docs, framework guides, code examples)\n" +
-      "- API references (endpoint details, parameter specs, response schemas)\n" +
-      "- MCP tools/list output (exact tool signatures and descriptions)\n" +
-      "- Skill prompts and instructions that are too large for context\n" +
-      "- README files, migration guides, changelog entries\n" +
-      "- Any content with code examples you may need to reference precisely\n\n" +
-      "After indexing, use 'search' to retrieve specific sections on-demand.\n" +
-      "Do NOT use for: log files, test output, CSV, build output — use 'execute_file' for those.",
+      "Index content into a searchable FTS5 knowledge base. Content stays out of context — use search to query later.",
     inputSchema: z.object({
       content: z
         .string()
@@ -935,9 +924,7 @@ server.registerTool(
   {
     title: "Search Indexed Content",
     description:
-      "Search indexed content. Requires prior indexing via ctx_batch_execute, ctx_index, or ctx_fetch_and_index. " +
-      "Pass ALL search questions as queries array in ONE call.\n\n" +
-      "TIPS: 2-4 specific terms per query. Use 'source' to scope results.",
+      "Search indexed content. Pass all queries as an array in one call.",
     inputSchema: z.object({
       queries: z.preprocess(coerceJsonArray, z
         .array(z.string())
@@ -1175,10 +1162,7 @@ server.registerTool(
   {
     title: "Fetch & Index URL",
     description:
-      "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, " +
-      "and returns a ~3KB preview. Full content stays in sandbox — use search() for deeper lookups.\n\n" +
-      "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.\n\n" +
-      "Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.",
+      "Fetch a URL, convert to markdown, and index into the knowledge base. Returns a preview.",
     inputSchema: z.object({
       url: z.string().describe("The URL to fetch and index"),
       source: z
@@ -1334,11 +1318,7 @@ server.registerTool(
   {
     title: "Batch Execute & Search",
     description:
-      "Execute multiple commands in ONE call, auto-index all output, and search with multiple queries. " +
-      "Returns search results directly — no follow-up calls needed.\n\n" +
-      "THIS IS THE PRIMARY TOOL. Use this instead of multiple execute() calls.\n\n" +
-      "One batch_execute call replaces 30+ execute calls + 10+ search calls.\n" +
-      "Provide all commands to run and all queries to search — everything happens in one round trip.",
+      "Run multiple commands, auto-index output, and search — all in one call.",
     inputSchema: z.object({
       commands: z.preprocess(coerceCommandsArray, z
         .array(
@@ -1547,9 +1527,7 @@ server.registerTool(
   {
     title: "Session Statistics",
     description:
-      "Returns context consumption statistics for the current session. " +
-      "Shows total bytes returned to context, breakdown by tool, call counts, " +
-      "estimated token usage, and context savings ratio.",
+      "Show context consumption stats, token usage, and savings ratio for this session.",
     inputSchema: z.object({}),
   },
   async () => {
@@ -1793,8 +1771,7 @@ server.registerTool(
   {
     title: "Run Diagnostics",
     description:
-      "Diagnose context-mode installation. Runs all checks server-side and " +
-      "returns results as a markdown checklist. No CLI execution needed.",
+      "Diagnose context-mode installation and return results as a markdown checklist.",
     inputSchema: z.object({}),
   },
   async () => {
@@ -1867,10 +1844,7 @@ server.registerTool(
   {
     title: "Upgrade Plugin",
     description:
-      "Upgrade context-mode to the latest version. Returns a shell command to execute. " +
-      "You MUST run the returned command using your shell tool (Bash, shell_execute, " +
-      "run_in_terminal, etc.) and display the output as a checklist. " +
-      "Tell the user to restart their session after upgrade.",
+      "Return a shell command to upgrade context-mode to the latest version.",
     inputSchema: z.object({}),
   },
   async () => {
