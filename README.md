@@ -532,6 +532,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
    git clone https://github.com/mksglu/context-mode.git ~/.pi/extensions/context-mode
    cd ~/.pi/extensions/context-mode
    npm install
+   npm run build
    ```
 
 2. Add to `~/.pi/settings/mcp.json` (or `.pi/settings/mcp.json` for project-level):
