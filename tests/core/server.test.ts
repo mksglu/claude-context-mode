@@ -18,13 +18,14 @@ import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { describe, test, expect, afterAll } from "vitest";
+import { describe, test, expect, afterAll, afterEach, beforeEach } from "vitest";
 
 import { classifyNonZeroExit } from "../../src/exit-classify.js";
 import { PolyglotExecutor } from "../../src/executor.js";
 import { detectRuntimes } from "../../src/runtime.js";
 import { ContentStore } from "../../src/store.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
+import { getFetchBackend, isFallbackEnabled, detectBrowserCli } from "../../src/server.js";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
 const runtimes = detectRuntimes();
@@ -1040,5 +1041,86 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
   test("fallback only triggers when neither CLI file exists", () => {
     // There should be an else/fallback branch after checking both paths
     expect(serverSrc).toMatch(/existsSync\(fallbackPath\)/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Configurable fetch backend (CTX_FETCH_BACKEND / CTX_FETCH_FALLBACK)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Configurable fetch backend", () => {
+  const origBackend = process.env.CTX_FETCH_BACKEND;
+  const origFallback = process.env.CTX_FETCH_FALLBACK;
+
+  beforeEach(() => {
+    delete process.env.CTX_FETCH_BACKEND;
+    delete process.env.CTX_FETCH_FALLBACK;
+  });
+
+  afterEach(() => {
+    // Restore original env after each test
+    if (origBackend === undefined) delete process.env.CTX_FETCH_BACKEND;
+    else process.env.CTX_FETCH_BACKEND = origBackend;
+    if (origFallback === undefined) delete process.env.CTX_FETCH_FALLBACK;
+    else process.env.CTX_FETCH_FALLBACK = origFallback;
+  });
+
+  test("getFetchBackend defaults to 'fetch'", () => {
+    expect(getFetchBackend()).toBe("fetch");
+  });
+
+  test("getFetchBackend returns 'browser' for browser/agent-browser values", () => {
+    process.env.CTX_FETCH_BACKEND = "browser";
+    expect(getFetchBackend()).toBe("browser");
+
+    process.env.CTX_FETCH_BACKEND = "agent-browser";
+    expect(getFetchBackend()).toBe("browser");
+
+    process.env.CTX_FETCH_BACKEND = "BROWSER";
+    expect(getFetchBackend()).toBe("browser");
+  });
+
+  test("getFetchBackend returns custom object for unknown values", () => {
+    process.env.CTX_FETCH_BACKEND = "my-fetcher --url {{url}}";
+    const result = getFetchBackend();
+    expect(result).toEqual({ custom: "my-fetcher --url {{url}}" });
+  });
+
+  test("getFetchBackend preserves original case for custom commands", () => {
+    process.env.CTX_FETCH_BACKEND = "CURL -sL $CTX_URL";
+    const result = getFetchBackend();
+    expect(result).toEqual({ custom: "CURL -sL $CTX_URL" });
+  });
+
+  test("isFallbackEnabled defaults to false", () => {
+    expect(isFallbackEnabled()).toBe(false);
+  });
+
+  test("isFallbackEnabled returns true for browser/agent-browser", () => {
+    process.env.CTX_FETCH_FALLBACK = "browser";
+    expect(isFallbackEnabled()).toBe(true);
+
+    process.env.CTX_FETCH_FALLBACK = "agent-browser";
+    expect(isFallbackEnabled()).toBe(true);
+  });
+
+  test("detectBrowserCli returns a boolean", () => {
+    const result = detectBrowserCli();
+    expect(typeof result).toBe("boolean");
+  });
+
+  test("buildBrowserFetchCode uses execFileSync (no shell injection)", () => {
+    const src = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
+    // Must use execFileSync, NOT execSync, to prevent shell injection via URL
+    expect(src).toContain("execFileSync('agent-browser', ['open', url]");
+    expect(src).not.toMatch(/execSync\('agent-browser open '/);
+  });
+
+  test("buildCustomFetchCode passes URL via env var, not interpolation", () => {
+    const src = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
+    // URL must be passed as CTX_URL env var, never interpolated into the command
+    expect(src).toContain("env: Object.assign({}, process.env, { CTX_URL: url })");
+    // The {{url}} template should be replaced with $CTX_URL, not the raw URL
+    expect(src).toContain('command.replace(/\\{\\{url\\}\\}/g, "$CTX_URL")');
   });
 });

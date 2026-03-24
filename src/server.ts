@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
+import { execSync } from "node:child_process";
 import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +49,43 @@ process.on("uncaughtException", (err) => {
 
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
+
+// ─────────────────────────────────────────────────────────
+// Fetch backend configuration (configurable via env vars)
+// ─────────────────────────────────────────────────────────
+export type FetchBackend = "fetch" | "browser" | { custom: string };
+
+export function detectBrowserCli(): boolean {
+  try {
+    execSync("agent-browser --version", { stdio: "pipe", timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Lazy-cached: avoids 5s timeout at module load when agent-browser isn't installed.
+let _hasBrowserCli: boolean | undefined;
+function hasBrowserCli(): boolean {
+  if (_hasBrowserCli === undefined) _hasBrowserCli = detectBrowserCli();
+  return _hasBrowserCli;
+}
+
+export function getFetchBackend(): FetchBackend {
+  const raw = (process.env.CTX_FETCH_BACKEND ?? "fetch").trim();
+  const env = raw.toLowerCase();
+  if (env === "fetch") return "fetch";
+  if (env === "browser" || env === "agent-browser") return "browser";
+  return { custom: raw };
+}
+
+export function isFallbackEnabled(): boolean {
+  const env = (process.env.CTX_FETCH_FALLBACK || "").trim().toLowerCase();
+  if (env === "browser" || env === "agent-browser") return true;
+  if (env === "auto") return hasBrowserCli();
+  return false;
+}
+
 const server = new McpServer({
   name: "context-mode",
   version: VERSION,
@@ -1170,6 +1208,131 @@ main();
 `;
 }
 
+// Browser-based fetch using agent-browser CLI (headless Chromium).
+// Gets rendered HTML from JS-heavy pages and converts to markdown via Turndown.
+// Uses execFileSync (no shell) to prevent command injection via URL.
+function buildBrowserFetchCode(url: string, outputPath: string): string {
+  const turndownPath = JSON.stringify(resolveTurndownPath());
+  const gfmPath = JSON.stringify(resolveGfmPluginPath());
+  return `
+const { execFileSync } = require('child_process');
+const TurndownService = require(${turndownPath});
+const { gfm } = require(${gfmPath});
+const fs = require('fs');
+const url = ${JSON.stringify(url)};
+const outputPath = ${JSON.stringify(outputPath)};
+
+function emit(ct, content) {
+  fs.writeFileSync(outputPath, content);
+  console.log('__CM_CT__:' + ct);
+}
+
+try {
+  execFileSync('agent-browser', ['open', url], { timeout: 30000, stdio: 'pipe' });
+  const html = execFileSync('agent-browser', ['get', 'text', 'body'], { timeout: 15000, encoding: 'utf-8' });
+
+  if (!html || html.trim().length === 0) {
+    console.error('Browser returned empty content');
+    process.exit(1);
+  }
+
+  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+  td.use(gfm);
+  td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
+  emit('html', td.turndown(html));
+} catch (err) {
+  console.error(err.message || String(err));
+  process.exit(1);
+}
+`;
+}
+
+// Custom shell command fetch. The command template should use $CTX_URL env var
+// (or {{url}} which is substituted only in the command template, NOT in a shell context).
+// URL is passed via CTX_URL environment variable to prevent shell injection.
+function buildCustomFetchCode(command: string, url: string, outputPath: string): string {
+  const turndownPath = JSON.stringify(resolveTurndownPath());
+  const gfmPath = JSON.stringify(resolveGfmPluginPath());
+  // Replace {{url}} with $CTX_URL so the command references the env var safely
+  const shellCmd = command.replace(/\{\{url\}\}/g, "$CTX_URL");
+  return `
+const { execSync } = require('child_process');
+const TurndownService = require(${turndownPath});
+const { gfm } = require(${gfmPath});
+const fs = require('fs');
+const url = ${JSON.stringify(url)};
+const outputPath = ${JSON.stringify(outputPath)};
+
+function emit(ct, content) {
+  fs.writeFileSync(outputPath, content);
+  console.log('__CM_CT__:' + ct);
+}
+
+try {
+  // URL is passed via env var to prevent shell injection — never interpolated into the command string.
+  const output = execSync(${JSON.stringify(shellCmd)}, {
+    timeout: 30000,
+    encoding: 'utf-8',
+    env: Object.assign({}, process.env, { CTX_URL: url }),
+  });
+
+  if (!output || output.trim().length === 0) {
+    console.error('Custom command returned empty content');
+    process.exit(1);
+  }
+
+  // Attempt HTML-to-markdown conversion; if it looks like plain text, emit as-is
+  if (output.includes('<') && (output.includes('</') || output.includes('/>'))) {
+    const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    td.use(gfm);
+    td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
+    emit('html', td.turndown(output));
+  } else {
+    emit('text', output.trim());
+  }
+} catch (err) {
+  console.error(err.message || String(err));
+  process.exit(1);
+}
+`;
+}
+
+// Select the right fetch code builder based on configured backend.
+function buildFetchCodeForBackend(backend: FetchBackend, url: string, outputPath: string): string {
+  if (backend === "browser") return buildBrowserFetchCode(url, outputPath);
+  if (typeof backend === "object" && backend.custom) return buildCustomFetchCode(backend.custom, url, outputPath);
+  return buildFetchCode(url, outputPath);
+}
+
+// Execute fetch code and read the result from the temp file.
+// Returns { header, markdown } on success, or { error } on failure.
+async function executeFetchCode(
+  code: string,
+  outputPath: string,
+  url: string,
+  timeout = 30_000,
+): Promise<{ header: string; markdown: string } | { error: string }> {
+  const result = await executor.execute({ language: "javascript", code, timeout });
+
+  if (result.exitCode !== 0) {
+    return { error: `Failed to fetch ${url}: ${result.stderr || result.stdout}` };
+  }
+
+  const header = (result.stdout || "").trim();
+  let markdown: string;
+  try {
+    markdown = readFileSync(outputPath, "utf-8").trim();
+  } catch {
+    return { error: `Fetched ${url} but could not read subprocess output` };
+  }
+
+  if (markdown.length === 0) {
+    return { error: `Fetched ${url} but got empty content` };
+  }
+
+  return { header, markdown };
+}
+
 server.registerTool(
   "ctx_fetch_and_index",
   {
@@ -1178,7 +1341,8 @@ server.registerTool(
       "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, " +
       "and returns a ~3KB preview. Full content stays in sandbox — use search() for deeper lookups.\n\n" +
       "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.\n\n" +
-      "Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.",
+      "Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.\n\n" +
+      "Configurable via env vars: CTX_FETCH_BACKEND (fetch|browser|custom command), CTX_FETCH_FALLBACK (browser|auto).",
     inputSchema: z.object({
       url: z.string().describe("The URL to fetch and index"),
       source: z
@@ -1227,60 +1391,37 @@ server.registerTool(
     const outputPath = join(tmpdir(), `ctx-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}.dat`);
 
     try {
-      const fetchCode = buildFetchCode(url, outputPath);
-      const result = await executor.execute({
-        language: "javascript",
-        code: fetchCode,
-        timeout: 30_000,
-      });
+      const backend = getFetchBackend();
+      const fallbackEnabled = isFallbackEnabled();
+      const fetchCode = buildFetchCodeForBackend(backend, url, outputPath);
+      let fetchResult = await executeFetchCode(fetchCode, outputPath, url);
+      let effectiveBackend: FetchBackend = backend;
 
-      if (result.exitCode !== 0) {
+      // Browser fallback: if primary fetch failed/empty and fallback is enabled
+      if ("error" in fetchResult && fallbackEnabled && hasBrowserCli() && backend === "fetch") {
+        // Clean up temp file from failed attempt before retry
+        try { rmSync(outputPath); } catch { /* already gone */ }
+        const browserCode = buildBrowserFetchCode(url, outputPath);
+        const retryResult = await executeFetchCode(browserCode, outputPath, url, 45_000);
+        if (!("error" in retryResult)) {
+          fetchResult = retryResult;
+          effectiveBackend = "browser";
+        }
+        // If browser also fails, return the original error (more informative)
+      }
+
+      if ("error" in fetchResult) {
         return trackResponse("ctx_fetch_and_index", {
-          content: [
-            {
-              type: "text" as const,
-              text: `Failed to fetch ${url}: ${result.stderr || result.stdout}`,
-            },
-          ],
+          content: [{ type: "text" as const, text: fetchResult.error }],
           isError: true,
         });
       }
 
-      // Parse content-type marker from stdout (content is in the temp file)
-      const store = getStore();
-      const header = (result.stdout || "").trim();
-
-      // Read full content from temp file (bypasses smartTruncate)
-      let markdown: string;
-      try {
-        markdown = readFileSync(outputPath, "utf-8").trim();
-      } catch {
-        return trackResponse("ctx_fetch_and_index", {
-          content: [
-            {
-              type: "text" as const,
-              text: `Fetched ${url} but could not read subprocess output`,
-            },
-          ],
-          isError: true,
-        });
-      }
-
-      if (markdown.length === 0) {
-        return trackResponse("ctx_fetch_and_index", {
-          content: [
-            {
-              type: "text" as const,
-              text: `Fetched ${url} but got empty content`,
-            },
-          ],
-          isError: true,
-        });
-      }
-
+      const { header, markdown } = fetchResult;
       trackIndexed(Buffer.byteLength(markdown));
 
       // Route to the appropriate indexing strategy based on Content-Type
+      const store = getStore();
       let indexed: IndexResult;
       if (header === "__CM_CT__:json") {
         indexed = store.indexJSON(markdown, source ?? url);
@@ -1298,8 +1439,9 @@ server.registerTool(
         : markdown;
       const totalKB = (Buffer.byteLength(markdown) / 1024).toFixed(1);
 
+      const backendLabel = effectiveBackend === "fetch" ? "" : effectiveBackend === "browser" ? " via browser" : " via custom backend";
       const text = [
-        `Fetched and indexed **${indexed.totalChunks} sections** (${totalKB}KB) from: ${indexed.label}`,
+        `Fetched and indexed **${indexed.totalChunks} sections** (${totalKB}KB)${backendLabel} from: ${indexed.label}`,
         `Full content indexed in sandbox — use search(queries: [...], source: "${indexed.label}") for specific lookups.`,
         "",
         "---",
