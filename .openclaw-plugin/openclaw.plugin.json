@@ -3,7 +3,7 @@
   "name": "Context Mode",
   "kind": "tool",
   "description": "OpenClaw plugin that saves 98% of your context window. Sandboxed code execution in 11 languages, FTS5 knowledge base with BM25 ranking, and intent-driven search.",
-  "version": "1.0.51",
+  "version": "1.0.52",
   "sandbox": {
     "mode": "permissive",
     "filesystem_access": "full",

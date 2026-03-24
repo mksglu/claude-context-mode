@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.51",
+  "version": "1.0.52",
   "description": "MCP server that saves 98% of your context window with session continuity. Sandboxed code execution in 11 languages, FTS5 knowledge base with BM25 ranking, and automatic state restore across compactions.",
   "author": {
     "name": "Mert Koseoğlu",
