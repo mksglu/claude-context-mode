@@ -115,14 +115,16 @@ if (cacheMatch) {
   }
 }
 
-// Ensure external dependencies are available
-for (const pkg of ["better-sqlite3", "turndown", "turndown-plugin-gfm", "@mixmark-io/domino"]) {
+// Ensure native dependencies are available (shared with hooks via ensure-deps.mjs)
+import { ensureDeps } from "./hooks/ensure-deps.mjs";
+// ensure-deps handles better-sqlite3; also install pure-JS deps used by server
+for (const pkg of ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"]) {
   if (!existsSync(resolve(__dirname, "node_modules", pkg))) {
     try {
       execSync(`npm install ${pkg} --no-package-lock --no-save --silent`, {
         cwd: __dirname,
         stdio: "pipe",
-        timeout: 60000,
+        timeout: 120000,
       });
     } catch { /* best effort */ }
   }

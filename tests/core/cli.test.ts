@@ -482,6 +482,36 @@ describe("bun:sqlite adapter (#45)", () => {
   });
 });
 
+// ── Shared dep bootstrap (#172) ──────────────────────────────────────
+
+describe("hooks/ensure-deps.mjs — shared bootstrap", () => {
+  it("ensure-deps.mjs exists and exports ensureDeps function", async () => {
+    expect(existsSync(resolve(ROOT, "hooks", "ensure-deps.mjs"))).toBe(true);
+    const mod = await import("../../hooks/ensure-deps.mjs");
+    expect(typeof mod.ensureDeps).toBe("function");
+  });
+
+  it("start.mjs uses ensure-deps.mjs for native deps", () => {
+    const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
+    expect(src).toContain("ensure-deps.mjs");
+    // better-sqlite3 should NOT be in start.mjs inline loop (handled by ensure-deps)
+    expect(src).not.toMatch(/for.*\[.*"better-sqlite3"/s);
+  });
+
+  it("all session hooks import ensure-deps.mjs", () => {
+    const sessionHooks = [
+      "hooks/sessionstart.mjs",
+      "hooks/posttooluse.mjs",
+      "hooks/precompact.mjs",
+      "hooks/userpromptsubmit.mjs",
+    ];
+    for (const hook of sessionHooks) {
+      const src = readFileSync(resolve(ROOT, hook), "utf-8");
+      expect(src).toContain("ensure-deps.mjs");
+    }
+  });
+});
+
 // ── Cross-OS compatibility ────────────────────────────────────────────
 
 describe("Cross-OS compatibility", () => {

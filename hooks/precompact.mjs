@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import "./suppress-stderr.mjs";
+import "./ensure-deps.mjs";
 /**
  * PreCompact hook for context-mode session continuity.
  *
