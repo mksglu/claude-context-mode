@@ -1,9 +1,20 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
+
+function env(home: string) {
+  const root = parse(home).root;
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    HOMEDRIVE: root.replace(/[\\/]+$/, ""),
+    HOMEPATH: home.slice(root.length) || root,
+  };
+}
 
 describe("OpenCodeAdapter", () => {
   let adapter: OpenCodeAdapter;
@@ -191,7 +202,7 @@ describe("OpenCodeAdapter", () => {
         ],
         {
           cwd: dir,
-          env: { ...process.env, HOME: home },
+          env: env(home),
           encoding: "utf-8",
         },
       );
@@ -227,7 +238,7 @@ describe("OpenCodeAdapter", () => {
         ],
         {
           cwd: dir,
-          env: { ...process.env, HOME: home },
+          env: env(home),
           encoding: "utf-8",
         },
       );
@@ -264,7 +275,7 @@ describe("OpenCodeAdapter", () => {
         ],
         {
           cwd: dir,
-          env: { ...process.env, HOME: home },
+          env: env(home),
           encoding: "utf-8",
         },
       );
