@@ -640,7 +640,7 @@ npm install -g context-mode
 | `ctx_execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
 | `ctx_index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
-| `ctx_fetch_and_index` | Fetch URL, detect content type (HTML/JSON/text), chunk and index. | 60 KB → 40 B |
+| `ctx_fetch_and_index` | Fetch URL, chunk and index. 24h TTL cache — repeat calls skip network. `force: true` to bypass. | 60 KB → 40 B |
 | `ctx_stats` | Show context savings, call counts, and session statistics. | — |
 | `ctx_doctor` | Diagnose installation: runtimes, hooks, FTS5, versions. | — |
 | `ctx_upgrade` | Upgrade to latest version from GitHub, rebuild, reconfigure hooks. | — |
@@ -681,6 +681,19 @@ Levenshtein distance corrects typos before re-searching. "kuberntes" becomes "ku
 ### Smart Snippets
 
 Search results use intelligent extraction instead of truncation. Instead of returning the first N characters (which might miss the important part), Context Mode finds where your query terms appear in the content and returns windows around those matches.
+
+### TTL Cache
+
+Indexed content persists in a per-project SQLite database at `~/.context-mode/content/`. When `ctx_fetch_and_index` is called for a URL that was already indexed within the last 24 hours, the fetch is skipped entirely. The model searches the existing index directly.
+
+- **Fresh (<24h):** Returns a cache hint (0.3KB) instead of re-fetching (48KB+). Model proceeds to `ctx_search`.
+- **Stale (>24h):** Re-fetches silently. No user action needed.
+- **`force: true`:** Bypasses cache and re-fetches regardless of TTL.
+- **14-day cleanup:** Content databases and sources older than 14 days are removed on startup.
+
+This means `--continue` sessions preserve indexed docs across restarts. No re-fetching, no wasted context tokens.
+
+`ctx_stats` reports cache performance separately: hits, data avoided, network requests saved, and total context savings including cache.
 
 ### Progressive Throttling
 
