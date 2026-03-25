@@ -25,7 +25,7 @@ import { extractEvents } from "./session/extract.js";
 import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
-import { OpenCodeAdapter } from "./adapters/opencode/index.js";
+import { AdapterPlatformType, OpenCodeAdapter } from "./adapters/opencode/index.js";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -73,12 +73,15 @@ interface CompactingHookOutput {
 }
 
 // ── Helpers ───────────────────────────────────────────────
+function getPlatform(): AdapterPlatformType {
+  return process.env.KILO ? "kilo" : "opencode";
+}
 
 function getSessionDir(): string {
   const dir = join(
     homedir(),
     ".config",
-    "opencode",
+    getPlatform(),
     "context-mode",
     "sessions",
   );
@@ -103,21 +106,21 @@ function getDBPath(projectDir: string): string {
 export const ContextModePlugin = async (ctx: PluginContext) => {
   // Resolve build dir from compiled JS location
   const buildDir = dirname(fileURLToPath(import.meta.url));
-
+  
   // Load routing module (ESM .mjs, lives outside build/ in hooks/)
   const routingPath = resolve(buildDir, "..", "hooks", "core", "routing.mjs");
   const routing = await import(pathToFileURL(routingPath).href);
   await routing.initSecurity(buildDir);
-
+  
   // Initialize session
   const projectDir = ctx.directory;
   const db = new SessionDB({ dbPath: getDBPath(projectDir) });
   const sessionId = randomUUID();
   db.ensureSession(sessionId, projectDir);
-
+  
   // Auto-write AGENTS.md on startup for OpenCode projects
   try {
-    new OpenCodeAdapter().writeRoutingInstructions(projectDir, resolve(buildDir, ".."));
+    new OpenCodeAdapter(getPlatform()).writeRoutingInstructions(projectDir, resolve(buildDir, ".."));
   } catch {
     // best effort — never break plugin init
   }

@@ -80,7 +80,7 @@ import { HOOK_TYPES as OPENCODE_HOOK_NAMES } from "./hooks.js";
 // Adapter implementation
 // ─────────────────────────────────────────────────────────
 
-type AdapterPlatformType = Extract<PlatformId, "opencode" | "kilo">;
+export type AdapterPlatformType = Extract<PlatformId, "opencode" | "kilo">;
 
 export class OpenCodeAdapter implements HookAdapter {
   get name(): string {
