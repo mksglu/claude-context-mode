@@ -17,6 +17,7 @@ export const CLIENT_NAME_TO_PLATFORM: Record<string, PlatformId> = {
   "Visual-Studio-Code": "vscode-copilot",
   "Codex": "codex",
   "codex-mcp-client": "codex",
+  "Kilo Code": "kilo",
   "Kiro CLI": "kiro",
   "Pi CLI": "pi",
   "Pi Coding Agent": "pi",
