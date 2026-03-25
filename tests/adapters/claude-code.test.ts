@@ -1,3 +1,4 @@
+import "../setup-home";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";

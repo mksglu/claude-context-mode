@@ -1,3 +1,4 @@
+import "../setup-home";
 /**
  * Hook Integration Tests — Gemini CLI hooks
  *

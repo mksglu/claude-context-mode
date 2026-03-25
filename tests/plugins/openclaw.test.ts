@@ -1,3 +1,4 @@
+import "../setup-home";
 /**
  * Consolidated OpenClaw plugin tests.
  *

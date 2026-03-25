@@ -1,3 +1,4 @@
+import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
