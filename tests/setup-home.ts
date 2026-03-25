@@ -3,8 +3,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 
-// Test-only isolation: many adapters/plugins intentionally write session state under
-// homedir(), so the suite must not point at the contributor's real HOME.
+// Import this helper only from suites that exercise homedir()-backed session state.
+// We keep fake HOME opt-in per suite instead of global in vitest.config.ts so
+// unrelated tests still run against their normal environment and do not inherit
+// unnecessary path/env indirection.
 export const fakeHome = mkdtempSync(join(tmpdir(), "context-mode-test-home-"));
 const root = parse(fakeHome).root;
 export const realHome = process.env.HOME ?? "";
