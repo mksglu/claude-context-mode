@@ -259,17 +259,17 @@ export default {
       // best effort
     }
 
-    // Async init: load routing module + write AGENTS.md. Hooks await this.
+    // Async init: load routing module. Hooks await this.
+    // NOTE: writeRoutingInstructions is intentionally NOT called here.
+    // process.cwd() at plugin load time is the gateway's working directory, not
+    // the agent's workspace. Writing AGENTS.md to cwd() caused the file to be
+    // created in arbitrary directories (repo roots, config dirs, $HOME, etc.).
+    // The write is now deferred to session_start where the real workspace path
+    // is known via the sessionKey → workspace mapping.
     const initPromise = (async () => {
       const routingPath = resolve(buildDir, "..", "hooks", "core", "routing.mjs");
       const routing = await import(pathToFileURL(routingPath).href);
       await routing.initSecurity(buildDir);
-
-      try {
-        new OpenClawAdapter().writeRoutingInstructions(projectDir, pluginRoot);
-      } catch {
-        // best effort — never break plugin init
-      }
 
       return { routing };
     })();
@@ -486,6 +486,28 @@ export default {
             workspaceRouter.registerSession(key, sessionId);
           }
           resumeInjected = false;
+
+          // Write routing instructions (AGENTS.md) now that we know the real
+          // workspace. Derive the workspace directory from the sessionKey so we
+          // only write into recognised /.openclaw/workspace* paths, never into
+          // the gateway's cwd or any other arbitrary directory.
+          if (key) {
+            try {
+              const adapter = new OpenClawAdapter();
+              // Resolve workspace dir from sessionKey (pattern: agent:<name>:*)
+              const wsMatch = key.match(/^agent:([^:]+):/);
+              if (wsMatch) {
+                const wsDir = resolve(homedir(), ".openclaw", `workspace-${wsMatch[1]}`);
+                adapter.writeRoutingInstructions(wsDir, pluginRoot);
+              } else {
+                // Fallback: main workspace (sessionKey doesn't follow agent:<name>: pattern)
+                const wsDir = resolve(homedir(), ".openclaw", "workspace");
+                adapter.writeRoutingInstructions(wsDir, pluginRoot);
+              }
+            } catch {
+              // best effort — never break session start
+            }
+          }
         } catch {
           // best effort — never break session start
         }
