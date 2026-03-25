@@ -47,6 +47,18 @@ process.on("uncaughtException", (err) => {
   process.stderr.write(`[context-mode] uncaughtException: ${err?.message ?? err}\n`);
 });
 
+// Clean up any orphaned agent-browser (Chromium) processes on exit.
+// Only attempt cleanup if a browser fetch was actually started this session.
+let _browserLaunched = false;
+function cleanupBrowser() {
+  if (!_browserLaunched) return;
+  try { execFileSync(agentBrowserBin(), ["close"], { timeout: 5_000, stdio: "pipe" }); } catch { /* best effort */ }
+}
+for (const sig of ["SIGTERM", "SIGINT"] as const) {
+  process.on(sig, cleanupBrowser);
+}
+process.on("exit", cleanupBrowser);
+
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
 
@@ -55,9 +67,33 @@ const available = getAvailableLanguages(runtimes);
 // ─────────────────────────────────────────────────────────
 export type FetchBackend = "fetch" | "browser" | { custom: string };
 
+// Resolve agent-browser binary path — on Windows, npm installs .cmd shims
+// which execFileSync cannot find without shell: true. We probe for the .cmd
+// extension explicitly so we can keep shell: false (safer).
+let _agentBrowserBin: string | undefined;
+export function agentBrowserBin(): string {
+  if (_agentBrowserBin !== undefined) return _agentBrowserBin;
+  if (process.platform === "win32") {
+    // Try .cmd shim first (npm global/local installs), then bare name
+    for (const candidate of ["agent-browser.cmd", "agent-browser.exe", "agent-browser"]) {
+      try {
+        execFileSync(candidate, ["--version"], { stdio: "pipe", timeout: 5_000 });
+        _agentBrowserBin = candidate;
+        return candidate;
+      } catch { /* try next */ }
+    }
+  }
+  _agentBrowserBin = "agent-browser";
+  return _agentBrowserBin;
+}
+
 export function detectBrowserCli(): boolean {
+  // On Windows, agentBrowserBin() already probes with --version, so if it
+  // returned a cached value we know it succeeded. On non-Windows it returns
+  // "agent-browser" without probing, so we still need to check.
+  if (process.platform === "win32" && _agentBrowserBin !== undefined) return true;
   try {
-    execFileSync("agent-browser", ["--version"], { stdio: "pipe", timeout: 5_000 });
+    execFileSync(agentBrowserBin(), ["--version"], { stdio: "pipe", timeout: 5_000 });
     return true;
   } catch {
     return false;
@@ -1211,9 +1247,12 @@ main();
 // Browser-based fetch using agent-browser CLI (headless Chromium).
 // Gets rendered HTML from JS-heavy pages and converts to markdown via Turndown.
 // Uses execFileSync (no shell) to prevent command injection via URL.
+// Always closes the browser in a finally block to prevent orphaned Chromium processes.
 function buildBrowserFetchCode(url: string, outputPath: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
+  const bin = JSON.stringify(agentBrowserBin());
+  const MAX_BROWSER_BYTES = 512 * 1024; // 512KB cap on browser content
   return `
 const { execFileSync } = require('child_process');
 const TurndownService = require(${turndownPath});
@@ -1221,6 +1260,11 @@ const { gfm } = require(${gfmPath});
 const fs = require('fs');
 const url = ${JSON.stringify(url)};
 const outputPath = ${JSON.stringify(outputPath)};
+const bin = ${bin};
+
+function closeBrowser() {
+  try { execFileSync(bin, ['close'], { timeout: 5000, stdio: 'pipe' }); } catch {}
+}
 
 function emit(ct, content) {
   fs.writeFileSync(outputPath, content);
@@ -1228,21 +1272,36 @@ function emit(ct, content) {
 }
 
 try {
-  execFileSync('agent-browser', ['open', url], { timeout: 30000, stdio: 'pipe' });
-  const html = execFileSync('agent-browser', ['get', 'text', 'body'], { timeout: 15000, encoding: 'utf-8' });
+  execFileSync(bin, ['open', url], { timeout: 20000, stdio: 'pipe' });
+  let body = execFileSync(bin, ['get', 'text', 'body'], { timeout: 10000, encoding: 'utf-8' });
 
-  if (!html || html.trim().length === 0) {
+  if (!body || body.trim().length === 0) {
     console.error('Browser returned empty content');
     process.exit(1);
   }
 
-  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
-  td.use(gfm);
-  td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
-  emit('html', td.turndown(html));
+  // Cap content size to prevent oversized SPA pages from flooding the index.
+  // Use Buffer to slice at byte boundaries (body.slice uses char offsets, wrong for multi-byte).
+  if (Buffer.byteLength(body) > ${MAX_BROWSER_BYTES}) {
+    body = Buffer.from(body, 'utf-8').subarray(0, ${MAX_BROWSER_BYTES}).toString('utf-8');
+  }
+
+  // agent-browser 'get text body' returns innerText (plain text).
+  // Only run Turndown if the content contains HTML markup.
+  const head = body.slice(0, 1000);
+  if (head.includes('<!DOCTYPE') || head.includes('<html') || /<[a-z][\\s>]/i.test(head)) {
+    const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    td.use(gfm);
+    td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
+    emit('html', td.turndown(body));
+  } else {
+    emit('text', body.trim());
+  }
 } catch (err) {
   console.error(err.message || String(err));
   process.exit(1);
+} finally {
+  closeBrowser();
 }
 `;
 }
@@ -1253,8 +1312,9 @@ try {
 function buildCustomFetchCode(command: string, url: string, outputPath: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
-  // Replace {{url}} with $CTX_URL so the command references the env var safely
-  const shellCmd = command.replace(/\{\{url\}\}/g, "$CTX_URL");
+  // Replace {{url}} with "$CTX_URL" (quoted) so the command references the env var safely.
+  // Double quotes prevent word splitting on URLs containing spaces.
+  const shellCmd = command.replace(/\{\{url\}\}/g, '"$CTX_URL"');
   return `
 const { execSync } = require('child_process');
 const TurndownService = require(${turndownPath});
@@ -1300,7 +1360,7 @@ try {
 
 // Select the right fetch code builder based on configured backend.
 function buildFetchCodeForBackend(backend: FetchBackend, url: string, outputPath: string): string {
-  if (backend === "browser") return buildBrowserFetchCode(url, outputPath);
+  if (backend === "browser") { _browserLaunched = true; return buildBrowserFetchCode(url, outputPath); }
   if (typeof backend === "object" && backend.custom) return buildCustomFetchCode(backend.custom, url, outputPath);
   return buildFetchCode(url, outputPath);
 }
@@ -1311,7 +1371,7 @@ async function executeFetchCode(
   code: string,
   outputPath: string,
   url: string,
-  timeout = 30_000,
+  timeout = 40_000,
 ): Promise<{ header: string; markdown: string } | { error: string }> {
   const result = await executor.execute({ language: "javascript", code, timeout });
 
@@ -1400,15 +1460,19 @@ server.registerTool(
 
       // Browser fallback: if primary fetch failed/empty and fallback is enabled
       if ("error" in fetchResult && fallbackEnabled && hasBrowserCli() && backend === "fetch") {
+        const primaryError = fetchResult.error;
         // Clean up temp file from failed attempt before retry
         try { rmSync(outputPath); } catch { /* already gone */ }
+        _browserLaunched = true;
         const browserCode = buildBrowserFetchCode(url, outputPath);
-        const retryResult = await executeFetchCode(browserCode, outputPath, url, 60_000);
+        const retryResult = await executeFetchCode(browserCode, outputPath, url, 40_000);
         if (!("error" in retryResult)) {
           fetchResult = retryResult;
           effectiveBackend = "browser";
+        } else {
+          // Both backends failed — combine errors so the LLM sees both
+          fetchResult = { error: `${primaryError}\nBrowser fallback also failed: ${retryResult.error}` };
         }
-        // If browser also fails, return the original error (more informative)
       }
 
       if ("error" in fetchResult) {
