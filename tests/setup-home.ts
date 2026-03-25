@@ -5,7 +5,7 @@ import { join, parse } from "node:path";
 
 // Test-only isolation: many adapters/plugins intentionally write session state under
 // homedir(), so the suite must not point at the contributor's real HOME.
-const fakeHome = mkdtempSync(join(tmpdir(), "context-mode-test-home-"));
+export const fakeHome = mkdtempSync(join(tmpdir(), "context-mode-test-home-"));
 const root = parse(fakeHome).root;
 const saved = {
   HOME: process.env.HOME,
@@ -13,6 +13,8 @@ const saved = {
   HOMEDRIVE: process.env.HOMEDRIVE,
   HOMEPATH: process.env.HOMEPATH,
 };
+
+export const realHome = saved.HOME ?? "";
 
 process.env.HOME = fakeHome;
 process.env.USERPROFILE = fakeHome;
