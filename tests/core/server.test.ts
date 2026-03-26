@@ -1111,8 +1111,9 @@ describe("Configurable fetch backend", () => {
 
   test("buildBrowserFetchCode uses execFileSync (no shell injection)", () => {
     const src = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
-    // Must use execFileSync, NOT execSync, to prevent shell injection via URL
-    expect(src).toContain("execFileSync('agent-browser', ['open', url]");
+    // Must use execFileSync, NOT execSync, to prevent shell injection via URL.
+    // The binary is resolved via agentBrowserBin() into a `bin` variable for Windows .cmd shim compat.
+    expect(src).toContain("execFileSync(bin, ['open', url]");
     expect(src).not.toMatch(/execSync\('agent-browser open '/);
   });
 
@@ -1120,7 +1121,8 @@ describe("Configurable fetch backend", () => {
     const src = readFileSync(resolve(__dirname, "../../src/server.ts"), "utf-8");
     // URL must be passed as CTX_URL env var, never interpolated into the command
     expect(src).toContain("env: Object.assign({}, process.env, { CTX_URL: url })");
-    // The {{url}} template should be replaced with $CTX_URL, not the raw URL
-    expect(src).toContain('command.replace(/\\{\\{url\\}\\}/g, "$CTX_URL")');
+    // The {{url}} template should be replaced with "$CTX_URL" (quoted to prevent word splitting)
+    expect(src).toContain('command.replace(/\\{\\{url\\}\\}/g, \'"$CTX_URL"\')');
+
   });
 });
