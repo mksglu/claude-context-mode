@@ -21,6 +21,7 @@ import {
   mkdirSync,
   copyFileSync,
   accessSync,
+  existsSync,
   readdirSync,
   chmodSync,
   constants,
@@ -49,6 +50,8 @@ import {
   HOOK_SCRIPTS,
   PRE_TOOL_USE_MATCHER_PATTERN,
   isContextModeHook,
+  isAnyContextModeHook,
+  extractHookScriptPath,
   buildHookCommand,
   type HookType,
 } from "./hooks.js";
@@ -497,6 +500,41 @@ export class ClaudeCodeAdapter implements HookAdapter {
     const hooks = (settings.hooks ?? {}) as Record<string, unknown>;
     const changes: string[] = [];
 
+    // Remove stale context-mode hook entries across ALL hook types (fixes #187).
+    // After a marketplace auto-update or version change, settings.json may contain
+    // hardcoded paths pointing to deleted version directories (e.g., .../0.9.17/hooks/...).
+    // Clean these before registering fresh entries to prevent SessionStart errors.
+    for (const hookType of Object.keys(hooks)) {
+      const entries = hooks[hookType];
+      if (!Array.isArray(entries)) continue;
+
+      const filtered = entries.filter((entry: Record<string, unknown>) => {
+        const typedEntry = entry as { hooks?: Array<{ command?: string }> };
+        if (!isAnyContextModeHook(typedEntry)) return true; // preserve non-context-mode hooks
+
+        // Keep CLI dispatcher entries (path-independent, never stale)
+        const commands = typedEntry.hooks ?? [];
+        const hasOnlyDispatcherCommands = commands.every(
+          (h) => !h.command || !extractHookScriptPath(h.command),
+        );
+        if (hasOnlyDispatcherCommands) return true;
+
+        // For node path commands, check if the referenced script file exists
+        return commands.every((h) => {
+          const scriptPath = h.command ? extractHookScriptPath(h.command) : null;
+          if (!scriptPath) return true; // not a path-based command
+          return existsSync(scriptPath);
+        });
+      });
+
+      const removed = entries.length - filtered.length;
+      if (removed > 0) {
+        hooks[hookType] = filtered;
+        changes.push(`Removed ${removed} stale ${hookType} hook(s)`);
+      }
+    }
+
+    // Register fresh hooks for required hook types
     const hookTypes: HookType[] = [
       HOOK_TYPES.PRE_TOOL_USE,
       HOOK_TYPES.SESSION_START,
