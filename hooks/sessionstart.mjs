@@ -24,7 +24,7 @@ import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLat
 import { createSessionLoaders } from "./session-loaders.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
 // Resolve absolute path for imports (fileURLToPath for Windows compat)
@@ -120,6 +120,30 @@ try {
     }
 
     db.close();
+
+    // Age-gated lazy cleanup of old plugin cache version dirs (#181).
+    // Only delete dirs older than 1 hour to avoid breaking active sessions.
+    try {
+      const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+      if (pluginRoot) {
+        const cacheParentMatch = pluginRoot.match(/^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/);
+        if (cacheParentMatch) {
+          const cacheParent = cacheParentMatch[1];
+          const myDir = pluginRoot.replace(cacheParent, "").replace(/[\\/]/g, "");
+          const ONE_HOUR = 3600000;
+          const now = Date.now();
+          for (const d of readdirSync(cacheParent)) {
+            if (d === myDir) continue;
+            try {
+              const st = statSync(join(cacheParent, d));
+              if (now - st.mtimeMs > ONE_HOUR) {
+                rmSync(join(cacheParent, d), { recursive: true, force: true });
+              }
+            } catch { /* skip */ }
+          }
+        }
+      }
+    } catch { /* best effort — never block session start */ }
   }
   // "clear" — no action needed
 } catch (err) {

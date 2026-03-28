@@ -1,9 +1,11 @@
+import "../setup-home";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { ClaudeCodeAdapter } from "../../src/adapters/claude-code/index.js";
+import { fakeHome, realHome } from "../setup-home";
 
 describe("ClaudeCodeAdapter", () => {
   let adapter: ClaudeCodeAdapter;
@@ -193,6 +195,12 @@ describe("ClaudeCodeAdapter", () => {
       );
     });
 
+    it("creates session dirs under fake HOME instead of the contributor real HOME", () => {
+      const sessionDir = adapter.getSessionDir();
+      expect(sessionDir.startsWith(fakeHome)).toBe(true);
+      expect(sessionDir.startsWith(join(realHome, ".claude", "context-mode"))).toBe(false);
+    });
+
     it("DB path uses sha256 hash of projectDir", () => {
       const projectDir = "/my/project";
       const hash = createHash("sha256")
@@ -312,6 +320,164 @@ describe("ClaudeCodeAdapter", () => {
       const sessionStart = results.find((r) => r.check === "SessionStart hook");
       expect(preToolUse?.status).toBe("pass");
       expect(sessionStart?.status).toBe("pass");
+    });
+  });
+
+  // ── configureAllHooks — stale hook cleanup (Issue #187) ──
+
+  describe("configureAllHooks", () => {
+    let tempDir: string;
+    let pluginRoot: string;
+
+    beforeEach(() => {
+      tempDir = mkdtempSync(join(tmpdir(), "claude-hooks-test-"));
+      pluginRoot = mkdtempSync(join(tmpdir(), "plugin-root-hooks-"));
+      // Create hook scripts in the pluginRoot so they're "valid"
+      mkdirSync(join(pluginRoot, "hooks"), { recursive: true });
+      writeFileSync(join(pluginRoot, "hooks", "pretooluse.mjs"), "");
+      writeFileSync(join(pluginRoot, "hooks", "sessionstart.mjs"), "");
+      Object.defineProperty(adapter, "getSettingsPath", {
+        value: () => join(tempDir, "settings.json"),
+        configurable: true,
+      });
+    });
+
+    afterEach(() => {
+      rmSync(tempDir, { recursive: true, force: true });
+      rmSync(pluginRoot, { recursive: true, force: true });
+    });
+
+    it("removes stale hook entries pointing to non-existent paths", () => {
+      const staleRoot = "/tmp/non-existent-old-version-dir";
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: `node "${staleRoot}/hooks/sessionstart.mjs"` }],
+            }],
+            PreToolUse: [{
+              matcher: "Bash",
+              hooks: [{ type: "command", command: `node "${staleRoot}/hooks/pretooluse.mjs"` }],
+            }],
+          },
+        }),
+      );
+
+      const changes = adapter.configureAllHooks(pluginRoot);
+      expect(changes).toContain("Removed 1 stale SessionStart hook(s)");
+      expect(changes).toContain("Removed 1 stale PreToolUse hook(s)");
+    });
+
+    it("preserves non-context-mode hooks from other plugins", () => {
+      const staleRoot = "/tmp/non-existent-old-version-dir";
+      const otherPluginHook = {
+        matcher: "Bash",
+        hooks: [{ type: "command", command: "node /some/other-plugin/hooks/check.mjs" }],
+      };
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [
+              otherPluginHook,
+              {
+                matcher: "Bash",
+                hooks: [{ type: "command", command: `node "${staleRoot}/hooks/pretooluse.mjs"` }],
+              },
+            ],
+          },
+        }),
+      );
+
+      adapter.configureAllHooks(pluginRoot);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      const preToolUseEntries = settings.hooks.PreToolUse;
+      // Should have the other plugin's hook + the fresh context-mode hook
+      expect(preToolUseEntries.length).toBe(2);
+      expect(preToolUseEntries[0]).toEqual(otherPluginHook);
+    });
+
+    it("handles multiple stale versions from upgrade chains", () => {
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "",
+                hooks: [{ type: "command", command: 'node "/old/path/0.9.17/hooks/sessionstart.mjs"' }],
+              },
+              {
+                matcher: "",
+                hooks: [{ type: "command", command: 'node "/old/path/1.0.50/hooks/sessionstart.mjs"' }],
+              },
+            ],
+          },
+        }),
+      );
+
+      const changes = adapter.configureAllHooks(pluginRoot);
+      expect(changes).toContain("Removed 2 stale SessionStart hook(s)");
+    });
+
+    it("preserves CLI dispatcher format hooks (path-independent)", () => {
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: "context-mode hook claude-code sessionstart" }],
+            }],
+          },
+        }),
+      );
+
+      adapter.configureAllHooks(pluginRoot);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      // Should have the dispatcher entry updated (or kept) + fresh entry
+      const sessionStartEntries = settings.hooks.SessionStart;
+      expect(sessionStartEntries.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("works correctly on fresh install with no existing hooks", () => {
+      writeFileSync(join(tempDir, "settings.json"), JSON.stringify({}));
+
+      const changes = adapter.configureAllHooks(pluginRoot);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      expect(settings.hooks.PreToolUse).toHaveLength(1);
+      expect(settings.hooks.SessionStart).toHaveLength(1);
+      expect(changes.some((c: string) => c.includes("stale"))).toBe(false);
+    });
+
+    it("registers fresh hooks with correct pluginRoot paths after cleanup", () => {
+      const staleRoot = "/tmp/old-version";
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: `node "${staleRoot}/hooks/sessionstart.mjs"` }],
+            }],
+          },
+        }),
+      );
+
+      adapter.configureAllHooks(pluginRoot);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      const sessionHooks = settings.hooks.SessionStart;
+      expect(sessionHooks).toHaveLength(1);
+      // The fresh entry should point to the new pluginRoot (path may use \ on Windows)
+      const command = sessionHooks[0].hooks[0].command;
+      expect(command).toContain(pluginRoot);
+      expect(command).toContain("sessionstart.mjs");
     });
   });
 

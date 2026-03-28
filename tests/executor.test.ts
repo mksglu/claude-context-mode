@@ -16,10 +16,37 @@ const executor = new PolyglotExecutor({ runtimes });
 
 describe("Runtime Detection", () => {
   test("detects JavaScript runtime (bun or node)", async () => {
+    const isBun = runtimes.javascript.endsWith("bun");
+    const isAbsoluteNode = runtimes.javascript.startsWith("/") || runtimes.javascript.includes("\\");
     assert.ok(
-      ["bun", "node"].includes(runtimes.javascript),
-      `Got: ${runtimes.javascript}`,
+      isBun || isAbsoluteNode,
+      `Expected bun path or absolute node path, got: ${runtimes.javascript}`,
     );
+  });
+
+  test("detects JavaScript runtime (bun or absolute node path)", async () => {
+    // runtimes.javascript is either a bun path/command or process.execPath —
+    // never the bare string "node", since snap/wrapper envs need the real binary.
+    const isBun = runtimes.javascript.endsWith("bun");
+    const isAbsoluteNode = runtimes.javascript.startsWith("/") || runtimes.javascript.includes("\\");
+    assert.ok(
+      isBun || isAbsoluteNode,
+      `Expected bun path or absolute node path, got: ${runtimes.javascript}`,
+    );
+  });
+
+  test("buildCommand: javascript uses executable path, not bare 'node'", async () => {
+    const cmd = buildCommand(runtimes, "javascript", "/tmp/test.js");
+    assert.notEqual(cmd[0], "node", "Should not use bare 'node' — use process.execPath or full bun path");
+    assert.equal(cmd[cmd.length - 1], "/tmp/test.js");
+  });
+
+  test("buildCommand: javascript with bun-path runtime uses 'run' subcommand", async () => {
+    const bunRuntimes: RuntimeMap = { ...runtimes, javascript: "/home/user/.bun/bin/bun" };
+    const cmd = buildCommand(bunRuntimes, "javascript", "/tmp/test.js");
+    assert.equal(cmd[0], "/home/user/.bun/bin/bun");
+    assert.equal(cmd[1], "run");
+    assert.equal(cmd[2], "/tmp/test.js");
   });
 
   test("detects Shell runtime (non-empty string)", async () => {
@@ -1383,10 +1410,12 @@ describe("Temp Cleanup Resilience", () => {
     }
   });
 
-  test("PATH-dependent tools accessible from executor shell", async () => {
+  test("node runtime accessible from executor shell", async () => {
+    // Use process.execPath rather than bare 'node' — snap/wrapper installs silently
+    // exit 0 with no output when the snap wrapper is re-invoked as a subprocess.
     const r = await executor.execute({
       language: "shell",
-      code: 'node --version',
+      code: `"${process.execPath}" --version`,
     });
     assert.equal(r.exitCode, 0, `node not found in executor env, stderr: ${r.stderr}`);
     assert.ok(r.stdout.trim().startsWith("v"), `Expected version string, got: ${r.stdout}`);

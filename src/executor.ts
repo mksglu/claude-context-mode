@@ -1,4 +1,4 @@
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -78,7 +78,7 @@ export class PolyglotExecutor {
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
     const { language, code, timeout = 30_000, background = false } = opts;
-    const tmpDir = mkdtempSync(join(tmpdir(), "ctx-mode-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), ".ctx-mode-"));
 
     try {
       const filePath = this.#writeScript(tmpDir, code, language);
@@ -172,7 +172,7 @@ export class PolyglotExecutor {
 
     // Compile
     try {
-      execSync(`rustc ${srcPath} -o ${binPath}`, {
+      execFileSync("rustc", [srcPath, "-o", binPath], {
         cwd,
         timeout: Math.min(timeout, 60_000),
         encoding: "utf-8",

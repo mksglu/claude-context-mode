@@ -47,6 +47,22 @@ function commandExists(cmd: string): boolean {
   }
 }
 
+function bunExists(): boolean {
+  if (commandExists("bun")) return true;
+  // Bun installs to ~/.bun/bin which may not be in PATH in MCP server environments
+  if (!isWindows) {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    if (home && existsSync(`${home}/.bun/bin/bun`)) return true;
+  }
+  return false;
+}
+
+function bunCommand(): string {
+  if (commandExists("bun")) return "bun";
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  return `${home}/.bun/bin/bun`;
+}
+
 /**
  * On Windows, resolve the first non-WSL bash in PATH.
  * WSL bash (C:\Windows\System32\bash.exe) cannot handle Windows paths,
@@ -94,12 +110,13 @@ function getVersion(cmd: string): string {
 }
 
 export function detectRuntimes(): RuntimeMap {
-  const hasBun = commandExists("bun");
+  const hasBun = bunExists();
+  const bun = hasBun ? bunCommand() : null;
 
   return {
-    javascript: hasBun ? "bun" : "node",
-    typescript: hasBun
-      ? "bun"
+    javascript: bun ?? process.execPath,
+    typescript: bun
+      ? bun
       : commandExists("tsx")
         ? "tsx"
         : commandExists("ts-node")
@@ -128,12 +145,12 @@ export function detectRuntimes(): RuntimeMap {
 }
 
 export function hasBunRuntime(): boolean {
-  return commandExists("bun");
+  return bunExists();
 }
 
 export function getRuntimeSummary(runtimes: RuntimeMap): string {
   const lines: string[] = [];
-  const bunPreferred = runtimes.javascript === "bun";
+  const bunPreferred = runtimes.javascript?.endsWith("bun") ?? false;
 
   lines.push(
     `  JavaScript: ${runtimes.javascript} (${getVersion(runtimes.javascript)})${bunPreferred ? " ⚡" : ""}`,
@@ -218,9 +235,9 @@ export function buildCommand(
 ): string[] {
   switch (language) {
     case "javascript":
-      return runtimes.javascript === "bun"
-        ? ["bun", "run", filePath]
-        : ["node", filePath];
+      return runtimes.javascript.endsWith("bun")
+        ? [runtimes.javascript, "run", filePath]
+        : [runtimes.javascript, filePath];
 
     case "typescript":
       if (!runtimes.typescript) {
@@ -228,7 +245,7 @@ export function buildCommand(
           "No TypeScript runtime available. Install one of: bun (recommended), tsx (npm i -g tsx), or ts-node.",
         );
       }
-      if (runtimes.typescript === "bun") return ["bun", "run", filePath];
+      if (runtimes.typescript?.endsWith("bun")) return [runtimes.typescript, "run", filePath];
       if (runtimes.typescript === "tsx") return ["tsx", filePath];
       return ["ts-node", filePath];
 

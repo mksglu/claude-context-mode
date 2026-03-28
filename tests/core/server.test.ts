@@ -1024,17 +1024,17 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
   });
 
   test("contains inline fallback with git clone when neither CLI file exists", () => {
-    // The fallback must generate an inline node -e script with git clone
-    expect(serverSrc).toMatch(/git clone --depth 1/);
-    // The inline script should be a node -e one-liner or heredoc
-    expect(serverSrc).toMatch(/node -e/);
+    // The fallback must generate an inline script with git clone via execFileSync
+    expect(serverSrc).toMatch(/git.*clone.*--depth.*1/);
+    // The inline script is written to a temp .mjs file
+    expect(serverSrc).toMatch(/\.ctx-upgrade-inline\.mjs/);
   });
 
   test("inline fallback copies key files to plugin root", () => {
     // The inline script must copy build artifacts back
     expect(serverSrc).toMatch(/server\.bundle\.mjs/);
     expect(serverSrc).toMatch(/cli\.bundle\.mjs/);
-    expect(serverSrc).toMatch(/npm install/);
+    expect(serverSrc).toMatch(/npm.*install/);
   });
 
   test("fallback only triggers when neither CLI file exists", () => {

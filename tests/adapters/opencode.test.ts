@@ -1,3 +1,4 @@
+import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";

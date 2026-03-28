@@ -114,3 +114,34 @@ export function buildHookCommand(hookType: HookType, pluginRoot?: string): strin
   }
   return `context-mode hook claude-code ${hookType.toLowerCase()}`;
 }
+
+/**
+ * Extract the hook script file path from a command string.
+ * Returns the path if the command uses the `node "/path/to/hook.mjs"` format,
+ * or null if it uses the CLI dispatcher format (which is path-independent).
+ *
+ * Handles both quoted and unquoted paths, and both forward/back slashes.
+ */
+export function extractHookScriptPath(command: string): string | null {
+  // Match: node "/path/to/hooks/scriptname.mjs" or node /path/to/hooks/scriptname.mjs
+  const match = command.match(/node\s+"?([^"]+\.mjs)"?/);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Check if a hook entry is a context-mode hook (any hook type).
+ * Broader than `isContextModeHook` — matches any context-mode script name
+ * without requiring a specific hookType.
+ */
+export function isAnyContextModeHook(
+  entry: { hooks?: Array<{ command?: string }> },
+): boolean {
+  const scriptNames = Object.values(HOOK_SCRIPTS);
+  return (
+    entry.hooks?.some((h) =>
+      h.command != null &&
+      (scriptNames.some((s) => h.command!.includes(s)) ||
+        h.command.includes("context-mode hook")),
+    ) ?? false
+  );
+}
