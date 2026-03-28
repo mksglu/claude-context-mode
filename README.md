@@ -5,14 +5,6 @@
 [![users](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.message&label=users&color=brightgreen)](https://www.npmjs.com/package/context-mode) [![npm](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.npm&label=npm&color=blue)](https://www.npmjs.com/package/context-mode) [![marketplace](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&color=blue)](https://github.com/mksglu/context-mode) [![GitHub stars](https://img.shields.io/github/stars/mksglu/context-mode?style=flat&color=yellow)](https://github.com/mksglu/context-mode/stargazers) [![GitHub forks](https://img.shields.io/github/forks/mksglu/context-mode?style=flat&color=blue)](https://github.com/mksglu/context-mode/network/members) [![Last commit](https://img.shields.io/github/last-commit/mksglu/context-mode?color=green)](https://github.com/mksglu/context-mode/commits) [![License: ELv2](https://img.shields.io/badge/License-ELv2-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1478479412700909750?label=Discord&logo=discord&color=5865f2)](https://discord.gg/DCN9jUgN5v)
 
-## Privacy & Architecture
-
-Context Mode is not a CLI output filter or a cloud analytics dashboard. It operates at the MCP protocol layer — raw data stays in a sandboxed subprocess and never enters your context window. Web pages, API responses, file analysis, Playwright snapshots, log files — everything is processed in complete isolation.
-
-**Nothing leaves your machine.** No telemetry, no cloud sync, no usage tracking, no account required. Your code, your prompts, your session data — all local. The SQLite databases live in your home directory and die when you're done.
-
-This is a deliberate architectural choice, not a missing feature. Context optimization should happen at the source, not in a dashboard behind a per-seat subscription. Privacy-first is our philosophy — and every design decision follows from it. [License →](#license)
-
 ## The Problem
 
 Every MCP tool call dumps raw data into your context window. A Playwright snapshot costs 56 KB. Twenty GitHub issues cost 59 KB. One access log — 45 KB. After 30 minutes, 40% of your context is gone. And when the agent compacts the conversation to free space, it forgets which files it was editing, what tasks are in progress, and what you last asked for.
@@ -601,7 +593,7 @@ npm install -g context-mode
 | `ctx_execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
 | `ctx_index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
-| `ctx_fetch_and_index` | Fetch URL, detect content type (HTML/JSON/text), chunk and index. | 60 KB → 40 B |
+| `ctx_fetch_and_index` | Fetch URL, chunk and index. 24h TTL cache — repeat calls skip network. `force: true` to bypass. | 60 KB → 40 B |
 | `ctx_stats` | Show context savings, call counts, and session statistics. | — |
 | `ctx_doctor` | Diagnose installation: runtimes, hooks, FTS5, versions. | — |
 | `ctx_upgrade` | Upgrade to latest version from GitHub, rebuild, reconfigure hooks. | — |
@@ -642,6 +634,19 @@ Levenshtein distance corrects typos before re-searching. "kuberntes" becomes "ku
 ### Smart Snippets
 
 Search results use intelligent extraction instead of truncation. Instead of returning the first N characters (which might miss the important part), Context Mode finds where your query terms appear in the content and returns windows around those matches.
+
+### TTL Cache
+
+Indexed content persists in a per-project SQLite database at `~/.context-mode/content/`. When `ctx_fetch_and_index` is called for a URL that was already indexed within the last 24 hours, the fetch is skipped entirely. The model searches the existing index directly.
+
+- **Fresh (<24h):** Returns a cache hint (0.3KB) instead of re-fetching (48KB+). Model proceeds to `ctx_search`.
+- **Stale (>24h):** Re-fetches silently. No user action needed.
+- **`force: true`:** Bypasses cache and re-fetches regardless of TTL.
+- **14-day cleanup:** Content databases and sources older than 14 days are removed on startup.
+
+This means `--continue` sessions preserve indexed docs across restarts. No re-fetching, no wasted context tokens.
+
+`ctx_stats` reports cache performance separately: hits, data avoided, network requests saved, and total context savings including cache.
 
 ### Progressive Throttling
 
@@ -886,6 +891,14 @@ and error handling." After 20+ tool calls, type: ctx stats to see the session
 event count. When context compacts, the model continues from your last prompt
 with tasks, files, and decisions intact — no re-prompting needed.
 ```
+
+## Privacy & Architecture
+
+Context Mode is not a CLI output filter or a cloud analytics dashboard. It operates at the MCP protocol layer — raw data stays in a sandboxed subprocess and never enters your context window. Web pages, API responses, file analysis, Playwright snapshots, log files — everything is processed in complete isolation.
+
+**Nothing leaves your machine.** No telemetry, no cloud sync, no usage tracking, no account required. Your code, your prompts, your session data — all local. The SQLite databases live in your home directory and die when you're done.
+
+This is a deliberate architectural choice, not a missing feature. Context optimization should happen at the source, not in a dashboard behind a per-seat subscription. Privacy-first is our philosophy — and every design decision follows from it. [License →](#license)
 
 ## Security
 

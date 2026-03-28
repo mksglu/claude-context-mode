@@ -87,39 +87,44 @@ try {
       writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
     }
 
-    // 3. Update hook path + matcher in settings.json
+    // 3. Update hook paths + matcher in settings.json for ALL hook types (#187)
+    //    Previously only fixed PreToolUse — SessionStart, PostToolUse, PreCompact,
+    //    UserPromptSubmit paths remained stale after marketplace auto-update.
     const settingsPath = resolve(homedir(), ".claude", "settings.json");
     try {
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      const hooks = settings.hooks?.PreToolUse;
-      if (Array.isArray(hooks)) {
-        let changed = false;
-        for (const entry of hooks) {
-          // Fix deprecated Task-only matcher → Agent|Task
-          if (entry.matcher && entry.matcher.includes("Task") && !entry.matcher.includes("Agent")) {
+      const allHooks = settings.hooks || {};
+      let changed = false;
+
+      for (const hookType of Object.keys(allHooks)) {
+        const entries = allHooks[hookType];
+        if (!Array.isArray(entries)) continue;
+
+        for (const entry of entries) {
+          // Fix deprecated Task-only matcher (PreToolUse only)
+          if (hookType === "PreToolUse" && entry.matcher?.includes("Task") && !entry.matcher.includes("Agent")) {
             entry.matcher = entry.matcher.replace("Task", "Agent|Task");
             changed = true;
           }
+          // Rewrite stale context-mode hook paths to point to current version
           for (const h of (entry.hooks || [])) {
-            if (h.command?.includes("pretooluse.mjs") && !h.command.includes(targetDir)) {
-              h.command = "node " + resolve(targetDir, "hooks", "pretooluse.mjs");
-              changed = true;
+            if (h.command && h.command.includes(".mjs") && h.command.includes("context-mode") && !h.command.includes(targetDir)) {
+              // Extract the script filename (e.g., sessionstart.mjs, pretooluse.mjs)
+              const scriptMatch = h.command.match(/([a-z]+\.mjs)\s*"?\s*$/);
+              if (scriptMatch) {
+                h.command = "node " + resolve(targetDir, "hooks", scriptMatch[1]);
+                changed = true;
+              }
             }
           }
         }
-        if (changed) writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
       }
+
+      if (changed) writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
     } catch { /* skip settings update */ }
 
-    // 4. Nuke stale version dirs (keep only targetDir and current running dir)
-    try {
-      const keepDirs = new Set([basename(targetDir), myDirName]);
-      for (const d of readdirSync(cacheParent)) {
-        if (!keepDirs.has(d)) {
-          try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
-        }
-      }
-    } catch { /* skip */ }
+    // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
+    // to avoid breaking active sessions that still reference them (#181).
 
     writeFileSync(marker, Date.now().toString(), "utf-8");
   }

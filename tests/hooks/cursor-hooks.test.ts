@@ -1,3 +1,4 @@
+import "../setup-home";
 /**
  * Hook Integration Tests — Cursor hooks
  */
@@ -9,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, rmSync, existsSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
+import { fakeHome, realHome } from "../setup-home";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = join(__dirname, "..", "..", "hooks", "cursor");
@@ -39,6 +41,7 @@ describe("Cursor hooks", () => {
   let tempDir: string;
   let dbPath: string;
   let eventsPath: string;
+  let realDbPath: string;
 
   beforeAll(() => {
     tempDir = mkdtempSync(join(tmpdir(), "cursor-hook-test-"));
@@ -46,6 +49,7 @@ describe("Cursor hooks", () => {
     const sessionsDir = join(homedir(), ".cursor", "context-mode", "sessions");
     dbPath = join(sessionsDir, `${hash}.db`);
     eventsPath = join(sessionsDir, `${hash}-events.md`);
+    realDbPath = join(realHome, ".cursor", "context-mode", "sessions", `${hash}.db`);
   });
 
   afterAll(() => {
@@ -235,6 +239,20 @@ describe("Cursor hooks", () => {
       expect(startResult.exitCode).toBe(0);
       const payload = JSON.parse(startResult.stdout) as Record<string, unknown>;
       expect(String(payload.additional_context)).toContain("session_knowledge");
+    });
+
+    test("spawned hook writes stay under fake HOME", () => {
+      const result = runHook("posttooluse.mjs", {
+        tool_name: "Read",
+        tool_input: { file_path: "/src/app.ts" },
+        tool_output: "export default {}",
+        conversation_id: "cursor-hook-home-isolation",
+        cwd: tempDir,
+      }, cursorEnv());
+
+      expect(result.exitCode).toBe(0);
+      expect(dbPath.startsWith(fakeHome)).toBe(true);
+      expect(existsSync(realDbPath)).toBe(false);
     });
   });
 

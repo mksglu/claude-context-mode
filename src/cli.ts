@@ -14,8 +14,8 @@
 
 import * as p from "@clack/prompts";
 import color from "picocolors";
-import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, constants } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir, devNull } from "node:os";
@@ -419,8 +419,8 @@ async function upgrade() {
 
   s.start("Cloning mksglu/context-mode");
   try {
-    execSync(
-      `git clone --depth 1 https://github.com/mksglu/context-mode.git "${tmpDir}"`,
+    execFileSync(
+      "git", ["clone", "--depth", "1", "https://github.com/mksglu/context-mode.git", tmpDir],
       { stdio: "pipe", timeout: 30000 },
     );
     s.stop("Downloaded");
@@ -441,12 +441,12 @@ async function upgrade() {
 
     // Step 2: Install dependencies + build
     s.start("Installing dependencies & building");
-    execSync("npm install --no-audit --no-fund", {
+    execFileSync("npm", ["install", "--no-audit", "--no-fund"], {
       cwd: srcDir,
       stdio: "pipe",
       timeout: 120000,
     });
-    execSync("npm run build", {
+    execFileSync("npm", ["run", "build"], {
       cwd: srcDir,
       stdio: "pipe",
       timeout: 60000,
@@ -456,22 +456,8 @@ async function upgrade() {
     // Step 3: Update in-place
     s.start("Updating files in-place");
 
-    const cacheParentMatch = pluginRoot.match(
-      /^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/,
-    );
-    if (cacheParentMatch) {
-      const cacheParent = cacheParentMatch[1];
-      const myDir = pluginRoot.replace(cacheParent, "").replace(/[\\/]/g, "");
-      try {
-        const oldDirs = readdirSync(cacheParent).filter(d => d !== myDir);
-        for (const d of oldDirs) {
-          try { rmSync(resolve(cacheParent, d), { recursive: true, force: true }); } catch { /* skip */ }
-        }
-        if (oldDirs.length > 0) {
-          p.log.info(color.dim(`  Cleaned ${oldDirs.length} stale cache dir(s)`));
-        }
-      } catch { /* parent may not exist */ }
-    }
+    // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
+    // to avoid breaking active sessions that still reference them (#181).
 
     const items = [
       "build", "src", "hooks", "skills", "scripts", ".claude-plugin",
@@ -506,7 +492,7 @@ async function upgrade() {
 
     // Install production deps
     s.start("Installing production dependencies");
-    execSync("npm install --production --no-audit --no-fund", {
+    execFileSync("npm", ["install", "--production", "--no-audit", "--no-fund"], {
       cwd: pluginRoot,
       stdio: "pipe",
       timeout: 60000,
@@ -516,7 +502,7 @@ async function upgrade() {
     // Rebuild native addons for current Node.js ABI (fixes #131)
     s.start("Rebuilding native addons");
     try {
-      execSync("npm rebuild better-sqlite3", {
+      execFileSync("npm", ["rebuild", "better-sqlite3"], {
         cwd: pluginRoot,
         stdio: "pipe",
         timeout: 60000,
@@ -536,7 +522,7 @@ async function upgrade() {
     // Update global npm
     s.start("Updating npm global package");
     try {
-      execSync(`npm install -g "${pluginRoot}" --no-audit --no-fund`, {
+      execFileSync("npm", ["install", "-g", pluginRoot, "--no-audit", "--no-fund"], {
         stdio: "pipe",
         timeout: 30000,
       });
@@ -599,7 +585,7 @@ async function upgrade() {
       const binPath = resolve(pluginRoot, bin);
       try {
         accessSync(binPath, constants.F_OK);
-        execSync(`chmod +x "${binPath}"`, { stdio: "ignore" });
+        chmodSync(binPath, 0o755);
         permSet.push(binPath);
       } catch { /* not found — skip */ }
     }
@@ -632,7 +618,7 @@ async function upgrade() {
     const cliBundlePath = resolve(pluginRoot, "cli.bundle.mjs");
     const cliBuildPath = resolve(pluginRoot, "build", "cli.js");
     const cliPath = existsSync(cliBundlePath) ? cliBundlePath : cliBuildPath;
-    execSync(`node "${cliPath}" doctor`, {
+    execFileSync("node", [cliPath, "doctor"], {
       stdio: "inherit",
       timeout: 30000,
       cwd: pluginRoot,

@@ -259,17 +259,17 @@ export default {
       // best effort
     }
 
-    // Async init: load routing module + write AGENTS.md. Hooks await this.
+    // Async init: load routing module. Hooks await this.
+    // NOTE: writeRoutingInstructions is intentionally NOT called here.
+    // process.cwd() at plugin load time is the gateway's working directory, not
+    // the agent's workspace. Writing AGENTS.md to cwd() caused the file to be
+    // created in arbitrary directories (repo roots, config dirs, $HOME, etc.).
+    // The write is now deferred to session_start where the real workspace path
+    // is known via the sessionKey → workspace mapping.
     const initPromise = (async () => {
       const routingPath = resolve(buildDir, "..", "hooks", "core", "routing.mjs");
       const routing = await import(pathToFileURL(routingPath).href);
       await routing.initSecurity(buildDir);
-
-      try {
-        new OpenClawAdapter().writeRoutingInstructions(projectDir, pluginRoot);
-      } catch {
-        // best effort — never break plugin init
-      }
 
       return { routing };
     })();
@@ -486,6 +486,32 @@ export default {
             workspaceRouter.registerSession(key, sessionId);
           }
           resumeInjected = false;
+
+          // Write routing instructions (AGENTS.md) now that we know the real
+          // workspace. Derive the workspace directory from the sessionKey so we
+          // only write into recognised /.openclaw/workspace* paths, never into
+          // the gateway's cwd or any other arbitrary directory.
+          if (key) {
+            try {
+              const adapter = new OpenClawAdapter();
+              const openclawBase = resolve(homedir(), ".openclaw");
+              // Resolve workspace dir from sessionKey (pattern: agent:<name>:*)
+              // Restrict agent name to safe characters to prevent path traversal (#183)
+              const wsMatch = key.match(/^agent:([a-zA-Z0-9_-]+):/);
+              let wsDir: string;
+              if (wsMatch) {
+                wsDir = resolve(openclawBase, `workspace-${wsMatch[1]}`);
+              } else {
+                wsDir = resolve(openclawBase, "workspace");
+              }
+              // Containment check: never write outside ~/.openclaw/
+              if (wsDir.startsWith(openclawBase)) {
+                adapter.writeRoutingInstructions(wsDir, pluginRoot);
+              }
+            } catch {
+              // best effort — never break session start
+            }
+          }
         } catch {
           // best effort — never break session start
         }
@@ -593,7 +619,7 @@ export default {
       info: {
         id: "context-mode",
         name: "Context Mode",
-        ownsCompaction: true,
+        ownsCompaction: false,
       },
 
       async ingest() {
@@ -604,32 +630,12 @@ export default {
         return { messages, estimatedTokens: 0 };
       },
 
-      async compact({ currentTokenCount }: { currentTokenCount?: number } = {}) {
-        try {
-          const sid = sessionId;
-          const events = db.getEvents(sid);
-          if (events.length === 0) return { ok: true, compacted: false };
-
-          const stats = db.getSessionStats(sid);
-          const compactCount = (stats?.compact_count ?? 0) + 1;
-          const snapshot = buildResumeSnapshot(events, { compactCount });
-
-          db.upsertResume(sid, snapshot, events.length);
-          db.incrementCompactCount(sid);
-
-          return {
-            ok: true,
-            compacted: true,
-            result: {
-              summary: snapshot,
-              firstKeptEntryId: "",   // clear all history before this compaction
-              tokensBefore: currentTokenCount ?? 0,
-              tokensAfter: 0,
-            },
-          };
-        } catch {
-          return { ok: false, compacted: false };
-        }
+      async compact() {
+        // No-op: session continuity is handled by before_compaction / after_compaction hooks.
+        // Returning ownsCompaction: false + compacted: false lets the host platform (OpenClaw)
+        // manage conversation truncation, preserving Anthropic thinking/redacted_thinking blocks.
+        // See: https://github.com/mksglu/context-mode/issues/191
+        return { ok: true, compacted: false };
       },
     }));
 

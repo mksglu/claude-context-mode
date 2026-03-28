@@ -1,3 +1,4 @@
+import "../setup-home";
 /**
  * Hook Integration Tests — Kiro hooks
  *

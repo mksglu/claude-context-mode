@@ -16,7 +16,7 @@ import { strict as assert } from "node:assert";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContentStore } from "../../src/store.js";
-import { extractSnippet, positionsFromHighlight } from "../../src/server.js";
+import { extractSnippet, formatBatchQueryResults, positionsFromHighlight } from "../../src/server.js";
 
 // ─────────────────────────────────────────────────────────
 // Shared helpers
@@ -698,6 +698,65 @@ describe("Multi-source isolation (batch_execute path)", () => {
     // Global fallback (no source) should find it
     const globalFallback = store.searchWithFallback("JWT tokens", 3);
     assert.ok(globalFallback.length > 0, "Global fallback should find the content");
+
+    store.close();
+  });
+
+  test("batch_execute formatter never inlines previous indexed content", () => {
+    const store = createStore();
+
+    store.index({
+      content: "# Current Batch\n\nOnly current batch details live here.",
+      source: "batch: current",
+    });
+    store.index({
+      content: "# Older Indexed Content\n\nJWT tokens expire after 24 hours.",
+      source: "docs: auth",
+    });
+
+    const output = formatBatchQueryResults(store, ["JWT tokens"], "batch: current").join("\n");
+    assert.ok(output.includes("No matching sections found."), "Expected scoped batch result to stay empty");
+    assert.ok(!output.includes("previously indexed content"), "Should not mention cross-source fallback");
+    assert.ok(!output.includes("JWT tokens expire after 24 hours"), "Should not inline stale cross-source text");
+
+    store.close();
+  });
+
+  test("batch_execute formatter does not leak overlapping batch labels", () => {
+    const store = createStore();
+
+    store.index({
+      content: "# Current Build\n\nCurrent batch contains only build timing details.",
+      source: "batch:Build",
+    });
+    store.index({
+      content: "# Older Build and Test\n\nJWT tokens expire after 24 hours.",
+      source: "batch:Build,Test",
+    });
+
+    const output = formatBatchQueryResults(store, ["JWT tokens"], "batch:Build").join("\n");
+    assert.ok(output.includes("No matching sections found."), "Expected exact batch label filtering");
+    assert.ok(!output.includes("JWT tokens expire after 24 hours"), "Should not leak overlapping older batch label content");
+
+    store.close();
+  });
+
+  test("batch_execute formatter returns matches from the current batch", () => {
+    const store = createStore();
+
+    store.index({
+      content: "# Current Batch\n\nJWT tokens expire after 12 hours for the current batch.",
+      source: "batch: current",
+    });
+    store.index({
+      content: "# Older Indexed Content\n\nJWT tokens expire after 24 hours.",
+      source: "docs: auth",
+    });
+
+    const output = formatBatchQueryResults(store, ["JWT tokens"], "batch: current").join("\n");
+    assert.ok(output.includes("Current Batch"), "Expected current batch heading in formatter output");
+    assert.ok(output.includes("12 hours for the current batch"), "Expected current batch content in formatter output");
+    assert.ok(!output.includes("24 hours"), "Should not leak older source content when current batch matches");
 
     store.close();
   });

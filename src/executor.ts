@@ -78,7 +78,7 @@ export class PolyglotExecutor {
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
     const { language, code, timeout = 30_000, background = false } = opts;
-    const tmpDir = mkdtempSync(join(tmpdir(), "ctx-mode-"));
+    const tmpDir = mkdtempSync(join(tmpdir(), ".ctx-mode-"));
 
     try {
       const filePath = this.#writeScript(tmpDir, code, language);

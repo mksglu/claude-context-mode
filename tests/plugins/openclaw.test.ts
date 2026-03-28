@@ -1,3 +1,4 @@
+import "../setup-home";
 /**
  * Consolidated OpenClaw plugin tests.
  *
@@ -433,12 +434,12 @@ describe("OpenClawPlugin", () => {
   // ── Context engine ────────────────────────────────────
 
   describe("context engine", () => {
-    it("creates engine with ownsCompaction: true", async () => {
+    it("creates engine with ownsCompaction: false (host owns compaction to preserve thinking blocks)", async () => {
       const mock = await createTestPlugin(join(tempDir, "engine-info"));
       const engine = mock.contextEngines[0].factory();
       expect(engine.info.id).toBe("context-mode");
       expect(engine.info.name).toBe("Context Mode");
-      expect(engine.info.ownsCompaction).toBe(true);
+      expect(engine.info.ownsCompaction).toBe(false);
     });
 
     it("ingest returns { ingested: true }", async () => {
@@ -500,10 +501,10 @@ describe("OpenClawPlugin", () => {
         output: "On branch main",
       });
 
-      // Compacting generates snapshot
+      // compact() is a no-op — hooks handle session continuity
       const result = await engine.compact();
       expect(result.ok).toBe(true);
-      expect(result.compacted).toBe(true);
+      expect(result.compacted).toBe(false);
     });
 
     it("events survive session_start re-key (renameSession) with sessionKey", async () => {
@@ -527,10 +528,10 @@ describe("OpenClawPlugin", () => {
       const newSessionId = randomUUID();
       await sessionStartHook!.handler({ sessionId: newSessionId, sessionKey: "bot:telegram:123" });
 
-      // Events must survive: compact should find them and return compacted: true
+      // compact() is a no-op — hooks handle session continuity regardless of events
       const result = await engine.compact();
       expect(result.ok).toBe(true);
-      expect(result.compacted).toBe(true);
+      expect(result.compacted).toBe(false);
     });
 
     it("session_start with sessionKey isolates sessions per agent", async () => {
@@ -563,9 +564,9 @@ describe("OpenClawPlugin", () => {
       const resultB = await engineB.compact();
       expect(resultB.compacted).toBe(false);
 
-      // Agent A still has its events
+      // Agent A — compact() is a no-op regardless of events
       const resultA = await engineA.compact();
-      expect(resultA.compacted).toBe(true);
+      expect(resultA.compacted).toBe(false);
     });
 
     it("session_start without sessionKey falls back to fresh session", async () => {
@@ -586,7 +587,7 @@ describe("OpenClawPlugin", () => {
 
       const result = await engine.compact();
       expect(result.ok).toBe(true);
-      expect(result.compacted).toBe(true);
+      expect(result.compacted).toBe(false);
     });
 
     it("blocked tool command is replaced before execution", async () => {
