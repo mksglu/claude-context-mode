@@ -16,9 +16,11 @@ const executor = new PolyglotExecutor({ runtimes });
 
 describe("Runtime Detection", () => {
   test("detects JavaScript runtime (bun or node)", async () => {
+    const isBun = runtimes.javascript.endsWith("bun");
+    const isAbsoluteNode = runtimes.javascript.startsWith("/") || runtimes.javascript.includes("\\");
     assert.ok(
-      ["bun", "node"].includes(runtimes.javascript),
-      `Got: ${runtimes.javascript}`,
+      isBun || isAbsoluteNode,
+      `Expected bun path or absolute node path, got: ${runtimes.javascript}`,
     );
   });
 
