@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { execSync } from "node:child_process";
 import { existsSync, copyFileSync, chmodSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
 /**
@@ -141,6 +141,11 @@ if (!existsSync(resolve(__dirname, "cli.bundle.mjs")) && existsSync(resolve(__di
   writeFileSync(shimPath, '#!/usr/bin/env node\nawait import("./build/cli.js");\n');
   if (process.platform !== "win32") chmodSync(shimPath, 0o755);
 }
+
+// Statusline integration: expose stats writer before bundle loads
+globalThis.__writeCtxStats = (stats) => {
+  try { writeFileSync(join(tmpdir(), "ctx-mode-stats.json"), JSON.stringify(stats), "utf8"); } catch {}
+};
 
 // Bundle exists (CI-built) — start instantly
 if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {

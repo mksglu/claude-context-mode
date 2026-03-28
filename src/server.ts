@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -157,7 +157,31 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   sessionStats.calls[toolName] = (sessionStats.calls[toolName] || 0) + 1;
   sessionStats.bytesReturned[toolName] =
     (sessionStats.bytesReturned[toolName] || 0) + bytes;
+  writeStatsFile();
   return response;
+}
+
+function writeStatsFile(): void {
+  try {
+    const totalBytesReturned = Object.values(sessionStats.bytesReturned).reduce((s, b) => s + b, 0);
+    const totalCalls = Object.values(sessionStats.calls).reduce((s, c) => s + c, 0);
+    const bytesKeptOut = sessionStats.bytesIndexed + sessionStats.bytesSandboxed;
+    const totalProcessed = bytesKeptOut + totalBytesReturned;
+    const savingsRatio = totalProcessed / Math.max(totalBytesReturned, 1);
+    const reductionPct = totalProcessed > 0
+      ? Math.round((1 - totalBytesReturned / totalProcessed) * 100)
+      : 0;
+    const statsPath = join(tmpdir(), "ctx-mode-stats.json");
+    writeFileSync(statsPath, JSON.stringify({
+      savingsRatio: parseFloat(savingsRatio.toFixed(1)),
+      reductionPct,
+      totalCalls,
+      bytesReturned: totalBytesReturned,
+      bytesKeptOut,
+    }), "utf8");
+  } catch {
+    // Never block a tool call due to stats write failure
+  }
 }
 
 function trackIndexed(bytes: number): void {
