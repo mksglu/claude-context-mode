@@ -643,10 +643,10 @@ describe("Routing instructions — platform capabilities", () => {
     expect(adapter.capabilities.sessionStart).toBe(true);
   });
 
-  test("OpenCode has sessionStart === true (has hooks)", async () => {
+  test("OpenCode has sessionStart === false (plugin has no SessionStart hook)", async () => {
     const { getAdapter } = await import("../../src/adapters/detect.js");
     const adapter = await getAdapter("opencode");
-    expect(adapter.capabilities.sessionStart).toBe(true);
+    expect(adapter.capabilities.sessionStart).toBe(false);
   });
 
   test("VS Code Copilot has sessionStart === true (has hooks)", async () => {
@@ -810,7 +810,7 @@ describe("Routing instructions — hookless platform gate", () => {
     expect(existsSync(resolve(projectDir, "AGENTS.md"))).toBe(false);
   });
 
-  test("hook-capable platform (opencode) does NOT trigger writeRoutingInstructions", async () => {
+  test("OpenCode no-ops writeRoutingInstructions even without SessionStart", async () => {
     const { getAdapter } = await import("../../src/adapters/detect.js");
     const adapter = await getAdapter("opencode");
 

@@ -93,7 +93,7 @@ export class OpenCodeAdapter implements HookAdapter {
     preToolUse: true,
     postToolUse: true,
     preCompact: true, // experimental
-    sessionStart: true,
+    sessionStart: false,
     canModifyArgs: true,
     canModifyOutput: true, // with TUI bug caveat for bash (#13575)
     canInjectSessionContext: false,
@@ -479,26 +479,8 @@ export class OpenCodeAdapter implements HookAdapter {
     };
   }
 
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
-    const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
-    const sourcePath = resolve(pluginRoot, "configs", this.platform, config.fileName);
-
-    try {
-      const content = readFileSync(sourcePath, "utf-8");
-
-      try {
-        const existing = readFileSync(targetPath, "utf-8");
-        if (existing.includes("context-mode")) return null;
-        writeFileSync(targetPath, existing.trimEnd() + "\n\n" + content, "utf-8");
-        return targetPath;
-      } catch {
-        writeFileSync(targetPath, content, "utf-8");
-        return targetPath;
-      }
-    } catch {
-      return null;
-    }
+  writeRoutingInstructions(_projectDir: string, _pluginRoot: string): string | null {
+    return null;
   }
 
   // ── Internal helpers ───────────────────────────────────
