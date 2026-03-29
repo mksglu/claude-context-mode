@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll } from "vitest";
 import { strict as assert } from "node:assert";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PolyglotExecutor } from "../src/executor.js";
@@ -765,6 +765,54 @@ describe("Output Truncation", () => {
     });
     assert.ok(r.stderr.includes("FINAL ERROR"), "Should preserve last error line (tail)");
     assert.ok(r.stderr.includes("warn 0"), "Should preserve first warning (head)");
+  });
+
+  test("rawOutputPath is set when output exceeds maxOutputBytes", async () => {
+    const small = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+    const r = await small.execute({
+      language: "javascript",
+      code: `console.log(Array.from({length:50}, (_,i) => 'line '+i).join('\\n'));`,
+    });
+    // rawOutputPath should be defined and point to an existing file
+    assert.ok(r.rawOutputPath, "rawOutputPath should be defined for large output");
+    assert.ok(typeof r.rawOutputPath === "string", "rawOutputPath should be a string");
+    assert.ok(existsSync(r.rawOutputPath), "raw temp file should exist on disk");
+
+    // File should contain full untruncated output including middle lines
+    const rawContent = readFileSync(r.rawOutputPath, "utf-8");
+    assert.ok(rawContent.includes("line 25"), "raw file should contain middle lines that smartTruncate drops");
+    assert.ok(rawContent.includes("line 0"), "raw file should contain first line");
+    assert.ok(rawContent.includes("line 49"), "raw file should contain last line");
+
+    // Truncated output should still be returned in stdout
+    assert.ok(r.stdout.includes("truncated"), "stdout should still be truncated");
+
+    // Cleanup
+    rmSync(r.rawOutputPath);
+  });
+
+  test("rawOutputPath is undefined when output fits within maxOutputBytes", async () => {
+    const r = await executor.execute({
+      language: "javascript",
+      code: 'console.log("hello");',
+    });
+    assert.equal(r.rawOutputPath, undefined, "rawOutputPath should be undefined for small output");
+  });
+
+  test("raw temp file naming pattern matches ctx-raw-*", async () => {
+    const small = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+    const r = await small.execute({
+      language: "javascript",
+      code: `console.log(Array.from({length:50}, (_,i) => 'line '+i).join('\\n'));`,
+    });
+    assert.ok(r.rawOutputPath, "rawOutputPath should be defined");
+
+    // File should be in os.tmpdir() with the ctx-raw- prefix pattern
+    assert.ok(r.rawOutputPath.startsWith(tmpdir()), "raw file should be in tmpdir()");
+    assert.ok(/ctx-raw-\d+-[a-z0-9]+\.dat$/.test(r.rawOutputPath), "filename should match ctx-raw-{ts}-{rand}.dat pattern");
+
+    // Cleanup
+    rmSync(r.rawOutputPath);
   });
 });
 
