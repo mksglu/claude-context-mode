@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -91,6 +91,40 @@ function maybeIndexSessionEvents(store: ContentStore): void {
       } catch { /* best-effort per file */ }
     }
   } catch { /* best-effort — session continuity never blocks tools */ }
+}
+
+/**
+ * Sweep orphaned ctx-raw-* temp files older than 1 hour from tmpdir.
+ * Best-effort: wrapped in try/catch so failures never block tool responses.
+ * Called before batch indexing to prevent accumulation from crashes.
+ */
+function sweepOrphanedRawFiles(): void {
+  try {
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    const now = Date.now();
+    for (const f of readdirSync(tmpdir())) {
+      if (!f.startsWith("ctx-raw-")) continue;
+      const fp = join(tmpdir(), f);
+      try {
+        const { mtimeMs } = statSync(fp);
+        if (now - mtimeMs > ONE_HOUR_MS) rmSync(fp, { force: true });
+      } catch { /* race: already deleted */ }
+    }
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Read raw untruncated stdout from a temp file written by the executor.
+ * Returns the file content on success, or undefined if the file is absent/unreadable.
+ * Does NOT delete the file — callers handle cleanup.
+ */
+function readRawOutput(rawOutputPath: string | undefined): string | undefined {
+  if (!rawOutputPath) return undefined;
+  try {
+    return readFileSync(rawOutputPath, "utf-8");
+  } catch {
+    return undefined; // file gone or unreadable — fall back to truncated stdout
+  }
 }
 
 /**
