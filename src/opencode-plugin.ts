@@ -11,6 +11,7 @@
  * Constraints:
  *   - No SessionStart hook (OpenCode doesn't support it — #14808, #5409)
  *   - No context injection (canInjectSessionContext: false)
+ *   - No routing file auto-write (avoid dirtying project trees)
  *   - Session cleanup happens at plugin init (no SessionStart)
  */
 
@@ -118,13 +119,6 @@ export const ContextModePlugin = async (ctx: PluginContext) => {
   const sessionId = randomUUID();
   db.ensureSession(sessionId, projectDir);
   
-  // Auto-write AGENTS.md on startup for OpenCode projects
-  try {
-    new OpenCodeAdapter(getPlatform()).writeRoutingInstructions(projectDir, resolve(buildDir, ".."));
-  } catch {
-    // best effort — never break plugin init
-  }
-
   // Clean up old sessions on startup (replaces SessionStart hook)
   db.cleanupOldSessions(0);
 
