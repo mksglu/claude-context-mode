@@ -291,6 +291,18 @@ export class PolyglotExecutor {
           rawStderr += `\n[output capped at ${(this.#hardCapBytes / 1024 / 1024).toFixed(0)}MB — process killed]`;
         }
 
+        // Write full untruncated stdout to a temp file when truncation will occur.
+        // Skip when capExceeded — process was killed mid-stream, output is incomplete.
+        let rawOutputPath: string | undefined;
+        if (rawStdout.length > this.#maxOutputBytes && !capExceeded) {
+          try {
+            rawOutputPath = join(tmpdir(), `ctx-raw-${Date.now()}-${Math.random().toString(36).slice(2)}.dat`);
+            writeFileSync(rawOutputPath, rawStdout);
+          } catch {
+            rawOutputPath = undefined; // best-effort: if write fails, proceed without raw file
+          }
+        }
+
         const max = this.#maxOutputBytes;
         const stdout = smartTruncate(rawStdout, max);
         const stderr = smartTruncate(rawStderr, max);
@@ -300,6 +312,7 @@ export class PolyglotExecutor {
           stderr,
           exitCode: timedOut ? 1 : (exitCode ?? 1),
           timedOut,
+          rawOutputPath,
         });
       });
 
