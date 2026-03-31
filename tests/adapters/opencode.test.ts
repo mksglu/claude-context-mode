@@ -289,6 +289,111 @@ describe("OpenCodeAdapter", () => {
 
       rmSync(root, { recursive: true, force: true });
     });
+    it("configureAllHooks reads and writes back to opencode.jsonc (global)", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const file = join(conf, "opencode.jsonc");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      // Write a JSONC file with a comment
+      writeFileSync(file, `// OpenCode config\n{ "plugin": [] }\n`);
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify({backup:a.backupSettings(),changes:a.configureAllHooks('/tmp/plugin')}))`,
+        ],
+        {
+          cwd: dir,
+          env: env(home),
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({
+        backup: file + ".bak",
+        changes: ["Added context-mode to plugin array"],
+      });
+      // Was written back to the .jsonc path
+      const written = readFileSync(file, "utf-8");
+      expect(JSON.parse(written)).toEqual({ plugin: ["context-mode"] });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("opencode.jsonc takes precedence over opencode.json at the same location", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      // Both files exist at project root — .jsonc should win
+      writeFileSync(resolve(dir, "opencode.jsonc"), `// jsonc file\n{ "plugin": ["jsonc-marker"] }\n`);
+      writeFileSync(resolve(dir, "opencode.json"), JSON.stringify({ plugin: ["json-marker"] }, null, 2) + "\n");
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();const s=a.readSettings();console.log(JSON.stringify({plugin:s?.plugin,path:a.getSettingsPath()}))`,
+        ],
+        {
+          cwd: dir,
+          env: env(home),
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      const out = JSON.parse(run.stdout);
+      expect(out.plugin).toEqual(["jsonc-marker"]);
+      expect(out.path).toMatch(/opencode\.jsonc$/);
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("readSettings parses JSONC with line comments", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const file = join(conf, "opencode.jsonc");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(
+        file,
+        `// This is a JSONC config\n{\n  // plugins list\n  "plugin": ["existing-plugin"] /* trailing comment */\n}\n`,
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();const s=a.readSettings();console.log(JSON.stringify(s?.plugin))`,
+        ],
+        {
+          cwd: dir,
+          env: env(home),
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual(["existing-plugin"]);
+
+      rmSync(root, { recursive: true, force: true });
+    });
   });
   });
 });

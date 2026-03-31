@@ -27,6 +27,7 @@ import {
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
+import { parse as jsoncParse } from "jsonc-parser";
 
 import type {
   HookAdapter,
@@ -227,11 +228,17 @@ export class OpenCodeAdapter implements HookAdapter {
         resolve("kilo.json"),
         resolve(".kilocode", "kilo.json"),
         join(homedir(), ".config", "kilo", "kilo.json"),
-      ];  
+      ];
     }
     return [
+      // Project level
+      resolve("opencode.jsonc"),
       resolve("opencode.json"),
+      // Hidden config dir
+      resolve(".opencode", "opencode.jsonc"),
       resolve(".opencode", "opencode.json"),
+      // Global config dir
+      join(homedir(), ".config", "opencode", "opencode.jsonc"),
       join(homedir(), ".config", "opencode", "opencode.json"),
     ];
   }
@@ -308,7 +315,7 @@ export class OpenCodeAdapter implements HookAdapter {
       try {
         const raw = readFileSync(configPath, "utf-8");
         this.settingsPath = configPath;
-        return JSON.parse(raw) as Record<string, unknown>;
+        return jsoncParse(raw) as Record<string, unknown>;
       } catch {
         continue;
       }
@@ -335,7 +342,7 @@ export class OpenCodeAdapter implements HookAdapter {
       results.push({
         check: "Plugin configuration",
         status: "fail",
-        message: "Could not read opencode.json",
+        message: `Could not read ${this.getSettingsPath()}`,
         fix: "context-mode upgrade",
       });
       return results;
@@ -359,7 +366,7 @@ export class OpenCodeAdapter implements HookAdapter {
       results.push({
         check: "Plugin registration",
         status: "fail",
-        message: "No plugin array found in opencode.json",
+        message: `No plugin array found in ${this.getSettingsPath()}`,
         fix: "context-mode upgrade",
       });
     }
@@ -381,7 +388,7 @@ export class OpenCodeAdapter implements HookAdapter {
       return {
         check: "Plugin registration",
         status: "warn",
-        message: "Could not read opencode.json",
+        message: `Could not read ${this.getSettingsPath()}`,
       };
     }
 
@@ -400,7 +407,7 @@ export class OpenCodeAdapter implements HookAdapter {
     return {
       check: "Plugin registration",
       status: "fail",
-      message: "context-mode not found in opencode.json plugin array",
+      message: `context-mode not found in ${this.getSettingsPath()} plugin array`,
       fix: "context-mode upgrade",
     };
   }
