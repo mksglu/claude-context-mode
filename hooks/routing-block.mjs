@@ -35,12 +35,21 @@ export function createRoutingBlock(t) {
     - DO NOT use Read for analysis (use execute_file). Read IS correct for files you intend to Edit.
     - DO NOT use WebFetch (use ${t("ctx_fetch_and_index")} instead).
     - Bash is ONLY for git/mkdir/rm/mv/navigation.
+    - DO NOT use ${t("ctx_execute")} or ${t("ctx_execute_file")} to create, modify, or overwrite files.
+      ctx_execute is for data analysis, log processing, and computation only.
   </forbidden_actions>
+
+  <file_writing_policy>
+    ALWAYS use the native Write tool to create files and Edit tool to modify files.
+    NEVER use ${t("ctx_execute")}, ${t("ctx_execute_file")}, or Bash to write file content.
+    This applies to all file types: code, configs, plans, specs, YAML, JSON, markdown.
+  </file_writing_policy>
 
   <output_constraints>
     <word_limit>Keep your final response under 500 words.</word_limit>
     <artifact_policy>
-      Write artifacts (code, configs, PRDs) to FILES. NEVER return them as inline text.
+      Write artifacts (code, configs, PRDs) to FILES using the native Write tool. NEVER return them as inline text.
+      Use Edit tool for modifications to existing files.
       Return only: file path + 1-line description.
     </artifact_policy>
     <response_format>

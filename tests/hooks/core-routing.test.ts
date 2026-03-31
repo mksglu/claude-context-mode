@@ -364,6 +364,33 @@ describe("routePreToolUse", () => {
     });
   });
 
+  // ─── Routing block content ──────────────────────────────
+
+  describe("routing block content", () => {
+    it("contains file_writing_policy forbidding ctx_execute for file writes", () => {
+      expect(ROUTING_BLOCK).toContain("<file_writing_policy>");
+      expect(ROUTING_BLOCK).toContain("NEVER use");
+      expect(ROUTING_BLOCK).toContain("ctx_execute");
+      expect(ROUTING_BLOCK).toContain("native Write tool");
+      expect(ROUTING_BLOCK).toContain("Edit tool");
+    });
+
+    it("forbidden_actions blocks ctx_execute for file creation", () => {
+      expect(ROUTING_BLOCK).toContain(
+        "DO NOT use",
+      );
+      expect(ROUTING_BLOCK).toContain(
+        "to create, modify, or overwrite files",
+      );
+    });
+
+    it("artifact_policy specifies native Write tool", () => {
+      expect(ROUTING_BLOCK).toContain(
+        "Write artifacts (code, configs, PRDs) to FILES using the native Write tool",
+      );
+    });
+  });
+
   // ─── Unknown tools ─────────────────────────────────────
 
   describe("unknown tools", () => {
