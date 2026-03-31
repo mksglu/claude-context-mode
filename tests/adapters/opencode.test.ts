@@ -1,6 +1,6 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, parse, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -15,6 +15,17 @@ function env(home: string) {
     HOMEDRIVE: root.replace(/[\\/]+$/, ""),
     HOMEPATH: home.slice(root.length) || root,
   };
+}
+
+function createOpenCodePluginRoot(base: string): string {
+  const pluginRoot = join(base, "plugin-root");
+  const configDir = join(pluginRoot, "configs", "opencode");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(
+    join(configDir, "AGENTS.md"),
+    "# Context Mode\n\nUse context-mode MCP tools.\n",
+  );
+  return pluginRoot;
 }
 
 describe("OpenCodeAdapter", () => {
@@ -286,6 +297,289 @@ describe("OpenCodeAdapter", () => {
         expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
         expect(() => readFileSync(resolve(dir, "opencode.json"), "utf-8")).toThrow();
         expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({ plugin: ["context-mode"] });
+
+        rmSync(root, { recursive: true, force: true });
+      });
+    });
+
+    describe("writeRoutingInstructions — global injection", () => {
+      it("writes to global path when OPENCODE_INJECT_GLOBAL=true", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: "true" },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        const result = JSON.parse(run.stdout);
+        expect(result).toContain(join(".config", "opencode", "AGENTS.md"));
+        expect(readFileSync(join(home, ".config", "opencode", "AGENTS.md"), "utf-8")).toContain("context-mode");
+        expect(existsSync(join(projectDir, "AGENTS.md"))).toBe(false);
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("writes to project path when OPENCODE_INJECT_GLOBAL is not set", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        mkdirSync(home, { recursive: true });
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: undefined },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        const result = JSON.parse(run.stdout);
+        expect(result).toBe(join(projectDir, "AGENTS.md"));
+        expect(existsSync(join(projectDir, "AGENTS.md"))).toBe(true);
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("creates parent directory for global path when it does not exist", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        mkdirSync(home, { recursive: true });
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: "true" },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        expect(existsSync(join(home, ".config", "opencode", "AGENTS.md"))).toBe(true);
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("appends to existing global file without context-mode content", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        const confDir = join(home, ".config", "opencode");
+        mkdirSync(confDir, { recursive: true });
+        writeFileSync(join(confDir, "AGENTS.md"), "# My Rules\n\nDo not use tabs.\n");
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: "true" },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        const content = readFileSync(join(confDir, "AGENTS.md"), "utf-8");
+        expect(content).toContain("My Rules");
+        expect(content).toContain("context-mode");
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("skips when global file already contains context-mode (idempotent)", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        const confDir = join(home, ".config", "opencode");
+        mkdirSync(confDir, { recursive: true });
+        writeFileSync(join(confDir, "AGENTS.md"), "# context-mode\n\nAlready installed.\n");
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: "true" },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        expect(JSON.parse(run.stdout)).toBeNull();
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("writes to project path when OPENCODE_INJECT_GLOBAL=false", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        mkdirSync(home, { recursive: true });
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: "false" },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        const result = JSON.parse(run.stdout);
+        expect(result).toContain(projectDir);
+        expect(existsSync(join(projectDir, "AGENTS.md"))).toBe(true);
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("returns null when source config is missing (global mode)", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const emptyPluginRoot = join(root, "empty-plugin");
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        mkdirSync(emptyPluginRoot, { recursive: true });
+        mkdirSync(home, { recursive: true });
+
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(emptyPluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: "true" },
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        expect(JSON.parse(run.stdout)).toBeNull();
+
+        rmSync(root, { recursive: true, force: true });
+      });
+
+      it("reads OPENCODE_INJECT_GLOBAL from opencode.json mcp config", () => {
+        const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+        const projectDir = join(root, "project");
+        const home = join(root, "home");
+        const pluginRoot = createOpenCodePluginRoot(root);
+        const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+
+        mkdirSync(projectDir, { recursive: true });
+        mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+
+        // Write opencode.json with the env flag in MCP config — no shell env var set
+        writeFileSync(
+          join(projectDir, "opencode.json"),
+          JSON.stringify({
+            mcp: {
+              "context-mode": {
+                type: "local",
+                command: ["context-mode"],
+                environment: { OPENCODE_INJECT_GLOBAL: "true" },
+              },
+            },
+          }),
+        );
+
+        // Run WITHOUT OPENCODE_INJECT_GLOBAL in process env
+        const run = spawnSync(
+          process.execPath,
+          [
+            tsx,
+            "-e",
+            `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.writeRoutingInstructions(${JSON.stringify(projectDir)}, ${JSON.stringify(pluginRoot)})));`,
+          ],
+          {
+            cwd: projectDir,  // opencode.json is resolved relative to cwd
+            env: { ...env(home), OPENCODE_INJECT_GLOBAL: undefined },   // NO OPENCODE_INJECT_GLOBAL env var
+            encoding: "utf-8",
+          },
+        );
+
+        expect(run.status).toBe(0);
+        const result = JSON.parse(run.stdout);
+        // Should write to global path because the config was read from opencode.json
+        expect(result).toContain(join(".config", "opencode", "AGENTS.md"));
+        expect(existsSync(join(home, ".config", "opencode", "AGENTS.md"))).toBe(true);
+        expect(existsSync(join(projectDir, "AGENTS.md"))).toBe(false);
 
         rmSync(root, { recursive: true, force: true });
       });
