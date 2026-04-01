@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./reexec-node.mjs";
 import "./suppress-stderr.mjs";
 /**
  * Unified PreToolUse hook for context-mode (Claude Code)
