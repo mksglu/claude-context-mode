@@ -841,12 +841,52 @@ describe("OpenClaw sessionKey safety (#183)", () => {
 // ── PR #190 fix: getRuntimeSummary handles full bun path ──
 
 describe("Runtime summary bun detection (#190)", () => {
-  const RT_SOURCE = readFileSync(resolve(ROOT, "src/runtime.ts"), "utf-8");
+  const RT_SOURCE = readFileSync(resolve(ROOT, "src", "runtime.ts"), "utf-8");
 
   test("getRuntimeSummary does not use exact === bun comparison", () => {
     // Full path like /home/user/.bun/bin/bun must be detected
     const summaryStart = RT_SOURCE.indexOf("getRuntimeSummary");
     const summaryBody = RT_SOURCE.slice(summaryStart, RT_SOURCE.indexOf("\nexport", summaryStart + 10));
     expect(summaryBody).not.toContain('=== "bun"');
+  });
+});
+
+// ── Plugin root detection for Opencode/Kilocode platforms ────────────────
+
+describe("Plugin root detection (#PR refactor/opencode-improvements)", () => {
+  const CLI_SOURCE = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+
+  test("cachePluginRoot uses XDG_CACHE_HOME when set", () => {
+    const cacheRootStart = CLI_SOURCE.indexOf("function cachePluginRoot");
+    const cacheRootBody = CLI_SOURCE.slice(cacheRootStart, cacheRootStart + 500);
+    expect(cacheRootBody).toContain("process.env.XDG_CACHE_HOME");
+  });
+
+  test("cachePluginRoot uses LOCALAPPDATA on Windows", () => {
+    const cacheRootStart = CLI_SOURCE.indexOf("function cachePluginRoot");
+    const cacheRootBody = CLI_SOURCE.slice(cacheRootStart, cacheRootStart + 500);
+    expect(cacheRootBody).toContain("process.env.LOCALAPPDATA");
+    expect(cacheRootBody).toContain('process.platform === "win32"');
+  });
+
+  test("cachePluginRoot uses ~/.cache as default on non-Windows", () => {
+    const cacheRootStart = CLI_SOURCE.indexOf("function cachePluginRoot");
+    const cacheRootBody = CLI_SOURCE.slice(cacheRootStart, cacheRootStart + 500);
+    expect(cacheRootBody).toContain('".cache"');
+    expect(cacheRootBody).toContain("homedir");
+  });
+
+  test("getPluginRoot uses cache path for opencode platform", () => {
+    const getPluginRootStart = CLI_SOURCE.indexOf("function getPluginRoot");
+    const getPluginRootBody = CLI_SOURCE.slice(getPluginRootStart, getPluginRootStart + 300);
+    expect(getPluginRootBody).toContain("'opencode'");
+    expect(getPluginRootBody).toContain("cachePluginRoot");
+  });
+
+  test("getPluginRoot uses cache path for kilo platform", () => {
+    const getPluginRootStart = CLI_SOURCE.indexOf("function getPluginRoot");
+    const getPluginRootBody = CLI_SOURCE.slice(getPluginRootStart, getPluginRootStart + 300);
+    expect(getPluginRootBody).toContain("'kilo'");
+    expect(getPluginRootBody).toContain("cachePluginRoot");
   });
 });

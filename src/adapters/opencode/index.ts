@@ -300,18 +300,37 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   readSettings(): Record<string, unknown> | null {
-    // Try project-local paths first, then global config
-    // const paths = this.getConfigFilePaths();
-    // for (const configPath of paths) {
     this.settingsPath = undefined;
-    for (const configPath of this.paths()) {
+    const configPaths = this.paths();
+    let firstValidSettings: Record<string, unknown> | null = null;
+    let firstValidPath: string | undefined;
+
+    for (const configPath of configPaths) {
       try {
         const raw = readFileSync(configPath, "utf-8");
-        this.settingsPath = configPath;
-        return JSON.parse(raw) as Record<string, unknown>;
+        const settings = JSON.parse(raw) as Record<string, unknown>;
+
+        if (!firstValidSettings) {
+          firstValidSettings = settings;
+          firstValidPath = configPath;
+        }
+
+        const plugins = settings.plugin as string[] | undefined;
+        const hasPlugin = plugins?.some((p) => p.includes("context-mode"));
+        const isGlobalConfig = configPath === configPaths.at(-1);
+
+        if (hasPlugin || isGlobalConfig) {
+          this.settingsPath = configPath;
+          return settings;
+        }
       } catch {
         continue;
       }
+    }
+
+    if (firstValidSettings) {
+      this.settingsPath = firstValidPath;
+      return firstValidSettings;
     }
     return null;
   }
@@ -335,7 +354,7 @@ export class OpenCodeAdapter implements HookAdapter {
       results.push({
         check: "Plugin configuration",
         status: "fail",
-        message: "Could not read opencode.json",
+        message: `Could not read ${this.platform}.json`,
         fix: "context-mode upgrade",
       });
       return results;
@@ -359,7 +378,7 @@ export class OpenCodeAdapter implements HookAdapter {
       results.push({
         check: "Plugin registration",
         status: "fail",
-        message: "No plugin array found in opencode.json",
+        message: `No plugin array found in ${this.platform}.json`,
         fix: "context-mode upgrade",
       });
     }
@@ -369,7 +388,7 @@ export class OpenCodeAdapter implements HookAdapter {
       check: "SessionStart hook",
       status: "warn",
       message:
-        "SessionStart not supported in OpenCode (see issues #14808, #5409)",
+        `SessionStart not supported in ${this.name} (see issues #14808, #5409)`,
     });
 
     return results;
@@ -381,7 +400,7 @@ export class OpenCodeAdapter implements HookAdapter {
       return {
         check: "Plugin registration",
         status: "warn",
-        message: "Could not read opencode.json",
+        message: `Could not read ${this.platform}.json`,
       };
     }
 
@@ -400,7 +419,7 @@ export class OpenCodeAdapter implements HookAdapter {
     return {
       check: "Plugin registration",
       status: "fail",
-      message: "context-mode not found in opencode.json plugin array",
+      message: `context-mode not found in ${this.platform}.json plugin array`,
       fix: "context-mode upgrade",
     };
   }

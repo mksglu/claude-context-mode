@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
-import { tmpdir, devNull } from "node:os";
+import { tmpdir, devNull, homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   detectRuntimes,
@@ -112,7 +112,7 @@ export function toUnixPath(p: string): string {
   return p.replace(/\\/g, "/");
 }
 
-function getPluginRoot(): string {
+function defaultPluginRoot(): string {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
   // build/cli.js or src/cli.ts → go up one level; cli.bundle.mjs at project root → stay here
@@ -121,6 +121,26 @@ function getPluginRoot(): string {
     return resolve(__dirname, "..");
   }
   return __dirname;
+}
+
+// Opencode/Kilocode install plugins from npm into .cache folder
+function cachePluginRoot(platform: string): string {
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (xdg) return resolve(xdg, platform, "node_modules", "context-mode");
+  if (process.platform === "win32") {
+    const localApp = process.env.LOCALAPPDATA;
+    if (localApp) return resolve(localApp, platform, "node_modules", "context-mode");
+    return resolve(homedir(), "AppData", "Local", platform, "node_modules", "context-mode");
+  }
+  return resolve(homedir(), ".cache", platform, "node_modules", "context-mode");
+}
+
+function getPluginRoot(): string {
+  const platform = detectPlatform().platform;
+  if (platform === 'opencode' || platform === 'kilo') {
+    return cachePluginRoot(platform);
+  }
+  return defaultPluginRoot();
 }
 
 function getLocalVersion(): string {
@@ -430,7 +450,7 @@ async function upgrade() {
       readFileSync(resolve(srcDir, "package.json"), "utf-8"),
     );
     const newVersion = newPkg.version ?? "unknown";
-
+    
     if (newVersion === localVersion) {
       p.log.success(color.green("Already on latest") + ` — v${localVersion}`);
     } else {
@@ -518,7 +538,7 @@ async function upgrade() {
           color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
       );
     }
-
+    
     // Update global npm
     s.start("Updating npm global package");
     try {
