@@ -284,6 +284,14 @@ export class ContentStore {
     }
   }
 
+  /** Flush all indexed content. DB stays open with empty tables. */
+  clearAll(): void {
+    this.#db.exec("DELETE FROM chunks");
+    this.#db.exec("DELETE FROM chunks_trigram");
+    this.#db.exec("DELETE FROM sources");
+    this.#db.exec("DELETE FROM vocabulary");
+  }
+
   // ── Schema ──
 
   #initSchema(): void {

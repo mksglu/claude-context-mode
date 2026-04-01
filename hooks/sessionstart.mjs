@@ -19,7 +19,7 @@ import { createRoutingBlock } from "./routing-block.mjs";
 import { createToolNamer } from "./core/tool-naming.mjs";
 
 const ROUTING_BLOCK = createRoutingBlock(createToolNamer("claude-code"));
-import { readStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath } from "./session-helpers.mjs";
+import { readStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath, getContentDBPath } from "./session-helpers.mjs";
 import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLatestSessionEvents } from "./session-directive.mjs";
 import { createSessionLoaders } from "./session-loaders.mjs";
 import { join, dirname } from "node:path";
@@ -145,7 +145,13 @@ try {
       }
     } catch { /* best effort — never block session start */ }
   }
-  // "clear" — no action needed
+  // "clear" — delete content DB so the next session starts clean
+  try {
+    const dbPath = getContentDBPath();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  } catch { /* best effort */ }
 } catch (err) {
   // Session continuity is best-effort — never block session start
   try {

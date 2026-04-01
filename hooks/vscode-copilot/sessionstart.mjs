@@ -19,7 +19,7 @@ const ROUTING_BLOCK = createRoutingBlock(createToolNamer("vscode-copilot"));
 import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLatestSessionEvents } from "../session-directive.mjs";
 import {
   readStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath,
-  getProjectDir, VSCODE_OPTS,
+  getContentDBPath, getProjectDir, VSCODE_OPTS,
 } from "../session-helpers.mjs";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
@@ -112,7 +112,13 @@ try {
 
     db.close();
   }
-  // "clear" — no action needed
+  // "clear" — delete content DB so the next session starts clean
+  try {
+    const dbPath = getContentDBPath(OPTS);
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  } catch { /* best effort */ }
 } catch (err) {
   try {
     const { appendFileSync } = await import("node:fs");

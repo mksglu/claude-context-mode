@@ -170,3 +170,15 @@ export function getCleanupFlagPath(opts = CLAUDE_OPTS) {
   mkdirSync(dir, { recursive: true });
   return join(dir, `${hash}${getWorktreeSuffix()}.cleanup`);
 }
+
+/**
+ * Return the per-project content DB path.
+ * Same hash as src/server.ts getStorePath() — normalizes path separators.
+ * Path: ~/.context-mode/content/<SHA256(normalizedProjectDir)[:16]>.db
+ */
+export function getContentDBPath(opts = CLAUDE_OPTS) {
+  const projectDir = getProjectDir(opts);
+  const normalized = projectDir.replace(/\\/g, "/");
+  const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return join(homedir(), ".context-mode", "content", `${hash}.db`);
+}

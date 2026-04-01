@@ -110,10 +110,24 @@ function getStorePath(): string {
 }
 
 function getStore(): ContentStore {
+  const dbPath = getStorePath();
+
+  // SessionStart hook deletes the DB on /clear — detect and reset
+  if (_store && !existsSync(dbPath)) {
+    try { _store.cleanup(); } catch { /* ignore */ }
+    _store = null;
+    sessionStats.calls = {};
+    sessionStats.bytesReturned = {};
+    sessionStats.bytesIndexed = 0;
+    sessionStats.bytesSandboxed = 0;
+    sessionStats.cacheHits = 0;
+    sessionStats.cacheBytesSaved = 0;
+    sessionStats.sessionStart = Date.now();
+  }
+
   if (!_store) {
     // Content DB cleanup on fresh start is handled by SessionStart hook.
     // Server just opens whatever DB exists (or creates new if hook deleted it).
-    const dbPath = getStorePath();
     _store = new ContentStore(dbPath);
 
     // One-time startup cleanup: remove stale content DBs (>14 days)
