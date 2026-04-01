@@ -295,9 +295,9 @@ describe("Default Cap", () => {
   });
 });
 
-describe("hardCap still limits output (smartTruncate removed from executor)", () => {
-  test("hardCap kills process but stdout is NOT truncated by smartTruncate", async () => {
-    const executor = new PolyglotExecutor({ hardCapBytes: 50 * 1024, maxOutputBytes: 1024, runtimes });
+describe("hardCap still limits output", () => {
+  test("hardCap kills process but stdout is NOT truncated", async () => {
+    const executor = new PolyglotExecutor({ hardCapBytes: 50 * 1024, runtimes });
     const r = await executor.execute({
       language: "javascript",
       code: 'for (let i = 0; i < 4000; i++) console.log("x".repeat(25));',
@@ -311,7 +311,7 @@ describe("hardCap still limits output (smartTruncate removed from executor)", ()
 
 describe("Large Output Auto-Indexing", () => {
   test("large stdout is fully preserved by executor", async () => {
-    const executor = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+    const executor = new PolyglotExecutor({ runtimes });
     const r = await executor.execute({
       language: "javascript",
       code: 'for (let i = 0; i < 100; i++) console.log(`line ${i}: ${"x".repeat(20)}`);',

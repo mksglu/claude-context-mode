@@ -40,7 +40,6 @@ interface ExecuteFileOptions extends ExecuteOptions {
 }
 
 export class PolyglotExecutor {
-  #maxOutputBytes: number;
   #hardCapBytes: number;
   #projectRoot: string;
   #runtimes: RuntimeMap;
@@ -49,12 +48,10 @@ export class PolyglotExecutor {
   #backgroundedPids = new Set<number>();
 
   constructor(opts?: {
-    maxOutputBytes?: number;
     hardCapBytes?: number;
     projectRoot?: string;
     runtimes?: RuntimeMap;
   }) {
-    this.#maxOutputBytes = opts?.maxOutputBytes ?? 102_400;
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
     this.#projectRoot = opts?.projectRoot ?? process.cwd();
     this.#runtimes = opts?.runtimes ?? detectRuntimes();

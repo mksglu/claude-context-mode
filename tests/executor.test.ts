@@ -735,7 +735,7 @@ describe("Timeout Handling", () => {
 
 describe("Output Truncation", () => {
   test("stdout is returned in full without truncation", async () => {
-    const small = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+    const small = new PolyglotExecutor({ runtimes });
     const r = await small.execute({
       language: "javascript",
       code: 'for (let i = 0; i < 100; i++) console.log(`line ${i}: ${"x".repeat(20)}`);',
@@ -756,7 +756,7 @@ describe("Output Truncation", () => {
   });
 
   test("stderr is also returned in full without truncation", async () => {
-    const small = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+    const small = new PolyglotExecutor({ runtimes });
     const r = await small.execute({
       language: "javascript",
       code: `

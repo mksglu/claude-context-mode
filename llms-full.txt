@@ -56,7 +56,7 @@ execute({
 
 **Output limits:**
 
-- Smart truncation threshold (`maxOutputBytes`): 102,400 bytes (100 KB). Output exceeding this is truncated using head 60% + tail 40% split, snapped to line boundaries.
+- Auto-index threshold (`LARGE_OUTPUT_THRESHOLD`): 102,400 bytes (100 KB). Output exceeding this is fully indexed into FTS5 and a pointer is returned instead of raw content.
 - Hard cap (`hardCapBytes`): 104,857,600 bytes (100 MB). Process is killed at stream level if combined stdout+stderr exceeds this. Prevents memory exhaustion from commands like `yes` or `cat /dev/urandom`.
 - Intent search threshold (`INTENT_SEARCH_THRESHOLD`): 5000 bytes. Output below this is returned directly even when intent is provided.
 
@@ -404,17 +404,11 @@ Runtime detection uses `commandExists()` which checks `which` (Unix) or `where` 
 - **Elixir:** If a `mix.exs` exists in the project root, prepends `Path.wildcard` to add compiled BEAM paths (`*/ebin`) to the code path.
 - **Rust:** Source compiled with `rustc` to a temp binary, then executed. Not interpreted.
 
-### Output Truncation
+### Output Handling
 
-**Smart truncation (`#smartTruncate`):**
+**Full output preservation:**
 
-When output exceeds `maxOutputBytes` (102,400 bytes / 100 KB):
-
-1. Split output into lines
-2. Collect head lines until 60% of budget is consumed
-3. Collect tail lines (from end) until 40% of budget is consumed
-4. Insert separator: `"... [N lines / X.XKB truncated -- showing first M + last K lines] ..."`
-5. All calculations use `Buffer.byteLength()` for UTF-8 safety, snapping to line boundaries
+The executor returns complete, untruncated stdout and stderr. No data is discarded — the server auto-indexes large outputs (>100KB) into FTS5 and returns a pointer message instead of raw content. Small outputs are returned inline as-is.
 
 **Stream-level hard cap:**
 

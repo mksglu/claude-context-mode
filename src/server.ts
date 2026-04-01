@@ -1319,7 +1319,7 @@ server.registerTool(
       const store = getStore();
       const header = (result.stdout || "").trim();
 
-      // Read full content from temp file (bypasses smartTruncate)
+      // Read full content from temp file
       let markdown: string;
       try {
         markdown = readFileSync(outputPath, "utf-8").trim();
@@ -1451,7 +1451,7 @@ server.registerTool(
     try {
       // Execute each command individually so every command gets its own
       // output capture. Full stdout is preserved and indexed into FTS5.
-      // (Previously used smartTruncate which dropped middle content — Issue #61, #197)
+      // (Issue #61, #197)
       const perCommandOutputs: string[] = [];
       const startTime = Date.now();
       let timedOut = false;
