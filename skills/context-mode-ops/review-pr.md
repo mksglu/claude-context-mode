@@ -131,9 +131,14 @@ All tests pass + All architects APPROVE?
 
 ### 5. Merge to `next` & Fix Flow
 
+Always use `gh` CLI. Always squash merge into `next`:
+
 ```bash
-# Merge the PR into next (not main)
-gh pr merge {N} --squash --subject "feat/fix: {description} (#{N})" --merge-branch next
+# Change PR base to next if needed
+gh pr edit {N} --base next
+
+# Squash merge into next
+gh pr merge {N} --squash
 ```
 
 If follow-up fixes needed, push directly to `next`:
