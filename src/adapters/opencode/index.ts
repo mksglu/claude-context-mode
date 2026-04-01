@@ -25,7 +25,7 @@ import {
   accessSync,
   constants,
 } from "node:fs";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { homedir } from "node:os";
 
 import type {
@@ -227,7 +227,7 @@ export class OpenCodeAdapter implements HookAdapter {
         resolve("kilo.json"),
         resolve(".kilocode", "kilo.json"),
         join(homedir(), ".config", "kilo", "kilo.json"),
-      ];  
+      ];
     }
     return [
       resolve("opencode.json"),
@@ -479,10 +479,40 @@ export class OpenCodeAdapter implements HookAdapter {
     };
   }
 
+  /**
+   * Read an environment flag from the MCP config in opencode.json/kilo.json.
+   * Checks: settings.mcp["context-mode"].environment[key] === "true"
+   * Returns false on any error or missing key.
+   */
+  private readMcpEnvironmentFlag(key: string): boolean {
+    try {
+      const settings = this.readSettings();
+      if (!settings) return false;
+      const mcp = settings.mcp as Record<string, unknown> | undefined;
+      if (!mcp) return false;
+      const entry = mcp["context-mode"] as Record<string, unknown> | undefined;
+      if (!entry) return false;
+      const env = entry.environment as Record<string, string> | undefined;
+      if (!env) return false;
+      return env[key] === "true";
+    } catch {
+      return false;
+    }
+  }
+
   writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
     const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
+    const useGlobal =
+      process.env.OPENCODE_INJECT_GLOBAL === "true" ||
+      this.readMcpEnvironmentFlag("OPENCODE_INJECT_GLOBAL");
+    const targetPath = useGlobal
+      ? config.globalPath
+      : resolve(projectDir, config.projectRelativePath);
     const sourcePath = resolve(pluginRoot, "configs", this.platform, config.fileName);
+
+    if (useGlobal) {
+      mkdirSync(dirname(targetPath), { recursive: true });
+    }
 
     try {
       const content = readFileSync(sourcePath, "utf-8");
