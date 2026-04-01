@@ -48,6 +48,7 @@ import type {
 import {
   HOOK_TYPES,
   HOOK_SCRIPTS,
+  REQUIRED_HOOKS,
   PRE_TOOL_USE_MATCHER_PATTERN,
   isContextModeHook,
   isAnyContextModeHook,
@@ -531,6 +532,23 @@ export class ClaudeCodeAdapter implements HookAdapter {
       if (removed > 0) {
         hooks[hookType] = filtered;
         changes.push(`Removed ${removed} stale ${hookType} hook(s)`);
+      }
+    }
+
+    // If plugin hooks.json already covers all required hooks, skip settings.json
+    // registration entirely (Issue #198). Plugin installs don't need settings.json
+    // entries — hooks.json with ${CLAUDE_PLUGIN_ROOT} is the source of truth.
+    const pluginHooks = this.readPluginHooks(pluginRoot);
+    if (pluginHooks) {
+      const allCovered = REQUIRED_HOOKS.every((ht) =>
+        this.checkHookType(undefined, pluginHooks, ht),
+      );
+      if (allCovered) {
+        // Still write cleaned settings (stale removal) but don't add new entries
+        settings.hooks = hooks;
+        this.writeSettings(settings);
+        changes.push("Skipped settings.json registration — plugin hooks.json is sufficient");
+        return changes;
       }
     }
 

@@ -455,6 +455,82 @@ describe("ClaudeCodeAdapter", () => {
       expect(changes.some((c: string) => c.includes("stale"))).toBe(false);
     });
 
+    it("skips settings.json registration when plugin hooks.json already has all required hooks", () => {
+      // Plugin hooks.json has both PreToolUse and SessionStart
+      mkdirSync(join(pluginRoot, ".claude-plugin", "hooks"), { recursive: true });
+      writeFileSync(
+        join(pluginRoot, ".claude-plugin", "hooks", "hooks.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{
+              matcher: "Bash",
+              hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }],
+            }],
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }],
+            }],
+          },
+        }),
+      );
+
+      // settings.json starts empty
+      writeFileSync(join(tempDir, "settings.json"), JSON.stringify({}));
+
+      const changes = adapter.configureAllHooks(pluginRoot);
+
+      // Should NOT have written hook entries to settings.json
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      expect(settings.hooks?.PreToolUse).toBeUndefined();
+      expect(settings.hooks?.SessionStart).toBeUndefined();
+      // Should report that plugin hooks are sufficient
+      expect(changes.some((c: string) => c.includes("plugin hooks.json"))).toBe(true);
+    });
+
+    it("still cleans stale entries even when plugin hooks.json is present", () => {
+      const staleRoot = "/tmp/non-existent-old-version-dir";
+
+      // Plugin hooks.json has all required hooks
+      mkdirSync(join(pluginRoot, "hooks", "hooks_dir"), { recursive: true });
+      writeFileSync(
+        join(pluginRoot, "hooks", "hooks.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{
+              matcher: "Bash",
+              hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }],
+            }],
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }],
+            }],
+          },
+        }),
+      );
+
+      // settings.json has stale entries
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: `node "${staleRoot}/hooks/sessionstart.mjs"` }],
+            }],
+          },
+        }),
+      );
+
+      const changes = adapter.configureAllHooks(pluginRoot);
+
+      // Should clean stale entries
+      expect(changes).toContain("Removed 1 stale SessionStart hook(s)");
+      // Should NOT re-register in settings.json
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      const sessionHooks = settings.hooks?.SessionStart;
+      expect(!sessionHooks || sessionHooks.length === 0).toBe(true);
+    });
+
     it("registers fresh hooks with correct pluginRoot paths after cleanup", () => {
       const staleRoot = "/tmp/old-version";
       writeFileSync(
