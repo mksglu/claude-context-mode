@@ -377,6 +377,23 @@ describe("Shell Execution", () => {
     assert.ok(r.stdout.includes("sum: 30"));
   });
 
+  test("shell TMPDIR points to OS temp dir, not project root", async () => {
+    const r = await executor.execute({
+      language: "shell",
+      code: 'echo "$TMPDIR"',
+      timeout: 5_000,
+    });
+    const reportedTmpDir = r.stdout.trim();
+    assert.ok(
+      !reportedTmpDir.startsWith(process.cwd()),
+      `TMPDIR should not be project root, got: ${reportedTmpDir}`,
+    );
+    assert.ok(
+      reportedTmpDir.includes(".ctx-mode-"),
+      `TMPDIR should be the sandbox temp dir, got: ${reportedTmpDir}`,
+    );
+  });
+
   test("Shell: for loop + wc", async () => {
     const r = await executor.execute({
       language: "shell",
