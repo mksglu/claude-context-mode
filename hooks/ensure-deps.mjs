@@ -23,9 +23,23 @@ const NATIVE_DEPS = ["better-sqlite3"];
 
 export function ensureDeps() {
   for (const pkg of NATIVE_DEPS) {
-    if (!existsSync(resolve(root, "node_modules", pkg))) {
+    const pkgDir = resolve(root, "node_modules", pkg);
+    if (!existsSync(pkgDir)) {
+      // Package not installed at all
       try {
         execSync(`npm install ${pkg} --no-package-lock --no-save --silent`, {
+          cwd: root,
+          stdio: "pipe",
+          timeout: 120000,
+        });
+      } catch { /* best effort — hook degrades gracefully without DB */ }
+    } else if (
+      !existsSync(resolve(pkgDir, "build", "Release")) &&
+      !existsSync(resolve(pkgDir, "prebuilds"))
+    ) {
+      // Package installed but native binary missing (e.g., npm ignore-scripts=true)
+      try {
+        execSync(`npm rebuild ${pkg} --ignore-scripts=false`, {
           cwd: root,
           stdio: "pipe",
           timeout: 120000,
