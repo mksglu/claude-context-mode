@@ -142,50 +142,40 @@ TypeScript:    ✓ no errors
 Full Suite:    ✓ 47/47 passed
 ```
 
-### 7. Open PR
+### 7. Push Directly to `next`
 
-Once all architects approve and QA passes:
+**Do NOT open a PR.** Push fixes directly to the `next` branch:
 
 ```bash
-# Create branch from next
-git checkout -b fix/issue-{N}-{short-description} next
+# Ensure we're on next
+git checkout next
+git pull origin next
 
 # Apply changes from worktree agents
 # ... (merge worktree changes)
 
-# Push and create PR
-git push -u origin fix/issue-{N}-{short-description}
-gh pr create \
-  --base next \
-  --title "fix: {concise description} (closes #{N})" \
-  --body "$(cat <<'EOF'
-## Summary
+# Commit with issue reference
+git commit -m "fix: {concise description} (closes #{N})
+
 - {what was broken}
 - {what was fixed}
 - {which adapters/modules affected}
 
-## Test Plan
-- [ ] All 12 adapter tests pass
-- [ ] TypeScript compiles
-- [ ] Full test suite passes
-- [ ] Tested on {affected OS}
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
 
-Closes #{N}
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
+# Push to next
+git push origin next
 ```
 
 ### 8. Comment on Issue
 
-After PR is created, comment on the issue per [communication.md](communication.md):
+After pushing to `next`, comment on the issue per [communication.md](communication.md):
 
 ```bash
 gh issue comment {N} --body "$(cat <<'EOF'
 Hey @{author}! 👋
 
-We investigated this and pushed a fix in #{PR_NUMBER}.
+We investigated this and pushed a fix to the `next` branch ({commit_sha}).
 
 **What was happening:** {technical explanation of the root cause}
 

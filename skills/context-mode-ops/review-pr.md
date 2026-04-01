@@ -129,13 +129,16 @@ All tests pass + All architects APPROVE?
     └── Close with kind explanation. Rare — almost never do this.
 ```
 
-### 5. Merge & Fix Flow
+### 5. Merge to `next` & Fix Flow
 
 ```bash
-# Merge the PR
-gh pr merge {N} --squash --subject "feat/fix: {description} (#{N})"
+# Merge the PR into next (not main)
+gh pr merge {N} --squash --subject "feat/fix: {description} (#{N})" --merge-branch next
+```
 
-# If follow-up fixes needed:
+If follow-up fixes needed, push directly to `next`:
+
+```bash
 git checkout next
 git pull origin next
 ```

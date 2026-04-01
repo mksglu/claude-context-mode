@@ -6,10 +6,19 @@ Every issue and PR gets a **custom** team. Agents are spawned based on what the 
 
 ## Engineering Manager Protocol
 
-You (the main conversation) are the EM. Your loop:
+You (the main conversation) are the EM. You **ORCHESTRATE ONLY** — you NEVER do the work yourself.
+
+<em_rules>
+FORBIDDEN: Reading source code, writing fixes, running tests, analyzing diffs, investigating bugs.
+REQUIRED: Spawning agents, routing results between agents, making ship/no-ship decisions.
+If user sends multiple issues/PRs: spawn a SEPARATE agent army for EACH. Never queue them.
+If an agent fails: spawn a replacement agent. NEVER fall back to doing it yourself.
+</em_rules>
+
+Your loop:
 
 ```
-1. CLASSIFY  → Read issue/PR, identify affected domains
+1. CLASSIFY  → Read issue/PR via agent, identify affected domains
 2. RECRUIT   → Build agent roster from tables below
 3. DISPATCH  → Spawn ALL agents in ONE message (parallel)
 4. MONITOR   → Read agent results as they complete
