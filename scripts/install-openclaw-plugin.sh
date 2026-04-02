@@ -17,14 +17,20 @@ if [ ! -d "$OPENCLAW_STATE_DIR" ]; then
   echo "✗ OPENCLAW_STATE_DIR ($OPENCLAW_STATE_DIR) does not exist. Is OpenClaw installed?" >&2
   exit 1
 fi
-if [ ! -f "$OPENCLAW_STATE_DIR/runtime/openclaw.runtime.json" ]; then
-  echo "✗ $OPENCLAW_STATE_DIR/runtime/openclaw.runtime.json not found." >&2
+
+# Support both runtime/openclaw.runtime.json and openclaw.json
+if [ -f "$OPENCLAW_STATE_DIR/runtime/openclaw.runtime.json" ]; then
+  RUNTIME_JSON="$OPENCLAW_STATE_DIR/runtime/openclaw.runtime.json"
+elif [ -f "$OPENCLAW_STATE_DIR/openclaw.json" ]; then
+  RUNTIME_JSON="$OPENCLAW_STATE_DIR/openclaw.json"
+  echo "→ Using openclaw.json instead of runtime/openclaw.runtime.json"
+else
+  echo "✗ Neither $OPENCLAW_STATE_DIR/runtime/openclaw.runtime.json nor $OPENCLAW_STATE_DIR/openclaw.json found." >&2
   echo "  Start OpenClaw once first, then re-run this script." >&2
   exit 1
 fi
 
 EXT_DIR="$OPENCLAW_STATE_DIR/extensions/context-mode"
-RUNTIME_JSON="$OPENCLAW_STATE_DIR/runtime/openclaw.runtime.json"
 
 echo "→ context-mode plugin installer"
 echo "  plugin root : $PLUGIN_ROOT"
