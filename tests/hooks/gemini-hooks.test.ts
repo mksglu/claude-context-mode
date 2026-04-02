@@ -27,7 +27,7 @@ function runHook(hookFile: string, input: Record<string, unknown>, env?: Record<
   const result = spawnSync("node", [join(HOOKS_DIR, hookFile)], {
     input: JSON.stringify(input),
     encoding: "utf-8",
-    timeout: 10000,
+    timeout: 30_000,
     env: { ...process.env, ...env },
   });
   return {

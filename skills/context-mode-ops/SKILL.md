@@ -1,6 +1,6 @@
 ---
 name: context-mode-ops
-description: Manage context-mode GitHub issues, PRs, and releases with parallel subagent army. Orchestrates 10-20 dynamic agents (Architects, Staff Engineers, QA) per task. Use when triaging issues, reviewing PRs, releasing versions, fixing bugs, merging contributions, validating ENV vars, testing adapters, or syncing branches.
+description: Manage context-mode GitHub issues, PRs, releases, and marketing with parallel subagent army. Orchestrates 10-20 dynamic agents per task. Use when triaging issues, reviewing PRs, releasing versions, writing LinkedIn posts, announcing releases, fixing bugs, merging contributions, validating ENV vars, testing adapters, or syncing branches.
 ---
 
 # Context Mode Ops
@@ -49,6 +49,7 @@ For every task:
 | "triage issue #N", "fix issue", "analyze issue" | Triage | [triage-issue.md](triage-issue.md) |
 | "review PR #N", "merge PR", "check PR" | Review | [review-pr.md](review-pr.md) |
 | "release", "version bump", "publish" | Release | [release.md](release.md) |
+| "linkedin", "marketing", "announce", "write post" | Marketing | [marketing.md](marketing.md) |
 
 ## GitHub CLI (`gh`) Is Mandatory
 
@@ -96,6 +97,7 @@ Follow [communication.md](communication.md) — be warm, technical, and always p
 - [Dynamic Agent Organization](agent-teams.md)
 - [Validation Patterns](validation.md)
 - [Communication Templates](communication.md)
+- [Marketing & Announcements](marketing.md) — LinkedIn posts, release announcements, VC-targeted
 
 ## Installation
 

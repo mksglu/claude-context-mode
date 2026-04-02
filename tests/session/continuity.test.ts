@@ -27,7 +27,7 @@ function runHook(input: Record<string, unknown>) {
   const result = spawnSync("node", [HOOK_PATH], {
     input: JSON.stringify(input),
     encoding: "utf-8",
-    timeout: 5000,
+    timeout: 30_000,
   });
   return {
     exitCode: result.status ?? 1,

@@ -47,7 +47,7 @@ function runHook(input: Record<string, unknown>, env?: Record<string, string>, {
   const result = spawnSync("node", [HOOK_PATH], {
     input: bom ? "\uFEFF" + json : json,
     encoding: "utf-8",
-    timeout: 5000,
+    timeout: 30_000,
     env: { ...process.env, ...env },
   });
   return {

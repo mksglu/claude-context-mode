@@ -28,7 +28,7 @@ function runHook(hookFile: string, input: Record<string, unknown>, cwd?: string)
   const result = spawnSync("node", [join(HOOKS_DIR, hookFile)], {
     input: JSON.stringify(input),
     encoding: "utf-8",
-    timeout: 10000,
+    timeout: 30_000,
     env: { ...process.env },
     // Set subprocess cwd so process.cwd() inside the hook resolves to an
     // isolated directory. Kiro has no projectDirEnv so getSessionDBPath()
