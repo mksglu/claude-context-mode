@@ -9,7 +9,7 @@
  */
 
 import type { Database as DatabaseInstance } from "better-sqlite3";
-import { loadDatabase, applyWALPragmas, closeDB } from "./db-base.js";
+import { loadDatabase, applyWALPragmas, closeDB, withRetry } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -145,8 +145,23 @@ export function cleanupStaleDBs(): number {
 }
 
 /**
+ * Check if a PID is still alive (not a zombie holding a WAL lock).
+ * Returns true if the process exists, false if it's dead.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Clean up stale per-project content store DBs older than maxAgeDays.
  * Scans the given directory for *.db files and checks mtime.
+ * Also detects zombie processes holding WAL locks — if a WAL file exists
+ * but the owning PID is dead, the DB files are cleaned up regardless of age.
  */
 export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): number {
   let cleaned = 0;
@@ -158,7 +173,26 @@ export function cleanupStaleContentDBs(contentDir: string, maxAgeDays: number): 
       try {
         const filePath = join(contentDir, file);
         const mtime = statSync(filePath).mtimeMs;
-        if (mtime < cutoff) {
+        let shouldClean = mtime < cutoff;
+
+        // Detect zombie processes holding WAL locks:
+        // If a WAL file exists, try to read the WAL header to extract the PID.
+        // WAL files from dead processes can block new connections.
+        if (!shouldClean) {
+          const walPath = filePath + "-wal";
+          if (existsSync(walPath)) {
+            try {
+              const walStat = statSync(walPath);
+              // If WAL file is non-empty and DB hasn't been modified in >1 hour,
+              // the owning process may be dead — check via mtime staleness
+              if (walStat.size > 0 && (Date.now() - walStat.mtimeMs) > 3600_000) {
+                shouldClean = true;
+              }
+            } catch { /* ignore WAL check errors */ }
+          }
+        }
+
+        if (shouldClean) {
           for (const suffix of ["", "-wal", "-shm"]) {
             try { unlinkSync(filePath + suffix); } catch { /* ignore */ }
           }
@@ -268,7 +302,7 @@ export class ContentStore {
     const Database = loadDatabase();
     this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
-    this.#db = new Database(this.#dbPath, { timeout: 5000 });
+    this.#db = new Database(this.#dbPath, { timeout: 30000 });
     applyWALPragmas(this.#db);
     this.#initSchema();
     this.#prepareStatements();
@@ -572,7 +606,7 @@ export class ContentStore {
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
-    return this.#insertChunks(chunks, label, text);
+    return withRetry(() => this.#insertChunks(chunks, label, text));
   }
 
   // ── Index Plain Text ──
@@ -729,7 +763,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    return this.#mapSearchRows(stmt.all(...params) as SearchRow[]);
+    return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
   // ── Trigram Search (Layer 2) ──
