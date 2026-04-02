@@ -453,6 +453,8 @@ async function upgrade() {
     
     if (newVersion === localVersion) {
       p.log.success(color.green("Already on latest") + ` — v${localVersion}`);
+      rmSync(tmpDir, { recursive: true, force: true });
+      return;
     } else {
       p.log.info(
         `Update available: ${color.yellow("v" + localVersion)} → ${color.green("v" + newVersion)}`,
@@ -519,24 +521,26 @@ async function upgrade() {
     });
     s.stop("Dependencies ready");
 
-    // Rebuild native addons for current Node.js ABI (fixes #131)
-    s.start("Rebuilding native addons");
-    try {
-      execFileSync("npm", ["rebuild", "better-sqlite3"], {
-        cwd: pluginRoot,
-        stdio: "pipe",
-        timeout: 60000,
-      });
-      s.stop(color.green("Native addons rebuilt"));
-      changes.push("Rebuilt better-sqlite3 for current Node.js");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      s.stop(color.yellow("Native addon rebuild warning"));
-      p.log.warn(
-        color.yellow("better-sqlite3 rebuild issue") +
-          ` — ${message}` +
-          color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
-      );
+    if (detection.platform !== 'opencode' && detection.platform !== 'kilo') {
+      // Rebuild native addons for current Node.js ABI (fixes #131)
+      s.start("Rebuilding native addons");
+      try {
+        execFileSync("npm", ["rebuild", "better-sqlite3"], {
+          cwd: pluginRoot,
+          stdio: "pipe",
+          timeout: 60000,
+        });
+        s.stop(color.green("Native addons rebuilt"));
+        changes.push("Rebuilt better-sqlite3 for current Node.js");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        s.stop(color.yellow("Native addon rebuild warning"));
+        p.log.warn(
+          color.yellow("better-sqlite3 rebuild issue") +
+            ` — ${message}` +
+            color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
+        );
+      }
     }
     
     // Update global npm
@@ -576,9 +580,11 @@ async function upgrade() {
   // Step 3: Backup settings — adapter-aware
   p.log.step(`Backing up ${adapter.name} settings...`);
   const backupPath = adapter.backupSettings();
-  if (backupPath) {
+  if (backupPath?.endsWith(".bak")) {
     p.log.success(color.green("Backup created") + color.dim(" -> " + backupPath));
     changes.push("Backed up settings");
+  } else if (backupPath) {
+    p.log.success(color.green("Backup skipped") + color.dim(" — no changes needed"));
   } else {
     p.log.warn(
       color.yellow("No existing settings to backup") +

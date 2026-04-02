@@ -234,8 +234,8 @@ export class OpenCodeAdapter implements HookAdapter {
       return [
         resolve("kilo.json"),
         resolve("kilo.jsonc"),
-        resolve(".kilocode", "kilo.json"),
-        resolve(".kilocode", "kilo.jsonc"),
+        resolve(".kilo", "kilo.json"),
+        resolve(".kilo", "kilo.jsonc"),
         join(homedir(), ".config", "kilo", "kilo.json"),
         join(homedir(), ".config", "kilo", "kilo.jsonc"),
       ];  
@@ -393,7 +393,7 @@ export class OpenCodeAdapter implements HookAdapter {
       results.push({
         check: "Plugin registration",
         status: "fail",
-        message: `No plugin array found in ${this.platform}.json`,
+        message: `No plugin array found in ${this.platform}.json or ${this.platform}.jsonc`,
         fix: "context-mode upgrade",
       });
     }
@@ -479,19 +479,22 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   backupSettings(): string | null {
-    this.settingsPath = undefined;
-    for (const configPath of this.paths()) {
+    const check = this.checkPluginRegistration();
+    
+    if (!this.settingsPath) return null;
+
+    if (check.status === "pass") {
+      return this.settingsPath;
+    } else {
       try {
-        accessSync(configPath, constants.R_OK);
-        this.settingsPath = configPath;
-        const backupPath = configPath + ".bak";
-        copyFileSync(configPath, backupPath);
+        accessSync(this.settingsPath, constants.R_OK);
+        const backupPath = this.settingsPath + ".bak";
+        copyFileSync(this.settingsPath, backupPath);
         return backupPath;
-      } catch {
-        continue;
-      }
+      } catch { 
+        return null;
+       }
     }
-    return null;
   }
 
   setHookPermissions(_pluginRoot: string): string[] {

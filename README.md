@@ -276,7 +276,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
          "command": ["context-mode"]
        }
      },
-     "plugin": ["context-mode@latest"]
+     "plugin": ["context-mode"]
    }
    ```
 
@@ -326,7 +326,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
          "command": ["context-mode"]
        }
      },
-     "plugin": ["context-mode@latest"]
+     "plugin": ["context-mode"]
    }
    ```
 
