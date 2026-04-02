@@ -12,6 +12,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { ContentStore, cleanupStaleDBs } from "../src/store.js";
+import { withRetry } from "../src/db-base.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(__dirname, "fixtures");
@@ -1228,14 +1229,9 @@ describe("SQLITE_BUSY retry logic", () => {
     expect(storeSrc).toContain("timeout: 30000");
   });
 
-  test("ContentStore retries on SQLITE_BUSY and succeeds", () => {
-    const store = createStore();
-    // Verify the withRetry method exists
-    expect(typeof (store as any).withRetry).toBe("function");
-
-    // Test that withRetry retries on SQLITE_BUSY and eventually succeeds
+  test("withRetry retries on SQLITE_BUSY and succeeds", () => {
     let attempts = 0;
-    const result = (store as any).withRetry(() => {
+    const result = withRetry(() => {
       attempts++;
       if (attempts < 3) {
         throw new Error("SQLITE_BUSY: database is locked");
@@ -1244,19 +1240,45 @@ describe("SQLITE_BUSY retry logic", () => {
     });
     expect(result).toBe("success");
     expect(attempts).toBe(3);
-    store.close();
   });
 
-  test("ContentStore returns error after max retries exhausted", () => {
-    const store = createStore();
-
-    // withRetry should throw after all retries are exhausted
+  test("withRetry throws after max retries exhausted", () => {
     expect(() => {
-      (store as any).withRetry(() => {
+      withRetry(() => {
         throw new Error("SQLITE_BUSY: database is locked");
       });
     }).toThrow(/SQLITE_BUSY.*3 retries/);
+  });
 
-    store.close();
+  test("standalone withRetry from db-base retries on SQLITE_BUSY", () => {
+    let attempts = 0;
+    const result = withRetry(() => {
+      attempts++;
+      if (attempts < 3) {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }
+      return "ok";
+    });
+    expect(result).toBe("ok");
+    expect(attempts).toBe(3);
+  });
+
+  test("standalone withRetry throws after max retries exhausted", () => {
+    expect(() => {
+      withRetry(() => {
+        throw new Error("database is locked");
+      });
+    }).toThrow(/SQLITE_BUSY.*3 retries/);
+  });
+
+  test("standalone withRetry rethrows non-BUSY errors immediately", () => {
+    let attempts = 0;
+    expect(() => {
+      withRetry(() => {
+        attempts++;
+        throw new Error("UNIQUE constraint failed");
+      });
+    }).toThrow("UNIQUE constraint failed");
+    expect(attempts).toBe(1);
   });
 });

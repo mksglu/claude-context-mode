@@ -205,6 +205,41 @@ export function defaultDBPath(prefix: string = "context-mode"): string {
 }
 
 // ─────────────────────────────────────────────────────────
+// Retry helper
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Retry a DB operation with exponential backoff on SQLITE_BUSY errors.
+ * Catches errors containing "SQLITE_BUSY" or "database is locked" and
+ * retries up to 3 times with delays: 100ms, 500ms, 2000ms.
+ * If all retries fail, throws a descriptive error.
+ */
+export function withRetry<T>(fn: () => T): T {
+  const delays = [100, 500, 2000];
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return fn();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("SQLITE_BUSY") && !msg.includes("database is locked")) {
+        throw err;
+      }
+      lastError = err instanceof Error ? err : new Error(msg);
+      if (attempt < delays.length) {
+        const delay = delays[attempt];
+        const start = Date.now();
+        while (Date.now() - start < delay) { /* busy-wait for sync retry */ }
+      }
+    }
+  }
+  throw new Error(
+    `SQLITE_BUSY: database is locked after ${delays.length} retries. ` +
+    `Original error: ${lastError?.message}`
+  );
+}
+
+// ─────────────────────────────────────────────────────────
 // Base class
 // ─────────────────────────────────────────────────────────
 
@@ -276,35 +311,8 @@ export abstract class SQLiteBase {
     closeDB(this.#db);
   }
 
-  /**
-   * Retry a DB operation with exponential backoff on SQLITE_BUSY errors.
-   * Catches errors containing "SQLITE_BUSY" or "database is locked" and
-   * retries up to 3 times with delays: 100ms, 500ms, 2000ms.
-   * If all retries fail, throws a descriptive error.
-   */
   protected withRetry<T>(fn: () => T): T {
-    const delays = [100, 500, 2000];
-    let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= delays.length; attempt++) {
-      try {
-        return fn();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("SQLITE_BUSY") && !msg.includes("database is locked")) {
-          throw err;
-        }
-        lastError = err instanceof Error ? err : new Error(msg);
-        if (attempt < delays.length) {
-          const delay = delays[attempt];
-          const start = Date.now();
-          while (Date.now() - start < delay) { /* busy-wait for sync retry */ }
-        }
-      }
-    }
-    throw new Error(
-      `SQLITE_BUSY: database is locked after ${delays.length} retries. ` +
-      `Original error: ${lastError?.message}`
-    );
+    return withRetry(fn);
   }
 
   /**

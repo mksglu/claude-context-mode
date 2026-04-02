@@ -9,7 +9,7 @@
  */
 
 import type { Database as DatabaseInstance } from "better-sqlite3";
-import { loadDatabase, applyWALPragmas, closeDB } from "./db-base.js";
+import { loadDatabase, applyWALPragmas, closeDB, withRetry } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -589,39 +589,6 @@ export class ContentStore {
     `);
   }
 
-  // ── Retry Logic ──
-
-  /**
-   * Retry a DB operation with exponential backoff on SQLITE_BUSY errors.
-   * Catches errors containing "SQLITE_BUSY" or "database is locked" and
-   * retries up to 3 times with delays: 100ms, 500ms, 2000ms.
-   * If all retries fail, throws a descriptive error.
-   */
-  withRetry<T>(fn: () => T): T {
-    const delays = [100, 500, 2000];
-    let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= delays.length; attempt++) {
-      try {
-        return fn();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("SQLITE_BUSY") && !msg.includes("database is locked")) {
-          throw err;
-        }
-        lastError = err instanceof Error ? err : new Error(msg);
-        if (attempt < delays.length) {
-          const delay = delays[attempt];
-          const start = Date.now();
-          while (Date.now() - start < delay) { /* busy-wait for sync retry */ }
-        }
-      }
-    }
-    throw new Error(
-      `SQLITE_BUSY: database is locked after ${delays.length} retries. ` +
-      `Original error: ${lastError?.message}`
-    );
-  }
-
   // ── Index ──
 
   index(options: {
@@ -639,7 +606,7 @@ export class ContentStore {
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
-    return this.withRetry(() => this.#insertChunks(chunks, label, text));
+    return withRetry(() => this.#insertChunks(chunks, label, text));
   }
 
   // ── Index Plain Text ──
@@ -796,7 +763,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    return this.withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
+    return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
   // ── Trigram Search (Layer 2) ──

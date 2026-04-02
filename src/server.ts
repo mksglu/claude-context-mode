@@ -982,14 +982,6 @@ server.registerTool(
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("SQLITE_BUSY") || message.includes("database is locked")) {
-        return trackResponse("ctx_index", {
-          content: [
-            { type: "text" as const, text: "Database temporarily busy, please retry" },
-          ],
-          isError: true,
-        });
-      }
       return trackResponse("ctx_index", {
         content: [
           { type: "text" as const, text: `Index error: ${message}` },
@@ -1190,12 +1182,6 @@ server.registerTool(
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("SQLITE_BUSY") || message.includes("database is locked")) {
-        return trackResponse("ctx_search", {
-          content: [{ type: "text" as const, text: "Database temporarily busy, please retry" }],
-          isError: true,
-        });
-      }
       return trackResponse("ctx_search", {
         content: [{ type: "text" as const, text: `Search error: ${message}` }],
         isError: true,

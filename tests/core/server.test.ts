@@ -1115,19 +1115,3 @@ describe("Session stats reset on /clear", () => {
     expect(routingBlockSrc).toContain("reset: true");
   });
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SQLITE_BUSY graceful error handling (#218)
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("SQLITE_BUSY graceful error handling", () => {
-  test("ctx_search returns MCP error on database busy instead of crashing", () => {
-    const serverSrc = readFileSync(
-      resolve(__dirname, "../../src/server.ts"),
-      "utf-8",
-    );
-    // The server should catch SQLITE_BUSY errors and return a proper MCP error response
-    expect(serverSrc).toContain("Database temporarily busy, please retry");
-    expect(serverSrc).toContain("SQLITE_BUSY");
-  });
-});
