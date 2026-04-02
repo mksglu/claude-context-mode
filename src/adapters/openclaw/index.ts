@@ -24,7 +24,6 @@ import {
   copyFileSync,
   accessSync,
   constants,
-  existsSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
@@ -43,7 +42,6 @@ import type {
   PreCompactResponse,
   SessionStartResponse,
   HookRegistration,
-  RoutingInstructionsConfig,
 } from "../types.js";
 
 // ─────────────────────────────────────────────────────────
@@ -507,45 +505,6 @@ export class OpenClawAdapter implements HookAdapter {
 
   updatePluginRegistry(_pluginRoot: string, _version: string): void {
     // OpenClaw manages plugins through npm/openclaw.json — no separate registry
-  }
-
-  // ── Routing Instructions (soft enforcement) ────────────
-
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig {
-    return {
-      fileName: "AGENTS.md",
-      globalPath: resolve(homedir(), ".openclaw", "AGENTS.md"),
-      projectRelativePath: "AGENTS.md",
-    };
-  }
-
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
-    const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
-    const sourcePath = resolve(pluginRoot, "configs", "openclaw", config.fileName);
-
-    try {
-      let content: string;
-      try {
-        content = readFileSync(sourcePath, "utf-8");
-      } catch {
-        // Fall back to opencode config if openclaw-specific doesn't exist yet
-        const fallbackPath = resolve(pluginRoot, "configs", "opencode", config.fileName);
-        content = readFileSync(fallbackPath, "utf-8");
-      }
-
-      try {
-        const existing = readFileSync(targetPath, "utf-8");
-        if (existing.includes("context-mode")) return null;
-        writeFileSync(targetPath, existing.trimEnd() + "\n\n" + content, "utf-8");
-        return targetPath;
-      } catch {
-        writeFileSync(targetPath, content, "utf-8");
-        return targetPath;
-      }
-    } catch {
-      return null;
-    }
   }
 
   // ── Internal helpers ───────────────────────────────────

@@ -32,7 +32,6 @@ import type {
   PostToolUseResponse,
   SessionStartResponse,
   HookRegistration,
-  RoutingInstructionsConfig,
 } from "../types.js";
 import {
   HOOK_TYPES as CURSOR_HOOK_NAMES,
@@ -426,19 +425,6 @@ export class CursorAdapter implements HookAdapter {
 
   updatePluginRegistry(_pluginRoot: string, _version: string): void {
     // Cursor manages extensions and native hooks internally.
-  }
-
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig {
-    return {
-      fileName: "AGENTS.md",
-      globalPath: "",
-      projectRelativePath: "AGENTS.md",
-    };
-  }
-
-  writeRoutingInstructions(_projectDir: string, _pluginRoot: string): string | null {
-    // Native Cursor hook support ships independently from any instruction-file story.
-    return null;
   }
 
   private getCandidateHookConfigPaths(): string[] {

@@ -43,11 +43,11 @@ import type {
   PreCompactResponse,
   SessionStartResponse,
   HookRegistration,
-  RoutingInstructionsConfig,
 } from "../types.js";
 import {
   HOOK_TYPES,
   HOOK_SCRIPTS,
+  REQUIRED_HOOKS,
   PRE_TOOL_USE_MATCHER_PATTERN,
   isContextModeHook,
   isAnyContextModeHook,
@@ -534,6 +534,23 @@ export class ClaudeCodeAdapter implements HookAdapter {
       }
     }
 
+    // If plugin hooks.json already covers all required hooks, skip settings.json
+    // registration entirely (Issue #198). Plugin installs don't need settings.json
+    // entries — hooks.json with ${CLAUDE_PLUGIN_ROOT} is the source of truth.
+    const pluginHooks = this.readPluginHooks(pluginRoot);
+    if (pluginHooks) {
+      const allCovered = REQUIRED_HOOKS.every((ht) =>
+        this.checkHookType(undefined, pluginHooks, ht),
+      );
+      if (allCovered) {
+        // Still write cleaned settings (stale removal) but don't add new entries
+        settings.hooks = hooks;
+        this.writeSettings(settings);
+        changes.push("Skipped settings.json registration — plugin hooks.json is sufficient");
+        return changes;
+      }
+    }
+
     // Register fresh hooks for required hook types
     const hookTypes: HookType[] = [
       HOOK_TYPES.PRE_TOOL_USE,
@@ -642,41 +659,6 @@ export class ClaudeCodeAdapter implements HookAdapter {
       writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\n", "utf-8");
     } catch {
       /* best effort */
-    }
-  }
-
-  // ── Routing Instructions (soft enforcement) ────────────
-
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig {
-    return {
-      fileName: "CLAUDE.md",
-      globalPath: resolve(homedir(), ".claude", "CLAUDE.md"),
-      projectRelativePath: "CLAUDE.md",
-    };
-  }
-
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
-    const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
-    const sourcePath = resolve(pluginRoot, "configs", "claude-code", config.fileName);
-
-    try {
-      const content = readFileSync(sourcePath, "utf-8");
-
-      // Check if file exists and already has context-mode instructions
-      try {
-        const existing = readFileSync(targetPath, "utf-8");
-        if (existing.includes("context-mode")) return null;
-        // Append to existing file
-        writeFileSync(targetPath, existing.trimEnd() + "\n\n" + content, "utf-8");
-        return targetPath;
-      } catch {
-        // File doesn't exist — create it
-        writeFileSync(targetPath, content, "utf-8");
-        return targetPath;
-      }
-    } catch {
-      return null;
     }
   }
 

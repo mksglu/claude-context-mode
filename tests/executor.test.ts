@@ -377,6 +377,34 @@ describe("Shell Execution", () => {
     assert.ok(r.stdout.includes("sum: 30"));
   });
 
+  test("shell TMPDIR points to sandbox temp dir, not project root", async () => {
+    const r = await executor.execute({
+      language: "shell",
+      code: 'echo "$TMPDIR"',
+      timeout: 5_000,
+    });
+    const reported = r.stdout.trim();
+    assert.ok(
+      !reported.startsWith(process.cwd()),
+      `TMPDIR should not be project root, got: ${reported}`,
+    );
+    assert.ok(
+      reported.includes(".ctx-mode-"),
+      `TMPDIR should be the sandbox temp dir, got: ${reported}`,
+    );
+  });
+
+  test("shell TMPDIR works cross-platform (not just echo)", async () => {
+    // Use a command that writes to TMPDIR to verify it's writable
+    const r = await executor.execute({
+      language: "shell",
+      code: 'touch "$TMPDIR/ctx-test-file" && echo "ok"',
+      timeout: 5_000,
+    });
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.trim() === "ok");
+  });
+
   test("Shell: for loop + wc", async () => {
     const r = await executor.execute({
       language: "shell",
@@ -734,16 +762,17 @@ describe("Timeout Handling", () => {
 });
 
 describe("Output Truncation", () => {
-  test("smart truncation: keeps head + tail", async () => {
-    const small = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+  test("stdout is returned in full without truncation", async () => {
+    const small = new PolyglotExecutor({ runtimes });
     const r = await small.execute({
       language: "javascript",
       code: 'for (let i = 0; i < 100; i++) console.log(`line ${i}: ${"x".repeat(20)}`);',
     });
-    assert.ok(r.stdout.includes("truncated"), "Should indicate truncation");
-    assert.ok(r.stdout.includes("line 0"), "Should preserve first lines (head)");
-    assert.ok(r.stdout.includes("line 99"), "Should preserve last lines (tail)");
-    assert.ok(r.stdout.includes("showing first"), "Should show head/tail counts");
+    assert.ok(!r.stdout.includes("truncated"), "stdout should NOT be truncated");
+    assert.ok(r.stdout.includes("line 0"), "Should contain first line");
+    assert.ok(r.stdout.includes("line 50"), "Should contain middle line (previously lost)");
+    assert.ok(r.stdout.includes("line 99"), "Should contain last line");
+    assert.ok(!r.stdout.includes("showing first"), "Should have no truncation marker");
   });
 
   test("does not truncate under limit", async () => {
@@ -754,8 +783,8 @@ describe("Output Truncation", () => {
     assert.ok(!r.stdout.includes("truncated"));
   });
 
-  test("smart truncation on stderr preserves error context", async () => {
-    const small = new PolyglotExecutor({ maxOutputBytes: 200, runtimes });
+  test("stderr is also returned in full without truncation", async () => {
+    const small = new PolyglotExecutor({ runtimes });
     const r = await small.execute({
       language: "javascript",
       code: `
@@ -763,8 +792,10 @@ describe("Output Truncation", () => {
         console.error("FINAL ERROR: something broke");
       `,
     });
-    assert.ok(r.stderr.includes("FINAL ERROR"), "Should preserve last error line (tail)");
-    assert.ok(r.stderr.includes("warn 0"), "Should preserve first warning (head)");
+    assert.ok(r.stderr.includes("FINAL ERROR"), "Should contain last error line");
+    assert.ok(r.stderr.includes("warn 0"), "Should contain first warning");
+    assert.ok(r.stderr.includes("warn 25"), "Should contain middle warning (previously lost)");
+    assert.ok(!r.stderr.includes("truncated"), "stderr should NOT be truncated");
   });
 });
 

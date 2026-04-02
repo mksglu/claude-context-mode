@@ -28,8 +28,8 @@ describe("OpenCodeAdapter", () => {
   // ── Capabilities ──────────────────────────────────────
 
   describe("capabilities", () => {
-    it("sessionStart is true", () => {
-      expect(adapter.capabilities.sessionStart).toBe(true);
+    it("sessionStart is false", () => {
+      expect(adapter.capabilities.sessionStart).toBe(false);
     });
 
     it("canInjectSessionContext is false", () => {
@@ -284,6 +284,113 @@ describe("OpenCodeAdapter", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("readSettings reads opencode.jsonc with comments stripped", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "opencode.jsonc"),
+        `{
+  // This is a line comment
+  "plugin": ["context-mode"],
+  /* Block comment */
+  "version": "1.0"
+}
+`,
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.readSettings()))`,
+        ],
+        { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
+      );
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ plugin: ["context-mode"], version: "1.0" });
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("prefers opencode.json over opencode.jsonc when both exist", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "opencode.json"), JSON.stringify({ from: "json" }));
+      writeFileSync(join(dir, "opencode.jsonc"), `{ /* comment */ "from": "jsonc" }`);
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.readSettings()))`,
+        ],
+        { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
+      );
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ from: "json" });
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("configureAllHooks works with opencode.jsonc", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "opencode.jsonc"),
+        `{
+  // My config
+  "plugin": []
+}
+`,
+      );
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.configureAllHooks('/tmp/plugin')))`,
+        ],
+        { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
+      );
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual(["Added context-mode to plugin array"]);
+      // Should write back to .jsonc (same file it read)
+      expect(JSON.parse(readFileSync(join(dir, "opencode.jsonc"), "utf-8"))).toEqual({
+        plugin: ["context-mode"],
+      });
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("validates hooks with jsonc config shows correct error message", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      // No config file at all
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.validateHooks('/tmp')))`,
+        ],
+        { cwd: dir, env: env(join(root, "home")), encoding: "utf-8" },
+      );
+      expect(run.status).toBe(0);
+      const results = JSON.parse(run.stdout);
+      const pluginCheck = results.find((r: { check: string }) => r.check === "Plugin configuration");
+      expect(pluginCheck.message).toContain("jsonc");
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("configureAllHooks writes back to .opencode/opencode.json when that is the selected config", () => {
       const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
       const dir = join(root, "project");
@@ -339,7 +446,7 @@ describe("OpenCodeAdapter for KiloCode", () => {
 
   describe("capabilities", () => {
     it("has same capabilities as OpenCode", () => {
-      expect(adapter.capabilities.sessionStart).toBe(true);
+      expect(adapter.capabilities.sessionStart).toBe(false);
       expect(adapter.capabilities.canInjectSessionContext).toBe(false);
       expect(adapter.capabilities.preToolUse).toBe(true);
       expect(adapter.capabilities.postToolUse).toBe(true);

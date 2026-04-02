@@ -146,24 +146,4 @@ describe("AntigravityAdapter", () => {
     });
   });
 
-  // ── Routing Instructions ──────────────────────────────
-
-  describe("routing instructions", () => {
-    it("fileName is GEMINI.md", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.fileName).toBe("GEMINI.md");
-    });
-
-    it("globalPath is ~/.gemini/GEMINI.md", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.globalPath).toBe(
-        resolve(homedir(), ".gemini", "GEMINI.md"),
-      );
-    });
-
-    it("projectRelativePath is GEMINI.md", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.projectRelativePath).toBe("GEMINI.md");
-    });
-  });
 });

@@ -7,6 +7,7 @@ tsconfig.json
 bun.lock
 BENCHMARK.md
 PRD*.md
+skills/context-mode-ops/
 tasks/
 .github/
 .DS_Store

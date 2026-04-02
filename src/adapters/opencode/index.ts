@@ -17,6 +17,14 @@
  */
 
 import { createHash } from "node:crypto";
+
+/** Strip JSONC comments (// and /* *​/) and trailing commas for JSON.parse. */
+function stripJsonComments(str: string): string {
+  return str
+    .replace(/\/\/.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/,(\s*[}\]])/g, "$1");
+}
 import {
   readFileSync,
   writeFileSync,
@@ -24,6 +32,7 @@ import {
   copyFileSync,
   accessSync,
   constants,
+  realpathSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
@@ -42,7 +51,6 @@ import type {
   PreCompactResponse,
   SessionStartResponse,
   HookRegistration,
-  RoutingInstructionsConfig,
   PlatformId,
 } from "../types.js";
 
@@ -93,7 +101,7 @@ export class OpenCodeAdapter implements HookAdapter {
     preToolUse: true,
     postToolUse: true,
     preCompact: true, // experimental
-    sessionStart: true,
+    sessionStart: false,
     canModifyArgs: true,
     canModifyOutput: true, // with TUI bug caveat for bash (#13575)
     canInjectSessionContext: false,
@@ -225,14 +233,20 @@ export class OpenCodeAdapter implements HookAdapter {
     if (this.platform === "kilo") {
       return [
         resolve("kilo.json"),
+        resolve("kilo.jsonc"),
         resolve(".kilocode", "kilo.json"),
+        resolve(".kilocode", "kilo.jsonc"),
         join(homedir(), ".config", "kilo", "kilo.json"),
+        join(homedir(), ".config", "kilo", "kilo.jsonc"),
       ];  
     }
     return [
       resolve("opencode.json"),
+      resolve("opencode.jsonc"),
       resolve(".opencode", "opencode.json"),
+      resolve(".opencode", "opencode.jsonc"),
       join(homedir(), ".config", "opencode", "opencode.json"),
+      join(homedir(), ".config", "opencode", "opencode.jsonc"),
     ];
   }
 
@@ -308,7 +322,8 @@ export class OpenCodeAdapter implements HookAdapter {
     for (const configPath of configPaths) {
       try {
         const raw = readFileSync(configPath, "utf-8");
-        const settings = JSON.parse(raw) as Record<string, unknown>;
+        const text = configPath.endsWith(".jsonc") ? stripJsonComments(raw) : raw;
+        const settings = JSON.parse(text) as Record<string, unknown>;
 
         if (!firstValidSettings) {
           firstValidSettings = settings;
@@ -317,8 +332,8 @@ export class OpenCodeAdapter implements HookAdapter {
 
         const plugins = settings.plugin as string[] | undefined;
         const hasPlugin = plugins?.some((p) => p.includes("context-mode"));
-        const isGlobalConfig = configPath === configPaths.at(-1);
-
+        const isGlobalConfig = configPath === configPaths.at(-1) || configPath === configPaths.at(-2);
+        
         if (hasPlugin || isGlobalConfig) {
           this.settingsPath = configPath;
           return settings;
@@ -336,7 +351,7 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   writeSettings(settings: Record<string, unknown>): void {
-    // Write to opencode.json/kilo.json in current directory
+    // Write to opencode.json(c)/kilo.json(c) in current directory
     writeFileSync(
       this.getSettingsPath(),
       JSON.stringify(settings, null, 2) + "\n",
@@ -354,7 +369,7 @@ export class OpenCodeAdapter implements HookAdapter {
       results.push({
         check: "Plugin configuration",
         status: "fail",
-        message: `Could not read ${this.platform}.json`,
+        message: `Could not read ${this.platform}.json or ${this.platform}.jsonc`,
         fix: "context-mode upgrade",
       });
       return results;
@@ -400,7 +415,7 @@ export class OpenCodeAdapter implements HookAdapter {
       return {
         check: "Plugin registration",
         status: "warn",
-        message: `Could not read ${this.platform}.json`,
+        message: `Could not read ${this.platform}.json or ${this.platform}.jsonc`,
       };
     }
 
@@ -486,38 +501,6 @@ export class OpenCodeAdapter implements HookAdapter {
 
   updatePluginRegistry(_pluginRoot: string, _version: string): void {
     // OpenCode manages plugins through npm/opencode.json — no separate registry
-  }
-
-  // ── Routing Instructions (soft enforcement) ────────────
-
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig {
-    return {
-      fileName: "AGENTS.md",
-      globalPath: resolve(homedir(), ".config", this.platform, "AGENTS.md"),
-      projectRelativePath: "AGENTS.md",
-    };
-  }
-
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
-    const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
-    const sourcePath = resolve(pluginRoot, "configs", this.platform, config.fileName);
-
-    try {
-      const content = readFileSync(sourcePath, "utf-8");
-
-      try {
-        const existing = readFileSync(targetPath, "utf-8");
-        if (existing.includes("context-mode")) return null;
-        writeFileSync(targetPath, existing.trimEnd() + "\n\n" + content, "utf-8");
-        return targetPath;
-      } catch {
-        writeFileSync(targetPath, content, "utf-8");
-        return targetPath;
-      }
-    } catch {
-      return null;
-    }
   }
 
   // ── Internal helpers ───────────────────────────────────

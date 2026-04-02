@@ -263,17 +263,6 @@ describe("OpenClawAdapter", () => {
     });
   });
 
-  // ── Routing instructions ──────────────────────────────
-
-  describe("routing instructions", () => {
-    it("returns AGENTS.md config", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.fileName).toBe("AGENTS.md");
-      expect(config.projectRelativePath).toBe("AGENTS.md");
-      expect(config.globalPath).toContain(".openclaw");
-    });
-  });
-
   // ── Hook config generation ────────────────────────────
 
   describe("generateHookConfig", () => {

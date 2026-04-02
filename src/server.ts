@@ -144,12 +144,46 @@ const sessionStats = {
   sessionStart: Date.now(),
 };
 
+/**
+ * Reset session stats to zero. Called when /clear flag is detected.
+ * The SessionStart hook writes a .clear-stats flag file on /clear,
+ * and the server checks for it before each tool call.
+ */
+function resetSessionStats(): void {
+  sessionStats.calls = {};
+  sessionStats.bytesReturned = {};
+  sessionStats.bytesIndexed = 0;
+  sessionStats.bytesSandboxed = 0;
+  sessionStats.cacheHits = 0;
+  sessionStats.cacheBytesSaved = 0;
+  sessionStats.sessionStart = Date.now();
+
+  // Also reset FTS5 content store — drop and recreate on next getStore() call
+  if (_store) {
+    try { _store.cleanup(); } catch { /* best effort */ }
+    _store = null;
+  }
+}
+
+/** Check for .clear-stats flag and reset stats if found. */
+function checkClearStatsFlag(): void {
+  const sessDir = join(homedir(), ".claude", "context-mode", "sessions");
+  try {
+    const flags = readdirSync(sessDir).filter((f) => f.endsWith(".clear-stats"));
+    for (const f of flags) {
+      unlinkSync(join(sessDir, f));
+    }
+    if (flags.length > 0) resetSessionStats();
+  } catch { /* best effort */ }
+}
+
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
 };
 
 function trackResponse(toolName: string, response: ToolResult): ToolResult {
+  checkClearStatsFlag();
   const bytes = response.content.reduce(
     (sum, c) => sum + Buffer.byteLength(c.text),
     0,
@@ -589,6 +623,16 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
             isError,
           });
         }
+        // Auto-index large error output into FTS5 — no data loss
+        if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
+          trackIndexed(Buffer.byteLength(output));
+          return trackResponse("ctx_execute", {
+            content: [
+              { type: "text" as const, text: intentSearch(output, "errors failures exceptions", isError ? `execute:${language}:error` : `execute:${language}`) },
+            ],
+            isError,
+          });
+        }
         return trackResponse("ctx_execute", {
           content: [
             { type: "text" as const, text: output },
@@ -607,6 +651,11 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
             { type: "text" as const, text: intentSearch(stdout, intent, `execute:${language}`) },
           ],
         });
+      }
+
+      // Auto-index large stdout into FTS5 — return pointer, not raw content
+      if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
+        return trackResponse("ctx_execute", indexStdout(stdout, `execute:${language}`));
       }
 
       return trackResponse("ctx_execute", {
@@ -652,6 +701,7 @@ function indexStdout(
 // ─────────────────────────────────────────────────────────
 
 const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
+const LARGE_OUTPUT_THRESHOLD = 102_400; // 100KB — auto-index into FTS5, return pointer
 
 function intentSearch(
   stdout: string,
@@ -804,6 +854,16 @@ server.registerTool(
             isError,
           });
         }
+        // Auto-index large error output into FTS5 — no data loss
+        if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
+          trackIndexed(Buffer.byteLength(output));
+          return trackResponse("ctx_execute_file", {
+            content: [
+              { type: "text" as const, text: intentSearch(output, "errors failures exceptions", isError ? `file:${path}:error` : `file:${path}`) },
+            ],
+            isError,
+          });
+        }
         return trackResponse("ctx_execute_file", {
           content: [
             { type: "text" as const, text: output },
@@ -821,6 +881,11 @@ server.registerTool(
             { type: "text" as const, text: intentSearch(stdout, intent, `file:${path}`) },
           ],
         });
+      }
+
+      // Auto-index large stdout into FTS5 — return pointer, not raw content
+      if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
+        return trackResponse("ctx_execute_file", indexStdout(stdout, `file:${path}`));
       }
 
       return trackResponse("ctx_execute_file", {
@@ -1288,7 +1353,7 @@ server.registerTool(
       const store = getStore();
       const header = (result.stdout || "").trim();
 
-      // Read full content from temp file (bypasses smartTruncate)
+      // Read full content from temp file
       let markdown: string;
       try {
         markdown = readFileSync(outputPath, "utf-8").trim();
@@ -1419,9 +1484,8 @@ server.registerTool(
 
     try {
       // Execute each command individually so every command gets its own
-      // smartTruncate budget (~100KB). Previously, all commands were
-      // concatenated into a single script where smartTruncate (60% head +
-      // 40% tail) could silently drop middle commands. (Issue #61)
+      // output capture. Full stdout is preserved and indexed into FTS5.
+      // (Issue #61, #197)
       const perCommandOutputs: string[] = [];
       const startTime = Date.now();
       let timedOut = false;
@@ -1547,9 +1611,20 @@ server.registerTool(
       "Returns context consumption statistics for the current session. " +
       "Shows total bytes returned to context, breakdown by tool, call counts, " +
       "estimated token usage, and context savings ratio.",
-    inputSchema: z.object({}),
+    inputSchema: z.object({
+      reset: z.boolean().optional().describe("Reset all stats and FTS5 store to zero. Use after /clear."),
+    }),
   },
-  async () => {
+  async ({ reset }) => {
+    // Check for clear flag BEFORE reading stats
+    checkClearStatsFlag();
+
+    if (reset) {
+      resetSessionStats();
+      return trackResponse("ctx_stats", {
+        content: [{ type: "text" as const, text: "Session stats and search index reset." }],
+      });
+    }
     const totalBytesReturned = Object.values(sessionStats.bytesReturned).reduce(
       (sum, b) => sum + b,
       0,
@@ -1991,26 +2066,15 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Write routing instructions for hookless platforms (e.g. Codex CLI, Antigravity)
+  // Log detected MCP client for diagnostics
   try {
     const { detectPlatform, getAdapter } = await import("./adapters/detect.js");
     const clientInfo = server.server.getClientVersion();
     const signal = detectPlatform(clientInfo ?? undefined);
-    const adapter = await getAdapter(signal.platform);
+    await getAdapter(signal.platform);
     if (clientInfo) {
       console.error(`MCP client: ${clientInfo.name} v${clientInfo.version} → ${signal.platform}`);
     }
-    // Routing file auto-write DISABLED for all platforms (#158, #164).
-    // Writing to project dirs dirties git trees and env var detection at
-    // MCP startup is unreliable. Routing is injected via SessionStart hooks
-    // for hook-capable platforms. Non-hook platforms rely on manual setup
-    // until `context-mode init` command is implemented.
-    // if (!adapter.capabilities.sessionStart) {
-    //   const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-    //   const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_HOME ?? process.cwd();
-    //   const written = adapter.writeRoutingInstructions(projectDir, pluginRoot);
-    //   if (written) console.error(`Wrote routing instructions: ${written}`);
-    // }
   } catch { /* best effort — don't block server startup */ }
 
   console.error(`Context Mode MCP server v${VERSION} running on stdio`);

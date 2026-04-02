@@ -200,15 +200,15 @@ describe("CLI Hook Path Tests", () => {
 // ── ABI-aware native binary caching (#148) ────────────────────────────
 
 /**
- * Extract ensureNativeCompat from start.mjs at test time.
- * start.mjs is the entry point with side effects, so we can't import it directly.
- * Instead we extract the function source via regex, wrap it as a temp ESM module,
+ * Extract ensureNativeCompat from hooks/ensure-deps.mjs at test time.
+ * ensure-deps.mjs is the shared bootstrap with side effects (auto-runs on import),
+ * so we extract the function source via regex, wrap it as a temp ESM module,
  * and dynamically import it — tests always run against the real code.
  */
 async function loadEnsureNativeCompat(): Promise<(pluginRoot: string) => void> {
-  const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
-  const match = src.match(/^function ensureNativeCompat\b[\s\S]*?^}/m);
-  if (!match) throw new Error("ensureNativeCompat not found in start.mjs");
+  const src = readFileSync(resolve(ROOT, "hooks", "ensure-deps.mjs"), "utf-8");
+  const match = src.match(/^export function ensureNativeCompat\b[\s\S]*?^}/m);
+  if (!match) throw new Error("ensureNativeCompat not found in hooks/ensure-deps.mjs");
 
   const tmpFile = join(tmpdir(), `abi-test-${Date.now()}.mjs`);
   writeFileSync(tmpFile, [
@@ -216,7 +216,7 @@ async function loadEnsureNativeCompat(): Promise<(pluginRoot: string) => void> {
     'import { resolve } from "node:path";',
     'import { createRequire } from "node:module";',
     'import { execSync } from "node:child_process";',
-    `export ${match[0]}`,
+    `${match[0]}`,
   ].join("\n"));
 
   try {
@@ -253,10 +253,11 @@ describe("ABI-aware native binary caching (#148)", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  test("start.mjs contains ensureNativeCompat function", () => {
-    const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
+  test("ensure-deps.mjs contains ensureNativeCompat function", () => {
+    const src = readFileSync(resolve(ROOT, "hooks", "ensure-deps.mjs"), "utf-8");
     expect(src).toContain("function ensureNativeCompat");
-    expect(src).toContain("ensureNativeCompat(__dirname)");
+    // ensure-deps.mjs auto-runs the function with root on import
+    expect(src).toContain("ensureNativeCompat(root)");
   });
 
   test("cache hit: copies cached ABI binary to active path", async () => {
@@ -618,16 +619,16 @@ describe("start.mjs CLI self-heal", () => {
     expect(src).toContain("writeFileSync");
   });
 
-  test("start.mjs CLI self-heal is after ensureNativeCompat and before server import", () => {
+  test("start.mjs CLI self-heal is after ensure-deps import and before server import", () => {
     const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
-    const nativeCompatIdx = src.indexOf("ensureNativeCompat(__dirname)");
+    const ensureDepsIdx = src.indexOf("ensure-deps.mjs");
     const selfHealIdx = src.indexOf('cli.bundle.mjs');
     const serverImportIdx = src.indexOf('server.bundle.mjs');
-    expect(nativeCompatIdx).toBeGreaterThan(-1);
+    expect(ensureDepsIdx).toBeGreaterThan(-1);
     expect(selfHealIdx).toBeGreaterThan(-1);
     expect(serverImportIdx).toBeGreaterThan(-1);
-    // Self-heal must be between ensureNativeCompat call and server import
-    expect(selfHealIdx).toBeGreaterThan(nativeCompatIdx);
+    // Self-heal must be between ensure-deps import and server import
+    expect(selfHealIdx).toBeGreaterThan(ensureDepsIdx);
     expect(selfHealIdx).toBeLessThan(serverImportIdx);
   });
 });
@@ -823,18 +824,18 @@ describe("Self-heal covers all hook types (#187)", () => {
 // ── PR #183 fix: path traversal prevention in OpenClaw sessionKey ──
 
 describe("OpenClaw sessionKey safety (#183)", () => {
-  const OC_SOURCE = readFileSync(resolve(ROOT, "src/openclaw-plugin.ts"), "utf-8");
+  const WR_SOURCE = readFileSync(resolve(ROOT, "src/openclaw/workspace-router.ts"), "utf-8");
 
-  test("sessionKey regex only allows safe characters (no path traversal)", () => {
+  test("workspace regex only allows safe characters (no path traversal)", () => {
     // Must use [a-zA-Z0-9_-]+ not [^:]+ to prevent ../../ in agent name
-    expect(OC_SOURCE).toContain('[a-zA-Z0-9_-]+');
-    expect(OC_SOURCE).not.toMatch(/\[\^:\]\+/);
+    expect(WR_SOURCE).toContain('[a-zA-Z0-9_-]+');
   });
 
-  test("workspace path has containment check against .openclaw base", () => {
-    // Must verify resolved path stays inside ~/.openclaw/
-    expect(OC_SOURCE).toContain('startsWith(');
-    expect(OC_SOURCE).toContain('.openclaw');
+  test("workspace path is scoped to /openclaw/workspace- prefix", () => {
+    // extractWorkspace must only match recognised /openclaw/workspace-<name> paths
+    expect(WR_SOURCE).toContain('/openclaw/workspace-');
+    // workspaceFromKey derives workspace from sessionKey agent:<name>:<channel>
+    expect(WR_SOURCE).toContain('`/openclaw/workspace-');
   });
 });
 

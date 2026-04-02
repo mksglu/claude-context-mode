@@ -46,7 +46,6 @@ import type {
   PreCompactResponse,
   SessionStartResponse,
   HookRegistration,
-  RoutingInstructionsConfig,
 } from "../types.js";
 
 // ─────────────────────────────────────────────────────────
@@ -534,38 +533,6 @@ export class GeminiCLIAdapter implements HookAdapter {
       writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
     } catch {
       /* best effort */
-    }
-  }
-
-  // ── Routing Instructions (soft enforcement) ────────────
-
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig {
-    return {
-      fileName: "GEMINI.md",
-      globalPath: resolve(homedir(), ".gemini", "GEMINI.md"),
-      projectRelativePath: "GEMINI.md",
-    };
-  }
-
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
-    const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
-    const sourcePath = resolve(pluginRoot, "configs", "gemini-cli", config.fileName);
-
-    try {
-      const content = readFileSync(sourcePath, "utf-8");
-
-      try {
-        const existing = readFileSync(targetPath, "utf-8");
-        if (existing.includes("context-mode")) return null;
-        writeFileSync(targetPath, existing.trimEnd() + "\n\n" + content, "utf-8");
-        return targetPath;
-      } catch {
-        writeFileSync(targetPath, content, "utf-8");
-        return targetPath;
-      }
-    } catch {
-      return null;
     }
   }
 

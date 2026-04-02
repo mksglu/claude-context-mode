@@ -252,28 +252,11 @@ export interface HookAdapter {
   /** Update platform's plugin registry to point to given path and version. */
   updatePluginRegistry(pluginRoot: string, version: string): void;
 
-  // ── Routing Instructions (soft enforcement) ─────────────
-
-  /** Get the routing instructions file config for this platform. */
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig;
-
-  /** Write routing instructions file to project directory if not present. Returns path written or null if already exists. */
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null;
 }
 
 // ─────────────────────────────────────────────────────────
 // Diagnostic result
 // ─────────────────────────────────────────────────────────
-
-/** Configuration for platform-specific routing instruction files. */
-export interface RoutingInstructionsConfig {
-  /** File name the platform reads (e.g., "CLAUDE.md", "GEMINI.md", "AGENTS.md"). */
-  fileName: string;
-  /** Global path for this platform (e.g., "~/.claude/CLAUDE.md"). */
-  globalPath: string;
-  /** Project-level path relative to project root (e.g., "GEMINI.md", ".github/copilot-instructions.md"). */
-  projectRelativePath: string;
-}
 
 /** Result from a platform-specific diagnostic check. */
 export interface DiagnosticResult {

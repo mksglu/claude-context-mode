@@ -50,7 +50,6 @@ import type {
   PreCompactResponse,
   SessionStartResponse,
   HookRegistration,
-  RoutingInstructionsConfig,
 } from "../types.js";
 
 // ─────────────────────────────────────────────────────────
@@ -575,41 +574,6 @@ export class VSCodeCopilotAdapter implements HookAdapter {
   updatePluginRegistry(_pluginRoot: string, _version: string): void {
     // VS Code manages extensions through its own marketplace/extension system.
     // No manual registry update needed.
-  }
-
-  // ── Routing Instructions (soft enforcement) ────────────
-
-  getRoutingInstructionsConfig(): RoutingInstructionsConfig {
-    return {
-      fileName: "copilot-instructions.md",
-      globalPath: "", // VS Code Copilot uses org-level, not global file
-      projectRelativePath: join(".github", "copilot-instructions.md"),
-    };
-  }
-
-  writeRoutingInstructions(projectDir: string, pluginRoot: string): string | null {
-    const config = this.getRoutingInstructionsConfig();
-    const targetPath = resolve(projectDir, config.projectRelativePath);
-    const sourcePath = resolve(pluginRoot, "configs", "vscode-copilot", config.fileName);
-
-    try {
-      const content = readFileSync(sourcePath, "utf-8");
-
-      // Ensure .github directory exists
-      mkdirSync(resolve(projectDir, ".github"), { recursive: true });
-
-      try {
-        const existing = readFileSync(targetPath, "utf-8");
-        if (existing.includes("context-mode")) return null;
-        writeFileSync(targetPath, existing.trimEnd() + "\n\n" + content, "utf-8");
-        return targetPath;
-      } catch {
-        writeFileSync(targetPath, content, "utf-8");
-        return targetPath;
-      }
-    } catch {
-      return null;
-    }
   }
 
   // ── Internal helpers ───────────────────────────────────

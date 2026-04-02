@@ -177,24 +177,4 @@ describe("KiroAdapter", () => {
     });
   });
 
-  // ── Routing Instructions ──────────────────────────────
-
-  describe("routing instructions", () => {
-    it("fileName is KIRO.md", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.fileName).toBe("KIRO.md");
-    });
-
-    it("globalPath is ~/.kiro/KIRO.md", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.globalPath).toBe(
-        resolve(homedir(), ".kiro", "KIRO.md"),
-      );
-    });
-
-    it("projectRelativePath is KIRO.md", () => {
-      const config = adapter.getRoutingInstructionsConfig();
-      expect(config.projectRelativePath).toBe("KIRO.md");
-    });
-  });
 });

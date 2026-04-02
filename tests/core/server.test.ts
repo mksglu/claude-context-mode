@@ -295,17 +295,58 @@ describe("Default Cap", () => {
   });
 });
 
-describe("Smart Truncation Interaction", () => {
-  test("truncation: hardCap and maxOutputBytes work together", async () => {
-    const executor = new PolyglotExecutor({ hardCapBytes: 50 * 1024, maxOutputBytes: 1024, runtimes });
+describe("hardCap still limits output", () => {
+  test("hardCap kills process but stdout is NOT truncated", async () => {
+    const executor = new PolyglotExecutor({ hardCapBytes: 50 * 1024, runtimes });
     const r = await executor.execute({
       language: "javascript",
       code: 'for (let i = 0; i < 4000; i++) console.log("x".repeat(25));',
       timeout: 10_000,
     });
     assert.ok(r.stderr.includes("output capped"), "Hard cap should trigger");
-    const stdoutBytes = Buffer.byteLength(r.stdout);
-    assert.ok(stdoutBytes < 50 * 1024, "Final stdout should be truncated by smartTruncate, got " + stdoutBytes + " bytes");
+    assert.ok(!r.stdout.includes("truncated"), "stdout should NOT have truncation marker");
+    assert.ok(!r.stdout.includes("showing first"), "stdout should NOT have head/tail marker");
+  });
+});
+
+describe("Large Output Auto-Indexing", () => {
+  test("large stdout is fully preserved by executor", async () => {
+    const executor = new PolyglotExecutor({ runtimes });
+    const r = await executor.execute({
+      language: "javascript",
+      code: 'for (let i = 0; i < 100; i++) console.log(`line ${i}: ${"x".repeat(20)}`);',
+    });
+    assert.ok(r.stdout.includes("line 0"), "Should contain first line");
+    assert.ok(r.stdout.includes("line 50"), "Should contain middle line");
+    assert.ok(r.stdout.includes("line 99"), "Should contain last line");
+    assert.ok(!r.stdout.includes("truncated"), "Should NOT be truncated");
+  });
+
+  test("large stdout is indexed into FTS5 and searchable", async () => {
+    const store = new ContentStore(":memory:");
+    const lines: string[] = [];
+    for (let i = 0; i < 5000; i++) lines.push(`line ${i}: data_value_${i}`);
+    const largeOutput = lines.join("\n");
+
+    const indexed = store.indexPlainText(largeOutput, "test:large-output");
+    assert.ok(indexed.totalChunks > 1, "Should be chunked into multiple sections");
+
+    const results = store.searchWithFallback("data_value_2500", 3, "test:large-output");
+    assert.ok(results.length > 0, "Middle content should be searchable");
+    assert.ok(results[0].content.includes("2500"), "Should find the middle line");
+
+    store.close();
+  });
+
+  test("small stdout is returned inline as-is", async () => {
+    const executor = new PolyglotExecutor({ runtimes });
+    const r = await executor.execute({
+      language: "javascript",
+      code: 'console.log("hello world");',
+    });
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes("hello world"));
+    assert.ok(!r.stdout.includes("Indexed"), "Small output should NOT be indexed pointer");
   });
 });
 
@@ -1040,5 +1081,37 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
   test("fallback only triggers when neither CLI file exists", () => {
     // There should be an else/fallback branch after checking both paths
     expect(serverSrc).toMatch(/existsSync\(fallbackPath\)/);
+  });
+});
+
+// ─── Clear stats on /clear ───────────────────────────────────────────────────
+
+describe("Session stats reset on /clear", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("server.ts has resetSessionStats function", () => {
+    expect(serverSrc).toContain("function resetSessionStats");
+  });
+
+  test("ctx_stats accepts reset parameter", () => {
+    expect(serverSrc).toContain("reset: z.boolean()");
+    expect(serverSrc).toContain("if (reset)");
+  });
+
+  test("resetSessionStats also resets FTS5 content store", () => {
+    expect(serverSrc).toContain("_store.cleanup()");
+    expect(serverSrc).toContain("_store = null");
+  });
+
+  test("routing block instructs reset after /clear", () => {
+    const routingBlockSrc = readFileSync(
+      resolve(__dirname, "../../hooks/routing-block.mjs"),
+      "utf-8",
+    );
+    expect(routingBlockSrc).toContain("After /clear");
+    expect(routingBlockSrc).toContain("reset: true");
   });
 });

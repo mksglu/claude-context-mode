@@ -41,7 +41,7 @@ import { extractEvents, extractUserEvents } from "./session/extract.js";
 import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
-import { OpenClawAdapter } from "./adapters/openclaw/index.js";
+
 import { WorkspaceRouter } from "./openclaw/workspace-router.js";
 
 // ── OpenClaw Plugin API Types ─────────────────────────────
@@ -260,12 +260,6 @@ export default {
     }
 
     // Async init: load routing module. Hooks await this.
-    // NOTE: writeRoutingInstructions is intentionally NOT called here.
-    // process.cwd() at plugin load time is the gateway's working directory, not
-    // the agent's workspace. Writing AGENTS.md to cwd() caused the file to be
-    // created in arbitrary directories (repo roots, config dirs, $HOME, etc.).
-    // The write is now deferred to session_start where the real workspace path
-    // is known via the sessionKey → workspace mapping.
     const initPromise = (async () => {
       const routingPath = resolve(buildDir, "..", "hooks", "core", "routing.mjs");
       const routing = await import(pathToFileURL(routingPath).href);
@@ -491,27 +485,6 @@ export default {
           // workspace. Derive the workspace directory from the sessionKey so we
           // only write into recognised /.openclaw/workspace* paths, never into
           // the gateway's cwd or any other arbitrary directory.
-          if (key) {
-            try {
-              const adapter = new OpenClawAdapter();
-              const openclawBase = resolve(homedir(), ".openclaw");
-              // Resolve workspace dir from sessionKey (pattern: agent:<name>:*)
-              // Restrict agent name to safe characters to prevent path traversal (#183)
-              const wsMatch = key.match(/^agent:([a-zA-Z0-9_-]+):/);
-              let wsDir: string;
-              if (wsMatch) {
-                wsDir = resolve(openclawBase, `workspace-${wsMatch[1]}`);
-              } else {
-                wsDir = resolve(openclawBase, "workspace");
-              }
-              // Containment check: never write outside ~/.openclaw/
-              if (wsDir.startsWith(openclawBase)) {
-                adapter.writeRoutingInstructions(wsDir, pluginRoot);
-              }
-            } catch {
-              // best effort — never break session start
-            }
-          }
         } catch {
           // best effort — never break session start
         }

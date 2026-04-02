@@ -170,3 +170,16 @@ export function getCleanupFlagPath(opts = CLAUDE_OPTS) {
   mkdirSync(dir, { recursive: true });
   return join(dir, `${hash}${getWorktreeSuffix()}.cleanup`);
 }
+
+/**
+ * Return the per-project clear-stats flag path.
+ * Written by SessionStart hook on /clear, read by MCP server to reset stats.
+ * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>.clear-stats
+ */
+export function getClearStatsFlagPath(opts = CLAUDE_OPTS) {
+  const projectDir = getProjectDir(opts);
+  const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
+  const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
+  mkdirSync(dir, { recursive: true });
+  return join(dir, `${hash}${getWorktreeSuffix()}.clear-stats`);
+}
