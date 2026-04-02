@@ -70,7 +70,8 @@ describe("cli.bundle.mjs — marketplace install support", () => {
   it("cli.ts upgrade doctor call prefers cli.bundle.mjs with fallback", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     expect(src).toContain("cli.bundle.mjs");
-    expect(src).toContain("build", "cli.js");
+    expect(src).toContain("build");
+    expect(src).toContain("cli.js");
     // Must use existsSync for fallback
     expect(src).toContain("existsSync");
   });
@@ -856,12 +857,6 @@ describe("Runtime summary bun detection (#190)", () => {
 
 describe("Plugin root detection (#PR refactor/opencode-improvements)", () => {
   const CLI_SOURCE = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
-
-  test("cachePluginRoot uses XDG_CACHE_HOME when set", () => {
-    const cacheRootStart = CLI_SOURCE.indexOf("function cachePluginRoot");
-    const cacheRootBody = CLI_SOURCE.slice(cacheRootStart, cacheRootStart + 500);
-    expect(cacheRootBody).toContain("process.env.XDG_CACHE_HOME");
-  });
 
   test("cachePluginRoot uses LOCALAPPDATA on Windows", () => {
     const cacheRootStart = CLI_SOURCE.indexOf("function cachePluginRoot");

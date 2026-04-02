@@ -125,8 +125,6 @@ function defaultPluginRoot(): string {
 
 // Opencode/Kilocode install plugins from npm into .cache folder
 function cachePluginRoot(platform: string): string {
-  const xdg = process.env.XDG_CACHE_HOME;
-  if (xdg) return resolve(xdg, platform, "node_modules", "context-mode");
   if (process.platform === "win32") {
     const localApp = process.env.LOCALAPPDATA;
     if (localApp) return resolve(localApp, platform, "node_modules", "context-mode");
