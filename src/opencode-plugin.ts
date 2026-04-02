@@ -76,24 +76,15 @@ function getPlatform(): AdapterPlatformType {
   return process.env.KILO ? "kilo" : "opencode";
 }
 
-const adapter = new OpenCodeAdapter(getPlatform());
-
-function getSessionDir(): string {
-  return adapter.getSessionDir();
-}
-
-function getDBPath(projectDir: string): string {
-  return adapter.getSessionDBPath(projectDir);
-}
-
 // ── Plugin Factory ────────────────────────────────────────
 
 /**
  * OpenCode plugin factory. Called once when OpenCode loads the plugin.
  * Returns an object mapping hook event names to async handler functions.
- */
+*/
 export const ContextModePlugin = async (ctx: PluginContext) => {
   // Resolve build dir from compiled JS location
+  const adapter = new OpenCodeAdapter(getPlatform());
   const buildDir = dirname(fileURLToPath(import.meta.url));
   
   // Load routing module (ESM .mjs, lives outside build/ in hooks/)
@@ -103,7 +94,7 @@ export const ContextModePlugin = async (ctx: PluginContext) => {
   
   // Initialize session
   const projectDir = ctx.directory;
-  const db = new SessionDB({ dbPath: getDBPath(projectDir) });
+  const db = new SessionDB({ dbPath: adapter.getSessionDBPath(projectDir) });
   const sessionId = randomUUID();
   db.ensureSession(sessionId, projectDir);
   
