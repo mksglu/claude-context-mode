@@ -11,6 +11,8 @@ export const HOOK_TYPES = {
   PRE_TOOL_USE: "preToolUse",
   POST_TOOL_USE: "postToolUse",
   SESSION_START: "sessionStart",
+  STOP: "stop",
+  AFTER_AGENT_RESPONSE: "afterAgentResponse",
 } as const;
 
 export type HookType = (typeof HOOK_TYPES)[keyof typeof HOOK_TYPES];
@@ -20,6 +22,8 @@ export const HOOK_SCRIPTS: Record<HookType, string> = {
   [HOOK_TYPES.PRE_TOOL_USE]: "pretooluse.mjs",
   [HOOK_TYPES.POST_TOOL_USE]: "posttooluse.mjs",
   [HOOK_TYPES.SESSION_START]: "sessionstart.mjs",
+  [HOOK_TYPES.STOP]: "stop.mjs",
+  [HOOK_TYPES.AFTER_AGENT_RESPONSE]: "afteragentresponse.mjs",
 };
 
 /** Canonical Cursor-native matchers for tools context-mode routes proactively. */

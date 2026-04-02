@@ -192,9 +192,11 @@ describe("CursorAdapter", () => {
     it("generates native Cursor hook entries for v1 hooks only", () => {
       const config = adapter.generateHookConfig(process.cwd()) as Record<string, unknown>;
       expect(Object.keys(config).sort()).toEqual([
+        "afterAgentResponse",
         "postToolUse",
         "preToolUse",
         "sessionStart",
+        "stop",
       ]);
       expect(config.preCompact).toBeUndefined();
     });
@@ -255,6 +257,57 @@ describe("CursorAdapter", () => {
       const result = adapter.checkPluginRegistration();
       expect(result.status).toBe("pass");
       expect(result.message).toContain(join(".cursor", "mcp.json"));
+    });
+  });
+
+  describe("stop hook", () => {
+    it("capabilities includes stop", () => {
+      expect(typeof adapter.parseStopInput).toBe("function");
+    });
+
+    it("parseStopInput extracts conversation_id as sessionId", () => {
+      const event = adapter.parseStopInput({
+        conversation_id: "conv-789",
+        status: "completed",
+        loop_count: 0,
+      });
+      expect(event.sessionId).toBe("conv-789");
+      expect(event.status).toBe("completed");
+      expect(event.loopCount).toBe(0);
+    });
+
+    it("parseStopInput extracts transcript_path", () => {
+      const event = adapter.parseStopInput({
+        conversation_id: "conv-1",
+        status: "completed",
+        loop_count: 3,
+        transcript_path: "/tmp/transcript.json",
+      });
+      expect(event.transcriptPath).toBe("/tmp/transcript.json");
+    });
+
+    it("formatStopResponse with followup returns followup_message", () => {
+      const resp = adapter.formatStopResponse({ followupMessage: "continue working" });
+      expect(resp).toEqual({ followup_message: "continue working" });
+    });
+
+    it("formatStopResponse without followup returns empty object", () => {
+      const resp = adapter.formatStopResponse({});
+      expect(resp).toEqual({});
+    });
+  });
+
+  describe("afterAgentResponse hook", () => {
+    it("parseAfterAgentResponseInput extracts text", () => {
+      const event = adapter.parseAfterAgentResponseInput({ text: "Here is the code..." });
+      expect(event.text).toBe("Here is the code...");
+    });
+  });
+
+  describe("generateHookConfig includes stop", () => {
+    it("generates hooks with stop entry", () => {
+      const config = adapter.generateHookConfig("/path/to/plugin");
+      expect(config).toHaveProperty("stop");
     });
   });
 });

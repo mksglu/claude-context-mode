@@ -216,6 +216,30 @@ export function defaultDBPath(prefix: string = "context-mode"): string {
  *
  * The `db` getter exposes the raw `DatabaseInstance` to subclasses only.
  */
+/**
+ * Track all live DatabaseInstance objects so we can close them on process exit.
+ * Prevents better-sqlite3 segfaults caused by V8 garbage-collecting Database
+ * objects after the native addon context is already torn down.
+ *
+ * Uses a global symbol so the set and exit handler survive vitest's module
+ * re-imports within the same fork process (ESM isolate mode clears
+ * module-level state but globalThis persists).
+ */
+const _kLiveDBs = Symbol.for("__context_mode_live_dbs__");
+const _liveDBs: Set<DatabaseInstance> = (() => {
+  const g = globalThis as Record<symbol, Set<DatabaseInstance> | undefined>;
+  if (!g[_kLiveDBs]) {
+    g[_kLiveDBs] = new Set<DatabaseInstance>();
+    process.on("exit", () => {
+      for (const db of g[_kLiveDBs]!) {
+        try { db.close(); } catch { /* already closed */ }
+      }
+      g[_kLiveDBs]!.clear();
+    });
+  }
+  return g[_kLiveDBs]!;
+})();
+
 export abstract class SQLiteBase {
   readonly #dbPath: string;
   readonly #db: DatabaseInstance;
@@ -224,6 +248,7 @@ export abstract class SQLiteBase {
     const Database = loadDatabase();
     this.#dbPath = dbPath;
     this.#db = new Database(dbPath, { timeout: 5000 });
+    _liveDBs.add(this.#db);
     applyWALPragmas(this.#db);
     this.initSchema();
     this.prepareStatements();
@@ -247,6 +272,7 @@ export abstract class SQLiteBase {
 
   /** Close the database connection without deleting files. */
   close(): void {
+    _liveDBs.delete(this.#db);
     closeDB(this.#db);
   }
 
@@ -255,6 +281,7 @@ export abstract class SQLiteBase {
    * Call on process exit or at end of session lifecycle.
    */
   cleanup(): void {
+    _liveDBs.delete(this.#db);
     closeDB(this.#db);
     deleteDBFiles(this.#dbPath);
   }

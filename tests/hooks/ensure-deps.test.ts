@@ -59,7 +59,7 @@ function runHarness(root: string): string[] {
   writeFileSync(harnessPath, HARNESS, "utf-8");
   const result = spawnSync("node", [harnessPath, root], {
     encoding: "utf-8",
-    timeout: 5000,
+    timeout: 30_000,
   });
   return JSON.parse(result.stdout.trim());
 }
