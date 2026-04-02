@@ -251,7 +251,13 @@ export class OpenCodeAdapter implements HookAdapter {
   }
 
   getSessionDir(): string {
-    const dir = join(homedir(), ".config", this.platform, "context-mode", "sessions");
+    let configDir: string;
+    if (process.platform === "win32") {
+      configDir = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+    } else {
+      configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+    }
+    const dir = join(configDir, this.platform, "context-mode", "sessions");
     mkdirSync(dir, { recursive: true });
     return dir;
   }

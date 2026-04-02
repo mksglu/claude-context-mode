@@ -177,11 +177,17 @@ describe("OpenCodeAdapter", () => {
       expect(adapter.getSettingsPath()).toBe(resolve("opencode.json"));
     });
 
-    it("session dir is under ~/.config/opencode/context-mode/sessions/", () => {
+    it("session dir is under platform-specific config directory", () => {
       const sessionDir = adapter.getSessionDir();
-      expect(sessionDir).toBe(
-        join(homedir(), ".config", "opencode", "context-mode", "sessions"),
-      );
+      let expectedDir: string;
+      if (process.platform === "win32") {
+        const configDir = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+        expectedDir = join(configDir, "opencode", "context-mode", "sessions");
+      } else {
+        const configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+        expectedDir = join(configDir, "opencode", "context-mode", "sessions");
+      }
+      expect(sessionDir).toBe(expectedDir);
     });
 
     it("configureAllHooks writes back to the global config it read", () => {
@@ -459,11 +465,17 @@ describe("OpenCodeAdapter for KiloCode", () => {
       expect(adapter.getSettingsPath()).toBe(resolve("kilo.json"));
     });
 
-    it("session dir is under ~/.config/kilo/context-mode/sessions/", () => {
+    it("session dir is under platform-specific config directory", () => {
       const sessionDir = adapter.getSessionDir();
-      expect(sessionDir).toBe(
-        join(homedir(), ".config", "kilo", "context-mode", "sessions"),
-      );
+      let expectedDir: string;
+      if (process.platform === "win32") {
+        const configDir = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+        expectedDir = join(configDir, "kilo", "context-mode", "sessions");
+      } else {
+        const configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+        expectedDir = join(configDir, "kilo", "context-mode", "sessions");
+      }
+      expect(sessionDir).toBe(expectedDir);
     });
   });
 });

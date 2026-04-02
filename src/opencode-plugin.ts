@@ -79,13 +79,13 @@ function getPlatform(): AdapterPlatformType {
 }
 
 function getSessionDir(): string {
-  const dir = join(
-    homedir(),
-    ".config",
-    getPlatform(),
-    "context-mode",
-    "sessions",
-  );
+  let configDir: string;
+  if (process.platform === "win32") {
+    configDir = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+  } else {
+    configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  }
+  const dir = join(configDir, getPlatform(), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
