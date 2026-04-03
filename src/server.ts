@@ -498,16 +498,9 @@ server.registerTool(
           "Use search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
           "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.",
         ),
-      inheritEnvKeys: z
-        .array(z.string())
-        .optional()
-        .describe(
-          "Environment variables to inherit from the parent process (e.g. ['TMPDIR']). " +
-          "Security-critical variables (NODE_OPTIONS, LD_PRELOAD, etc.) are always blocked.",
-        ),
     }),
   },
-  async ({ language, code, timeout, background, intent, inheritEnvKeys }) => {
+  async ({ language, code, timeout, background, intent }) => {
     // Security: deny-only firewall
     if (language === "shell") {
       const denied = checkDenyPolicy(code, "execute");
@@ -572,7 +565,7 @@ ${code}
 __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nsetInterval(()=>{},2147483647);' : ''}
 })(typeof require!=='undefined'?require:null);`;
       }
-      const result = await executor.execute({ language, code: instrumentedCode, timeout, background, inheritEnvKeys });
+      const result = await executor.execute({ language, code: instrumentedCode, timeout, background });
 
       // Parse sandbox network metrics from stderr
       const netMatch = result.stderr?.match(/__CM_NET__:(\d+)/);
@@ -1480,16 +1473,9 @@ server.registerTool(
         .optional()
         .default(60000)
         .describe("Max execution time in ms (default: 60s)"),
-      inheritEnvKeys: z
-        .array(z.string())
-        .optional()
-        .describe(
-          "Environment variables to inherit from the parent process (e.g. ['TMPDIR']). " +
-          "Security-critical variables (NODE_OPTIONS, LD_PRELOAD, etc.) are always blocked.",
-        ),
     }),
   },
-  async ({ commands, queries, timeout, inheritEnvKeys }) => {
+  async ({ commands, queries, timeout }) => {
     // Security: check each command against deny patterns
     for (const cmd of commands) {
       const denied = checkDenyPolicy(cmd.command, "batch_execute");
@@ -1519,7 +1505,6 @@ server.registerTool(
           language: "shell",
           code: `${cmd.command} 2>&1`,
           timeout: remaining,
-          inheritEnvKeys,
         });
 
         const output = result.stdout || "(no output)";

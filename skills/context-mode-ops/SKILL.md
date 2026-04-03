@@ -7,6 +7,26 @@ description: Manage context-mode GitHub issues, PRs, releases, and marketing wit
 
 Parallel subagent army for issue triage, PR review, and releases.
 
+## Claim Verification: BLOCKING GATE
+
+<claim_verification_enforcement>
+STOP. Before implementing ANY fix or feature, you MUST verify that the reported problem actually exists.
+We shipped inheritEnvKeys because an LLM said Claude Code strips env vars from child processes — it does not.
+We got burned shipping a fix for an unverified claim. Never again.
+
+RULE: No code without proof. Every bug must be reproduced. Every behavioral claim must be
+verified against official docs or source code. LLM knowledge about platform behavior is NOT evidence.
+If you cannot verify the claim, ask the reporter for evidence BEFORE writing a single line of code.
+</claim_verification_enforcement>
+
+**Read [validation.md](validation.md) Problem Verification section FIRST.** Summary:
+
+1. **Bug reports**: Reproduce locally or request reproduction steps. No repro = no fix.
+2. **Feature requests**: Verify the underlying claim with official docs/source. Never trust LLM assertions about how platforms behave.
+3. **Performance claims**: Benchmark it. "Should be faster" is not evidence.
+4. **Cannot verify?** Comment on the issue asking for `ctx-debug.sh` output and repro steps. Do NOT implement speculatively.
+5. Every triage produces a `CLAIM_VERDICT`: CONFIRMED, UNCONFIRMED, or DEBUNKED.
+
 ## TDD-First: BLOCKING GATE
 
 <tdd_enforcement>
@@ -74,6 +94,7 @@ Never use curl/wget to GitHub API. `gh` handles auth, pagination, and rate limit
 ## Validation (Every Workflow)
 
 Before shipping ANY change, validate per [validation.md](validation.md):
+- [ ] **Problem verified** — claim reproduced or confirmed with hard evidence (CLAIM_VERDICT logged)
 - [ ] ENV vars verified against real platform source (not LLM hallucinations)
 - [ ] All 12 adapter tests pass: `npx vitest run tests/adapters/`
 - [ ] TypeScript compiles: `npm run typecheck`

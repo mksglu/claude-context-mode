@@ -76,7 +76,49 @@ Agents to spawn:
 9. OS Compatibility Architect (CLI runs on all OS)
 ```
 
-### 4. Investigation Phase (Parallel)
+### 4. Claim Verification — BLOCKING GATE
+
+<claim_verification_enforcement>
+STOP. Before ANY agent writes implementation code, the claim in the issue MUST be verified
+with hard evidence. We shipped inheritEnvKeys because an LLM said Claude Code strips env vars
+— it doesn't. We got burned shipping a fix for an unverified claim. Never again.
+</claim_verification_enforcement>
+
+**Every issue makes a claim. Verify it BEFORE coding.**
+
+| Issue Type | Required Evidence | How to Get It |
+|------------|-------------------|---------------|
+| **Bug report** | Reproduce locally with a failing test or command | Run the exact steps from the report. If it doesn't fail, the bug may not exist. |
+| **Feature request claiming behavior X** | Prove behavior X actually happens | Check official docs, source code, or web search. NOT LLM knowledge — LLMs hallucinate platform behavior. |
+| **Feature request claiming perf issue** | Benchmark the actual impact | Measure before/after. No "it should be faster" — show numbers. |
+| **"Tool X sets env var Y"** | Find it in official source | `ctx_fetch_and_index` the platform's docs/source. Grep their repo. If you can't find it, it probably doesn't exist. |
+
+**Verification Steps:**
+
+1. **Architect agents** must produce a `CLAIM_VERDICT` before any Staff Engineer writes code:
+   ```
+   CLAIM: "{exact claim from the issue}"
+   EVIDENCE: {link to official doc, source file, or reproduction output}
+   VERDICT: CONFIRMED | UNCONFIRMED | HALLUCINATED
+   ```
+
+2. If `VERDICT: UNCONFIRMED` — do NOT implement. Instead, comment on the issue:
+   ```
+   We couldn't reproduce/verify this claim. Could you provide:
+   - Debug output from: npx context-mode doctor (or ctx-debug.sh)
+   - Exact steps to reproduce
+   - Platform version and OS
+
+   We want to fix this but need to confirm the problem exists first.
+   ```
+
+3. If `VERDICT: HALLUCINATED` — the reporter (or their LLM) made up a behavior that doesn't exist. Comment kindly explaining the misunderstanding. Close with "working as intended" if appropriate.
+
+4. Only `VERDICT: CONFIRMED` proceeds to the Investigation Phase below.
+
+**The `ctx-debug.sh` script exists for exactly this purpose.** When in doubt, ask the reporter to run it and paste the output.
+
+### 5. Investigation Phase (Parallel)
 
 All agents investigate simultaneously:
 
@@ -98,7 +140,7 @@ All agents investigate simultaneously:
 - Run full affected adapter tests
 - Report: DRAFT_FIX with RED→GREEN evidence for each behavior
 
-### 5. Ping-Pong Review
+### 6. Ping-Pong Review
 
 Route Staff Engineer outputs to their paired Architects:
 
@@ -110,7 +152,7 @@ EM reads Staff Engineer result
   → Max 2 rounds, then EM decides
 ```
 
-### 6. Validate (QA Engineer)
+### 7. Validate (QA Engineer)
 
 QA Engineer runs the full validation matrix:
 
@@ -142,7 +184,7 @@ TypeScript:    ✓ no errors
 Full Suite:    ✓ 47/47 passed
 ```
 
-### 7. Push Directly to `next`
+### 8. Push Directly to `next`
 
 **Do NOT open a PR.** Push fixes directly to the `next` branch:
 
@@ -167,7 +209,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
 git push origin next
 ```
 
-### 8. Comment on Issue & Close
+### 9. Comment on Issue & Close
 
 After pushing to `next`, comment and **close the issue immediately**:
 
@@ -198,8 +240,14 @@ gh issue close {N}
 ## Decision Tree: Fix vs. Wontfix vs. Needs Info
 
 ```
-Issue is clear and reproducible?
-├── YES → Fix it (steps 3-8 above)
+Issue makes a claim about platform behavior?
+├── YES → Run Claim Verification (Step 4) FIRST
+│   ├── CONFIRMED → Fix it (steps 5-9 above)
+│   ├── UNCONFIRMED → Request evidence (ctx-debug.sh output, repro steps)
+│   └── HALLUCINATED → Explain kindly, close if appropriate
+│
+Issue is clear and reproducible (no behavioral claim)?
+├── YES → Fix it (steps 5-9 above)
 ├── UNCLEAR → Comment asking for reproduction steps
 │   └── Template: "Could you share the exact command/config that triggers this?"
 └── BY DESIGN → Explain why, close with "working as intended" label

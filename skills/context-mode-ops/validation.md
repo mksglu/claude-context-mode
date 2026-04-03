@@ -2,6 +2,74 @@
 
 Cross-cutting validation rules used by ALL workflows (triage, review, release).
 
+## Problem Verification — FIRST GATE
+
+<problem_verification_enforcement>
+This is the FIRST validation step, before anything else. We shipped inheritEnvKeys because
+we trusted an LLM claim that Claude Code strips environment variables — it does not.
+We got burned shipping a fix for an unverified claim. Never again.
+Every bug report, feature request, and behavioral claim MUST be proven true before code is written.
+</problem_verification_enforcement>
+
+### For Bug Reports
+
+**Reproduce it or reject it.** Run the exact reproduction steps from the issue. If it doesn't fail, the bug may not exist.
+
+```
+Step 1: Extract the claimed reproduction steps from the issue
+Step 2: Run them locally (use ctx_execute or a test)
+Step 3: Record the ACTUAL output
+Step 4: Compare actual vs. claimed behavior
+Step 5: VERDICT:
+  → REPRODUCED: Bug is real, proceed to fix
+  → NOT_REPRODUCED: Ask reporter for ctx-debug.sh output and exact repro steps
+  → INVALID: Reporter's environment is misconfigured, help them fix it
+```
+
+### For Feature Requests
+
+**Verify the underlying claim.** Feature requests always contain an implicit claim ("X behaves this way", "Y is slow", "Z doesn't support W"). Prove the claim first.
+
+```
+Step 1: Identify the claim (e.g., "Claude Code strips env vars from child processes")
+Step 2: Find HARD EVIDENCE — official docs, source code, or measured benchmarks
+  → Use ctx_fetch_and_index on official docs/repos
+  → Use ctx_execute to run actual tests
+  → NEVER trust LLM knowledge about platform behavior — LLMs hallucinate this constantly
+Step 3: VERDICT:
+  → CONFIRMED: Claim is true, proceed to design
+  → UNCONFIRMED: Cannot verify — ask reporter for evidence before implementing
+  → DEBUNKED: Claim is false — comment on issue explaining the misunderstanding
+```
+
+### Requesting Evidence from Reporters
+
+When a claim cannot be verified, comment on the issue BEFORE implementing:
+
+```markdown
+We want to address this but need to verify the underlying behavior first.
+Could you provide:
+1. Output from: `npx context-mode doctor` (or run `ctx-debug.sh`)
+2. Exact reproduction steps
+3. Platform version, adapter, and OS
+
+We'll investigate as soon as we can confirm the issue. Thanks for reporting!
+```
+
+### Evidence Log
+
+Every triage MUST produce a verification entry:
+
+```
+CLAIM: "{exact claim}"
+SOURCE: {issue number or PR}
+EVIDENCE: {link to doc, test output, or benchmark result}
+VERDICT: CONFIRMED | UNCONFIRMED | DEBUNKED
+ACTION: {proceed | request-info | close-as-invalid}
+```
+
+---
+
 ## ENV Variable Verification
 
 LLMs frequently hallucinate environment variables. Every ENV var in an issue or PR must be verified.
@@ -229,6 +297,7 @@ npm run typecheck
 
 Every change, regardless of workflow, must pass:
 
+- [ ] **Problem verified** — CLAIM_VERDICT is CONFIRMED with hard evidence (this is gate zero)
 - [ ] `npm run typecheck` — 0 errors
 - [ ] `npm test` — all pass
 - [ ] Adapter tests — all 12 pass (or N/A if untouched)
