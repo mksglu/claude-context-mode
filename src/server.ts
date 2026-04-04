@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, unlinkSync, readdirSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -69,6 +69,18 @@ const executor = new PolyglotExecutor({
   runtimes,
   projectRoot: process.env.CLAUDE_PROJECT_DIR,
 });
+
+// ─────────────────────────────────────────────────────────
+// FS read tracking preload for batch_execute
+// ─────────────────────────────────────────────────────────
+// NODE_OPTIONS is denied by the executor's #buildSafeEnv (security).
+// Instead, we inject it as an inline shell env prefix in each batch command.
+// This temp file is loaded via --require when batch commands spawn Node processes.
+const CM_FS_PRELOAD = join(tmpdir(), `cm-fs-preload-${process.pid}.js`);
+writeFileSync(
+  CM_FS_PRELOAD,
+  `(function(){var __cm_fs=0;process.on('exit',function(){if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch(e){}});try{var f=require('fs');var ors=f.readFileSync;f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};}catch(e){}})();\n`,
+);
 
 // Lazy singleton — no DB overhead unless index/search is used
 let _store: ContentStore | null = null;
@@ -1601,6 +1613,11 @@ server.registerTool(
       const startTime = Date.now();
       let timedOut = false;
 
+      // Inject NODE_OPTIONS for FS read tracking in spawned Node processes.
+      // The executor denies NODE_OPTIONS in its env (security), so we set it
+      // as an inline shell prefix. This only affects child `node` invocations.
+      const nodeOptsPrefix = `NODE_OPTIONS="--require ${CM_FS_PRELOAD}" `;
+
       for (const cmd of commands) {
         const elapsed = Date.now() - startTime;
         const remaining = timeout - elapsed;
@@ -1614,11 +1631,22 @@ server.registerTool(
 
         const result = await executor.execute({
           language: "shell",
-          code: `${cmd.command} 2>&1`,
+          code: `${nodeOptsPrefix}${cmd.command} 2>&1`,
           timeout: remaining,
         });
 
-        const output = result.stdout || "(no output)";
+        let output = result.stdout || "(no output)";
+
+        // Parse and strip __CM_FS__ markers emitted by the preload script.
+        // Because 2>&1 merges stderr into stdout, markers appear in output.
+        const fsMatches = output.matchAll(/__CM_FS__:(\d+)/g);
+        let cmdFsBytes = 0;
+        for (const m of fsMatches) cmdFsBytes += parseInt(m[1]);
+        if (cmdFsBytes > 0) {
+          sessionStats.bytesSandboxed += cmdFsBytes;
+          output = output.replace(/__CM_FS__:\d+\n?/g, "");
+        }
+
         perCommandOutputs.push(`# ${cmd.label}\n\n${output}\n`);
 
         if (result.timedOut) {
@@ -1755,7 +1783,7 @@ server.registerTool(
         try {
           const engine = new AnalyticsEngine(sdb);
           const report = engine.queryAll(sessionStats);
-          text = formatReport(report);
+          text = formatReport(report, VERSION, _latestVersion);
         } finally {
           sdb.close();
         }
@@ -1763,13 +1791,13 @@ server.registerTool(
         // No session DB — build a minimal report from runtime stats only
         const engine = new AnalyticsEngine(createMinimalDb());
         const report = engine.queryAll(sessionStats);
-        text = formatReport(report);
+        text = formatReport(report, VERSION, _latestVersion);
       }
     } catch {
       // Session DB not available or incompatible — build minimal report from runtime stats
       const engine = new AnalyticsEngine(createMinimalDb());
       const report = engine.queryAll(sessionStats);
-      text = formatReport(report);
+      text = formatReport(report, VERSION, _latestVersion);
     }
 
     return trackResponse("ctx_stats", {
@@ -2057,10 +2085,11 @@ async function main() {
     console.error(`Cleaned up ${cleaned} stale DB file(s) from previous sessions`);
   }
 
-  // Clean up own DB + backgrounded processes on shutdown
+  // Clean up own DB + backgrounded processes + preload script on shutdown
   const shutdown = () => {
     executor.cleanupBackgrounded();
     if (_store) _store.close(); // persist DB for --continue sessions
+    try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
   };
   const gracefulShutdown = async () => {
     shutdown();

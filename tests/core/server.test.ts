@@ -1476,3 +1476,39 @@ describe("FS read instrumentation", () => {
     expect(serverSrc).toContain('result.stderr.replace(/\\n?__CM_FS__:\\d+\\n?/g, "")');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// batch_execute FS read tracking via NODE_OPTIONS preload
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("batch_execute FS read tracking", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("creates CM_FS_PRELOAD temp file with FS tracking script", () => {
+    expect(serverSrc).toContain("CM_FS_PRELOAD");
+    expect(serverSrc).toContain("cm-fs-preload-");
+    // Preload script must write __CM_FS__ marker to stderr on exit
+    expect(serverSrc).toMatch(/writeFileSync\(\s*CM_FS_PRELOAD/);
+  });
+
+  test("sets NODE_OPTIONS with --require for batch commands", () => {
+    expect(serverSrc).toContain('NODE_OPTIONS="--require ${CM_FS_PRELOAD}"');
+    expect(serverSrc).toContain("nodeOptsPrefix");
+  });
+
+  test("parses __CM_FS__ from batch output and updates bytesSandboxed", () => {
+    expect(serverSrc).toContain("/__CM_FS__:(\\d+)/g");
+    expect(serverSrc).toContain("sessionStats.bytesSandboxed += cmdFsBytes");
+  });
+
+  test("strips __CM_FS__ markers from batch command output", () => {
+    expect(serverSrc).toContain('output.replace(/__CM_FS__:\\d+\\n?/g, "")');
+  });
+
+  test("cleans up preload file on shutdown", () => {
+    expect(serverSrc).toContain("unlinkSync(CM_FS_PRELOAD)");
+  });
+});

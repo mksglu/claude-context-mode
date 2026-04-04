@@ -1,20 +1,14 @@
 /**
- * AnalyticsEngine — All 27 metrics from SessionDB.
+ * AnalyticsEngine — Runtime savings + session continuity reporting.
  *
- * Computes session-level and cross-session analytics using SQL queries
- * and JavaScript post-processing. Groups:
- *
- *  Group 1 (SQL Direct):    17 metrics — direct SQL against session tables
- *  Group 2 (JS Computed):    3 metrics — SQL + JS post-processing
- *  Group 3 (Runtime):        4 metrics — stubs for server.ts tracking
- *  Group 4 (New Extractor):  3 metrics — stubs for future extractors
+ * Computes context-window savings from runtime stats and queries
+ * session continuity data from SessionDB.
  *
  * Usage:
  *   const engine = new AnalyticsEngine(sessionDb);
  *   const report = engine.queryAll(runtimeStats);
  */
 
-import type { SessionDB } from "./db.js";
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -27,54 +21,6 @@ export interface DatabaseAdapter {
     get(...params: unknown[]): unknown;
     all(...params: unknown[]): unknown[];
   };
-}
-
-/** Weekly trend data point */
-export interface WeeklyTrendRow {
-  day: string;
-  sessions: number;
-}
-
-/** Category distribution row */
-export interface ContinuityRow {
-  category: string;
-  count: number;
-}
-
-/** Hourly productivity row */
-export interface HourlyRow {
-  hour: string;
-  count: number;
-}
-
-/** Project distribution row */
-export interface ProjectRow {
-  project_dir: string;
-  sessions: number;
-}
-
-/** CLAUDE.md freshness row */
-export interface FreshnessRow {
-  data: string;
-  last_updated: string;
-}
-
-/** Rework rate row */
-export interface ReworkRow {
-  data: string;
-  edits: number;
-}
-
-/** Subagent usage row */
-export interface SubagentRow {
-  data: string;
-  total: number;
-}
-
-/** Skill usage row */
-export interface SkillRow {
-  data: string;
-  invocations: number;
 }
 
 /** Context savings result (#1) */
@@ -104,12 +50,6 @@ export interface ToolSavingsRow {
 export interface SandboxIO {
   inputBytes: number;
   outputBytes: number;
-}
-
-/** Pattern insight result (#6) */
-export interface PatternInsight {
-  pattern: string;
-  confidence: number;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -156,40 +96,7 @@ export interface FullReport {
   /** Session metadata from SessionDB */
   session: {
     id: string;
-    duration_min: number | null;
-    tool_calls: number;
     uptime_min: string;
-  };
-  /** Activity metrics */
-  activity: {
-    commits: number;
-    errors: number;
-    error_rate_pct: number;
-    tool_diversity: number;
-    efficiency_score: number;
-    commits_per_session_avg: number;
-    session_outcome: string;
-    productive_pct: number;
-    exploratory_pct: number;
-  };
-  /** Pattern metrics */
-  patterns: {
-    hourly_commits: number[];
-    weekly_trend: Array<{ day: string; sessions: number }>;
-    iteration_cycles: number;
-    rework: Array<{ file: string; edits: number }>;
-  };
-  /** Health metrics */
-  health: {
-    claude_md_freshness: Array<{ project: string; days_ago: number | null }>;
-    compactions_this_week: number;
-    weekly_sessions: number;
-    permission_denials: number;
-  };
-  /** Agent metrics */
-  agents: {
-    subagents: Array<{ type: string; count: number }>;
-    skills: Array<{ name: string; count: number }>;
   };
   /** Session continuity data */
   continuity: {
@@ -263,357 +170,6 @@ export class AnalyticsEngine {
   }
 
   // ═══════════════════════════════════════════════════════
-  // GROUP 1 — SQL Direct (17 metrics)
-  // ═══════════════════════════════════════════════════════
-
-  /**
-   * #5 Weekly Trend — sessions started per day over the last 7 days.
-   * Returns an array of { day, sessions } sorted by day.
-   */
-  weeklyTrend(): WeeklyTrendRow[] {
-    return this.db.prepare(
-      `SELECT date(started_at) as day, COUNT(*) as sessions
-       FROM session_meta
-       WHERE started_at > datetime('now', '-7 days')
-       GROUP BY day`,
-    ).all() as WeeklyTrendRow[];
-  }
-
-  /**
-   * #7 Session Continuity — event category distribution for a session.
-   * Shows what the session focused on (file ops, git, errors, etc.).
-   */
-  sessionContinuity(sessionId: string): ContinuityRow[] {
-    return this.db.prepare(
-      `SELECT category, COUNT(*) as count
-       FROM session_events
-       WHERE session_id = ?
-       GROUP BY category`,
-    ).all(sessionId) as ContinuityRow[];
-  }
-
-  /**
-   * #8 Commit Count — number of git commits made during a session.
-   * Matches events where category='git' and data contains 'commit'.
-   */
-  commitCount(sessionId: string): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt
-       FROM session_events
-       WHERE session_id = ? AND category = 'git' AND data LIKE '%commit%'`,
-    ).get(sessionId) as { cnt: number };
-    return row.cnt;
-  }
-
-  /**
-   * #9 Error Count — total error events in a session.
-   */
-  errorCount(sessionId: string): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt
-       FROM session_events
-       WHERE session_id = ? AND category = 'error'`,
-    ).get(sessionId) as { cnt: number };
-    return row.cnt;
-  }
-
-  /**
-   * #10 Session Duration — elapsed minutes from session start to last event.
-   * Returns null if last_event_at is not set (session still initializing).
-   */
-  sessionDuration(sessionId: string): number | null {
-    const row = this.db.prepare(
-      `SELECT (julianday(last_event_at) - julianday(started_at)) * 24 * 60 as minutes
-       FROM session_meta
-       WHERE session_id = ?`,
-    ).get(sessionId) as { minutes: number | null } | undefined;
-    return row?.minutes ?? null;
-  }
-
-  /**
-   * #11 Error Rate — percentage of events that are errors in a session.
-   * Returns 0 for sessions with no events (division by zero protection).
-   */
-  errorRate(sessionId: string): number {
-    const row = this.db.prepare(
-      `SELECT ROUND(100.0 * SUM(CASE WHEN category='error' THEN 1 ELSE 0 END) / COUNT(*), 1) as rate
-       FROM session_events
-       WHERE session_id = ?`,
-    ).get(sessionId) as { rate: number | null };
-    return row.rate ?? 0;
-  }
-
-  /**
-   * #12 Tool Diversity — number of distinct MCP tools used in a session.
-   * Higher diversity suggests more sophisticated tool usage.
-   */
-  toolDiversity(sessionId: string): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(DISTINCT data) as cnt
-       FROM session_events
-       WHERE session_id = ? AND category = 'mcp'`,
-    ).get(sessionId) as { cnt: number };
-    return row.cnt;
-  }
-
-  /**
-   * #14 Hourly Productivity — event distribution by hour of day.
-   * Optionally scoped to a session; omit sessionId for all sessions.
-   */
-  hourlyProductivity(sessionId?: string): HourlyRow[] {
-    if (sessionId) {
-      return this.db.prepare(
-        `SELECT strftime('%H', created_at) as hour, COUNT(*) as count
-         FROM session_events
-         WHERE session_id = ?
-         GROUP BY hour`,
-      ).all(sessionId) as HourlyRow[];
-    }
-    return this.db.prepare(
-      `SELECT strftime('%H', created_at) as hour, COUNT(*) as count
-       FROM session_events
-       GROUP BY hour`,
-    ).all() as HourlyRow[];
-  }
-
-  /**
-   * #15 Project Distribution — session count per project directory.
-   * Sorted descending by session count.
-   */
-  projectDistribution(): ProjectRow[] {
-    return this.db.prepare(
-      `SELECT project_dir, COUNT(*) as sessions
-       FROM session_meta
-       GROUP BY project_dir
-       ORDER BY sessions DESC`,
-    ).all() as ProjectRow[];
-  }
-
-  /**
-   * #16 Compaction Count — number of snapshot compactions for a session.
-   * Higher counts indicate longer/more active sessions.
-   */
-  compactionCount(sessionId: string): number {
-    const row = this.db.prepare(
-      `SELECT compact_count
-       FROM session_meta
-       WHERE session_id = ?`,
-    ).get(sessionId) as { compact_count: number } | undefined;
-    return row?.compact_count ?? 0;
-  }
-
-  /**
-   * #17 Weekly Session Count — total sessions started in the last 7 days.
-   */
-  weeklySessionCount(): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt
-       FROM session_meta
-       WHERE started_at > datetime('now', '-7 days')`,
-    ).get() as { cnt: number };
-    return row.cnt;
-  }
-
-  /**
-   * #18 Commits Per Session — average commits across all sessions.
-   * Returns 0 when no sessions exist (NULLIF prevents division by zero).
-   */
-  commitsPerSession(): number {
-    const row = this.db.prepare(
-      `SELECT ROUND(1.0 * (SELECT COUNT(*) FROM session_events WHERE category='git' AND data LIKE '%commit%')
-        / NULLIF((SELECT COUNT(DISTINCT session_id) FROM session_meta), 0), 1) as avg`,
-    ).get() as { avg: number | null };
-    return row.avg ?? 0;
-  }
-
-  /**
-   * #22 CLAUDE.md Freshness — last update timestamp for each rule file.
-   * Helps identify stale configuration files.
-   */
-  claudeMdFreshness(): FreshnessRow[] {
-    return this.db.prepare(
-      `SELECT data, MAX(created_at) as last_updated
-       FROM session_events
-       WHERE category = 'rule'
-       GROUP BY data`,
-    ).all() as FreshnessRow[];
-  }
-
-  /**
-   * #24 Rework Rate — files edited more than once (indicates iteration/rework).
-   * Sorted descending by edit count.
-   */
-  reworkRate(sessionId?: string): ReworkRow[] {
-    if (sessionId) {
-      return this.db.prepare(
-        `SELECT data, COUNT(*) as edits
-         FROM session_events
-         WHERE session_id = ? AND category = 'file'
-         GROUP BY data
-         HAVING edits > 1
-         ORDER BY edits DESC`,
-      ).all(sessionId) as ReworkRow[];
-    }
-    return this.db.prepare(
-      `SELECT data, COUNT(*) as edits
-       FROM session_events
-       WHERE category = 'file'
-       GROUP BY data
-       HAVING edits > 1
-       ORDER BY edits DESC`,
-    ).all() as ReworkRow[];
-  }
-
-  /**
-   * #25 Session Outcome — classify a session as 'productive' or 'exploratory'.
-   * Productive: has at least one commit AND last event is not an error.
-   */
-  sessionOutcome(sessionId: string): "productive" | "exploratory" {
-    const row = this.db.prepare(`
-      SELECT CASE
-        WHEN EXISTS(SELECT 1 FROM session_events WHERE session_id=? AND category='git' AND data LIKE '%commit%')
-         AND NOT EXISTS(SELECT 1 FROM session_events WHERE session_id=?
-             AND category='error' AND id=(SELECT MAX(id) FROM session_events WHERE session_id=?))
-        THEN 'productive'
-        ELSE 'exploratory'
-      END as outcome
-    `).get(sessionId, sessionId, sessionId) as { outcome: "productive" | "exploratory" };
-    return row.outcome;
-  }
-
-  /**
-   * #26 Subagent Usage — subagent spawn counts grouped by type/purpose.
-   */
-  subagentUsage(sessionId: string): SubagentRow[] {
-    return this.db.prepare(
-      `SELECT COUNT(*) as total, data
-       FROM session_events
-       WHERE session_id = ? AND category = 'subagent'
-       GROUP BY data`,
-    ).all(sessionId) as SubagentRow[];
-  }
-
-  /**
-   * #27 Skill Usage — skill/slash-command invocation frequency.
-   * Sorted descending by invocation count.
-   */
-  skillUsage(sessionId: string): SkillRow[] {
-    return this.db.prepare(
-      `SELECT data, COUNT(*) as invocations
-       FROM session_events
-       WHERE session_id = ? AND category = 'skill'
-       GROUP BY data
-       ORDER BY invocations DESC`,
-    ).all(sessionId) as SkillRow[];
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // GROUP 2 — JS Computed (3 metrics)
-  // ═══════════════════════════════════════════════════════
-
-  /**
-   * #4 Session Mix — percentage of sessions classified as productive.
-   * Iterates all sessions and uses #25 (sessionOutcome) to classify each.
-   */
-  sessionMix(): { productive: number; exploratory: number } {
-    const sessions = this.db.prepare(
-      `SELECT session_id FROM session_meta`,
-    ).all() as Array<{ session_id: string }>;
-
-    if (sessions.length === 0) {
-      return { productive: 0, exploratory: 0 };
-    }
-
-    let productiveCount = 0;
-    for (const s of sessions) {
-      if (this.sessionOutcome(s.session_id) === "productive") {
-        productiveCount++;
-      }
-    }
-
-    const productivePct = Math.round((100 * productiveCount) / sessions.length);
-    return {
-      productive: productivePct,
-      exploratory: 100 - productivePct,
-    };
-  }
-
-  /**
-   * #13 / #20 Efficiency Score — composite score (0-100) measuring session productivity.
-   *
-   * Components:
-   *  - Error rate (lower = better): weight 30%
-   *  - Tool diversity (higher = better): weight 20%
-   *  - Commit presence (boolean bonus): weight 25%
-   *  - Rework rate (lower = better): weight 15%
-   *  - Session duration efficiency (moderate = better): weight 10%
-   *
-   * Formula: score = 100 - errorPenalty + diversityBonus + commitBonus - reworkPenalty + durationBonus - 40
-   * The -40 baseline prevents empty sessions from scoring 100.
-   */
-  efficiencyScore(sessionId: string): number {
-    const errRate = this.errorRate(sessionId);
-    const diversity = this.toolDiversity(sessionId);
-    const commits = this.commitCount(sessionId);
-
-    const totalEvents = (this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM session_events WHERE session_id = ?`,
-    ).get(sessionId) as { cnt: number }).cnt;
-
-    const fileEvents = (this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM session_events WHERE session_id = ? AND category = 'file'`,
-    ).get(sessionId) as { cnt: number }).cnt;
-
-    // Rework: files edited more than once in this session
-    const reworkFiles = this.db.prepare(
-      `SELECT COUNT(*) as cnt FROM (SELECT data, COUNT(*) as edits FROM session_events WHERE session_id = ? AND category = 'file' GROUP BY data HAVING edits > 1)`,
-    ).get(sessionId) as { cnt: number };
-    const reworkRatio = fileEvents > 0 ? reworkFiles.cnt / fileEvents : 0;
-
-    // Duration in minutes
-    const duration = this.sessionDuration(sessionId) ?? 0;
-
-    // Score components
-    const errorPenalty = Math.min(errRate * 0.3, 30);
-    const diversityBonus = Math.min(diversity * 4, 20);
-    const commitBonus = commits > 0 ? 25 : 0;
-    const reworkPenalty = Math.min(reworkRatio * 15, 15);
-    const durationBonus = duration > 5 && duration < 60 ? 10 : duration >= 60 ? 5 : 0;
-
-    const score = Math.round(
-      Math.max(0, Math.min(100,
-        100 - errorPenalty + diversityBonus + commitBonus - reworkPenalty + durationBonus - 40,
-      )),
-    );
-    return score;
-  }
-
-  /**
-   * #23 Iteration Cycles — counts edit-error-fix sequences in a session.
-   *
-   * Walks events chronologically and detects patterns where a file event
-   * is followed by an error event, then another file event.
-   */
-  iterationCycles(sessionId: string): number {
-    const events = this.db.prepare(
-      `SELECT category, data FROM session_events WHERE session_id = ? ORDER BY id ASC`,
-    ).all(sessionId) as Array<{ category: string; data: string }>;
-
-    let cycles = 0;
-    for (let i = 0; i < events.length - 2; i++) {
-      if (
-        events[i].category === "file" &&
-        events[i + 1].category === "error" &&
-        events[i + 2].category === "file"
-      ) {
-        cycles++;
-        i += 2; // Skip past this cycle
-      }
-    }
-    return cycles;
-  }
-
-  // ═══════════════════════════════════════════════════════
   // GROUP 3 — Runtime (4 metrics, stubs)
   // ═══════════════════════════════════════════════════════
 
@@ -667,73 +223,12 @@ export class AnalyticsEngine {
   }
 
   // ═══════════════════════════════════════════════════════
-  // GROUP 4 — New Extractor Needed (3 metrics)
-  // ═══════════════════════════════════════════════════════
-
-  /**
-   * #6 Pattern Detected — identifies recurring patterns in a session.
-   *
-   * Analyzes category distribution and detects dominant patterns
-   * (>60% threshold). Falls back to combination detection and
-   * "balanced" for evenly distributed sessions.
-   */
-  patternDetected(sessionId: string): string {
-    const categories = this.sessionContinuity(sessionId);
-    const total = categories.reduce((sum, c) => sum + c.count, 0);
-    if (total === 0) return "no activity";
-
-    // Sort by count descending
-    categories.sort((a, b) => b.count - a.count);
-    const dominant = categories[0];
-    const ratio = dominant.count / total;
-
-    if (ratio > 0.6) {
-      const patterns: Record<string, string> = {
-        file: "heavy file editor",
-        git: "git-focused",
-        mcp: "tool-heavy",
-        error: "debugging session",
-        plan: "planning session",
-        subagent: "delegation-heavy",
-        rule: "configuration session",
-        task: "task management",
-      };
-      return patterns[dominant.category] ?? `${dominant.category}-focused`;
-    }
-
-    // Check for common combinations
-    if (
-      categories.find((c) => c.category === "git") &&
-      categories.find((c) => c.category === "file")
-    ) {
-      return "build and commit";
-    }
-    return "balanced";
-  }
-
-  /**
-   * #21 Permission Denials — count of tool calls blocked by security rules.
-   *
-   * Filters error events containing "denied", "blocked", or "permission".
-   * Stub: ideally requires a dedicated extractor in extract.ts.
-   */
-  permissionDenials(sessionId: string): number {
-    const row = this.db.prepare(
-      `SELECT COUNT(*) as cnt
-       FROM session_events
-       WHERE session_id = ? AND category = 'error'
-         AND (data LIKE '%denied%' OR data LIKE '%blocked%' OR data LIKE '%permission%')`,
-    ).get(sessionId) as { cnt: number };
-    return row.cnt;
-  }
-
-  // ═══════════════════════════════════════════════════════
   // queryAll — single unified report from ONE source
   // ═══════════════════════════════════════════════════════
 
   /**
-   * Build a complete FullReport by merging runtime stats (passed in)
-   * with all 27 DB-backed metrics and continuity data.
+   * Build a FullReport by merging runtime stats (passed in)
+   * with continuity data from the DB.
    *
    * This is the ONE call that ctx_stats should use.
    */
@@ -786,51 +281,6 @@ export class AnalyticsEngine {
         total_savings_ratio: totalSavingsRatio,
       };
     }
-
-    // ── Session metrics ──
-    const durationMin = sid ? this.sessionDuration(sid) : null;
-    const toolCallsDb = sid ? (this.db.prepare(
-      "SELECT COUNT(*) as cnt FROM session_events WHERE session_id = ? AND category = 'mcp'",
-    ).get(sid) as { cnt: number }).cnt : 0;
-
-    // ── Activity metrics ──
-    const commits = sid ? this.commitCount(sid) : 0;
-    const errors = sid ? this.errorCount(sid) : 0;
-    const errorRatePct = sid ? this.errorRate(sid) : 0;
-    const toolDiversity = sid ? this.toolDiversity(sid) : 0;
-    const effScore = sid ? this.efficiencyScore(sid) : 0;
-    const commitsPerSessionAvg = this.commitsPerSession();
-    const sessionOutcome = sid ? this.sessionOutcome(sid) : "exploratory";
-    const mix = this.sessionMix();
-
-    // ── Pattern metrics ──
-    const hourlyRaw = this.hourlyProductivity(sid || undefined);
-    const hourlyCommits = Array.from({ length: 24 }, (_, i) => {
-      const h = String(i).padStart(2, "0");
-      return hourlyRaw.find((r) => r.hour === h)?.count ?? 0;
-    });
-    const weeklyTrend = this.weeklyTrend();
-    const iterCycles = sid ? this.iterationCycles(sid) : 0;
-    const rework = sid ? this.reworkRate(sid) : this.reworkRate();
-
-    // ── Health metrics ──
-    const claudeMdFreshness = this.claudeMdFreshness().map((r) => {
-      const daysAgo = r.last_updated
-        ? Math.round((Date.now() - new Date(r.last_updated).getTime()) / 86_400_000)
-        : null;
-      return { project: r.data, days_ago: daysAgo };
-    });
-    const compactionsThisWeek = sid ? this.compactionCount(sid) : 0;
-    const weeklySessions = this.weeklySessionCount();
-    const permDenials = sid ? this.permissionDenials(sid) : 0;
-
-    // ── Agent metrics ──
-    const subagents = sid
-      ? this.subagentUsage(sid).map((r) => ({ type: r.data, count: r.total }))
-      : [];
-    const skills = sid
-      ? this.skillUsage(sid).map((r) => ({ name: r.data, count: r.invocations }))
-      : [];
 
     // ── Continuity data ──
     const eventTotal = (this.db.prepare(
@@ -898,34 +348,8 @@ export class AnalyticsEngine {
       cache,
       session: {
         id: sid,
-        duration_min: durationMin !== null ? Math.round(durationMin * 10) / 10 : null,
-        tool_calls: toolCallsDb,
         uptime_min: uptimeMin,
       },
-      activity: {
-        commits,
-        errors,
-        error_rate_pct: errorRatePct,
-        tool_diversity: toolDiversity,
-        efficiency_score: effScore,
-        commits_per_session_avg: commitsPerSessionAvg,
-        session_outcome: sessionOutcome,
-        productive_pct: mix.productive,
-        exploratory_pct: mix.exploratory,
-      },
-      patterns: {
-        hourly_commits: hourlyCommits,
-        weekly_trend: weeklyTrend,
-        iteration_cycles: iterCycles,
-        rework: rework.map((r) => ({ file: r.data, edits: r.edits })),
-      },
-      health: {
-        claude_md_freshness: claudeMdFreshness,
-        compactions_this_week: compactionsThisWeek,
-        weekly_sessions: weeklySessions,
-        permission_denials: permDenials,
-      },
-      agents: { subagents, skills },
       continuity: {
         total_events: eventTotal,
         by_category: continuityByCategory,
@@ -937,216 +361,145 @@ export class AnalyticsEngine {
 }
 
 // ─────────────────────────────────────────────────────────
-// formatReport — renders FullReport as markdown
+// formatReport — renders FullReport as concise, honest output
 // ─────────────────────────────────────────────────────────
 
 /** Format bytes as human-readable KB or MB. */
 function kb(b: number): string {
-  if (b >= 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)}MB`;
-  return `${(b / 1024).toFixed(1)}KB`;
+  if (b >= 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  if (b >= 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${b} B`;
+}
+
+/** Format session uptime as human-readable duration. */
+function formatDuration(uptimeMin: string): string {
+  const min = parseFloat(uptimeMin);
+  if (isNaN(min) || min < 1) return "< 1 min";
+  if (min < 60) return `${Math.round(min)} min`;
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
 /**
- * Render a FullReport as a marketing-friendly, outcome-focused session story.
+ * Build a before/after comparison bar.
  *
- * Framework: Persona -> Metric -> Evidence -> Action -> ROI
- * The output tells a narrative instead of dumping raw numbers.
+ * The "without" bar is always full (40 chars).
+ * The "with" bar is proportional to the ratio of returned vs total.
  */
-export function formatReport(report: FullReport): string {
+function comparisonBars(total: number, returned: number): { withoutBar: string; withBar: string } {
+  const BAR_WIDTH = 40;
+  const withoutBar = "#".repeat(BAR_WIDTH);
+  const withFill = total > 0 ? Math.max(1, Math.round((returned / total) * BAR_WIDTH)) : BAR_WIDTH;
+  const withBar = "#".repeat(withFill) + " ".repeat(BAR_WIDTH - withFill);
+  return { withoutBar, withBar };
+}
+
+/**
+ * Render a FullReport as a before/after comparison developers instantly understand.
+ *
+ * Design rules:
+ * - If no savings, show "fresh session" format (no fake percentages)
+ * - Active session shows BEFORE vs AFTER -- what would have flooded your conversation vs what actually did
+ * - Per-tool table only if 2+ different tools were called
+ * - Time gained is the hero metric
+ * - Under 15 lines for typical sessions
+ */
+export function formatReport(report: FullReport, version?: string, latestVersion?: string | null): string {
   const lines: string[] = [];
+  const duration = formatDuration(report.session.uptime_min);
 
-  // ── Hero: headline story ──
-  lines.push(`## Think in Code -- Session Report`);
+  // ── Compute real savings ──
+  const totalKeptOut =
+    report.savings.kept_out + (report.cache ? report.cache.bytes_saved : 0);
+  const totalReturned = report.savings.total_bytes_returned;
+  const totalCalls = report.savings.total_calls;
 
-  if (report.savings.total_calls === 0) {
-    lines.push(
-      "",
-      "No sandbox activity yet. Use ctx_execute or ctx_batch_execute to start saving context.",
-      "",
-      "---",
-      "_Display this entire report as-is in your response. Do NOT summarize, collapse, or paraphrase any section._",
-    );
+  // ── Fresh session: almost no activity ──
+  if (totalKeptOut === 0) {
+    lines.push(`context-mode -- session (${duration})`);
+    lines.push("");
+
+    if (totalCalls === 0) {
+      lines.push("No tool calls yet.");
+    } else {
+      const callLabel = totalCalls === 1 ? "1 tool call" : `${totalCalls} tool calls`;
+      lines.push(`${callLabel}  |  ${kb(totalReturned)} in context  |  no savings yet`);
+    }
+
+    lines.push("");
+    lines.push("Tip: Use ctx_execute to analyze files in sandbox -- savings start there.");
+    lines.push("");
+    lines.push(version ? `v${version}` : "context-mode");
+    if (version && latestVersion && latestVersion !== "unknown" && latestVersion !== version) {
+      lines.push(`Update available: v${version} -> v${latestVersion}  |  Run: ctx_upgrade`);
+    }
     return lines.join("\n");
   }
 
-  const totalProcessed =
-    report.savings.kept_out + (report.cache ? report.cache.bytes_saved : 0);
-  const totalReturned = report.savings.total_bytes_returned;
-  const grandTotal = totalProcessed + totalReturned;
+  // ── Active session with real savings ──
+  const grandTotal = totalKeptOut + totalReturned;
   const savingsPercent =
     grandTotal > 0
-      ? ((1 - totalReturned / grandTotal) * 100).toFixed(1)
+      ? ((totalKeptOut / grandTotal) * 100).toFixed(1)
       : "0.0";
-  // Rough estimate: 4 bytes per token, ~2 min reading time per 1000 tokens
-  const tokensSaved = Math.round(totalProcessed / 4);
-  const extraMinutes = Math.round((tokensSaved / 1000) * 2);
 
-  lines.push(
-    "",
-    `Your agent processed ${kb(totalProcessed)} of data.`,
-    `Only ${kb(totalReturned)} entered your context window.`,
-    "",
-    `**Context saved: ${savingsPercent}% -- session extended by ~${extraMinutes} minutes**`,
-  );
+  // ── Time saved estimate (hero metric) ──
+  // ~4 bytes per token, ~1000 tokens per minute of context window capacity
+  const minSaved = Math.round(totalKeptOut / 4 / 1000);
 
-  // ── What happened ──
-  lines.push("", "### What happened", "");
+  lines.push(`context-mode -- session (${duration})`);
+  lines.push("");
 
-  // Count per-tool categories
-  const toolCallMap = new Map<string, number>();
-  for (const t of report.savings.by_tool) {
-    toolCallMap.set(t.tool, t.calls);
+  // ── Before/after comparison ──
+  const { withoutBar, withBar } = comparisonBars(grandTotal, totalReturned);
+  lines.push(`Without context-mode:  |${withoutBar}| ${kb(grandTotal)} in your conversation`);
+  lines.push(`With context-mode:     |${withBar}| ${kb(totalReturned)} in your conversation`);
+  lines.push("");
+  const savingsLine = `${kb(totalKeptOut)} processed in sandbox, never entered your conversation. (${savingsPercent}% reduction)`;
+  lines.push(savingsLine);
+
+  if (minSaved > 0) {
+    const timeSaved = minSaved >= 60
+      ? `+${Math.floor(minSaved / 60)}h ${minSaved % 60}m`
+      : `+${minSaved}m`;
+    lines.push(`${timeSaved} session time gained.`);
   }
 
-  const executeCount =
-    (toolCallMap.get("ctx_execute") ?? 0) +
-    (toolCallMap.get("ctx_execute_file") ?? 0);
-  const batchCount = toolCallMap.get("ctx_batch_execute") ?? 0;
-  const searchCount = toolCallMap.get("ctx_search") ?? 0;
-  const fetchCount = toolCallMap.get("ctx_fetch_and_index") ?? 0;
-  const fileCount = executeCount + batchCount;
-  const networkCount = fetchCount;
-  const cacheCount = report.cache ? report.cache.hits : 0;
-
-  if (fileCount > 0) {
-    lines.push(
-      `-> ${fileCount} file${fileCount !== 1 ? "s" : ""} analyzed in sandbox (never entered context)`,
-    );
-  }
-  if (networkCount > 0) {
-    lines.push(
-      `-> ${networkCount} API call${networkCount !== 1 ? "s" : ""} sandboxed (responses indexed, not dumped)`,
-    );
-  }
-  if (searchCount > 0) {
-    lines.push(
-      `-> ${searchCount} search quer${searchCount !== 1 ? "ies" : "y"} served from index`,
-    );
-  }
-  if (cacheCount > 0) {
-    lines.push(
-      `-> ${cacheCount} repeat fetch${cacheCount !== 1 ? "es" : ""} avoided (TTL cache)`,
-    );
-  }
-
-  // ── Per-tool breakdown ──
+  // ── Per-tool table (only if 2+ different tools) ──
   const activatedTools = report.savings.by_tool.filter((t) => t.calls > 0);
-  if (activatedTools.length > 0) {
-    lines.push(
-      "",
-      "### Per-tool breakdown",
-      "",
-      "| Tool | Calls | Data processed | Context used | Saved |",
-      "|------|------:|---------------:|-------------:|------:|",
-    );
+  if (activatedTools.length >= 2) {
+    lines.push("");
     for (const t of activatedTools) {
-      const processed = t.tokens * 4; // bytes approximation from tokens
-      const contextUsed = t.context_kb * 1024;
-      const savedPct =
-        processed > 0
-          ? (
-              ((processed - contextUsed) / processed) *
-              100
-            ).toFixed(0)
-          : "--";
+      const returned = t.context_kb * 1024;
+      const callLabel = `${t.calls} call${t.calls !== 1 ? "s" : ""}`;
       lines.push(
-        `| ${t.tool} | ${t.calls} | ${kb(processed)} | ${kb(contextUsed)} | ${savedPct}% |`,
+        `  ${t.tool.padEnd(22)} ${callLabel.padEnd(10)} ${kb(returned)} used`,
       );
     }
   }
 
-  // ── Session continuity ──
+  // ── Footer: continuity + version + outdated warning ──
+  const footerParts: string[] = [];
+  if (report.continuity.compact_count > 0) {
+    footerParts.push(
+      `${report.continuity.compact_count} compaction${report.continuity.compact_count !== 1 ? "s" : ""}`,
+    );
+  }
   if (report.continuity.total_events > 0) {
-    lines.push("", "### Session continuity", "");
-    const parts: string[] = [];
-    if (report.continuity.compact_count > 0) {
-      parts.push(
-        `${report.continuity.compact_count} compaction${report.continuity.compact_count !== 1 ? "s" : ""}`,
-      );
-    }
-    parts.push(
+    footerParts.push(
       `${report.continuity.total_events} event${report.continuity.total_events !== 1 ? "s" : ""} preserved`,
     );
-
-    // Count tasks from continuity categories
-    const taskRow = report.continuity.by_category.find(
-      (c) => c.category === "task" || c.category === "tasks",
-    );
-    if (taskRow && taskRow.count > 0) {
-      parts.push(
-        `${taskRow.count} task${taskRow.count !== 1 ? "s" : ""} tracked`,
-      );
-    }
-
-    lines.push(parts.join(" | "));
-
-    if (report.continuity.compact_count > 0) {
-      lines.push(
-        "",
-        `Session knowledge preserved across ${report.continuity.compact_count} compaction${report.continuity.compact_count !== 1 ? "s" : ""} -- zero context lost.`,
-      );
-    } else {
-      lines.push(
-        "",
-        "When your context compacts, all of this will restore awareness -- no starting from scratch.",
-      );
-    }
-    if (report.continuity.resume_ready) {
-      lines.push("Resume snapshot ready for the next compaction.");
-    }
   }
+  const versionStr = version ? `v${version}` : "context-mode";
+  footerParts.push(versionStr);
+  lines.push("");
+  lines.push(footerParts.join("  |  "));
 
-  // ── Analytics JSON (for power users) ──
-  const analyticsJson = {
-    session: {
-      duration_min: report.session.duration_min,
-      tool_calls: report.session.tool_calls,
-    },
-    activity: {
-      commits: report.activity.commits,
-      errors: report.activity.errors,
-      error_rate_pct: report.activity.error_rate_pct,
-      tool_diversity: report.activity.tool_diversity,
-      efficiency_score: report.activity.efficiency_score,
-      commits_per_session_avg: report.activity.commits_per_session_avg,
-      session_outcome: report.activity.session_outcome,
-    },
-    patterns: {
-      hourly_commits: report.patterns.hourly_commits,
-      weekly_trend: report.patterns.weekly_trend,
-      iteration_cycles: report.patterns.iteration_cycles,
-      rework: report.patterns.rework,
-    },
-    health: {
-      claude_md_freshness: report.health.claude_md_freshness,
-      compactions_this_week: report.health.compactions_this_week,
-      weekly_sessions: report.health.weekly_sessions,
-      permission_denials: report.health.permission_denials,
-    },
-    agents: {
-      subagents: report.agents.subagents,
-      skills: report.agents.skills,
-    },
-    continuity: { total_events: report.continuity.total_events },
-  };
-
-  lines.push(
-    "",
-    "### Analytics (27 metrics)",
-    "",
-    "```json",
-    JSON.stringify(analyticsJson, null, 2),
-    "```",
-  );
-
-  // Footer
-  lines.push(
-    "",
-    "---",
-    "context-mode -- github.com/mksglu/context-mode",
-    "",
-    "_Display this entire report as-is in your response. Do NOT summarize, collapse, or paraphrase any section._",
-  );
+  // Outdated warning in footer
+  if (version && latestVersion && latestVersion !== "unknown" && latestVersion !== version) {
+    lines.push(`Update available: v${version} -> v${latestVersion}  |  Run: ctx_upgrade`);
+  }
 
   return lines.join("\n");
 }
