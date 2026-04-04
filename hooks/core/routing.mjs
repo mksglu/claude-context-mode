@@ -220,7 +220,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform) {
         return {
           action: "modify",
           updatedInput: {
-            command: `echo "context-mode: curl/wget blocked. You MUST use ${t("ctx_fetch_and_index")}(url, source) to fetch URLs, or ${t("ctx_execute")}(language, code) to run HTTP calls in sandbox. Do NOT retry with curl/wget."`,
+            command: `echo "context-mode: curl/wget blocked. Think in Code — use ${t("ctx_execute")}(language, code) to write code that fetches, processes, and prints only the answer. Or use ${t("ctx_fetch_and_index")}(url, source) to fetch and index. Write pure JS with try/catch, no npm deps. Do NOT retry with curl/wget."`,
           },
         };
       }
@@ -242,7 +242,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform) {
       return {
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: Inline HTTP blocked. Use ${t("ctx_execute")}(language, code) to run HTTP calls in sandbox, or ${t("ctx_fetch_and_index")}(url, source) for web pages. Do NOT retry with Bash."`,
+          command: `echo "context-mode: Inline HTTP blocked. Think in Code — use ${t("ctx_execute")}(language, code) to write code that fetches, processes, and console.log() only the result. Write robust pure JS with try/catch, no npm deps. Do NOT retry with Bash."`,
         },
       };
     }
@@ -254,7 +254,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform) {
       return {
         action: "modify",
         updatedInput: {
-          command: `echo "context-mode: Build tool redirected to sandbox. Use ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd}\\") to run this command. Do NOT retry with Bash."`,
+          command: `echo "context-mode: Build tool redirected. Think in Code — use ${t("ctx_execute")}(language: \\"shell\\", code: \\"${safeCmd} 2>&1 | tail -30\\") to run and print only errors/summary. Do NOT retry with Bash."`,
         },
       };
     }
@@ -278,7 +278,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform) {
     const url = toolInput.url ?? "";
     return {
       action: "deny",
-      reason: `context-mode: WebFetch blocked. Use ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch this URL in sandbox. Then use ${t("ctx_search")}(queries: [...]) to query results. Do NOT use curl, wget, mcp_web_fetch, or mcp_fetch_tool.`,
+      reason: `context-mode: WebFetch blocked. Think in Code — use ${t("ctx_fetch_and_index")}(url: "${url}", source: "...") to fetch and index, then ${t("ctx_search")}(queries: [...]) to query. Or use ${t("ctx_execute")}(language, code) to fetch, process, and console.log() only what you need. Write pure JS, no npm deps. Do NOT use curl, wget, or WebFetch.`,
     };
   }
 
