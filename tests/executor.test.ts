@@ -1165,6 +1165,47 @@ puts "Users via file_path: #{data['users'].length}"
     assert.ok(r.stdout.includes(testFile), `Got: ${r.stdout}`);
   });
 
+  // --- execute_file: directory path guard (GPT-4.1 regression) ---
+  // GPT-4.1 called ctx_execute_file with a directory path for recursive listing tasks,
+  // causing exit code 1 (EISDIR). Verify the error is surfaced correctly so the fix
+  // in tool descriptions can be validated end-to-end.
+
+  test("execute_file: passing a directory path exits with code 1", async () => {
+    const r = await executor.executeFile({
+      path: testDir,
+      language: "javascript",
+      code: `console.log(FILE_CONTENT.length);`,
+    });
+    assert.equal(
+      r.exitCode,
+      1,
+      "Expected exit code 1 when path is a directory",
+    );
+    const combined = (r.stderr + r.stdout).toLowerCase();
+    assert.ok(
+      combined.includes("eisdir") || combined.includes("illegal operation") || combined.includes("is a directory"),
+      `Expected EISDIR or 'is a directory' in output, got: ${combined}`,
+    );
+  });
+
+  test("execute_file: passing a nonexistent path exits with code 1 (ENOENT)", async () => {
+    const r = await executor.executeFile({
+      path: join(testDir, "does-not-exist.txt"),
+      language: "javascript",
+      code: `console.log(FILE_CONTENT.length);`,
+    });
+    assert.equal(
+      r.exitCode,
+      1,
+      "Expected exit code 1 when file does not exist",
+    );
+    const combined = (r.stderr + r.stdout).toLowerCase();
+    assert.ok(
+      combined.includes("enoent") || combined.includes("no such file"),
+      `Expected ENOENT in output, got: ${combined}`,
+    );
+  });
+
   afterAll(() => {
     rmSync(testDir, { recursive: true, force: true });
   });
