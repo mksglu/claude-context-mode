@@ -53,4 +53,5 @@ try {
   // PostToolUse must never block the session — silent fallback
 }
 
-// PostToolUse hooks don't need hookSpecificOutput
+// Emit empty hookSpecificOutput so Claude Code doesn't show false "hook error" (CC #41868).
+process.stdout.write(JSON.stringify({ hookSpecificOutput: {} }) + "\n");
