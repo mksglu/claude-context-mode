@@ -54,13 +54,12 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
   }, interval);
   timer.unref();
 
-  // P0: Stdin close — parent pipe broken
-  // Must resume stdin to receive close/end events (Node starts paused)
-  const onStdinClose = () => shutdown();
-  process.stdin.resume();
-  process.stdin.on("end", onStdinClose);
-  process.stdin.on("close", onStdinClose);
-  process.stdin.on("error", onStdinClose);
+  // NOTE: Stdin-based shutdown detection (process.stdin.resume + end/close/error
+  // listeners) was removed here. It conflicts with the MCP SDK's StdioServerTransport
+  // which also reads from process.stdin via readline. Transient stdin events caused
+  // false-positive shutdowns → "MCP error -32000: Connection closed" on the client.
+  // Parent death is reliably caught by the ppid check above + OS signals below.
+  // See: https://github.com/mksglu/context-mode/issues/236
 
   // P0: OS signals — terminal close, kill, ctrl+c
   const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
@@ -70,9 +69,6 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
   return () => {
     stopped = true;
     clearInterval(timer);
-    process.stdin.removeListener("end", onStdinClose);
-    process.stdin.removeListener("close", onStdinClose);
-    process.stdin.removeListener("error", onStdinClose);
     for (const sig of signals) process.removeListener(sig, shutdown);
   };
 }
