@@ -23,7 +23,6 @@ import { existsSync, copyFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -59,18 +58,28 @@ export function ensureDeps() {
 }
 
 /**
- * ABI-aware native binary caching for better-sqlite3 (#148, #203).
+ * Probe-load better-sqlite3 in a child process to verify the binary on disk
+ * is compatible with the current Node ABI. In-process require() caches native
+ * modules at the dlopen level, so it can't detect on-disk binary changes.
+ * A child process gets a fresh dlopen cache.
  *
- * Users with mise/asdf/volta/fnm may run sessions with different Node
- * versions. Each ABI needs its own compiled binary — cache them
- * side-by-side so switching Node versions doesn't require a rebuild
- * every time.
- *
- * Flow:
- *   1. Check if ABI-specific cache exists → swap in
- *   2. Probe-load better-sqlite3 → if OK, cache current binary
- *   3. If ABI mismatch → npm rebuild, then cache the new binary
+ * Note: require('better-sqlite3') only loads the JS wrapper — the native
+ * binary is lazy-loaded when instantiating a Database. We must create an
+ * in-memory DB to actually trigger dlopen.
  */
+function probeNativeInChildProcess(pluginRoot) {
+  try {
+    execSync(`node -e "new (require('better-sqlite3'))(':memory:').close()"`, {
+      cwd: pluginRoot,
+      stdio: "pipe",
+      timeout: 10000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function ensureNativeCompat(pluginRoot) {
   try {
     const abi = process.versions.modules;
@@ -80,32 +89,34 @@ export function ensureNativeCompat(pluginRoot) {
 
     if (!existsSync(nativeDir)) return;
 
-    // Fast path: cached binary for this ABI already exists
+    // Fast path: cached binary for this ABI already exists — swap in and verify
     if (existsSync(abiCachePath)) {
       copyFileSync(abiCachePath, binaryPath);
       codesignBinary(binaryPath);
-      return;
+      // Validate via child process — dlopen cache is per-process, so in-process
+      // require() can't detect a swapped binary on disk (#148)
+      if (probeNativeInChildProcess(pluginRoot)) {
+        return; // Cache hit validated
+      }
+      // Cached binary is stale/corrupt — fall through to rebuild
     }
 
     if (!existsSync(binaryPath)) return;
 
     // Probe: try loading better-sqlite3 with current Node
-    try {
-      const req = createRequire(resolve(pluginRoot, "package.json"));
-      req("better-sqlite3");
+    if (probeNativeInChildProcess(pluginRoot)) {
       // Load succeeded — cache the working binary for this ABI
       copyFileSync(binaryPath, abiCachePath);
-    } catch (probeErr) {
-      if (probeErr?.message?.includes("NODE_MODULE_VERSION")) {
-        // ABI mismatch — rebuild for current Node version
-        execSync("npm rebuild better-sqlite3", {
-          cwd: pluginRoot,
-          stdio: "pipe",
-          timeout: 60000,
-        });
-        if (existsSync(binaryPath)) {
-          copyFileSync(binaryPath, abiCachePath);
-        }
+    } else {
+      // ABI mismatch — rebuild for current Node version
+      execSync("npm rebuild better-sqlite3", {
+        cwd: pluginRoot,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+      codesignBinary(binaryPath);
+      if (existsSync(binaryPath)) {
+        copyFileSync(binaryPath, abiCachePath);
       }
     }
   } catch {

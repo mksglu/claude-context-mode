@@ -111,13 +111,179 @@ describe("ensure-deps: native binary detection (#206)", () => {
   });
 });
 
+// ── Shared path to the real ensure-deps.mjs (used by ABI + codesign tests) ──
+const ensureDepsAbsPath = join(fileURLToPath(import.meta.url), "..", "..", "..", "hooks", "ensure-deps.mjs");
+
+// ═══════════════════════════════════════════════════════════════════════
+// RED-GREEN tests for ABI cache validation (#148 follow-up)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Subprocess harness that replicates ensureNativeCompat's decision logic
+// using a simulated probe (binary is "valid" if content starts with "VALID").
+// This avoids needing a real better-sqlite3 install in the temp dir.
+const ABI_HARNESS = `
+import { existsSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const pluginRoot = process.argv[2];
+const abi = "137"; // arbitrary ABI value for testing — not tied to any real Node version
+const captured = [];
+
+const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
+const binaryPath = resolve(nativeDir, "better_sqlite3.node");
+const abiCachePath = resolve(nativeDir, "better_sqlite3.abi" + abi + ".node");
+
+function probeNative() {
+  if (!existsSync(binaryPath)) return false;
+  const buf = readFileSync(binaryPath);
+  return buf.length >= 5 && buf.toString("utf-8", 0, 5) === "VALID";
+}
+
+if (!existsSync(nativeDir)) {
+  console.log(JSON.stringify(captured));
+  process.exit(0);
+}
+
+if (existsSync(abiCachePath)) {
+  copyFileSync(abiCachePath, binaryPath);
+  captured.push("cache-swap");
+  if (probeNative()) {
+    captured.push("cache-valid");
+    console.log(JSON.stringify(captured));
+    process.exit(0);
+  }
+  captured.push("cache-invalid");
+}
+
+if (!existsSync(binaryPath)) {
+  console.log(JSON.stringify(captured));
+  process.exit(0);
+}
+
+if (probeNative()) {
+  captured.push("probe-ok");
+  copyFileSync(binaryPath, abiCachePath);
+  captured.push("cached");
+} else {
+  captured.push("probe-fail");
+  writeFileSync(binaryPath, "VALID-rebuilt-binary");
+  captured.push("rebuilt");
+  copyFileSync(binaryPath, abiCachePath);
+  captured.push("cached");
+}
+
+console.log(JSON.stringify(captured));
+`;
+
+describe("ensure-deps: ABI cache validation (#148 follow-up)", () => {
+  function runAbiHarness(root: string): string[] {
+    const harnessPath = join(root, "_abi-harness.mjs");
+    writeFileSync(harnessPath, ABI_HARNESS, "utf-8");
+    const result = spawnSync("node", [harnessPath, root], {
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+    if (result.error) throw result.error;
+    return JSON.parse(result.stdout.trim());
+  }
+
+  test("corrupted ABI cache: detects invalid binary, rebuilds, and re-caches", () => {
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    // Valid binary on disk
+    writeFileSync(join(releaseDir, "better_sqlite3.node"), "VALID-original");
+    // Corrupted cache (wrong ABI binary saved under current ABI label)
+    writeFileSync(join(releaseDir, "better_sqlite3.abi137.node"), "WRONG-abi115-binary");
+
+    const actions = runAbiHarness(root);
+    expect(actions).toEqual(["cache-swap", "cache-invalid", "probe-fail", "rebuilt", "cached"]);
+  });
+
+  test("valid ABI cache: uses fast path without rebuild", () => {
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(join(releaseDir, "better_sqlite3.node"), "VALID-original");
+    writeFileSync(join(releaseDir, "better_sqlite3.abi137.node"), "VALID-cached-binary");
+
+    const actions = runAbiHarness(root);
+    expect(actions).toEqual(["cache-swap", "cache-valid"]);
+  });
+
+  test("missing ABI cache with valid binary: probes and creates cache", () => {
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(join(releaseDir, "better_sqlite3.node"), "VALID-original");
+    // No abi137.node cache file
+
+    const actions = runAbiHarness(root);
+    expect(actions).toEqual(["probe-ok", "cached"]);
+  });
+
+  test("missing ABI cache with incompatible binary: rebuilds and caches", () => {
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(join(releaseDir, "better_sqlite3.node"), "WRONG-different-abi");
+    // No cache file
+
+    const actions = runAbiHarness(root);
+    expect(actions).toEqual(["probe-fail", "rebuilt", "cached"]);
+  });
+
+  test("corrupted cache with missing binary: early return after cache swap fails", () => {
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    // No better_sqlite3.node on disk, only a corrupted cache
+    writeFileSync(join(releaseDir, "better_sqlite3.abi137.node"), "WRONG-corrupt");
+
+    const actions = runAbiHarness(root);
+    // Cache swap copies corrupt → binaryPath, probe fails, then falls through.
+    // binaryPath now exists (from the copy), so it won't hit the early return.
+    // Instead it probes again, fails, and rebuilds.
+    expect(actions).toEqual(["cache-swap", "cache-invalid", "probe-fail", "rebuilt", "cached"]);
+  });
+
+  test("graceful degradation: does not throw when probe and rebuild both fail", () => {
+    // Exercise the real ensureNativeCompat on a fake plugin root where
+    // better-sqlite3 exists but has no valid binary and npm rebuild will fail.
+    // The outer try/catch must swallow all errors.
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(join(releaseDir, "better_sqlite3.node"), "CORRUPT-binary");
+
+    const harness = `
+import { ensureNativeCompat } from ${JSON.stringify("file://" + ensureDepsAbsPath.replace(/\\/g, "/"))};
+try {
+  ensureNativeCompat(${JSON.stringify(root)});
+  console.log(JSON.stringify({ threw: false }));
+} catch (e) {
+  console.log(JSON.stringify({ threw: true, error: e.message }));
+}
+`;
+    const harnessPath = join(root, "_degrade-harness.mjs");
+    writeFileSync(harnessPath, harness, "utf-8");
+    const result = spawnSync("node", [harnessPath], {
+      encoding: "utf-8",
+      timeout: 30_000,
+      cwd: join(fileURLToPath(import.meta.url), "..", ".."),
+    });
+    if (result.error) throw result.error;
+    const out = JSON.parse(result.stdout.trim());
+    expect(out).toEqual({ threw: false });
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // RED-GREEN tests for macOS codesign after binary copy (#SIGKILL fix)
 // ═══════════════════════════════════════════════════════════════════════
 
 // Subprocess harness that imports codesignBinary from ensure-deps.mjs and
 // exercises it with mocked execSync to verify codesign behavior.
-const ensureDepsAbsPath = join(fileURLToPath(import.meta.url), "..", "..", "..", "hooks", "ensure-deps.mjs");
 const CODESIGN_HARNESS = `
 import { codesignBinary } from ${JSON.stringify("file://" + ensureDepsAbsPath.replace(/\\/g, "/"))};
 
