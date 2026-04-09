@@ -343,7 +343,12 @@ export class SessionDB extends SQLiteBase {
       this.stmt(S.updateMetaLastEvent).run(sessionId);
     });
 
-    transaction();
+    // Use withRetry to handle SQLITE_BUSY under concurrent PostToolUse hooks.
+    // When many tool calls complete in parallel (e.g., batch get_issue), multiple
+    // hook processes compete for the write lock on the same SessionDB file.
+    // better-sqlite3's busy_timeout handles most cases, but withRetry provides
+    // defense-in-depth for edge cases like lock escalation during transactions.
+    this.withRetry(() => transaction());
   }
 
   /**

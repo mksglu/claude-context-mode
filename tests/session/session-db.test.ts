@@ -531,3 +531,41 @@ describe("Limit", () => {
     assert.equal(limited[2].data, "file-2.ts");
   });
 });
+
+// ════════════════════════════════════════════
+// ADDITIONAL: Concurrent insert resilience
+// ════════════════════════════════════════════
+
+describe("Concurrent Insert Resilience", () => {
+  test("multiple DB instances can write to the same file without data loss", () => {
+    // Simulates concurrent PostToolUse hooks writing to the same SessionDB.
+    // When many tool calls complete in parallel (e.g., batch get_issue),
+    // multiple hook processes open the same DB and insert events concurrently.
+    const dbPath = join(tmpdir(), `session-concurrent-${randomUUID()}.db`);
+    const instances = Array.from({ length: 5 }, () => {
+      const db = new SessionDB({ dbPath });
+      cleanups.push(() => db.cleanup());
+      return db;
+    });
+
+    const sid = "sess-concurrent";
+    instances[0].ensureSession(sid, "/project");
+
+    // Each instance inserts unique events
+    for (let i = 0; i < instances.length; i++) {
+      instances[i].insertEvent(sid, makeEvent({
+        type: "mcp",
+        data: `get_issue: UXF-${i}`,
+      }));
+    }
+
+    // All events should be present — no SQLITE_BUSY failures
+    const events = instances[0].getEvents(sid);
+    assert.equal(events.length, 5, `Expected 5 events from concurrent inserts, got ${events.length}`);
+
+    // Clean up all instances
+    for (const db of instances) {
+      db.close();
+    }
+  });
+});

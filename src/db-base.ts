@@ -127,7 +127,14 @@ export function loadDatabase(): typeof DatabaseConstructor {
           readonly: opts?.readonly,
           create: true,
         });
-        return new BunSQLiteAdapter(raw);
+        const adapter = new BunSQLiteAdapter(raw);
+        // Propagate busy_timeout to match better-sqlite3's timeout option.
+        // Without this, concurrent writes under Bun fail immediately with
+        // SQLITE_BUSY instead of retrying (better-sqlite3 sets this automatically).
+        if (opts?.timeout) {
+          adapter.pragma(`busy_timeout = ${Number(opts.timeout)}`);
+        }
+        return adapter;
       } as any;
     } else {
       // Node.js — use better-sqlite3.
