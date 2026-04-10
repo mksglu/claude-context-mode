@@ -139,10 +139,19 @@ export function extractKeywords(message: string): string[] {
   const tokens = normalized.split(/\s+/);
   const freq = new Map<string, number>();
 
-  for (const token of tokens) {
+  for (const rawToken of tokens) {
+    if (rawToken.length < 2) continue;
+    if (STOPWORDS_EN_EXTENDED.has(rawToken)) continue;
+    if (STOPWORDS_KO.has(rawToken)) continue;
+
+    // Apply stemming to ASCII-only tokens; Hangul passes through unchanged.
+    const token = /^[a-z]+$/.test(rawToken) ? stem(rawToken) : rawToken;
     if (token.length < 2) continue;
-    if (STOPWORDS_EN.has(token)) continue;
-    if (STOPWORDS_KO.has(token)) continue;
+
+    // Re-check stopwords after stemming — some stems may collapse to
+    // entries that are in the extended set (e.g. "testing" → "test").
+    if (STOPWORDS_EN_EXTENDED.has(token)) continue;
+
     freq.set(token, (freq.get(token) ?? 0) + 1);
   }
 

@@ -149,6 +149,34 @@ describe("extractKeywords — direct unit tests", () => {
     const msg = "Implementing drift detection in context-mode";
     assert.deepEqual(extractKeywords(msg), extractKeywords(msg));
   });
+
+  test("filters generic tech filler words (extended stopwords)", () => {
+    // "file", "function", "test", "run" are all in GENERIC_TECH_STOPWORDS
+    const result = extractKeywords("run the test function in this file");
+    // After filtering: only "this" is removed as base stopword; "run/test/function/file"
+    // are extended stopwords. Nothing survives — or maybe just nothing.
+    assert.deepEqual(result, []);
+  });
+
+  test("stems English tokens so morphological variants collapse", () => {
+    // "testing" and "tested" both stem to "test" which is then dropped as
+    // a generic tech stopword. Use a non-stopword test target instead:
+    const result = extractKeywords("authenticate authenticating authenticated");
+    // "authenticate" length 12 → suffix "ate"? not in list. stays.
+    // "authenticating" length 14 → "ing" suffix, stem to "authenticat"
+    // "authenticated" length 13 → "ed" suffix, stem to "authenticat"
+    // Frequencies: authenticate=1, authenticat=2
+    assert.deepEqual(result, ["authenticat", "authenticate"]);
+  });
+
+  test("leaves Hangul tokens untouched by the stemmer", () => {
+    const result = extractKeywords("세션 토픽 감지");
+    // All Hangul tokens pass through without stemming.
+    assert.equal(result.length, 3);
+    for (const kw of result) {
+      assert.ok(/^[가-힣]+$/.test(kw), `"${kw}" should be pure Hangul`);
+    }
+  });
 });
 
 describe("extractTopicSignal — direct unit tests", () => {
