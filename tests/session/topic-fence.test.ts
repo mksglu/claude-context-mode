@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, test } from "vitest";
 import { extractUserEvents } from "../../src/session/extract.js";
-import { extractKeywords, extractTopicSignal } from "../../src/session/topic-fence.js";
+import { extractKeywords, extractTopicSignal, stem } from "../../src/session/topic-fence.js";
 
 // ════════════════════════════════════════════
 // topic-fence Phase 1 — extractTopicSignal
@@ -174,5 +174,39 @@ describe("extractTopicSignal — direct unit tests", () => {
     const parsed = JSON.parse(events[0].data);
     assert.deepEqual(Object.keys(parsed), ["keywords"]);
     assert.deepEqual(parsed.keywords, ["auth", "login", "database"]);
+  });
+});
+
+describe("stem — Porter-inspired English stemmer", () => {
+  test("strips common suffixes", () => {
+    assert.equal(stem("testing"), "test");
+    assert.equal(stem("tested"), "test");
+    assert.equal(stem("tests"), "test");
+    assert.equal(stem("running"), "runn"); // no e-restoration; acceptable
+    assert.equal(stem("implementing"), "implement"); // "ing" stripped
+  });
+
+  test("leaves short words (≤4 chars) untouched", () => {
+    assert.equal(stem("auth"), "auth");
+    assert.equal(stem("user"), "user");
+    assert.equal(stem("ing"), "ing");
+  });
+
+  test("leaves words without a recognized suffix untouched", () => {
+    assert.equal(stem("react"), "react");
+    assert.equal(stem("context"), "context");
+    assert.equal(stem("database"), "database");
+  });
+
+  test("strips tion as a 4-char suffix (not ation as a 5-char suffix)", () => {
+    // Important: the rule list contains "tion" (4 chars), not "ation".
+    // So "implementation" → strip "tion" → "implementa", NOT "implement".
+    // This is the actual stemmer behavior — document it rather than
+    // fight it, since drift detection only needs consistent application.
+    assert.equal(stem("implementation"), "implementa");
+    // Similarly "nationalization" strips "ization" (7 chars, which IS in
+    // the list) before the "tion" rule is reached, because longer suffixes
+    // come first in the iteration order.
+    assert.equal(stem("nationalization"), "national");
   });
 });

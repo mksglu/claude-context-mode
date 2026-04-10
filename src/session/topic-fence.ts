@@ -41,6 +41,84 @@ const STOPWORDS_KO = new Set([
   "좀","네","예","아니","뭐","어떻게","왜","어디",
 ]);
 
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 2 additions — extended stopwords and lightweight stemmer
+//
+// Generic coding-domain "filler" terms that poison Jaccard comparisons
+// because they appear across topic events of almost every coding session.
+// Empirically derived and validated in eval-drift.mjs (Path A tokenizer).
+// Any change to this list MUST be re-validated by running eval-drift.mjs
+// and confirming the F1=0.900 score is preserved.
+// ─────────────────────────────────────────────────────────────────────────
+
+const GENERIC_TECH_STOPWORDS = new Set([
+  // generic verbs
+  "use","using","used","make","makes","made","run","runs","running","ran",
+  "check","checks","checking","checked","try","tries","trying","tried",
+  "add","adds","adding","added","remove","removes","removing","removed",
+  "update","updates","updating","updated","get","gets","getting","got",
+  "set","sets","setting","need","needs","needed","want","wants","wanted",
+  "show","shows","showing","showed","see","sees","seeing","saw",
+  "look","looks","looking","looked","think","thinks","thinking","thought",
+  "work","works","working","worked","fix","fixes","fixing","fixed",
+  "build","builds","building","built","test","tests","testing","tested",
+  "start","starts","starting","started","found","find","finds",
+  "call","calls","calling","called","pass","passes","passing","passed",
+  "return","returns","returning","returned","handle","handles","handling",
+  "write","writes","writing","wrote","read","reads","reading",
+  "change","changes","changing","changed","help","helps","helping",
+  "create","creates","creating","created","delete","deletes","deleting",
+  "let","lets","letting","move","moves","moving","moved",
+  "now","next","first","then","actually","really","maybe","probably",
+  "right","okay","good","great","nice","here","there","back","again",
+  "new","old","big","small","same","different","many","much",
+  "like","way","ways","thing","things","part","parts","side","sides",
+  "case","cases","time","times","turn","turns","step","steps",
+  // generic tech nouns
+  "code","file","files","function","functions","method","methods",
+  "class","classes","type","types","value","values","name","names",
+  "data","item","items","list","lists","bug","bugs","error","errors",
+  "issue","issues","problem","problems","stuff",
+  // generic modals
+  "still","already","yet","even","also","too","either","neither",
+  // filler from LLM prompts
+  "implement","implementing","implementation","implemented",
+]);
+
+const STOPWORDS_EN_EXTENDED = new Set([...STOPWORDS_EN, ...GENERIC_TECH_STOPWORDS]);
+
+/**
+ * Lightweight Porter-inspired English stemmer.
+ *
+ * Applies the most common English suffix rules in longest-first order.
+ * Only strips a suffix if the resulting stem is at least 3 characters long.
+ * Words of length ≤ 4 are returned unchanged to avoid over-aggressive
+ * stripping of short technical terms.
+ *
+ * NOT a full Porter stemmer — deliberately minimal to stay pure and cheap.
+ * The specific rule list is the empirical reference from eval-drift.mjs.
+ * Do not "improve" this without re-running eval-drift.mjs to confirm
+ * F1=0.900 is preserved.
+ */
+export function stem(word: string): string {
+  if (word.length <= 4) return word;
+  const suffixes = [
+    "ational", "tional", "ization", "izing", "ized",
+    "ingly", "edly",
+    "ments", "ment",
+    "tions", "sions", "tion", "sion",
+    "ness", "able", "ible",
+    "ing", "ers", "ed", "er",
+    "ly", "es", "s",
+  ];
+  for (const suf of suffixes) {
+    if (word.length - suf.length >= 3 && word.endsWith(suf)) {
+      return word.slice(0, word.length - suf.length);
+    }
+  }
+  return word;
+}
+
 const TOPIC_MAX_KEYWORDS = 8;
 const TOPIC_MIN_KEYWORDS = 2;
 
