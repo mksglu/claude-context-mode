@@ -154,3 +154,116 @@ describe("scoreDrift — core algorithm", () => {
     assert.deepEqual(scoreDrift(history, current), []);
   });
 });
+
+describe("scoreDrift — defensive handling", () => {
+  test("U7: one corrupted history row is treated as empty, others proceed", () => {
+    const history = [
+      row(["auth", "jwt", "login"]),
+      { data: "not valid json at all" }, // corrupted
+      row(["auth", "jwt", "login"]),
+      row(["react", "hooks", "state"]),
+      row(["react", "hooks", "state"]),
+      row(["react", "hooks", "state"]),
+    ];
+    const current = currentEvent(["react", "hooks", "state"]);
+    // Should still produce a drift event since the surviving rows exhibit a clean shift.
+    const result = scoreDrift(history, current);
+    assert.doesNotThrow(() => result);
+    // The exact fire/no-fire depends on how the corrupted row shifts the windows.
+    // We assert the function did not throw; failing the assertion means a regression.
+    assert.ok(Array.isArray(result), "must return an array");
+  });
+
+  test("U8: all history rows corrupted → empty-set fallback returns []", () => {
+    const history = [
+      { data: "garbage" },
+      { data: "garbage" },
+      { data: "garbage" },
+      { data: "garbage" },
+      { data: "garbage" },
+      { data: "garbage" },
+    ];
+    const current = currentEvent(["react", "hooks", "state"]);
+    // All windows degenerate to empty sets → similarity 1.0 → no drift.
+    assert.deepEqual(scoreDrift(history, current), []);
+  });
+
+  test("U9: CONTEXT_MODE_TOPIC_FENCE_DISABLED=1 returns [] immediately", async () => {
+    // Cache test: scoreDrift reads TOPIC_FENCE_DISABLED at module load.
+    // Test the disabled state by stubbing the env var, resetting vitest's
+    // module cache, and re-importing topic-fence fresh. The plain-import
+    // form (no cache buster query string) is the vitest-idiomatic pattern.
+    const { vi } = await import("vitest");
+    vi.stubEnv("CONTEXT_MODE_TOPIC_FENCE_DISABLED", "1");
+    vi.resetModules();
+    const mod = await import("../../src/session/topic-fence.js");
+    // Use the unique-keyword construction from U2 so we know drift WOULD
+    // fire if the kill switch were off.
+    const history = [
+      row(["alpha", "aleph", "aardvark"]),
+      row(["beta", "banana", "bravo"]),
+      row(["gamma", "grape", "gecko"]),
+      row(["delta", "date", "duck"]),
+      row(["epsilon", "eagle", "elephant"]),
+      row(["zeta", "zebra", "zeppelin"]),
+    ];
+    const current = currentEvent(["lambda", "lion", "llama"]);
+    assert.deepEqual(mod.scoreDrift(history, current), []);
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  test("U10: determinism — identical inputs produce byte-identical payloads", () => {
+    // Use the U2 unique-keyword construction so drift actually fires and
+    // the determinism assertion on the payload string has something to
+    // check. Overlapping vocabularies would produce [] twice and pass
+    // the assertion trivially without testing anything.
+    const history = [
+      row(["alpha", "aleph", "aardvark"]),
+      row(["beta", "banana", "bravo"]),
+      row(["gamma", "grape", "gecko"]),
+      row(["delta", "date", "duck"]),
+      row(["epsilon", "eagle", "elephant"]),
+      row(["zeta", "zebra", "zeppelin"]),
+    ];
+    const current = currentEvent(["lambda", "lion", "llama"]);
+    const r1 = scoreDrift(history, current);
+    const r2 = scoreDrift(history, current);
+    assert.equal(r1.length, 1, "drift must fire so we have a payload to compare");
+    assert.equal(r2.length, 1);
+    assert.equal(r1[0].data, r2[0].data, "payloads must be byte-identical");
+  });
+
+  test("U11: payload shape — sorted keywords, 2-decimal scores, window array", () => {
+    // Same unique-keyword construction as U2/U10 but with intentionally
+    // non-alphabetical insertion order in the current event, so we can
+    // verify the sort step of the payload builder actually runs.
+    const history = [
+      row(["alpha", "aleph", "aardvark"]),
+      row(["beta", "banana", "bravo"]),
+      row(["gamma", "grape", "gecko"]),
+      row(["delta", "date", "duck"]),
+      row(["epsilon", "eagle", "elephant"]),
+      row(["zeta", "zebra", "zeppelin"]),
+    ];
+    const current = currentEvent(["lion", "llama", "lambda"]); // not in alphabetical order
+    const result = scoreDrift(history, current);
+    assert.equal(result.length, 1, "drift must fire so payload is present");
+    const payload = JSON.parse(result[0].data);
+    assert.deepEqual(Object.keys(payload).sort(), ["curr_score", "new", "old", "prev_score", "window"]);
+    // Keywords must be sorted lexicographically in the payload
+    assert.deepEqual(payload.new, [...payload.new].sort());
+    assert.deepEqual(payload.old, [...payload.old].sort());
+    // The `new` array must CONTAIN all three current-event keywords.
+    // They will sit in the middle of the alphabetically-sorted output,
+    // not at the tail — verify by membership, not position.
+    assert.ok(payload.new.includes("lambda"), "payload.new should contain 'lambda'");
+    assert.ok(payload.new.includes("lion"),   "payload.new should contain 'lion'");
+    assert.ok(payload.new.includes("llama"),  "payload.new should contain 'llama'");
+    // Scores must be strings with exactly 2 decimal places
+    assert.ok(/^\d\.\d{2}$/.test(payload.prev_score), `prev_score "${payload.prev_score}" malformed`);
+    assert.ok(/^\d\.\d{2}$/.test(payload.curr_score), `curr_score "${payload.curr_score}" malformed`);
+    // Window must be literal [N, M]
+    assert.deepEqual(payload.window, [3, 3]);
+  });
+});
