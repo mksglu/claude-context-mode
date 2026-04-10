@@ -5,6 +5,10 @@
  * All 13 event categories as specified in PRD Section 3.
  */
 
+// topic-fence Phase 1 lives in a dedicated module so the feature can be
+// maintained as a standalone skill without expanding this file's surface area.
+import { extractTopicSignal } from "./topic-fence.js";
+
 // ── Public interfaces ──────────────────────────────────────────────────────
 
 export interface SessionEvent {
@@ -626,7 +630,7 @@ export function extractEvents(input: HookInput): SessionEvent[] {
 /**
  * Extract session events from a UserPromptSubmit hook input (user message text).
  *
- * Handles: decision, role, intent, data categories.
+ * Handles: decision, role, intent, data, topic categories.
  * Returns an array of zero or more SessionEvents. Never throws.
  */
 export function extractUserEvents(message: string): SessionEvent[] {
@@ -637,6 +641,7 @@ export function extractUserEvents(message: string): SessionEvent[] {
     events.push(...extractRole(message));
     events.push(...extractIntent(message));
     events.push(...extractData(message));
+    events.push(...extractTopicSignal(message));
 
     return events;
   } catch {
