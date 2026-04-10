@@ -7,7 +7,7 @@
 
 // topic-fence Phase 1 lives in a dedicated module so the feature can be
 // maintained as a standalone skill without expanding this file's surface area.
-import { extractTopicSignal } from "./topic-fence.js";
+import { extractTopicSignal, scoreDrift, type TopicHistoryRow } from "./topic-fence.js";
 
 // ── Public interfaces ──────────────────────────────────────────────────────
 
@@ -630,10 +630,21 @@ export function extractEvents(input: HookInput): SessionEvent[] {
 /**
  * Extract session events from a UserPromptSubmit hook input (user message text).
  *
- * Handles: decision, role, intent, data, topic categories.
+ * Handles: decision, role, intent, data, topic, and (Phase 2) topic_drift.
+ * When `topicHistory` is provided and non-empty AND the current message
+ * produces a topic event, drift scoring runs and may emit a topic_drift
+ * event alongside the topic event.
+ *
+ * The `topicHistory` parameter defaults to `[]` so adapters that have not
+ * wired up the DB query continue to work unchanged — they simply get no
+ * drift detection.
+ *
  * Returns an array of zero or more SessionEvents. Never throws.
  */
-export function extractUserEvents(message: string): SessionEvent[] {
+export function extractUserEvents(
+  message: string,
+  topicHistory: ReadonlyArray<TopicHistoryRow> = [],
+): SessionEvent[] {
   try {
     const events: SessionEvent[] = [];
 
@@ -641,7 +652,14 @@ export function extractUserEvents(message: string): SessionEvent[] {
     events.push(...extractRole(message));
     events.push(...extractIntent(message));
     events.push(...extractData(message));
-    events.push(...extractTopicSignal(message));
+
+    const topicEvents = extractTopicSignal(message);
+    events.push(...topicEvents);
+
+    // Phase 2: drift scoring — only when history provided AND current topic emitted.
+    if (topicHistory.length > 0 && topicEvents.length > 0) {
+      events.push(...scoreDrift(topicHistory, topicEvents[0]));
+    }
 
     return events;
   } catch {

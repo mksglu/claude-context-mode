@@ -278,3 +278,82 @@ describe("clampInt / clampFloat — Phase 2 config helpers", () => {
     assert.equal(clampFloat("1", 0.10, 0, 1), 1);
   });
 });
+
+// ════════════════════════════════════════════
+// topic-fence Phase 2 — drift integration via extractUserEvents
+// ════════════════════════════════════════════
+
+describe("extractUserEvents with topicHistory — Phase 2 drift integration", () => {
+  // Helper: build a stored topic row from keywords.
+  const storedTopic = (keywords: string[]) => ({
+    data: JSON.stringify({ keywords }),
+  });
+
+  test("I1: omitting topicHistory preserves Phase 1 behavior", () => {
+    const events = extractUserEvents("implementing authentication for web app");
+    const topics = events.filter((e) => e.type === "topic");
+    const drifts = events.filter((e) => e.type === "topic_drift");
+    assert.equal(topics.length, 1);
+    assert.equal(drifts.length, 0);
+  });
+
+  test("I2: topic shift message + 6-row history emits both topic and topic_drift", () => {
+    // Each history row uses unique vocabulary so that every possible
+    // sliding window pair is Jaccard-disjoint. See U2 for the detailed
+    // rationale — the same construction constraint applies here.
+    //
+    // The current MESSAGE goes through the production tokenizer, so we
+    // pick a sentence whose Path A tokens do not collide with any
+    // history row's keywords. "lambda lion llama cheetah python" uses
+    // only short/uncommon words that survive the stemmer unchanged and
+    // appear in neither the base nor extended stopword lists.
+    const history = [
+      storedTopic(["alpha", "aleph", "aardvark"]),
+      storedTopic(["beta", "banana", "bravo"]),
+      storedTopic(["gamma", "grape", "gecko"]),
+      storedTopic(["delta", "date", "duck"]),
+      storedTopic(["epsilon", "eagle", "elephant"]),
+      storedTopic(["zeta", "zebra", "zeppelin"]),
+    ];
+    const events = extractUserEvents("lambda lion llama cheetah python", history);
+    const topics = events.filter((e) => e.type === "topic");
+    const drifts = events.filter((e) => e.type === "topic_drift");
+    assert.equal(topics.length, 1, "should emit current topic");
+    assert.equal(drifts.length, 1, "should emit drift event");
+  });
+
+  test("I3: short message with no current topic → no drift even with history", () => {
+    // Same unique-vocabulary history as I2 — guarantees drift WOULD fire
+    // if a current topic were produced. But "yes" produces no topic event.
+    const history = [
+      storedTopic(["alpha", "aleph", "aardvark"]),
+      storedTopic(["beta", "banana", "bravo"]),
+      storedTopic(["gamma", "grape", "gecko"]),
+      storedTopic(["delta", "date", "duck"]),
+      storedTopic(["epsilon", "eagle", "elephant"]),
+      storedTopic(["zeta", "zebra", "zeppelin"]),
+    ];
+    const events = extractUserEvents("yes", history);
+    const drifts = events.filter((e) => e.type === "topic_drift");
+    assert.equal(drifts.length, 0);
+  });
+
+  test("I4: history below cold-start threshold → only topic, no drift", () => {
+    const history = [
+      storedTopic(["alpha", "aleph", "aardvark"]),
+      storedTopic(["beta", "banana", "bravo"]),
+      storedTopic(["gamma", "grape", "gecko"]),
+    ]; // only 3 rows — below the 6-row minimum
+    const events = extractUserEvents("lambda lion llama cheetah python", history);
+    const topics = events.filter((e) => e.type === "topic");
+    const drifts = events.filter((e) => e.type === "topic_drift");
+    assert.equal(topics.length, 1);
+    assert.equal(drifts.length, 0);
+  });
+
+  test("I5: empty history uses default parameter, no drift", () => {
+    const events = extractUserEvents("lambda lion llama cheetah python", []);
+    const drifts = events.filter((e) => e.type === "topic_drift");
+    assert.equal(drifts.length, 0);
+  });
+});
