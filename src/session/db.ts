@@ -109,6 +109,7 @@ const S = {
   insertEvent: "insertEvent",
   getEvents: "getEvents",
   getEventsByType: "getEventsByType",
+  getRecentEventsByType: "getRecentEventsByType",
   getEventsByPriority: "getEventsByPriority",
   getEventsByTypeAndPriority: "getEventsByTypeAndPriority",
   getEventCount: "getEventCount",
@@ -225,6 +226,10 @@ export class SessionDB extends SQLiteBase {
     p(S.getEventsByType,
       `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
        FROM session_events WHERE session_id = ? AND type = ? ORDER BY id ASC LIMIT ?`);
+
+    p(S.getRecentEventsByType,
+      `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND type = ? ORDER BY id DESC LIMIT ?`);
 
     p(S.getEventsByPriority,
       `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
@@ -351,11 +356,19 @@ export class SessionDB extends SQLiteBase {
    */
   getEvents(
     sessionId: string,
-    opts?: { type?: string; minPriority?: number; limit?: number },
+    opts?: { type?: string; minPriority?: number; limit?: number; recent?: boolean },
   ): StoredEvent[] {
     const limit = opts?.limit ?? 1000;
     const type = opts?.type;
     const minPriority = opts?.minPriority;
+
+    // recent: true branch — uses DESC prepared statement and reverses
+    // the result so downstream consumers always see chronological order.
+    // Only fires when `type` is set; without a type, `recent` is a no-op.
+    if (type && opts?.recent) {
+      const rows = this.stmt(S.getRecentEventsByType).all(sessionId, type, limit) as StoredEvent[];
+      return rows.reverse();
+    }
 
     if (type && minPriority !== undefined) {
       return this.stmt(S.getEventsByTypeAndPriority).all(sessionId, type, minPriority, limit) as StoredEvent[];

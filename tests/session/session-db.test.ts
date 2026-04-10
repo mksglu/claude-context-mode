@@ -531,3 +531,41 @@ describe("Limit", () => {
     assert.equal(limited[2].data, "file-2.ts");
   });
 });
+
+describe("getEvents — recent: true option", () => {
+  test("returns the most recent N events of type, in chronological order", () => {
+    const db = createTestDB();
+    db.ensureSession("S1", "/tmp");
+    // Insert 10 topic events in order
+    for (let i = 0; i < 10; i++) {
+      db.insertEvent("S1", {
+        type: "topic",
+        category: "topic",
+        data: JSON.stringify({ keywords: [`kw${i}`] }),
+        priority: 3,
+      }, "test");
+    }
+    const recent = db.getEvents("S1", { type: "topic", limit: 5, recent: true });
+    assert.equal(recent.length, 5);
+    // Should be events 5, 6, 7, 8, 9 in chronological order
+    const kws = recent.map((r) => JSON.parse(r.data).keywords[0]);
+    assert.deepEqual(kws, ["kw5", "kw6", "kw7", "kw8", "kw9"]);
+  });
+
+  test("omitting recent preserves the existing ASC behavior", () => {
+    const db = createTestDB();
+    db.ensureSession("S2", "/tmp");
+    for (let i = 0; i < 5; i++) {
+      db.insertEvent("S2", {
+        type: "topic",
+        category: "topic",
+        data: JSON.stringify({ keywords: [`kw${i}`] }),
+        priority: 3,
+      }, "test");
+    }
+    const all = db.getEvents("S2", { type: "topic", limit: 3 });
+    // Default ASC: oldest 3
+    const kws = all.map((r) => JSON.parse(r.data).keywords[0]);
+    assert.deepEqual(kws, ["kw0", "kw1", "kw2"]);
+  });
+});
