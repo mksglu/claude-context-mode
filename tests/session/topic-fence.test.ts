@@ -357,3 +357,50 @@ describe("extractUserEvents with topicHistory — Phase 2 drift integration", ()
     assert.equal(drifts.length, 0);
   });
 });
+
+describe("Path A fidelity — production tokenizer matches eval-drift.mjs reference", () => {
+  // These expectations are snapshots of what eval-drift.mjs's
+  // extractKeywordsPathA returns for these inputs. They are hand-computed
+  // and verified once. If they ever diverge from the production
+  // extractKeywords output, the production tokenizer has drifted from
+  // the reference and the F1=0.900 empirical claim is at risk.
+  const cases: Array<{ input: string; expected: string[] }> = [
+    {
+      input: "I want to build a React component for displaying a list of users",
+      // Trace:
+      //   "i" len 1 → drop
+      //   "want" in extended stopwords → drop
+      //   "to" in base stopwords → drop
+      //   "build" in extended stopwords → drop
+      //   "a" len 1 → drop
+      //   "react" → stem: no suffix match → "react" ✓
+      //   "component" → stem: no suffix match → "component" ✓
+      //   "for" in base stopwords → drop
+      //   "displaying" → stem: "ing" match, len 10-3=7 ≥ 3 → "display" ✓
+      //   "a" len 1 → drop
+      //   "list" in extended stopwords → drop
+      //   "of" in base stopwords → drop
+      //   "users" → stem: "ers" match but len 5-3=2 < 3 (skip); "s" match, len 5-1=4 ≥ 3 → "user" ✓
+      // Frequency all 1, insertion order preserved.
+      expected: ["react", "component", "display", "user"],
+    },
+    {
+      input: "세션을 나눠서 진행할 수 있도록 감지해서 알려주는 기능",
+      // Korean tokens pass through unchanged (stemmer skipped by ASCII guard).
+      // 수 is 1 char (<2) → dropped.
+      expected: ["세션을", "나눠서", "진행할", "있도록", "감지해서", "알려주는", "기능"],
+    },
+    {
+      input: "auth auth login database",
+      // No stemmer matches (auth ≤ 4 chars, login/database have no suffix),
+      // no stopwords. Frequency: auth=2, login=1, database=1.
+      expected: ["auth", "login", "database"],
+    },
+  ];
+
+  for (const { input, expected } of cases) {
+    test(`matches reference for: "${input.slice(0, 40)}${input.length > 40 ? "..." : ""}"`, () => {
+      assert.deepEqual(extractKeywords(input), expected);
+    });
+  }
+});
