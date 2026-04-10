@@ -230,3 +230,111 @@ export function extractTopicSignal(message: string): SessionEvent[] {
     priority: 3,
   }];
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 2: drift scoring with 2-consecutive-window-pair rule
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal structural shape of a stored topic row. Exported so extract.ts
+ * can reference the same type in extractUserEvents's signature without
+ * redeclaring it. SessionDB.StoredEvent is structurally a superset of
+ * this type, so the hook passes DB rows directly with no cast.
+ */
+export type TopicHistoryRow = { data: string };
+
+/**
+ * Parse a topic event row's `data` field into a keyword array.
+ * Returns an empty array on any JSON parse error or schema mismatch.
+ * Pure, defensive — never throws.
+ */
+function parseTopicKeywords(data: string): string[] {
+  try {
+    const parsed = JSON.parse(data);
+    const kws = parsed?.keywords;
+    return Array.isArray(kws) ? kws.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Compute Jaccard similarity between two flattened keyword arrays
+ * (each representing one window: the union of all keywords across its
+ * constituent topic events).
+ *
+ * Returns 1.0 when both sets are empty — the "pathological empty-set"
+ * safe fallback described in PHASE2_SPEC.md §Edge Cases #5.
+ */
+function jaccardWindows(oldKw: string[][], newKw: string[][]): number {
+  const oldSet = new Set(oldKw.flat());
+  const newSet = new Set(newKw.flat());
+  if (oldSet.size === 0 && newSet.size === 0) return 1.0;
+  let inter = 0;
+  for (const k of oldSet) if (newSet.has(k)) inter++;
+  const uni = new Set([...oldSet, ...newSet]).size;
+  return uni === 0 ? 1.0 : inter / uni;
+}
+
+/**
+ * Detect topic drift across two adjacent sliding window pairs.
+ *
+ * Phase 2 requires BOTH window pairs (previous and current) to have Jaccard
+ * similarity below TOPIC_DRIFT_THRESHOLD. This "persistence rule" filters
+ * out one-shot vocabulary rotation within stable topics — empirically the
+ * dominant source of false positives (see VALIDATION_RESULTS.md).
+ *
+ * Returns [] in all of: kill switch set, cold start (history.length < N+M),
+ * either pair above threshold, pathological empty-set fallback.
+ *
+ * Pure function. Never throws. <1ms per call at default N=M=3.
+ */
+export function scoreDrift(
+  history: ReadonlyArray<TopicHistoryRow>,
+  currentTopic: SessionEvent,
+): SessionEvent[] {
+  if (TOPIC_FENCE_DISABLED) return [];
+
+  const N = TOPIC_WINDOW_OLD;
+  const M = TOPIC_WINDOW_NEW;
+  if (history.length < N + M) return [];
+
+  // Defensive parse of all rows — corrupted rows become empty arrays.
+  const historyKeywords = history.map((r) => parseTopicKeywords(r.data));
+  const currentKeywords = parseTopicKeywords(currentTopic.data);
+  const combined = [...historyKeywords, currentKeywords];
+
+  // Two adjacent window pairs.
+  const prevOld = combined.slice(0, N);
+  const prevNew = combined.slice(N, N + M);
+  const currOld = combined.slice(1, 1 + N);
+  const currNew = combined.slice(1 + N, 1 + N + M);
+
+  const prevScore = jaccardWindows(prevOld, prevNew);
+  const currScore = jaccardWindows(currOld, currNew);
+
+  // Persistence rule: both must be strictly below threshold.
+  if (prevScore >= TOPIC_DRIFT_THRESHOLD || currScore >= TOPIC_DRIFT_THRESHOLD) {
+    return [];
+  }
+
+  // Deterministic payload for DB dedup compatibility.
+  const sortedOld = [...new Set(currOld.flat())].sort();
+  const sortedNew = [...new Set(currNew.flat())].sort();
+  const payload = {
+    prev_score: prevScore.toFixed(2),
+    curr_score: currScore.toFixed(2),
+    old: sortedOld,
+    new: sortedNew,
+    window: [N, M],
+  };
+
+  return [
+    {
+      type: "topic_drift",
+      category: "topic",
+      data: JSON.stringify(payload),
+      priority: 2,
+    },
+  ];
+}
