@@ -26,3 +26,12 @@ When you need to analyze, count, filter, compare, search, parse, transform, or p
 - Keep responses under 500 words.
 - Write artifacts (code, configs) to FILES — never return them as inline text.
 - Return only: file path + 1-line description.
+
+## topic-fence Extension
+
+This fork adds real-time topic drift detection to context-mode.
+When a new, unrelated topic silently creeps into an ongoing session,
+topic-fence detects the shift and recommends splitting into a new session.
+
+Implementation context and phased plan: `.claude/skills/topic-fence/SKILL.md`
+Working branch: feature/topic-fence
