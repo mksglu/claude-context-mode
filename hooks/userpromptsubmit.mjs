@@ -48,8 +48,17 @@ try {
       priority: 1,
     }, "UserPromptSubmit");
 
-    // 2. Extract decision/role/intent/data from user message
-    const userEvents = extractUserEvents(trimmed);
+    // 2. Extract decision/role/intent/data/topic + Phase 2 drift detection
+    //    from user message. The topic history is queried via the new
+    //    `recent: true` option which returns the most recent N topic
+    //    events in chronological order. historySize = TOPIC_WINDOW_OLD +
+    //    TOPIC_WINDOW_NEW (6 at default config).
+    const recentTopics = db.getEvents(sessionId, {
+      type: "topic",
+      limit: 6,
+      recent: true,
+    });
+    const userEvents = extractUserEvents(trimmed, recentTopics);
     for (const ev of userEvents) {
       db.insertEvent(sessionId, ev, "UserPromptSubmit");
     }
