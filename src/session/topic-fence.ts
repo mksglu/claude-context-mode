@@ -18,6 +18,51 @@
 
 import type { SessionEvent } from "./extract.js";
 
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 2 configuration — read once at module load, cached for hot path
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Parse an env var as an integer, clamping to [min, max]. Returns the
+ * default value on any of: undefined, NaN, non-numeric string, out-of-range.
+ * Silently normalizes invalid input — the hook layer must never block.
+ */
+export function clampInt(
+  raw: string | undefined,
+  def: number,
+  min: number,
+  max: number,
+): number {
+  if (raw === undefined) return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  const i = Math.floor(n);
+  if (i < min || i > max) return def;
+  return i;
+}
+
+/**
+ * Parse an env var as a floating-point number, clamping to [min, max].
+ * Same normalization semantics as clampInt but preserves the fractional part.
+ */
+export function clampFloat(
+  raw: string | undefined,
+  def: number,
+  min: number,
+  max: number,
+): number {
+  if (raw === undefined) return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  if (n < min || n > max) return def;
+  return n;
+}
+
+const TOPIC_WINDOW_OLD       = clampInt(process.env.CONTEXT_MODE_TOPIC_WINDOW_OLD,        3,    1, 50);
+const TOPIC_WINDOW_NEW       = clampInt(process.env.CONTEXT_MODE_TOPIC_WINDOW_NEW,        3,    1, 50);
+const TOPIC_DRIFT_THRESHOLD  = clampFloat(process.env.CONTEXT_MODE_TOPIC_DRIFT_THRESHOLD, 0.10, 0, 1);
+const TOPIC_FENCE_DISABLED   = process.env.CONTEXT_MODE_TOPIC_FENCE_DISABLED === "1";
+
 const STOPWORDS_EN = new Set([
   "the","a","an","is","are","was","were","be","been","being",
   "have","has","had","do","does","did","will","would","could",

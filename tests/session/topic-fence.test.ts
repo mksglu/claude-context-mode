@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, test } from "vitest";
 import { extractUserEvents } from "../../src/session/extract.js";
-import { extractKeywords, extractTopicSignal, stem } from "../../src/session/topic-fence.js";
+import { clampFloat, clampInt, extractKeywords, extractTopicSignal, stem } from "../../src/session/topic-fence.js";
 
 // ════════════════════════════════════════════
 // topic-fence Phase 1 — extractTopicSignal
@@ -236,5 +236,45 @@ describe("stem — Porter-inspired English stemmer", () => {
     // the list) before the "tion" rule is reached, because longer suffixes
     // come first in the iteration order.
     assert.equal(stem("nationalization"), "national");
+  });
+});
+
+describe("clampInt / clampFloat — Phase 2 config helpers", () => {
+  test("clampInt returns default on undefined", () => {
+    assert.equal(clampInt(undefined, 3, 1, 50), 3);
+  });
+
+  test("clampInt returns default on NaN / non-numeric", () => {
+    assert.equal(clampInt("abc", 3, 1, 50), 3);
+    assert.equal(clampInt("NaN", 3, 1, 50), 3);
+  });
+
+  test("clampInt returns default on out-of-range", () => {
+    assert.equal(clampInt("0", 3, 1, 50), 3);   // below min
+    assert.equal(clampInt("100", 3, 1, 50), 3); // above max
+    assert.equal(clampInt("-5", 3, 1, 50), 3);  // negative
+  });
+
+  test("clampInt returns parsed integer on valid input", () => {
+    assert.equal(clampInt("5", 3, 1, 50), 5);
+    assert.equal(clampInt("1", 3, 1, 50), 1);
+    assert.equal(clampInt("50", 3, 1, 50), 50);
+  });
+
+  test("clampInt floors fractional input", () => {
+    assert.equal(clampInt("5.7", 3, 1, 50), 5);
+  });
+
+  test("clampFloat returns default on undefined / NaN / out-of-range", () => {
+    assert.equal(clampFloat(undefined, 0.10, 0, 1), 0.10);
+    assert.equal(clampFloat("abc", 0.10, 0, 1), 0.10);
+    assert.equal(clampFloat("-0.5", 0.10, 0, 1), 0.10);
+    assert.equal(clampFloat("1.5", 0.10, 0, 1), 0.10);
+  });
+
+  test("clampFloat accepts valid fractional input", () => {
+    assert.equal(clampFloat("0.25", 0.10, 0, 1), 0.25);
+    assert.equal(clampFloat("0", 0.10, 0, 1), 0);
+    assert.equal(clampFloat("1", 0.10, 0, 1), 1);
   });
 });
