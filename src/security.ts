@@ -162,6 +162,14 @@ export function matchesAnyPattern(
  *
  * This prevents bypassing deny patterns by prepending innocent commands.
  */
+/** Count consecutive backslashes immediately before position `pos`. */
+function trailingBackslashes(s: string, pos: number): number {
+  let count = 0;
+  let j = pos - 1;
+  while (j >= 0 && s[j] === "\\") { count++; j--; }
+  return count;
+}
+
 export function splitChainedCommands(command: string): string[] {
   const parts: string[] = [];
   let current = "";
@@ -171,15 +179,16 @@ export function splitChainedCommands(command: string): string[] {
 
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
-    const prev = i > 0 ? command[i - 1] : "";
+    // A character is escaped only when preceded by an odd number of backslashes.
+    const escaped = trailingBackslashes(command, i) % 2 !== 0;
 
-    if (ch === "'" && !inDouble && !inBacktick && prev !== "\\") {
+    if (ch === "'" && !inDouble && !inBacktick && !escaped) {
       inSingle = !inSingle;
       current += ch;
-    } else if (ch === '"' && !inSingle && !inBacktick && prev !== "\\") {
+    } else if (ch === '"' && !inSingle && !inBacktick && !escaped) {
       inDouble = !inDouble;
       current += ch;
-    } else if (ch === "`" && !inSingle && !inDouble && prev !== "\\") {
+    } else if (ch === "`" && !inSingle && !inDouble && !escaped) {
       inBacktick = !inBacktick;
       current += ch;
     } else if (!inSingle && !inDouble && !inBacktick) {

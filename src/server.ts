@@ -1336,6 +1336,64 @@ function resolveGfmPluginPath(): string {
 }
 
 // ─────────────────────────────────────────────────────────
+// SSRF prevention
+// ─────────────────────────────────────────────────────────
+
+/** Returns true if addr is a private/loopback/link-local IPv4 address. */
+function isPrivateIPv4(addr: string): boolean {
+  const parts = addr.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((n) => isNaN(n) || n < 0 || n > 255)) return false;
+  const [a, b] = parts;
+  return (
+    a === 0 ||                                // this-network
+    a === 10 ||                               // RFC-1918
+    a === 127 ||                              // loopback
+    (a === 169 && b === 254) ||               // link-local
+    (a === 172 && b >= 16 && b <= 31) ||      // RFC-1918
+    (a === 192 && b === 168)                  // RFC-1918
+  );
+}
+
+/** Validate a URL for SSRF risk. Only http/https allowed; private IPs are blocked. */
+function validateFetchUrl(raw: string): { ok: true } | { ok: false; reason: string } {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: "Invalid URL" };
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, reason: `Protocol '${url.protocol}' is not allowed — only http/https` };
+  }
+
+  const hostname = url.hostname.toLowerCase();
+
+  if (hostname === "localhost") {
+    return { ok: false, reason: "Fetching localhost is not allowed" };
+  }
+
+  if (isPrivateIPv4(hostname)) {
+    return { ok: false, reason: `Fetching private/internal IP '${hostname}' is not allowed` };
+  }
+
+  // IPv6: block loopback and private ranges (ULA fc00::/7, link-local fe80::/10)
+  const ipv6Inner = hostname.startsWith("[") ? hostname.slice(1, -1) : null;
+  if (ipv6Inner !== null) {
+    if (
+      ipv6Inner === "::1" ||
+      ipv6Inner.startsWith("fc") ||
+      ipv6Inner.startsWith("fd") ||
+      ipv6Inner.toLowerCase().startsWith("fe80")
+    ) {
+      return { ok: false, reason: "Fetching private/loopback IPv6 addresses is not allowed" };
+    }
+  }
+
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────
 // Tool: fetch_and_index
 // ─────────────────────────────────────────────────────────
 
@@ -1419,6 +1477,14 @@ server.registerTool(
     }),
   },
   async ({ url, source, force }) => {
+    const urlCheck = validateFetchUrl(url);
+    if (!urlCheck.ok) {
+      return trackResponse("ctx_fetch_and_index", {
+        content: [{ type: "text" as const, text: `URL blocked: ${urlCheck.reason}` }],
+        isError: true,
+      });
+    }
+
     // TTL cache: if source was indexed within 24h, return cached hint
     if (!force) {
       const store = getStore();

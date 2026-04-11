@@ -1,4 +1,4 @@
-import { spawn, execSync, execFileSync } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -36,7 +36,7 @@ const OS_TMPDIR = (() => {
 function killTree(proc: ReturnType<typeof spawn>): void {
   if (isWin && proc.pid) {
     try {
-      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
+      execFileSync("taskkill", ["/F", "/T", "/PID", String(proc.pid)], { stdio: "pipe" });
     } catch { /* already dead */ }
   } else if (proc.pid) {
     try {
