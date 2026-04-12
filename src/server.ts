@@ -1142,17 +1142,30 @@ function coerceJsonArray(val: unknown): unknown {
 }
 
 /**
- * Coerce commands array: handles double-serialization AND the case where
- * the model passes plain command strings instead of {label, command} objects.
+ * Coerce commands array: handles double-serialization, plain-string items, and
+ * object items where the model used `description`/`name`/`title` instead of the
+ * required `label` field (a common LLM output shape).
  */
 function coerceCommandsArray(val: unknown): unknown {
   const arr = coerceJsonArray(val);
-  if (Array.isArray(arr)) {
-    return arr.map((item, i) =>
-      typeof item === "string" ? { label: `cmd_${i + 1}`, command: item } : item
-    );
-  }
-  return arr;
+  if (!Array.isArray(arr)) return arr;
+  return arr.map((item, i) => {
+    if (typeof item === "string") {
+      return { label: `cmd_${i + 1}`, command: item };
+    }
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.label !== "string" || obj.label.length === 0) {
+        const fallback =
+          (typeof obj.description === "string" && obj.description) ||
+          (typeof obj.name === "string" && obj.name) ||
+          (typeof obj.title === "string" && obj.title) ||
+          `cmd_${i + 1}`;
+        return { ...obj, label: fallback };
+      }
+    }
+    return item;
+  });
 }
 
 server.registerTool(
