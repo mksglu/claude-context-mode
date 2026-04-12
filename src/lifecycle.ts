@@ -1,8 +1,11 @@
 /**
  * lifecycle — Process lifecycle guard for MCP server.
  *
- * Detects parent process death, stdin close, and OS signals to prevent
+ * Detects parent process death (ppid polling) and OS signals to prevent
  * orphaned MCP server processes consuming 100% CPU (issue #103).
+ *
+ * Stdin close is NOT used as a shutdown signal — the MCP stdio transport
+ * owns stdin and transient pipe events cause spurious -32000 errors (#236).
  *
  * Cross-platform: macOS, Linux, Windows.
  */
@@ -10,7 +13,7 @@
 export interface LifecycleGuardOptions {
   /** Interval in ms to check parent liveness. Default: 30_000 */
   checkIntervalMs?: number;
-  /** Called when parent death or stdin close is detected. */
+  /** Called when parent death or OS signal is detected. */
   onShutdown: () => void;
   /** Injectable parent-alive check (for testing). Default: ppid-based check. */
   isParentAlive?: () => boolean;
@@ -54,14 +57,6 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
   }, interval);
   timer.unref();
 
-  // P0: Stdin close — parent pipe broken
-  // Must resume stdin to receive close/end events (Node starts paused)
-  const onStdinClose = () => shutdown();
-  process.stdin.resume();
-  process.stdin.on("end", onStdinClose);
-  process.stdin.on("close", onStdinClose);
-  process.stdin.on("error", onStdinClose);
-
   // P0: OS signals — terminal close, kill, ctrl+c
   const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
   if (process.platform !== "win32") signals.push("SIGHUP");
@@ -70,9 +65,6 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
   return () => {
     stopped = true;
     clearInterval(timer);
-    process.stdin.removeListener("end", onStdinClose);
-    process.stdin.removeListener("close", onStdinClose);
-    process.stdin.removeListener("error", onStdinClose);
     for (const sig of signals) process.removeListener(sig, shutdown);
   };
 }

@@ -128,18 +128,31 @@ describe("Lifecycle Guard", () => {
 const isWindows = process.platform === "win32";
 
 describe.skipIf(isWindows)("Lifecycle Guard — Integration (real process)", () => {
-  test("child exits when stdin is closed", async () => {
+  test("child does NOT exit when stdin is closed (#236)", async () => {
     const { child, ready } = spawnGuardChild(42);
 
     await ready;
     child.stdin!.end();
 
-    const code = await new Promise<number | null>((resolve) => {
-      child.on("close", resolve);
-      setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 5000);
-    });
+    let exited = false;
+    let exitCode: number | null = null;
+    child.on("close", (code) => { exited = true; exitCode = code; });
 
-    assert.equal(code, 42, "Child should exit with code 42 when stdin closes");
+    // Give the guard 500ms — if stdin-close still triggered shutdown, it
+    // would have fired by now (previous implementation exited within ~1ms).
+    await new Promise((r) => setTimeout(r, 500));
+
+    assert.equal(exited, false, `Child must stay alive after stdin.end(); exited with code ${exitCode}`);
+    assert.equal(child.killed, false, "Child.killed should still be false");
+
+    // Clean up: SIGTERM the still-alive child so the test runner doesn't leak.
+    const closed = new Promise<number | null>((resolve) => {
+      if (exited) return resolve(exitCode);
+      child.on("close", resolve);
+      setTimeout(() => { child.kill("SIGKILL"); resolve(null); }, 3000);
+    });
+    child.kill("SIGTERM");
+    await closed;
   }, 10_000);
 
   test("child exits on SIGTERM", async () => {
