@@ -7,10 +7,13 @@ export default defineConfig({
     // Native addons (better-sqlite3) can segfault in worker_threads during
     // process cleanup. Use forks on all platforms for stable isolation.
     pool: "forks",
-    // Hook subprocess tests (spawnSync + better-sqlite3 native addon) can
-    // fail intermittently under parallel load on CI.  Retry once to absorb
-    // transient resource-contention failures without masking real regressions.
-    // Only enable retry on CI to avoid slowing down local dev.
-    retry: process.env.CI ? 2 : 0,
+    // Several suites spawn Node subprocesses via spawnSync (hook runners)
+    // that load the better-sqlite3 native addon. When vitest ran those
+    // files concurrently in separate fork workers, the child processes
+    // intermittently received SIGKILL (empty stdout/stderr, status=null) —
+    // likely from worker-teardown signal propagation under load.
+    // Serializing files eliminates the race deterministically; tests
+    // within a file still run sequentially as before (spawnSync is sync).
+    fileParallelism: false,
   },
 });
