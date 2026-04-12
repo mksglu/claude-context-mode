@@ -2183,7 +2183,7 @@ async function main() {
   } catch { /* best effort — _detectedAdapter stays null, falls back to .claude */ }
 
   // Non-blocking version check — result stored for trackResponse warnings
-  fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
+  // fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
 
   console.error(`Context Mode MCP server v${VERSION} running on stdio`);
   console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);

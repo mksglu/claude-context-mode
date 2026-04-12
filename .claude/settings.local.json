@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"userInput\\\\|user.*path\\\\|dynamicPath\\\\|concat.*path\\\\|template.*path\" /c/d/context-mode/src/*.ts /c/d/context-mode/src/**/*.ts)",
+      "Bash(python3 -c \":*)",
+      "Bash(node -e \":*)",
+      "Bash(powershell -NonInteractive -File scripts/build.ps1)",
+      "Bash(node cli.bundle.mjs --help)",
+      "Bash(node cli.bundle.mjs version)",
+      "Bash(node -e \"console.log\\(require\\(''./package.json''\\).version\\)\")",
+      "Bash(powershell -NonInteractive -File scripts/deploy.ps1)",
+      "Bash(powershell -NonInteractive -File scripts/setup-tools.ps1 -Tool all -ProjectDir C:/projects/myapp)",
+      "Bash(powershell -NonInteractive -Command \"& { $null = New-Item -Path C:/projects/myapp -ItemType Directory -Force; & scripts/setup-tools.ps1 -Tool gemini,vscode,cursor,opencode,kilo,codex,kiro -ProjectDir C:/projects/myapp }\")",
+      "Bash(powershell -NonInteractive -Command '& { $null = New-Item -Path C:/projects/myapp2 -ItemType Directory -Force; & scripts/setup-tools.ps1 -Tool gemini,vscode,cursor,opencode,kilo,codex,kiro -ProjectDir C:/projects/myapp2 }')",
+      "Read(//c/projects/myapp2/.cursor/**)",
+      "Read(//c/projects/myapp2/.vscode/**)",
+      "Bash(node -e \"console.log\\(process.execPath\\)\")"
+    ]
+  }
+}
