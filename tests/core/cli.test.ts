@@ -142,10 +142,25 @@ describe(".mcp.json — MCP server config", () => {
     expect(upgradeSrc).toContain('resolve(pluginRoot, ".mcp.json")');
   });
 
-  it("template .mcp.json keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {
+  it("plugin manifest keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {
+    // Marketplace installs read .claude-plugin/plugin.json, not repo-root
+    // .mcp.json. The plugin manifest is the one that must retain the
+    // ${CLAUDE_PLUGIN_ROOT} placeholder so installed plugins resolve their
+    // bundled server path. Repo-root .mcp.json is for contributors opening
+    // the repo as a regular project and uses a relative path to avoid the
+    // "Missing environment variable: CLAUDE_PLUGIN_ROOT" warning.
+    const plugin = JSON.parse(
+      readFileSync(resolve(ROOT, ".claude-plugin", "plugin.json"), "utf-8"),
+    );
+    const args = plugin.mcpServers["context-mode"].args;
+    expect(args[0]).toContain("CLAUDE_PLUGIN_ROOT");
+  });
+
+  it("repo-root .mcp.json uses relative path to silence CLAUDE_PLUGIN_ROOT warning", () => {
     const mcp = JSON.parse(readFileSync(resolve(ROOT, ".mcp.json"), "utf-8"));
     const args = mcp.mcpServers["context-mode"].args;
-    expect(args[0]).toContain("CLAUDE_PLUGIN_ROOT");
+    expect(args[0]).not.toContain("CLAUDE_PLUGIN_ROOT");
+    expect(args[0]).toMatch(/^\.\/|^start\.mjs$/);
   });
 });
 
