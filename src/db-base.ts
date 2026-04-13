@@ -249,6 +249,12 @@ export function loadDatabase(): typeof DatabaseConstructor {
 export function applyWALPragmas(db: DatabaseInstance): void {
   db.pragma("journal_mode = WAL");
   db.pragma("synchronous = NORMAL");
+  // Memory-map the DB file for read-heavy FTS5 search workloads.
+  // Eliminates read() syscalls — the kernel serves pages directly from
+  // the page cache. 256MB is a safe upper bound (SQLite only maps up to
+  // the actual file size). Falls back gracefully on platforms where mmap
+  // is unavailable or restricted.
+  try { db.pragma("mmap_size = 268435456"); } catch { /* unsupported runtime */ }
 }
 
 // ─────────────────────────────────────────────────────────
