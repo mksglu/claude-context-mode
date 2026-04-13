@@ -298,6 +298,12 @@ export class ContentStore {
   #stmtStats!: PreparedStatement;
   #stmtSourceMeta!: PreparedStatement;
 
+  // FTS5 optimization: track inserts and optimize periodically to defragment
+  // the index. FTS5 b-trees fragment over many insert/delete cycles, degrading
+  // search performance. SQLite's built-in 'optimize' merges b-tree segments.
+  #insertCount = 0;
+  static readonly OPTIMIZE_EVERY = 50;
+
   constructor(dbPath?: string) {
     const Database = loadDatabase();
     this.#dbPath =
@@ -728,6 +734,15 @@ export class ContentStore {
     const sourceId = transaction();
     if (text) this.#extractAndStoreVocabulary(text);
 
+    // Periodically optimize FTS5 indexes to merge b-tree segments.
+    // Fragmentation accumulates over insert/delete cycles (dedup re-indexes
+    // every source on update). The 'optimize' command merges segments into
+    // a single b-tree, improving search latency for long-running sessions.
+    this.#insertCount++;
+    if (this.#insertCount % ContentStore.OPTIMIZE_EVERY === 0) {
+      this.#optimizeFTS();
+    }
+
     return {
       sourceId,
       label,
@@ -1099,7 +1114,16 @@ export class ContentStore {
     }
   }
 
+  /** Merge FTS5 b-tree segments for both porter and trigram indexes. */
+  #optimizeFTS(): void {
+    try {
+      this.#db.exec("INSERT INTO chunks(chunks) VALUES('optimize')");
+      this.#db.exec("INSERT INTO chunks_trigram(chunks_trigram) VALUES('optimize')");
+    } catch { /* best effort — don't block indexing */ }
+  }
+
   close(): void {
+    this.#optimizeFTS(); // defragment before close
     closeDB(this.#db); // WAL checkpoint before close — important for persistent DBs
   }
 

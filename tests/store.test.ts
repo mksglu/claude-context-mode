@@ -1460,3 +1460,44 @@ describe("ContentStore — corrupt DB recovery", () => {
     expect(() => new ContentStore(tmpdir())).toThrow();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// FTS5 Periodic Optimization
+// ═══════════════════════════════════════════════════════════
+
+describe("FTS5 periodic optimize", () => {
+  test("search works correctly after OPTIMIZE_EVERY inserts", () => {
+    const dbPath = join(tmpdir(), `ctx-optimize-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const store = new ContentStore(dbPath);
+
+    // Insert enough sources to trigger at least one optimize cycle
+    for (let i = 0; i < ContentStore.OPTIMIZE_EVERY + 5; i++) {
+      store.indexPlainText(`Document number ${i} about testing optimization`, `source-${i}`);
+    }
+
+    // Search should still work correctly after optimization ran
+    const results = store.search("testing optimization");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].content).toContain("testing optimization");
+
+    store.cleanup();
+  });
+
+  test("close() does not throw even after many inserts", () => {
+    const dbPath = join(tmpdir(), `ctx-optimize-close-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const store = new ContentStore(dbPath);
+
+    for (let i = 0; i < 10; i++) {
+      store.indexPlainText(`Content ${i}`, `src-${i}`);
+    }
+
+    // close() calls #optimizeFTS — should not throw
+    expect(() => store.close()).not.toThrow();
+  });
+
+  test("OPTIMIZE_EVERY is a reasonable value", () => {
+    // Guard against accidentally setting it too low (perf) or too high (no benefit)
+    expect(ContentStore.OPTIMIZE_EVERY).toBeGreaterThanOrEqual(20);
+    expect(ContentStore.OPTIMIZE_EVERY).toBeLessThanOrEqual(200);
+  });
+});
