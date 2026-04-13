@@ -907,22 +907,30 @@ export class ContentStore {
       .split(/\s+/)
       .filter((w) => w.length >= 2);
 
-    // Single-term queries: no reranking needed
-    if (terms.length < 2) return results;
-
     return results
       .map((r) => {
-        const content = r.content.toLowerCase();
-        const positions = terms.map((t) => findAllPositions(content, t));
+        // Title-match boost: query terms found in the chunk title get a boost.
+        // Code chunks get a stronger title boost (function/class names are high
+        // signal) while prose chunks get a moderate one (headings are useful but
+        // body carries more weight).
+        const titleLower = r.title.toLowerCase();
+        const titleHits = terms.filter((t) => titleLower.includes(t)).length;
+        const titleWeight = r.contentType === "code" ? 0.6 : 0.3;
+        const titleBoost = titleHits > 0 ? titleWeight * (titleHits / terms.length) : 0;
 
-        // If any term is missing from content, no proximity boost
-        if (positions.some((p) => p.length === 0)) {
-          return { result: r, boost: 0 };
+        // Proximity boost for multi-term queries
+        let proximityBoost = 0;
+        if (terms.length >= 2) {
+          const content = r.content.toLowerCase();
+          const positions = terms.map((t) => findAllPositions(content, t));
+
+          if (!positions.some((p) => p.length === 0)) {
+            const minSpan = findMinSpan(positions);
+            proximityBoost = 1 / (1 + minSpan / Math.max(content.length, 1));
+          }
         }
 
-        const minSpan = findMinSpan(positions);
-        const boost = 1 / (1 + minSpan / Math.max(content.length, 1));
-        return { result: r, boost };
+        return { result: r, boost: titleBoost + proximityBoost };
       })
       .sort((a, b) => b.boost - a.boost || a.result.rank - b.result.rank)
       .map(({ result }) => result);

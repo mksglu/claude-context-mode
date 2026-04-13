@@ -2345,3 +2345,79 @@ describe("Proximity reranking", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 8. Content-Type-Aware Title Boost
+// ═══════════════════════════════════════════════════════════
+
+describe("Content-type-aware title boost in reranking", () => {
+  test("chunk with query term in title ranks above chunk with same term only in body", () => {
+    const store = createStore();
+    try {
+      // Chunk A: title matches "parseConfig"
+      store.index({
+        content: "## parseConfig\n\nThis function loads configuration from disk and parses it into a settings object.",
+        source: "title-match",
+      });
+      // Chunk B: "parseConfig" only in body, not title
+      store.index({
+        content: "## Configuration Guide\n\nThe system uses parseConfig to load settings from disk. Call parseConfig with the path to your config file.",
+        source: "body-match",
+      });
+
+      const results = store.searchWithFallback("parseConfig", 5);
+      assert.ok(results.length >= 2, "Should find both chunks");
+      assert.ok(
+        results[0].title.toLowerCase().includes("parseconfig"),
+        "Chunk with title match should rank first",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("title boost applies to single-term queries (not just multi-term)", () => {
+    const store = createStore();
+    try {
+      store.index({
+        content: "## authentication\n\nThis module handles user login and session management.",
+        source: "auth-titled",
+      });
+      store.index({
+        content: "## Security Overview\n\nThe authentication system validates user credentials using bcrypt hashing. Authentication tokens expire after 24 hours.",
+        source: "auth-body",
+      });
+
+      const results = store.searchWithFallback("authentication", 5);
+      assert.ok(results.length >= 2, "Should find both chunks");
+      assert.ok(
+        results[0].title.toLowerCase().includes("authentication"),
+        "Chunk with query term in title should rank first",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("code chunks get stronger title boost than prose chunks", () => {
+    const store = createStore();
+    try {
+      // Code chunk: "validator" in title + code fence → contentType=code, titleWeight=0.6
+      store.index({
+        content: "## validator\n\n```javascript\nclass Validator {\n  validate(input) { return input.length > 0; }\n}\n```",
+        source: "validator-code",
+      });
+      // Prose chunk: "validator" in title, no code fence → contentType=prose, titleWeight=0.3
+      store.index({
+        content: "## validator\n\nThe validator module provides input validation utilities for the API layer. It checks all fields.",
+        source: "validator-prose",
+      });
+
+      const results = store.searchWithFallback("validator input", 5);
+      assert.ok(results.length >= 2, "Should find both chunks");
+      assert.equal(results[0].contentType, "code", "Code chunk should rank first with stronger title boost");
+    } finally {
+      store.close();
+    }
+  });
+});
