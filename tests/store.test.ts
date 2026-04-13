@@ -1283,6 +1283,127 @@ describe("SQLITE_BUSY retry logic", () => {
   });
 });
 
+// ── withRetry coverage for all write/read paths ──
+
+describe("withRetry edge cases", () => {
+  test("withRetry succeeds on first attempt", () => {
+    const result = withRetry(() => "immediate", [0, 0, 0]);
+    expect(result).toBe("immediate");
+  });
+
+  test("withRetry recovers on last retry", () => {
+    let attempts = 0;
+    const result = withRetry(() => {
+      attempts++;
+      if (attempts <= 3) {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }
+      return "recovered";
+    }, [0, 0, 0]);
+    expect(result).toBe("recovered");
+    expect(attempts).toBe(4); // 1 initial + 3 retries
+  });
+
+  test("withRetry handles 'database is locked' without SQLITE_BUSY prefix", () => {
+    let attempts = 0;
+    const result = withRetry(() => {
+      attempts++;
+      if (attempts < 2) {
+        throw new Error("database is locked");
+      }
+      return "ok";
+    }, [0, 0, 0]);
+    expect(result).toBe("ok");
+    expect(attempts).toBe(2);
+  });
+
+  test("withRetry with empty delays array throws immediately on BUSY", () => {
+    expect(() => {
+      withRetry(() => {
+        throw new Error("SQLITE_BUSY: database is locked");
+      }, []);
+    }).toThrow(/SQLITE_BUSY.*0 retries/);
+  });
+
+  test("withRetry preserves return type", () => {
+    const obj = withRetry(() => ({ key: "value", num: 42 }), [0]);
+    expect(obj).toEqual({ key: "value", num: 42 });
+  });
+});
+
+// ── Concurrent write resilience ──
+
+describe("concurrent DB access", () => {
+  test("two ContentStore instances can write to the same DB file", () => {
+    const dbPath = join(tmpdir(), `concurrent-write-${Date.now()}.db`);
+    const store1 = new ContentStore(dbPath);
+    const store2 = new ContentStore(dbPath);
+
+    store1.index({ content: "# First\n\nContent from store 1.", source: "store1-doc" });
+    store2.index({ content: "# Second\n\nContent from store 2.", source: "store2-doc" });
+
+    // Both sources should be searchable from either store
+    const results1 = store1.search("Content from store", 10);
+    expect(results1.length).toBeGreaterThanOrEqual(2);
+
+    const results2 = store2.search("Content from store", 10);
+    expect(results2.length).toBeGreaterThanOrEqual(2);
+
+    store1.cleanup();
+    store2.close();
+  });
+
+  test("indexPlainText is protected by withRetry", () => {
+    // Verify indexPlainText doesn't throw on transient BUSY by testing
+    // concurrent plain text indexing on same DB
+    const dbPath = join(tmpdir(), `concurrent-plaintext-${Date.now()}.db`);
+    const store1 = new ContentStore(dbPath);
+    const store2 = new ContentStore(dbPath);
+
+    store1.indexPlainText("alpha bravo charlie", "plain-1");
+    store2.indexPlainText("delta echo foxtrot", "plain-2");
+
+    const r1 = store1.search("alpha bravo", 5, "plain-1");
+    expect(r1.length).toBeGreaterThan(0);
+    const r2 = store1.search("delta echo", 5, "plain-2");
+    expect(r2.length).toBeGreaterThan(0);
+
+    store1.cleanup();
+    store2.close();
+  });
+
+  test("indexJSON is protected by withRetry", () => {
+    const dbPath = join(tmpdir(), `concurrent-json-${Date.now()}.db`);
+    const store1 = new ContentStore(dbPath);
+    const store2 = new ContentStore(dbPath);
+
+    store1.indexJSON(JSON.stringify({ users: [{ name: "Alice" }] }), "json-1");
+    store2.indexJSON(JSON.stringify({ items: [{ id: 1 }] }), "json-2");
+
+    const results = store1.search("Alice", 5);
+    expect(results.length).toBeGreaterThan(0);
+
+    store1.cleanup();
+    store2.close();
+  });
+
+  test("search and searchTrigram work under concurrent writes", () => {
+    const dbPath = join(tmpdir(), `concurrent-search-${Date.now()}.db`);
+    const store1 = new ContentStore(dbPath);
+    const store2 = new ContentStore(dbPath);
+
+    store1.index({ content: "# Guide\n\nReact hooks are powerful.", source: "guide" });
+
+    // Write from store2 while store1 searches
+    store2.index({ content: "# Tutorial\n\nVue composition API.", source: "tutorial" });
+    const results = store1.search("hooks", 5);
+    expect(results.length).toBeGreaterThan(0);
+
+    store1.cleanup();
+    store2.close();
+  });
+});
+
 // ── WAL checkpoint on close (#244) ──
 
 describe("closeDB — WAL checkpoint", () => {

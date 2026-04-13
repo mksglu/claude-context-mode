@@ -648,11 +648,11 @@ export class ContentStore {
 
     const chunks = this.#chunkPlainText(content, linesPerChunk);
 
-    return this.#insertChunks(
+    return withRetry(() => this.#insertChunks(
       chunks.map((c) => ({ ...c, hasCode: false })),
       source,
       content,
-    );
+    ));
   }
 
   // ── Index JSON ──
@@ -687,7 +687,7 @@ export class ContentStore {
       return this.indexPlainText(content, source);
     }
 
-    return this.#insertChunks(chunks, source, content);
+    return withRetry(() => this.#insertChunks(chunks, source, content));
   }
 
   // ── Shared DB Insertion ──
@@ -821,7 +821,7 @@ export class ContentStore {
       params = [sanitized, limit];
     }
 
-    return this.#mapSearchRows(stmt.all(...params) as SearchRow[]);
+    return withRetry(() => this.#mapSearchRows(stmt.all(...params) as SearchRow[]));
   }
 
   // ── Fuzzy Correction (Layer 3) ──
