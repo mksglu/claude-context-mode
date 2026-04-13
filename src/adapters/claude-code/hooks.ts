@@ -78,11 +78,7 @@ export const REQUIRED_HOOKS: HookType[] = [
 ];
 
 /** Optional hooks that enhance functionality but aren't critical. */
-export const OPTIONAL_HOOKS: HookType[] = [
-  HOOK_TYPES.POST_TOOL_USE,
-  HOOK_TYPES.PRE_COMPACT,
-  HOOK_TYPES.USER_PROMPT_SUBMIT,
-];
+export const OPTIONAL_HOOKS: HookType[] = [];
 
 /**
  * Check if a hook entry points to a context-mode hook script.
