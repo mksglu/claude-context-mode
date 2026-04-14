@@ -343,17 +343,28 @@ export default function piExtension(pi: any): void {
 
   pi.registerCommand("ctx-stats", {
     description: "Show context-mode session statistics",
-    handler: () => {
-      if (!_db || !_sessionId) {
-        return { text: "context-mode: no active session" };
+    handler: async (_args: string, ctx: any) => {
+      const text =
+        !_db || !_sessionId
+          ? "context-mode: no active session"
+          : buildStatsText(_db, _sessionId);
+
+      if (ctx?.hasUI) {
+        ctx.ui.notify(text, "info");
+        return;
       }
-      return { text: buildStatsText(_db, _sessionId) };
+
+      pi.sendMessage({
+        customType: "context-mode",
+        content: text,
+        display: true,
+      });
     },
   });
 
   pi.registerCommand("ctx-doctor", {
     description: "Run context-mode diagnostics",
-    handler: () => {
+    handler: async (_args: string, ctx: any) => {
       const dbPath = getDBPath();
       const dbExists = existsSync(dbPath);
       const lines: string[] = [
@@ -381,7 +392,17 @@ export default function piExtension(pi: any): void {
         }
       }
 
-      return { text: lines.join("\n") };
+      const text = lines.join("\n");
+      if (ctx?.hasUI) {
+        ctx.ui.notify(text, "info");
+        return;
+      }
+
+      pi.sendMessage({
+        customType: "context-mode",
+        content: text,
+        display: true,
+      });
     },
   });
 }
