@@ -2421,3 +2421,122 @@ describe("Content-type-aware title boost in reranking", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. Search Relevance Eval — ranking quality under competitive conditions
+//
+// Indexes 12 heterogeneous markdown sources into a single store and asserts
+// ranking correctness (precision@1, recall@5, title boost, cascade, negatives).
+// Guards BM25 weights, RRF K, proximity formula, and title boost weights
+// against silent regression.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const RELEVANCE_CORPUS: Array<{ source: string; markdown: string }> = [
+  {
+    source: "api-auth-handler",
+    markdown: `# Authentication middleware\n\n## verifyToken\n\n\`\`\`typescript\nexport async function verifyToken(req: Request): Promise<User> {\n  const header = req.headers.get("Authorization");\n  if (!header?.startsWith("Bearer ")) {\n    throw new AuthenticationError("Missing or malformed Authorization header");\n  }\n  const token = header.slice(7);\n  const payload = jwt.verify(token, process.env.JWT_SECRET!);\n  return payload;\n}\n\`\`\`\n\nThe middleware validates JWT tokens from the Authorization header and returns the decoded user payload.`,
+  },
+  {
+    source: "nginx-access-log",
+    markdown: `# Nginx access log\n\n## Recent requests\n\n\`\`\`\n192.168.1.42 "GET /api/auth/callback HTTP/1.1" 200 1234\n192.168.1.43 "GET /static/bundle.js HTTP/1.1" 200 450321\n192.168.1.44 "POST /api/users HTTP/1.1" 201 89\n10.0.0.1 "DELETE /api/sessions HTTP/1.1" 204 0\n\`\`\``,
+  },
+  {
+    source: "react-useeffect-docs",
+    markdown: `# React useEffect\n\n## Cleanup and dependencies\n\nuseEffect lets you synchronize a component with an external system.\n\n\`\`\`jsx\nuseEffect(() => {\n  const connection = createConnection(serverUrl, roomId);\n  connection.connect();\n  return () => connection.disconnect();\n}, [serverUrl, roomId]);\n\`\`\`\n\n## When cleanup runs\n\nThe cleanup function runs before every re-render with changed dependencies, and once more when the component unmounts.`,
+  },
+  {
+    source: "vitest-output",
+    markdown: `# Test results\n\n## Summary\n\nTest Suites: 1 failed, 29 passed, 30 total\nTests: 1 failed, 219 passed, 220 total\n\n## Failed test\n\n\`\`\`\nFAIL tests/hooks/integration.test.ts\n  PostToolUse hook session capture\n    AssertionError: expected "ok" to equal "captured"\n    at tests/hooks/integration.test.ts:142:5\n\`\`\`\n\n## Passed suites\n\n- store.test.ts (34 tests) 1200ms\n- executor.test.ts (55 tests) 3400ms`,
+  },
+  {
+    source: "database-migration",
+    markdown: `# Database migration 0042\n\n## Add tenant_id column\n\n\`\`\`sql\nALTER TABLE orders ADD COLUMN tenant_id UUID NOT NULL DEFAULT '00000000';\nCREATE INDEX idx_orders_tenant ON orders(tenant_id);\n\`\`\`\n\n## Backfill\n\n\`\`\`sql\nUPDATE orders SET tenant_id = (SELECT org_id FROM users WHERE users.id = orders.user_id);\n\`\`\``,
+  },
+  {
+    source: "nextjs-build-output",
+    markdown: `# Next.js build output\n\n## Warnings\n\n- You have enabled experimental feature (serverActions) in next.config.js\n- Duplicate page detected. pages/api/auth and app/api/auth both resolve to /api/auth\n\n## Routes\n\n| Route | Size | First Load |\n|-------|------|------------|\n| / | 5.2 kB | 89.1 kB |\n| /dashboard | 12.3 kB | 96.2 kB |`,
+  },
+  {
+    source: "python-traceback",
+    markdown: `# Python error traceback\n\n## Database connection timeout\n\n\`\`\`\nTraceback (most recent call last):\n  File "/app/services/sync.py", line 234, in sync_orders\n    conn = await asyncpg.connect(DATABASE_URL, timeout=30)\nasyncio.TimeoutError\n\nDatabaseConnectionError: Failed to connect after 3 retries\n\`\`\`\n\nThe sync service could not reach the PostgreSQL database within the 30-second timeout.`,
+  },
+  {
+    source: "git-log-recent",
+    markdown: `# Git log\n\n## Recent commits\n\n- eb36c2e perf: enable mmap_size pragma for FTS5 search\n- 766de41 ci: update server.bundle.mjs\n- 01470ec fix(store): wrap indexPlainText with withRetry\n- c445a12 feat(kiro): add full hook support for Kiro IDE`,
+  },
+  {
+    source: "tailwind-config",
+    markdown: `# Tailwind CSS configuration\n\n## Custom theme colors\n\n\`\`\`javascript\nmodule.exports = {\n  theme: {\n    extend: {\n      colors: {\n        brand: { 50: '#f0f9ff', 500: '#0ea5e9', 900: '#0c4a6e' },\n      },\n      fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },\n    },\n  },\n  plugins: [require('@tailwindcss/forms'), require('@tailwindcss/typography')],\n};\n\`\`\``,
+  },
+  {
+    source: "dockerfile-prod",
+    markdown: `# Dockerfile\n\n## Multi-stage production build\n\n\`\`\`dockerfile\nFROM node:20-alpine AS builder\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci --production=false\nCOPY . .\nRUN npm run build\n\nFROM node:20-alpine AS runner\nENV NODE_ENV=production\nCOPY --from=builder /app/build ./build\nCMD ["node", "build/server.js"]\n\`\`\``,
+  },
+  {
+    source: "k8s-deployment",
+    markdown: `# Kubernetes deployment\n\n## api-server\n\n\`\`\`yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api-server\n  namespace: production\nspec:\n  replicas: 3\n  template:\n    spec:\n      containers:\n        - name: api\n          image: registry.example.com/api:v2.3.1\n          resources:\n            requests: { cpu: "250m", memory: "512Mi" }\n          readinessProbe:\n            httpGet: { path: /health, port: 3000 }\n\`\`\``,
+  },
+  {
+    source: "package-json-deps",
+    markdown: `# Package dependencies\n\n## Production\n\n- next 14.2.3\n- react 18.3.1\n- @prisma/client 5.14.0\n- zod 3.23.8\n\n## Dev dependencies\n\n- typescript 5.4.5\n- vitest 1.6.0\n- tailwindcss 3.4.3\n- eslint 8.57.0`,
+  },
+];
+
+describe("Search relevance eval — competitive corpus", () => {
+  let relevanceStore: ContentStore;
+
+  beforeEach(() => {
+    const path = join(tmpdir(), `ctx-relevance-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    relevanceStore = new ContentStore(path);
+    for (const doc of RELEVANCE_CORPUS) {
+      relevanceStore.index({ content: doc.markdown, source: doc.source });
+    }
+  });
+
+  afterEach(() => {
+    relevanceStore.cleanup();
+  });
+
+  function topOne(query: string, expectedSource: string) {
+    const results = relevanceStore.searchWithFallback(query, 3);
+    expect(results.length, `"${query}" should return results`).toBeGreaterThan(0);
+    expect(results[0].source, `"${query}" #1 should be "${expectedSource}", got "${results[0]?.source}"`).toBe(expectedSource);
+  }
+
+  function ranking(query: string, expectTop: string | string[], expectAbsent?: string[], layer?: string) {
+    const results = relevanceStore.searchWithFallback(query, 5);
+    const sources = results.map((r) => r.source);
+    const tops = Array.isArray(expectTop) ? expectTop : [expectTop];
+    for (const e of tops) expect(sources, `"${query}" should find "${e}" in top 5, got [${sources}]`).toContain(e);
+    if (expectAbsent) for (const a of expectAbsent) expect(sources, `"${query}" should NOT return "${a}"`).not.toContain(a);
+    if (layer) expect(results[0]?.matchLayer, `"${query}" should hit ${layer} layer`).toBe(layer);
+  }
+
+  // precision@1
+  test("'authentication middleware JWT' → api-auth-handler", () => topOne("authentication middleware JWT", "api-auth-handler"));
+  test("'database connection timeout' → python-traceback", () => topOne("database connection timeout", "python-traceback"));
+  test("'useEffect cleanup' → react-useeffect-docs", () => topOne("useEffect cleanup", "react-useeffect-docs"));
+  test("'tenant_id migration ALTER TABLE' → database-migration", () => topOne("tenant_id migration ALTER TABLE", "database-migration"));
+  test("'Dockerfile multi-stage build' → dockerfile-prod", () => topOne("Dockerfile multi-stage build", "dockerfile-prod"));
+  test("'Kubernetes deployment replicas' → k8s-deployment", () => topOne("Kubernetes deployment replicas", "k8s-deployment"));
+  test("'tailwind theme colors brand' → tailwind-config", () => topOne("tailwind theme colors brand", "tailwind-config"));
+  test("'test failed assertion FAIL' → vitest-output", () => topOne("test failed assertion FAIL", "vitest-output"));
+
+  // recall@5
+  test("'error timeout' finds python-traceback", () => ranking("error timeout", "python-traceback", ["tailwind-config", "git-log-recent"]));
+  test("'build warning experimental serverActions' finds nextjs output", () => ranking("build warning experimental serverActions", "nextjs-build-output"));
+  test("'react dependencies vitest typescript' finds package.json", () => ranking("react dependencies vitest typescript", "package-json-deps"));
+  test("'mmap pragma perf FTS5' finds git log", () => ranking("mmap pragma perf FTS5", "git-log-recent"));
+
+  // title boost
+  test("'Kubernetes deployment' title match ranks k8s-deployment first", () => topOne("Kubernetes deployment", "k8s-deployment"));
+  test("'Dockerfile' title match ranks dockerfile-prod first", () => topOne("Dockerfile", "dockerfile-prod"));
+
+  // cascade
+  test("exact terms hit RRF layer", () => ranking("useEffect cleanup", "react-useeffect-docs", undefined, "rrf"));
+  test("typo still resolves to correct doc", () => ranking("authenticaton middlewar", "api-auth-handler"));
+
+  // negatives
+  test("'tailwind colors' excludes unrelated sources", () => ranking("tailwind colors", "tailwind-config", ["database-migration", "python-traceback"]));
+  test("'SQL ALTER TABLE' excludes non-DB sources", () => ranking("SQL ALTER TABLE", "database-migration", ["nginx-access-log", "react-useeffect-docs"]));
+});
