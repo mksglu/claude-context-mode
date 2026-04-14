@@ -7,6 +7,43 @@
  */
 
 // ─────────────────────────────────────────────────────────
+// Internal: byte-safe prefix
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Return the longest character-prefix of `str` whose UTF-8 encoding is at
+ * most `maxBytes` bytes. Uses binary search to avoid O(n²) scanning. Returns
+ * "" when `maxBytes` is <= 0 so callers never exceed their budget.
+ *
+ * Guards against splitting a UTF-16 surrogate pair: if the prefix would end
+ * on a lone high surrogate, back off one code unit so the result round-trips
+ * through UTF-8 without producing a U+FFFD replacement character.
+ */
+function byteSafePrefix(str: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (Buffer.byteLength(str) <= maxBytes) return str;
+
+  let lo = 0;
+  let hi = str.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (Buffer.byteLength(str.slice(0, mid)) <= maxBytes) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  // If we landed between a high and low surrogate, back off so the prefix
+  // ends on a valid code point boundary.
+  if (lo > 0) {
+    const code = str.charCodeAt(lo - 1);
+    if (code >= 0xd800 && code <= 0xdbff) lo -= 1;
+  }
+  return str.slice(0, lo);
+}
+
+// ─────────────────────────────────────────────────────────
 // JSON truncation
 // ─────────────────────────────────────────────────────────
 
@@ -15,6 +52,9 @@
  * If truncation occurs, the string is cut at a UTF-8-safe boundary and
  * "... [truncated]" is appended. The result is NOT guaranteed to be valid
  * JSON after truncation — it is suitable only for display/logging.
+ *
+ * The returned string is always <= `maxBytes` bytes. When `maxBytes` is
+ * smaller than the marker, the marker itself is byte-safely truncated.
  *
  * @param value    - Any JSON-serializable value.
  * @param maxBytes - Maximum byte length of the returned string.
@@ -28,25 +68,14 @@ export function truncateJSON(
   const serialized = JSON.stringify(value, null, indent) ?? "null";
   if (Buffer.byteLength(serialized) <= maxBytes) return serialized;
 
-  // Find the largest character slice that stays within maxBytes once encoded.
-  // Buffer.byteLength is O(n) but we only call it once per truncation.
   const marker = "... [truncated]";
   const markerBytes = Buffer.byteLength(marker);
-  const budget = maxBytes - markerBytes;
 
-  // Binary-search for the right character count — avoids O(n²) scanning.
-  let lo = 0;
-  let hi = serialized.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (Buffer.byteLength(serialized.slice(0, mid)) <= budget) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
+  // Degenerate budget: can't fit serialized content + marker. Fit as much of
+  // the marker as we can so the return still honors `maxBytes`.
+  if (maxBytes <= markerBytes) return byteSafePrefix(marker, maxBytes);
 
-  return serialized.slice(0, lo) + marker;
+  return byteSafePrefix(serialized, maxBytes - markerBytes) + marker;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -79,25 +108,19 @@ export function escapeXML(str: string): string {
  * byte-safe slice with an ellipsis appended. Useful for single-value fields
  * (e.g., tool response strings) where head+tail splitting is not needed.
  *
+ * The returned string is always <= `maxBytes` bytes. When `maxBytes` is
+ * smaller than the ellipsis marker, the marker itself is byte-safely truncated.
+ *
  * @param str      - Input string.
  * @param maxBytes - Hard byte cap.
  */
 export function capBytes(str: string, maxBytes: number): string {
   if (Buffer.byteLength(str) <= maxBytes) return str;
+
   const marker = "...";
   const markerBytes = Buffer.byteLength(marker);
-  const budget = maxBytes - markerBytes;
 
-  let lo = 0;
-  let hi = str.length;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (Buffer.byteLength(str.slice(0, mid)) <= budget) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
+  if (maxBytes <= markerBytes) return byteSafePrefix(marker, maxBytes);
 
-  return str.slice(0, lo) + marker;
+  return byteSafePrefix(str, maxBytes - markerBytes) + marker;
 }
