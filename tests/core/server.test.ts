@@ -1595,3 +1595,106 @@ describe("ctx_doctor — resource cleanup regression (#247)", () => {
     }
   }, 25_000);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Numeric tool-input coercion — end-to-end via real MCP JSON-RPC calls.
+// Guards against the failure mode from logs: models sending timeout: "300000"
+// (string) instead of 300000 (number). Reuses the startMcpServer harness above.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Numeric tool-input coercion (MCP runtime)", () => {
+  // Exercise each coerced field with a stringified number and assert no
+  // validation error (-32602) comes back. We batch into one subprocess to
+  // keep the test fast.
+  test(
+    "stringified numeric args are accepted by coerced schemas; ctx_purge stays strict",
+    async () => {
+      const proc = startMcpServer();
+      sendRpc(proc, {
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "coerce-test", version: "1.0" } },
+      });
+      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      // ctx_execute with timeout as string — must be coerced and execute.
+      sendRpc(proc, {
+        jsonrpc: "2.0", id: 200, method: "tools/call",
+        params: { name: "ctx_execute", arguments: { language: "shell", code: "echo ok", timeout: "5000" } },
+      });
+      // ctx_execute_file with timeout as string — path intentionally invalid;
+      // we only care that schema validation passes (no -32602).
+      sendRpc(proc, {
+        jsonrpc: "2.0", id: 201, method: "tools/call",
+        params: { name: "ctx_execute_file", arguments: {
+          path: "nonexistent-for-schema-test.txt", language: "shell", code: "echo ok", timeout: "5000",
+        } },
+      });
+      // ctx_batch_execute with timeout as string.
+      sendRpc(proc, {
+        jsonrpc: "2.0", id: 202, method: "tools/call",
+        params: { name: "ctx_batch_execute", arguments: {
+          commands: [{ label: "echo-test", command: "echo ok" }],
+          queries: ["ok"],
+          timeout: "10000",
+        } },
+      });
+      // ctx_purge with confirm as STRING — must be rejected as validation error.
+      // (coercion here would be dangerous: z.coerce.boolean("false") === true)
+      sendRpc(proc, {
+        jsonrpc: "2.0", id: 203, method: "tools/call",
+        params: { name: "ctx_purge", arguments: { confirm: "true" } },
+      });
+
+      const responses = await collectRpcResponses(proc, 15_000);
+      const byId = new Map(responses.map((r) => [r.id, r]));
+
+      // The MCP SDK returns input-validation failures as { result: { isError: true,
+      // content: [{ text: "MCP error -32602: Input validation error..." }] } }
+      // — NOT as a JSON-RPC error object. Check for that shape.
+      const isValidationError = (r: DoctorJsonRpcResponse | undefined): boolean => {
+        const text = r?.result?.content?.[0]?.text ?? "";
+        return r?.result?.isError === true && /-32602|Input validation error/i.test(text);
+      };
+
+      const exec = byId.get(200);
+      expect(exec, "ctx_execute response missing").toBeDefined();
+      expect(isValidationError(exec), `ctx_execute rejected stringified timeout: ${exec!.result?.content?.[0]?.text}`).toBe(false);
+
+      const execFile = byId.get(201);
+      expect(execFile, "ctx_execute_file response missing").toBeDefined();
+      // Handler may soft-fail on missing path, but schema validation must pass.
+      const execFileText = execFile!.result?.content?.[0]?.text ?? "";
+      expect(/-32602|Input validation error/i.test(execFileText) && execFile!.result?.isError === true,
+        `ctx_execute_file rejected stringified timeout: ${execFileText}`).toBe(false);
+
+      const batch = byId.get(202);
+      expect(batch, "ctx_batch_execute response missing").toBeDefined();
+      expect(isValidationError(batch), `ctx_batch_execute rejected stringified timeout: ${batch!.result?.content?.[0]?.text}`).toBe(false);
+
+      // ctx_purge with string confirm MUST fail validation — coercion here would be dangerous.
+      const purge = byId.get(203);
+      expect(purge, "ctx_purge response missing").toBeDefined();
+      expect(isValidationError(purge), "ctx_purge must reject string confirm").toBe(true);
+      expect(purge!.result?.content?.[0]?.text ?? "").toMatch(/confirm/);
+    },
+    30_000,
+  );
+
+  test("default timeout applies when omitted", async () => {
+    const proc = startMcpServer();
+    sendRpc(proc, {
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "default-timeout", version: "1.0" } },
+    });
+    sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+    sendRpc(proc, {
+      jsonrpc: "2.0", id: 300, method: "tools/call",
+      params: { name: "ctx_execute", arguments: { language: "shell", code: "echo default-ok" } },
+    });
+    const responses = await collectRpcResponses(proc, 10_000);
+    const r = responses.find((x) => x.id === 300);
+    expect(r, "ctx_execute response missing").toBeDefined();
+    expect(r!.error).toBeUndefined();
+    expect(r!.result?.content?.[0]?.text ?? "").toMatch(/default-ok/);
+  }, 20_000);
+});

@@ -583,10 +583,10 @@ server.registerTool(
           "Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), or IO.puts (Elixir) to output a summary to context.",
         ),
       timeout: z
-        .number()
+        .coerce.number()
         .optional()
         .default(30000)
-        .describe("Max execution time in ms"),
+        .describe("Max execution time in ms, as a JSON number (e.g. 300000). Do NOT quote it as a string (\"300000\")."),
       background: z
         .boolean()
         .optional()
@@ -917,10 +917,10 @@ server.registerTool(
           "Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts.",
         ),
       timeout: z
-        .number()
+        .coerce.number()
         .optional()
         .default(30000)
-        .describe("Max execution time in ms"),
+        .describe("Max execution time in ms, as a JSON number (e.g. 300000). Do NOT quote it as a string (\"300000\")."),
       intent: z
         .string()
         .optional()
@@ -1593,10 +1593,10 @@ server.registerTool(
           "This is your ONLY chance — put ALL your questions here. No follow-up calls needed.",
         )),
       timeout: z
-        .number()
+        .coerce.number()
         .optional()
         .default(60000)
-        .describe("Max execution time in ms (default: 60s)"),
+        .describe("Max execution time in ms, as a JSON number (e.g. 60000). Do NOT quote it as a string (\"60000\"). Default: 60s."),
     }),
   },
   async ({ commands, queries, timeout }) => {
@@ -2004,7 +2004,7 @@ server.registerTool(
       "resume snapshots), and session events markdown. Resets in-memory stats. " +
       "This is irreversible.",
     inputSchema: z.object({
-      confirm: z.boolean().describe("Must be true to confirm the destructive operation."),
+      confirm: z.boolean().describe("Must be the JSON boolean true (not the string \"true\") to confirm this destructive, irreversible operation."),
     }),
   },
   async ({ confirm }) => {
@@ -2094,7 +2094,7 @@ server.registerTool(
       "parallel work patterns, project focus, and actionable insights. " +
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
-      port: z.number().optional().describe("Port to serve on (default: 4747)"),
+      port: z.coerce.number().optional().describe("Port to serve on, as a JSON number (e.g. 4747). Default: 4747."),
     }),
   },
   async ({ port: userPort }) => {
