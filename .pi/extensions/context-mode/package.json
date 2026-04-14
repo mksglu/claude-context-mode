@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.84",
+  "version": "1.0.85",
   "description": "Context-mode extension for Pi coding agent — session continuity and context window protection",
   "main": "index.ts",
   "dependencies": {

@@ -549,9 +549,13 @@ async function upgrade() {
     // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
     // to avoid breaking active sessions that still reference them (#181).
 
+    // Read files list from cloned repo's package.json so new directories
+    // (like insight/) are automatically included without chicken-and-egg issues
+    // where the old CLI doesn't know about new directories.
+    const clonedPkg = JSON.parse(readFileSync(resolve(srcDir, "package.json"), "utf-8"));
     const items = [
-      "build", "src", "hooks", "skills", "scripts", "insight", ".claude-plugin",
-      "start.mjs", "server.bundle.mjs", "cli.bundle.mjs", "package.json",
+      ...(clonedPkg.files || []),
+      "src", "package.json",
     ];
     for (const item of items) {
       try {
