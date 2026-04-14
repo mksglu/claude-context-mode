@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.87",
+  "version": "1.0.88",
   "description": "OpenClaw plugin that saves 98% of your context window. Sandboxed code execution in 11 languages, FTS5 knowledge base with BM25 ranking, and intent-driven search.",
   "author": {
     "name": "Mert Koseoğlu",
