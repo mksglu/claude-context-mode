@@ -96,24 +96,46 @@ try {
       const allHooks = settings.hooks || {};
       let changed = false;
 
-      for (const hookType of Object.keys(allHooks)) {
-        const entries = allHooks[hookType];
-        if (!Array.isArray(entries)) continue;
-
-        for (const entry of entries) {
-          // Fix deprecated Task-only matcher (PreToolUse only)
-          if (hookType === "PreToolUse" && entry.matcher?.includes("Task") && !entry.matcher.includes("Agent")) {
-            entry.matcher = entry.matcher.replace("Task", "Agent|Task");
+      // If hooks.json is present, the plugin system owns hook registration.
+      // Remove any settings.json context-mode entries to prevent duplicate concurrent
+      // hook processes that cause "non-blocking hook error" on every tool call.
+      const hooksJsonPath = resolve(myRoot, "hooks", "hooks.json");
+      if (existsSync(hooksJsonPath)) {
+        for (const hookType of Object.keys(allHooks)) {
+          const entries = allHooks[hookType];
+          if (!Array.isArray(entries)) continue;
+          const filtered = entries.filter(
+            (entry) =>
+              !entry.hooks?.some(
+                (h) => h.command?.includes(".mjs") && h.command?.includes("context-mode"),
+              ),
+          );
+          if (filtered.length !== entries.length) {
+            allHooks[hookType] = filtered;
             changed = true;
           }
-          // Rewrite stale context-mode hook paths to point to current version
-          for (const h of (entry.hooks || [])) {
-            if (h.command && h.command.includes(".mjs") && h.command.includes("context-mode") && !h.command.includes(targetDir)) {
-              // Extract the script filename (e.g., sessionstart.mjs, pretooluse.mjs)
-              const scriptMatch = h.command.match(/([a-z]+\.mjs)\s*"?\s*$/);
-              if (scriptMatch) {
-                h.command = "node " + resolve(targetDir, "hooks", scriptMatch[1]);
-                changed = true;
+        }
+      } else {
+        // Legacy: hooks.json absent — rewrite stale paths to current version dir.
+        for (const hookType of Object.keys(allHooks)) {
+          const entries = allHooks[hookType];
+          if (!Array.isArray(entries)) continue;
+
+          for (const entry of entries) {
+            // Fix deprecated Task-only matcher (PreToolUse only)
+            if (hookType === "PreToolUse" && entry.matcher?.includes("Task") && !entry.matcher.includes("Agent")) {
+              entry.matcher = entry.matcher.replace("Task", "Agent|Task");
+              changed = true;
+            }
+            // Rewrite stale context-mode hook paths to point to current version
+            for (const h of (entry.hooks || [])) {
+              if (h.command && h.command.includes(".mjs") && h.command.includes("context-mode") && !h.command.includes(targetDir)) {
+                // Extract the script filename (e.g., sessionstart.mjs, pretooluse.mjs)
+                const scriptMatch = h.command.match(/([a-z]+\.mjs)\s*"?\s*$/);
+                if (scriptMatch) {
+                  h.command = "node " + resolve(targetDir, "hooks", scriptMatch[1]);
+                  changed = true;
+                }
               }
             }
           }

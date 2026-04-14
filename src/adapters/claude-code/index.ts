@@ -543,7 +543,22 @@ export class ClaudeCodeAdapter implements HookAdapter {
         this.checkHookType(undefined, pluginHooks, ht),
       );
       if (allCovered) {
-        // Still write cleaned settings (stale removal) but don't add new entries
+        // Remove ALL existing context-mode hooks from settings.json — hooks.json
+        // is the source of truth. Keeping them causes duplicate concurrent hook
+        // processes (one from settings.json, one from hooks.json), which triggers
+        // "non-blocking hook error" warnings on every tool call.
+        for (const hookType of Object.keys(hooks)) {
+          const entries = hooks[hookType];
+          if (!Array.isArray(entries)) continue;
+          const filtered = (entries as Array<Record<string, unknown>>).filter((entry) =>
+            !isAnyContextModeHook(entry as { hooks?: Array<{ command?: string }> }),
+          );
+          const removed = entries.length - filtered.length;
+          if (removed > 0) {
+            hooks[hookType] = filtered;
+            changes.push(`Removed ${removed} duplicate ${hookType} hook(s) — covered by plugin hooks.json`);
+          }
+        }
         settings.hooks = hooks;
         this.writeSettings(settings);
         changes.push("Skipped settings.json registration — plugin hooks.json is sufficient");

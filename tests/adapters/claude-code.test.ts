@@ -560,6 +560,45 @@ describe("ClaudeCodeAdapter", () => {
       expect(command).toContain(pluginRoot);
       expect(command).toContain("sessionstart.mjs");
     });
+
+    it("removes existing valid context-mode hooks from settings.json when plugin hooks.json covers all required hooks", () => {
+      // Plugin hooks.json covers all required hooks (pluginRoot already has scripts from beforeEach)
+      writeFileSync(
+        join(pluginRoot, "hooks", "hooks.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] }],
+            SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }] }],
+          },
+        }),
+      );
+
+      // settings.json has VALID (non-stale) context-mode hooks — paths exist, so they won't be
+      // removed by the stale-path filter. But they duplicate what hooks.json already registers,
+      // causing two concurrent hook processes for every tool call (the root cause of #NNN).
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{
+              matcher: "Bash|WebFetch|Read|Grep|Agent",
+              hooks: [{ type: "command", command: `node "${join(pluginRoot, "hooks", "pretooluse.mjs")}"` }],
+            }],
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: `node "${join(pluginRoot, "hooks", "sessionstart.mjs")}"` }],
+            }],
+          },
+        }),
+      );
+
+      adapter.configureAllHooks(pluginRoot);
+
+      // Valid duplicate hooks should be removed — hooks.json is the source of truth
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      expect(settings.hooks?.PreToolUse ?? []).toHaveLength(0);
+      expect(settings.hooks?.SessionStart ?? []).toHaveLength(0);
+    });
   });
 
   // ── Hook matchers (#229, #241) ────────────────────────
