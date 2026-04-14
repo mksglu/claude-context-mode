@@ -1564,34 +1564,71 @@ function sendRpc(proc: ChildProcess, msg: Record<string, unknown>): void {
   proc.stdin!.write(JSON.stringify(msg) + "\n");
 }
 
-function collectRpcResponses(proc: ChildProcess, timeoutMs: number): Promise<DoctorJsonRpcResponse[]> {
+/**
+ * Read RPC responses from the server stdout until all `expectedIds` have
+ * arrived or `timeoutMs` elapses, whichever comes first. Early-exit keeps
+ * the happy path at <1s and gives Windows CI its full timeout budget when
+ * process spawn + native-module load runs slow.
+ */
+function collectRpcResponses(
+  proc: ChildProcess,
+  timeoutMs: number,
+  expectedIds: number[],
+): Promise<DoctorJsonRpcResponse[]> {
   return new Promise((res) => {
+    const expected = new Set(expectedIds);
+    const seen = new Map<number, DoctorJsonRpcResponse>();
     let buffer = "";
+    let timer: ReturnType<typeof setTimeout>;
+
+    const finish = () => {
+      clearTimeout(timer);
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      res(Array.from(seen.values()));
+    };
+
     proc.stdout!.on("data", (d: Buffer) => {
       buffer += d.toString();
+      // Drain whole lines from the buffer. Stdout is newline-delimited JSON-RPC.
+      let idx: number;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        try {
+          const parsed = JSON.parse(line) as DoctorJsonRpcResponse;
+          if (typeof parsed.id === "number" && expected.has(parsed.id)) {
+            seen.set(parsed.id, parsed);
+            if (seen.size === expected.size) {
+              finish();
+              return;
+            }
+          }
+        } catch { /* ignore malformed / partial lines */ }
+      }
     });
-    setTimeout(() => {
-      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
-      const responses = buffer
-        .split("\n")
-        .filter((l) => l.trim())
-        .map((l) => { try { return JSON.parse(l) as DoctorJsonRpcResponse; } catch { return null; } })
-        .filter((r): r is DoctorJsonRpcResponse => r !== null && typeof r.id === "number");
-      res(responses);
-    }, timeoutMs);
+
+    timer = setTimeout(finish, timeoutMs);
   });
 }
 
-async function initAndCallDoctor(proc: ChildProcess, invocations: number, windowMs = 8000): Promise<DoctorJsonRpcResponse[]> {
+async function initAndCallDoctor(
+  proc: ChildProcess,
+  invocations: number,
+  windowMs = 15_000,
+): Promise<DoctorJsonRpcResponse[]> {
   sendRpc(proc, {
     jsonrpc: "2.0", id: 1, method: "initialize",
     params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-doctor-regression", version: "1.0" } },
   });
   sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+  const ids: number[] = [];
   for (let i = 0; i < invocations; i++) {
-    sendRpc(proc, { jsonrpc: "2.0", id: 100 + i, method: "tools/call", params: { name: "ctx_doctor", arguments: {} } });
+    const id = 100 + i;
+    ids.push(id);
+    sendRpc(proc, { jsonrpc: "2.0", id, method: "tools/call", params: { name: "ctx_doctor", arguments: {} } });
   }
-  return collectRpcResponses(proc, windowMs);
+  return collectRpcResponses(proc, windowMs, ids);
 }
 
 describe("ctx_doctor — resource cleanup regression (#247)", () => {
@@ -1605,16 +1642,16 @@ describe("ctx_doctor — resource cleanup regression (#247)", () => {
     expect(text).toContain("context-mode doctor");
     expect(text).toMatch(/Server test:/);
     expect(text).toMatch(/FTS5 \/ SQLite:/);
-  }, 20_000);
+  }, 30_000);
 
   test("three concurrent ctx_doctor calls all succeed without crashing the server", async () => {
     const proc = startMcpServer();
-    const responses = await initAndCallDoctor(proc, 3, 12_000);
+    const responses = await initAndCallDoctor(proc, 3, 20_000);
     const calls = [100, 101, 102].map((id) => responses.find((r) => r.id === id));
     for (const c of calls) {
       expect(c, "missing ctx_doctor response — server likely crashed").toBeDefined();
       expect(c!.error).toBeUndefined();
       expect(c!.result?.content?.[0]?.text).toContain("context-mode doctor");
     }
-  }, 25_000);
+  }, 35_000);
 });

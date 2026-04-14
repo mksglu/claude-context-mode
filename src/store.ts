@@ -320,6 +320,14 @@ export class ContentStore {
   #insertCount = 0;
   static readonly OPTIMIZE_EVERY = 50;
 
+  // Fuzzy correction cache (process-local LRU). fuzzyCorrect() hits the vocab
+  // DB and runs levenshtein against every candidate within length tolerance,
+  // which is CPU-linear in |candidates|. Repeated queries ("erro", "erro" …)
+  // recompute the same answer. The vocabulary table is insert-only, so cache
+  // entries only become stale when new words enter — we clear on actual insert.
+  #fuzzyCache = new Map<string, string | null>();
+  static readonly FUZZY_CACHE_SIZE = 256;
+
   constructor(dbPath?: string) {
     const Database = loadDatabase();
     this.#dbPath =
@@ -872,6 +880,14 @@ export class ContentStore {
     const word = query.toLowerCase().trim();
     if (word.length < 3) return null;
 
+    // Cache hit: promote to tail (Map preserves insertion order → LRU).
+    if (this.#fuzzyCache.has(word)) {
+      const cached = this.#fuzzyCache.get(word) ?? null;
+      this.#fuzzyCache.delete(word);
+      this.#fuzzyCache.set(word, cached);
+      return cached;
+    }
+
     const maxDist = maxEditDistance(word.length);
 
     const candidates = this.#stmtFuzzyVocab.all(
@@ -881,9 +897,13 @@ export class ContentStore {
 
     let bestWord: string | null = null;
     let bestDist = maxDist + 1;
+    let exactMatch = false;
 
     for (const { word: candidate } of candidates) {
-      if (candidate === word) return null; // exact match — no correction
+      if (candidate === word) {
+        exactMatch = true;
+        break;
+      }
       const dist = levenshtein(word, candidate);
       if (dist < bestDist) {
         bestDist = dist;
@@ -891,7 +911,16 @@ export class ContentStore {
       }
     }
 
-    return bestDist <= maxDist ? bestWord : null;
+    const result = exactMatch ? null : bestDist <= maxDist ? bestWord : null;
+
+    // Evict the oldest entry before insert if we hit the size cap.
+    if (this.#fuzzyCache.size >= ContentStore.FUZZY_CACHE_SIZE) {
+      const oldestKey = this.#fuzzyCache.keys().next().value;
+      if (oldestKey !== undefined) this.#fuzzyCache.delete(oldestKey);
+    }
+    this.#fuzzyCache.set(word, result);
+
+    return result;
   }
 
   // ── Reciprocal Rank Fusion (Cormack et al. 2009) ──
@@ -1169,11 +1198,18 @@ export class ContentStore {
 
     const unique = [...new Set(words)];
 
+    let inserted = 0;
     this.#db.transaction(() => {
       for (const word of unique) {
-        this.#stmtInsertVocab.run(word);
+        const info = this.#stmtInsertVocab.run(word);
+        inserted += info.changes;
       }
     })();
+
+    // Invalidate fuzzy cache when new vocab words actually land. INSERT OR
+    // IGNORE reports changes=0 for duplicates, so re-indexing identical
+    // content does not thrash the cache during iterative workflows.
+    if (inserted > 0) this.#fuzzyCache.clear();
   }
 
   // ── Chunking ──
