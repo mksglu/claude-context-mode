@@ -1453,6 +1453,75 @@ describe("Temp Cleanup Resilience", () => {
   });
 });
 
+describe("Background Mode", () => {
+  test("background: true returns partial output with backgrounded flag", async () => {
+    const bgExecutor = new PolyglotExecutor({ runtimes });
+    const r = await bgExecutor.execute({
+      language: "javascript",
+      code: `console.log("started"); setInterval(() => {}, 1000);`,
+      timeout: 500,
+      background: true,
+    });
+    assert.equal(r.backgrounded, true, "Should be marked as backgrounded");
+    assert.equal(r.timedOut, true, "Background detach fires on timeout");
+    assert.equal(r.exitCode, 0, "Backgrounded processes return exitCode 0");
+    assert.ok(r.stdout.includes("started"), "Should capture output before detach");
+    bgExecutor.cleanupBackgrounded();
+  }, 10_000);
+
+  test("cleanupBackgrounded kills detached process", async () => {
+    const bgExecutor = new PolyglotExecutor({ runtimes });
+    const r = await bgExecutor.execute({
+      language: "javascript",
+      code: `process.stdout.write(String(process.pid)); setInterval(() => {}, 1000);`,
+      timeout: 500,
+      background: true,
+    });
+    const pid = parseInt(r.stdout.trim(), 10);
+    assert.ok(pid > 0, `Expected valid PID, got: "${r.stdout}"`);
+
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch { /* ESRCH */ }
+    assert.equal(alive, true, "Process should be alive before cleanup");
+
+    bgExecutor.cleanupBackgrounded();
+    await new Promise((r) => setTimeout(r, 300));
+
+    alive = false;
+    try { process.kill(pid, 0); alive = true; } catch { /* ESRCH */ }
+    assert.equal(alive, false, `Process ${pid} should be dead after cleanup`);
+  }, 10_000);
+});
+
+describe("hardCapBytes Enforcement", () => {
+  test("kills process when combined output exceeds byte cap", async () => {
+    const cappedExecutor = new PolyglotExecutor({
+      runtimes,
+      hardCapBytes: 1024,
+    });
+    const r = await cappedExecutor.execute({
+      language: "javascript",
+      code: `for (let i = 0; i < 10000; i++) console.log("x".repeat(100));`,
+      timeout: 10_000,
+    });
+    assert.ok(r.stderr.includes("output capped at"), "Should indicate cap was hit");
+    assert.notEqual(r.exitCode, 0, "Process should be killed (non-zero exit)");
+  }, 15_000);
+
+  test("stderr contributes to byte cap", async () => {
+    const cappedExecutor = new PolyglotExecutor({
+      runtimes,
+      hardCapBytes: 1024,
+    });
+    const r = await cappedExecutor.execute({
+      language: "javascript",
+      code: `for (let i = 0; i < 10000; i++) console.error("e".repeat(100));`,
+      timeout: 10_000,
+    });
+    assert.ok(r.stderr.includes("output capped at"), "stderr should trigger cap");
+  }, 15_000);
+});
+
 describe("Windows Shell Support", () => {
   test("shell runtime is always a non-empty string", async () => {
     assert.ok(
