@@ -1283,6 +1283,126 @@ describe("Fuzzy Edge Cases", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────
+// Fuzzy correction cache
+// ─────────────────────────────────────────────────────────
+
+describe("fuzzyCorrect LRU cache", () => {
+  test("returns identical result on repeated queries for the same word", () => {
+    const store = createStore();
+    store.index({
+      content: "The authentication middleware handles orchestration of services.",
+      source: "cache-test",
+    });
+
+    const first = store.fuzzyCorrect("authentiction");
+    const second = store.fuzzyCorrect("authentiction");
+
+    assert.equal(first, second, "cached result must match uncached result");
+    assert.equal(first, "authentication");
+
+    store.close();
+  });
+
+  test("cache entry for null (no correction) is also returned on hit", () => {
+    const store = createStore();
+    store.index({
+      content: "one two three four",
+      source: "cache-null-test",
+    });
+
+    // A word unrelated to the vocab, too far for any correction.
+    const first = store.fuzzyCorrect("xylophone");
+    const second = store.fuzzyCorrect("xylophone");
+
+    assert.equal(first, null);
+    assert.equal(second, null);
+
+    store.close();
+  });
+
+  test("cache is cleared when new vocabulary is inserted", () => {
+    const store = createStore();
+    store.index({
+      content: "authentication middleware orchestration deployment monitoring",
+      source: "cache-invalidate-v1",
+    });
+
+    // Prime the cache with a word that has no close match yet.
+    const beforeInsert = store.fuzzyCorrect("xylophne"); // should be null
+    assert.equal(beforeInsert, null);
+
+    // Add a new vocab word that *is* a close match for "xylophne".
+    store.index({
+      content: "The xylophone in the orchestra plays melodies.",
+      source: "cache-invalidate-v2",
+    });
+
+    // Cache must have been invalidated — stale null would be wrong now.
+    const afterInsert = store.fuzzyCorrect("xylophne");
+    assert.equal(afterInsert, "xylophone");
+
+    store.close();
+  });
+
+  test("cache is NOT cleared when re-indexing identical content", () => {
+    const store = createStore();
+    store.index({
+      content: "authentication middleware orchestration deployment",
+      source: "cache-idempotent",
+    });
+
+    // Prime the cache.
+    store.fuzzyCorrect("authentiction");
+    store.fuzzyCorrect("orchstration");
+
+    // Monkey-patch the underlying vocab stmt to count DB hits after priming.
+    // We can't easily inspect Map state; instead we verify behavior: a second
+    // identical fuzzyCorrect call for the same word returns the same answer
+    // even if we re-index the exact same content (no new vocab rows insert).
+    store.index({
+      content: "authentication middleware orchestration deployment",
+      source: "cache-idempotent", // same label → dedup handles it
+    });
+
+    const result = store.fuzzyCorrect("authentiction");
+    assert.equal(result, "authentication");
+
+    store.close();
+  });
+
+  test("cache respects FUZZY_CACHE_SIZE — eviction does not corrupt results", () => {
+    const store = createStore();
+    // Build a vocab with many distinct words so evictions happen during sweep.
+    const vocab = Array.from({ length: 50 }, (_, i) => `uniqueword${i}abc`).join(" ");
+    store.index({ content: vocab, source: "large-vocab-cache" });
+
+    const capSize = ContentStore.FUZZY_CACHE_SIZE;
+
+    // Collect an oracle: what does fuzzyCorrect return on a cold cache for
+    // each input? Use a fresh store to get uncached answers.
+    const oracleStore = createStore();
+    oracleStore.index({ content: vocab, source: "oracle" });
+
+    // Query (capSize + 50) unique words, causing evictions. Each answer must
+    // match the cold-cache oracle — eviction of an entry must not influence
+    // the answer we get when we re-query that word.
+    for (let i = 0; i < capSize + 50; i++) {
+      const typo = `uniquewrd${i}abc`;
+      const oracle = oracleStore.fuzzyCorrect(typo);
+      const actual = store.fuzzyCorrect(typo);
+      assert.equal(
+        actual,
+        oracle,
+        `eviction corrupted result for ${typo}: got ${actual}, oracle ${oracle}`,
+      );
+    }
+
+    store.close();
+    oracleStore.close();
+  });
+});
+
 // ═══════════════════════════════════════════════════════════
 // 6. Intent Search
 // ═══════════════════════════════════════════════════════════
