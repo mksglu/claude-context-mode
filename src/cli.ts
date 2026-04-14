@@ -425,7 +425,7 @@ async function insight(port: number) {
   const { execSync, spawn } = await import("node:child_process");
   const { statSync, mkdirSync, cpSync } = await import("node:fs");
 
-  const insightSource = resolve(__dirname, "insight");
+  const insightSource = resolve(getPluginRoot(), "insight");
   // Adapter-agnostic cache: use ~/.claude/context-mode/insight-cache as default
   // (matches server.ts pattern but CLI doesn't have adapter detection)
   const cacheDir = join(homedir(), ".claude", "context-mode", "insight-cache");
