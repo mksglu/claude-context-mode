@@ -298,6 +298,11 @@ export class ContentStore {
   #stmtStats!: PreparedStatement;
   #stmtSourceMeta!: PreparedStatement;
 
+  // Cleanup path
+  #stmtCleanupChunks!: PreparedStatement;
+  #stmtCleanupChunksTrigram!: PreparedStatement;
+  #stmtCleanupSources!: PreparedStatement;
+
   // FTS5 optimization: track inserts and optimize periodically to defragment
   // the index. FTS5 b-trees fragment over many insert/delete cycles, degrading
   // search performance. SQLite's built-in 'optimize' merges b-tree segments.
@@ -614,6 +619,17 @@ export class ContentStore {
         (SELECT COUNT(*) FROM chunks) AS chunks,
         (SELECT COUNT(*) FROM chunks WHERE content_type = 'code') AS codeChunks
     `);
+
+    // Cleanup path — cached to avoid recompiling SQL on each periodic call
+    this.#stmtCleanupChunks = this.#db.prepare(
+      "DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))",
+    );
+    this.#stmtCleanupChunksTrigram = this.#db.prepare(
+      "DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))",
+    );
+    this.#stmtCleanupSources = this.#db.prepare(
+      "DELETE FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days')",
+    );
   }
 
   // ── Index ──
@@ -968,11 +984,13 @@ export class ContentStore {
     }
 
     // Step 2: Fuzzy correction → RRF re-run
+    // Skip stopwords — they'll be filtered by sanitizeQuery anyway, and each
+    // fuzzyCorrect call hits the vocab DB + runs levenshtein comparisons.
     const words = query
       .toLowerCase()
       .trim()
       .split(/\s+/)
-      .filter((w) => w.length >= 3);
+      .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
     const original = words.join(" ");
     const correctedWords = words.map((w) => this.fuzzyCorrect(w) ?? w);
     const correctedQuery = correctedWords.join(" ");
@@ -1095,19 +1113,10 @@ export class ContentStore {
    * Returns count of deleted sources.
    */
   cleanupStaleSources(maxAgeDays: number): number {
-    const deleteChunks = this.#db.prepare(
-      "DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))",
-    );
-    const deleteChunksTrigram = this.#db.prepare(
-      "DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))",
-    );
-    const deleteSources = this.#db.prepare(
-      "DELETE FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days')",
-    );
     const cleanup = this.#db.transaction((days: number) => {
-      deleteChunks.run(days);
-      deleteChunksTrigram.run(days);
-      return deleteSources.run(days);
+      this.#stmtCleanupChunks.run(days);
+      this.#stmtCleanupChunksTrigram.run(days);
+      return this.#stmtCleanupSources.run(days);
     });
     const info = cleanup(maxAgeDays);
     return info.changes;

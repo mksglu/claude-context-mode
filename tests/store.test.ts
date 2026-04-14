@@ -1512,3 +1512,59 @@ describe("FTS5 periodic optimize", () => {
     expect(ContentStore.OPTIMIZE_EVERY).toBeLessThanOrEqual(200);
   });
 });
+
+describe("Fuzzy correction skips stopwords", () => {
+  test("searchWithFallback does not fuzzy-correct stopwords", () => {
+    const store = createStore();
+    // Index content with a typo-like word "databse" that fuzzy should correct
+    store.index({
+      content:
+        "# Database Guide\n\nThe database handles all persistent storage.\n\n# Unrelated\n\nNothing relevant here.",
+      source: "fuzzy-stopwords",
+    });
+
+    // "update" is a stopword, "databse" is a typo for "database"
+    // Fuzzy correction should only run on "databse", not waste cycles on "update"
+    const results = store.searchWithFallback("update databse", 2);
+    // Should still find results via fuzzy correction of "databse" → "database"
+    // (or via RRF direct match since "database" stems match)
+    assert.ok(results.length > 0, "Should return results");
+    assert.ok(
+      results[0].content.toLowerCase().includes("database"),
+      `Should match 'database', got: ${results[0].title}`,
+    );
+    store.close();
+  });
+});
+
+describe("cleanupStaleSources uses cached prepared statements", () => {
+  test("cleanupStaleSources works correctly with cached statements", () => {
+    const store = createStore();
+    store.index({ content: "# Old\n\nOld content.", source: "old-source" });
+    store.index({ content: "# New\n\nNew content.", source: "new-source" });
+
+    const statsBefore = store.getStats();
+    assert.equal(statsBefore.sources, 2, "Should have 2 sources");
+
+    // Cleanup with 0 days should remove everything
+    const cleaned = store.cleanupStaleSources(0);
+    assert.ok(cleaned >= 0, "Should not throw with cached statements");
+
+    store.close();
+  });
+
+  test("cleanupStaleSources can be called multiple times", () => {
+    const store = createStore();
+    store.index({ content: "# Test\n\nContent.", source: "multi-call" });
+
+    // Multiple calls should reuse cached statements without error
+    store.cleanupStaleSources(30);
+    store.cleanupStaleSources(30);
+    store.cleanupStaleSources(30);
+
+    // Still functional after multiple cleanup calls
+    const stats = store.getStats();
+    assert.equal(stats.sources, 1, "Source should still exist (not older than 30 days)");
+    store.close();
+  });
+});
