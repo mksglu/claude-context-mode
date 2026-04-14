@@ -638,7 +638,13 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 
 **Install:**
 
-1. Install the package into Pi:
+1. Install context-mode globally:
+
+   ```bash
+   npm install -g context-mode
+   ```
+
+2. Install the package into Pi:
 
    ```bash
    pi install npm:context-mode
@@ -652,9 +658,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
    }
    ```
 
-   context-mode now ships a Pi package manifest, so Pi can load the bundled extension from npm directly — no clone or local build step required.
-
-2. Add to `~/.pi/agent/mcp.json` (or `.pi/mcp.json` for project-level):
+3. Add to `~/.pi/agent/mcp.json` (or `.pi/mcp.json` for project-level):
 
    ```json
    {
@@ -666,9 +670,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
    }
    ```
 
-   This works after `pi install npm:context-mode` because Pi installs npm packages globally and the `context-mode` CLI is available on `PATH`.
-
-3. Restart Pi.
+4. Restart Pi.
 
 **Verify:** In a Pi session, type `ctx stats`. Context-mode tools should appear and respond.
 
