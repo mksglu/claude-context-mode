@@ -72,7 +72,7 @@ Restart Claude Code (or run `/reload-plugins`).
 
 All checks should show `[x]`. The doctor validates runtimes, hooks, FTS5, and plugin registration.
 
-**Routing:** Automatic. The SessionStart hook injects routing instructions at runtime — no file is written to your project. The plugin registers all hooks (PreToolUse, PostToolUse, PreCompact, SessionStart) and 6 sandbox tools (`ctx_batch_execute`, `ctx_execute`, `ctx_execute_file`, `ctx_index`, `ctx_search`, `ctx_fetch_and_index`).
+**Routing:** Automatic. The SessionStart hook injects routing instructions at runtime — no file is written to your project. The plugin registers all hooks (PreToolUse, PostToolUse, PreCompact, SessionStart) and 6 sandbox tools (`ctx_batch_execute`, `ctx_execute`, `ctx_execute_file`, `ctx_index`, `ctx_search`, `ctx_fetch_and_index`) plus meta-tools (`ctx_stats`, `ctx_doctor`, `ctx_upgrade`, `ctx_purge`, `ctx_insight`).
 
 | Slash Command | What it does |
 |---|---|
@@ -80,8 +80,9 @@ All checks should show `[x]`. The doctor validates runtimes, hooks, FTS5, and pl
 | `/context-mode:ctx-doctor` | Diagnostics — runtimes, hooks, FTS5, plugin registration, versions. |
 | `/context-mode:ctx-upgrade` | Pull latest, rebuild, migrate cache, fix hooks. |
 | `/context-mode:ctx-purge` | Permanently delete all indexed content from the knowledge base. |
+| `/context-mode:ctx-insight` | Personal analytics dashboard — 15+ metrics on tool usage, session activity, error rate, parallel work patterns, and mastery curve. Opens a local web UI. |
 
-> **Note:** Slash commands are a Claude Code plugin feature. On other platforms, type `ctx stats`, `ctx doctor`, or `ctx upgrade` in the chat — the model calls the MCP tool automatically. See [Utility Commands](#utility-commands).
+> **Note:** Slash commands are a Claude Code plugin feature. On other platforms, type `ctx stats`, `ctx doctor`, `ctx upgrade`, or `ctx insight` in the chat — the model calls the MCP tool automatically. See [Utility Commands](#utility-commands).
 
 <details>
 <summary>Alternative — MCP-only install (no hooks or slash commands)</summary>
@@ -950,6 +951,7 @@ ctx stats       → context savings, call counts, session report
 ctx doctor      → diagnose runtimes, hooks, FTS5, versions
 ctx upgrade     → update from GitHub, rebuild, reconfigure hooks
 ctx purge       → permanently delete all indexed content from the knowledge base
+ctx insight     → personal analytics dashboard (opens local web UI)
 ```
 
 **From your terminal** — run directly without an AI session:
@@ -957,12 +959,13 @@ ctx purge       → permanently delete all indexed content from the knowledge ba
 ```bash
 context-mode doctor
 context-mode upgrade
+context-mode insight          # opens analytics dashboard in browser
 bash scripts/ctx-debug.sh    # full diagnostic report for bug reports
 ```
 
 The debug script collects OS info, runtime versions, better-sqlite3 status, adapter detection, config files (redacted), hook validation, FTS5/SQLite test, executor test, process check, session databases, and environment variables into a single pasteable markdown report.
 
-Works on **all platforms**. On Claude Code, slash commands (`/ctx-stats`, `/ctx-doctor`, `/ctx-upgrade`, `/ctx-purge`) are also available.
+Works on **all platforms**. On Claude Code, slash commands (`/ctx-stats`, `/ctx-doctor`, `/ctx-upgrade`, `/ctx-purge`, `/ctx-insight`) are also available.
 
 ## Benchmarks
 

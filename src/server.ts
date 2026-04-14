@@ -2099,7 +2099,9 @@ server.registerTool(
   },
   async ({ port: userPort }) => {
     const port = userPort || 4747;
-    const insightSource = resolve(__pkg_dir, "insight");
+    // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to plugin root
+    const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
+    const insightSource = resolve(pluginRoot, "insight");
     // Use adapter-aware path: derive from sessions dir (works across all 12 adapters)
     const sessDir = getSessionDir();
     const cacheDir = join(dirname(sessDir), "insight-cache");

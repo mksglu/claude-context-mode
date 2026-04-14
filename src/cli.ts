@@ -15,7 +15,7 @@
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, mkdirSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir, devNull, homedir } from "node:os";
