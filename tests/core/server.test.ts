@@ -150,6 +150,29 @@ describe("Non-zero Exit Code Classification", () => {
     expect(result.output).toContain("partial");
     expect(result.output).toContain("error msg");
   });
+
+  test("hard-fail with empty stdout still forwards stderr in output", () => {
+    const result = classifyNonZeroExit({
+      language: "shell",
+      exitCode: 1,
+      stdout: "",
+      stderr: "command not found",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Exit code: 1");
+    expect(result.output).toContain("command not found");
+  });
+
+  test("hard-fail output has labeled 'stdout:' and 'stderr:' sections", () => {
+    const result = classifyNonZeroExit({
+      language: "node",
+      exitCode: 137,
+      stdout: "S",
+      stderr: "E",
+    });
+    expect(result.output).toMatch(/stdout:\s*\nS/);
+    expect(result.output).toMatch(/stderr:\s*\nE/);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
