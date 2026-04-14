@@ -12,7 +12,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { spawnSync, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync, type ChildProcess } from "node:child_process";
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -1511,4 +1511,87 @@ describe("batch_execute FS read tracking", () => {
   test("cleans up preload file on shutdown", () => {
     expect(serverSrc).toContain("unlinkSync(CM_FS_PRELOAD)");
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ctx_doctor resource cleanup regression (#247)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const mcpEntry = resolve(__dirname, "..", "..", "start.mjs");
+
+interface DoctorJsonRpcResponse {
+  jsonrpc: "2.0";
+  id: number;
+  result?: {
+    content?: Array<{ type: string; text: string }>;
+    isError?: boolean;
+    serverInfo?: { name: string; version: string };
+  };
+  error?: { code: number; message: string };
+}
+
+function startMcpServer(): ChildProcess {
+  return spawn("node", [mcpEntry], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
+  });
+}
+
+function sendRpc(proc: ChildProcess, msg: Record<string, unknown>): void {
+  proc.stdin!.write(JSON.stringify(msg) + "\n");
+}
+
+function collectRpcResponses(proc: ChildProcess, timeoutMs: number): Promise<DoctorJsonRpcResponse[]> {
+  return new Promise((res) => {
+    let buffer = "";
+    proc.stdout!.on("data", (d: Buffer) => {
+      buffer += d.toString();
+    });
+    setTimeout(() => {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      const responses = buffer
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => { try { return JSON.parse(l) as DoctorJsonRpcResponse; } catch { return null; } })
+        .filter((r): r is DoctorJsonRpcResponse => r !== null && typeof r.id === "number");
+      res(responses);
+    }, timeoutMs);
+  });
+}
+
+async function initAndCallDoctor(proc: ChildProcess, invocations: number, windowMs = 8000): Promise<DoctorJsonRpcResponse[]> {
+  sendRpc(proc, {
+    jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-doctor-regression", version: "1.0" } },
+  });
+  sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+  for (let i = 0; i < invocations; i++) {
+    sendRpc(proc, { jsonrpc: "2.0", id: 100 + i, method: "tools/call", params: { name: "ctx_doctor", arguments: {} } });
+  }
+  return collectRpcResponses(proc, windowMs);
+}
+
+describe("ctx_doctor — resource cleanup regression (#247)", () => {
+  test("single ctx_doctor call returns a markdown checklist", async () => {
+    const proc = startMcpServer();
+    const responses = await initAndCallDoctor(proc, 1);
+    const call = responses.find((r) => r.id === 100);
+    expect(call).toBeDefined();
+    expect(call!.error).toBeUndefined();
+    const text = call!.result?.content?.[0]?.text ?? "";
+    expect(text).toContain("context-mode doctor");
+    expect(text).toMatch(/Server test:/);
+    expect(text).toMatch(/FTS5 \/ SQLite:/);
+  }, 20_000);
+
+  test("three concurrent ctx_doctor calls all succeed without crashing the server", async () => {
+    const proc = startMcpServer();
+    const responses = await initAndCallDoctor(proc, 3, 12_000);
+    const calls = [100, 101, 102].map((id) => responses.find((r) => r.id === id));
+    for (const c of calls) {
+      expect(c, "missing ctx_doctor response — server likely crashed").toBeDefined();
+      expect(c!.error).toBeUndefined();
+      expect(c!.result?.content?.[0]?.text).toContain("context-mode doctor");
+    }
+  }, 25_000);
 });
