@@ -371,8 +371,14 @@ function checkFilePathDenyPolicy(
   toolName: string,
 ): ToolResult | null {
   try {
-    const denyGlobs = readToolDenyPatterns("Read", process.env.CLAUDE_PROJECT_DIR);
-    const result = evaluateFilePath(filePath, denyGlobs);
+    const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+    const denyGlobs = readToolDenyPatterns("Read", projectDir);
+    const result = evaluateFilePath(
+      filePath,
+      denyGlobs,
+      process.platform === "win32",
+      projectDir,
+    );
     if (result.denied) {
       return trackResponse(toolName, {
         content: [{

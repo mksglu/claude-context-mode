@@ -429,19 +429,35 @@ export function evaluateCommandDenyOnly(
  *
  * Normalizes backslashes to forward slashes before matching so that
  * Windows paths work with Unix-style glob patterns.
+ *
+ * When `projectRoot` is supplied, the path is also matched in its
+ * resolved absolute form — preventing `..` traversal from bypassing
+ * absolute-path deny rules like `Read(/Users/.../.ssh/**)`.
  */
 export function evaluateFilePath(
   filePath: string,
   denyGlobs: string[][],
   caseInsensitive: boolean = process.platform === "win32",
+  projectRoot?: string,
 ): { denied: boolean; matchedPattern?: string } {
-  // Normalize backslashes to forward slashes for cross-platform matching
-  const normalized = filePath.replace(/\\/g, "/");
+  const toForward = (path: string): string => path.replace(/\\/g, "/");
+
+  // Match against both the raw input and (when projectRoot is supplied)
+  // the fully-resolved absolute path. Deduplicated so tests and callers
+  // that pass an already-absolute path don't pay the matching cost twice.
+  const candidates: string[] = [toForward(filePath)];
+  if (projectRoot) {
+    const absolute = toForward(resolve(projectRoot, filePath));
+    if (absolute !== candidates[0]) candidates.push(absolute);
+  }
 
   for (const globs of denyGlobs) {
     for (const glob of globs) {
-      if (fileGlobToRegex(glob, caseInsensitive).test(normalized)) {
-        return { denied: true, matchedPattern: glob };
+      const regex = fileGlobToRegex(glob, caseInsensitive);
+      for (const candidate of candidates) {
+        if (regex.test(candidate)) {
+          return { denied: true, matchedPattern: glob };
+        }
       }
     }
   }
