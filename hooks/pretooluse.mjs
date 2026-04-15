@@ -73,7 +73,8 @@ try {
 
     // 2. Update installed_plugins.json → point to correct version dir
     //    Skip if not present (e.g. CI / non-Claude-Code environments)
-    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const configBase = process.env.CLAUDE_CONFIG_DIR ? resolve(process.env.CLAUDE_CONFIG_DIR.replace(/^~/, homedir())) : resolve(homedir(), ".claude");
+    const ipPath = resolve(configBase, "plugins", "installed_plugins.json");
     if (existsSync(ipPath)) {
       const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
       for (const [key, entries] of Object.entries(ip.plugins || {})) {
@@ -90,7 +91,7 @@ try {
     // 3. Update hook paths + matcher in settings.json for ALL hook types (#187)
     //    Previously only fixed PreToolUse — SessionStart, PostToolUse, PreCompact,
     //    UserPromptSubmit paths remained stale after marketplace auto-update.
-    const settingsPath = resolve(homedir(), ".claude", "settings.json");
+    const settingsPath = resolve(configBase, "settings.json");
     try {
       const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
       const allHooks = settings.hooks || {};

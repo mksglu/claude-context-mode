@@ -92,8 +92,11 @@ try {
     const sessionId = getSessionId(input);
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     db.ensureSession(sessionId, projectDir);
+    const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+      ? process.env.CLAUDE_CONFIG_DIR.replace(/^~/, homedir())
+      : join(homedir(), ".claude");
     const claudeMdPaths = [
-      join(homedir(), ".claude", "CLAUDE.md"),
+      join(claudeConfigDir, "CLAUDE.md"),
       join(projectDir, "CLAUDE.md"),
       join(projectDir, ".claude", "CLAUDE.md"),
     ];
@@ -140,8 +143,11 @@ try {
     const { appendFileSync } = await import("node:fs");
     const { join: pjoin } = await import("node:path");
     const { homedir } = await import("node:os");
+    const debugConfigDir = process.env.CLAUDE_CONFIG_DIR
+      ? process.env.CLAUDE_CONFIG_DIR.replace(/^~/, homedir())
+      : pjoin(homedir(), ".claude");
     appendFileSync(
-      pjoin(homedir(), ".claude", "context-mode", "sessionstart-debug.log"),
+      pjoin(debugConfigDir, "context-mode", "sessionstart-debug.log"),
       `[${new Date().toISOString()}] ${err?.message || err}\n${err?.stack || ""}\n`,
     );
   } catch { /* ignore logging failure */ }

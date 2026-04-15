@@ -43,6 +43,19 @@ function getWorktreeSuffix() {
   return "";
 }
 
+/**
+ * Resolve the Claude Code config directory.
+ * Respects CLAUDE_CONFIG_DIR env var for multi-profile setups,
+ * falls back to ~/.claude.
+ */
+function getClaudeConfigDir() {
+  if (process.env.CLAUDE_CONFIG_DIR) {
+    const dir = process.env.CLAUDE_CONFIG_DIR.replace(/^~/, homedir());
+    return dir;
+  }
+  return join(homedir(), ".claude");
+}
+
 /** Claude Code platform options (default). */
 const CLAUDE_OPTS = {
   configDir: ".claude",
@@ -147,7 +160,8 @@ export function getSessionId(input, opts = CLAUDE_OPTS) {
 export function getSessionDBPath(opts = CLAUDE_OPTS) {
   const projectDir = getProjectDir(opts);
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
-  const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
+  const base = opts === CLAUDE_OPTS ? getClaudeConfigDir() : join(homedir(), opts.configDir);
+  const dir = join(base, "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${hash}${getWorktreeSuffix()}.db`);
 }
@@ -160,7 +174,8 @@ export function getSessionDBPath(opts = CLAUDE_OPTS) {
 export function getSessionEventsPath(opts = CLAUDE_OPTS) {
   const projectDir = getProjectDir(opts);
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
-  const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
+  const base = opts === CLAUDE_OPTS ? getClaudeConfigDir() : join(homedir(), opts.configDir);
+  const dir = join(base, "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${hash}${getWorktreeSuffix()}-events.md`);
 }
@@ -173,8 +188,11 @@ export function getSessionEventsPath(opts = CLAUDE_OPTS) {
 export function getCleanupFlagPath(opts = CLAUDE_OPTS) {
   const projectDir = getProjectDir(opts);
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
-  const dir = join(homedir(), opts.configDir, "context-mode", "sessions");
+  const base = opts === CLAUDE_OPTS ? getClaudeConfigDir() : join(homedir(), opts.configDir);
+  const dir = join(base, "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${hash}${getWorktreeSuffix()}.cleanup`);
 }
+
+export { getClaudeConfigDir };
 

@@ -19,7 +19,10 @@ import { fileURLToPath } from "node:url";
 // Resolve absolute path for imports
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadSnapshot } = createSessionLoaders(HOOK_DIR);
-const DEBUG_LOG = join(homedir(), ".claude", "context-mode", "precompact-debug.log");
+const _claudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+  ? process.env.CLAUDE_CONFIG_DIR.replace(/^~/, homedir())
+  : join(homedir(), ".claude");
+const DEBUG_LOG = join(_claudeConfigDir, "context-mode", "precompact-debug.log");
 
 try {
   const raw = await readStdin();
