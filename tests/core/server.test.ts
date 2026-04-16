@@ -1554,7 +1554,7 @@ interface DoctorJsonRpcResponse {
 }
 
 function startMcpServer(): ChildProcess {
-  return spawn("node", [mcpEntry], {
+  return spawn(process.execPath, [mcpEntry], {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
   });
@@ -1564,11 +1564,37 @@ function sendRpc(proc: ChildProcess, msg: Record<string, unknown>): void {
   proc.stdin!.write(JSON.stringify(msg) + "\n");
 }
 
+function waitForServerReady(
+  proc: ChildProcess,
+  timeoutMs = 60_000,
+): Promise<void> {
+  return new Promise((res, rej) => {
+    let buffer = "";
+    const timer = setTimeout(() => {
+      cleanup();
+      rej(new Error(`MCP server did not emit readiness marker within ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      proc.stderr!.off("data", onData);
+    };
+
+    const onData = (d: Buffer) => {
+      buffer += d.toString();
+      if (buffer.includes("Detected runtimes:")) {
+        cleanup();
+        res();
+      }
+    };
+
+    proc.stderr!.on("data", onData);
+  });
+}
+
 /**
  * Read RPC responses from the server stdout until all `expectedIds` have
- * arrived or `timeoutMs` elapses, whichever comes first. Early-exit keeps
- * the happy path at <1s and gives Windows CI its full timeout budget when
- * process spawn + native-module load runs slow.
+ * arrived or `timeoutMs` elapses, whichever comes first.
  */
 function collectRpcResponses(
   proc: ChildProcess,
@@ -1615,8 +1641,9 @@ function collectRpcResponses(
 async function initAndCallDoctor(
   proc: ChildProcess,
   invocations: number,
-  windowMs = 15_000,
+  windowMs = 20_000,
 ): Promise<DoctorJsonRpcResponse[]> {
+  await waitForServerReady(proc);
   sendRpc(proc, {
     jsonrpc: "2.0", id: 1, method: "initialize",
     params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-doctor-regression", version: "1.0" } },
@@ -1642,7 +1669,7 @@ describe("ctx_doctor — resource cleanup regression (#247)", () => {
     expect(text).toContain("context-mode doctor");
     expect(text).toMatch(/Server test:/);
     expect(text).toMatch(/FTS5 \/ SQLite:/);
-  }, 30_000);
+  }, 60_000);
 
   test("three concurrent ctx_doctor calls all succeed without crashing the server", async () => {
     const proc = startMcpServer();
@@ -1653,5 +1680,5 @@ describe("ctx_doctor — resource cleanup regression (#247)", () => {
       expect(c!.error).toBeUndefined();
       expect(c!.result?.content?.[0]?.text).toContain("context-mode doctor");
     }
-  }, 35_000);
+  }, 60_000);
 });

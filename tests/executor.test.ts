@@ -86,6 +86,21 @@ describe("Runtime Detection", () => {
     assert.ok(runtimes.python !== null, "No Python runtime found");
   });
 
+  if (process.platform === "win32") {
+    test("Windows: Python runtime prefers python.exe over python3 alias", async () => {
+      assert.notEqual(
+        runtimes.python?.toLowerCase(),
+        "python3",
+        `Expected python.exe-compatible runtime, got: ${runtimes.python}`,
+      );
+      assert.notEqual(
+        runtimes.python?.toLowerCase(),
+        "python3.bat",
+        `Expected python.exe-compatible runtime, got: ${runtimes.python}`,
+      );
+    });
+  }
+
   test("buildCommand: correct JS command structure", async () => {
     const cmd = buildCommand(runtimes, "javascript", "/tmp/test.js");
     assert.ok(cmd.length >= 2);

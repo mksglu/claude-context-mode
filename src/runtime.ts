@@ -122,10 +122,10 @@ export function detectRuntimes(): RuntimeMap {
         : commandExists("ts-node")
           ? "ts-node"
           : null,
-    python: commandExists("python3")
-      ? "python3"
-      : commandExists("python")
-        ? "python"
+    python: commandExists("python")
+      ? "python"
+      : commandExists("python3")
+        ? "python3"
         : null,
     shell: isWindows
       ? (resolveWindowsBash() ?? (commandExists("sh") ? "sh" : commandExists("powershell") ? "powershell" : "cmd.exe"))
