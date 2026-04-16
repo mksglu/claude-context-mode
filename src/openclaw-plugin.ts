@@ -12,7 +12,6 @@
  *   - before_compaction hook         — Flush events to resume snapshot
  *   - after_compaction hook          — Increment compact count
  *   - before_prompt_build (p=10)  — Resume snapshot injection into system context
- *   - before_prompt_build (p=5)   — Routing instruction injection into system context
  *   - context-mode engine      — Context engine with compaction management
  *   - /ctx-stats command       — Auto-reply command for session statistics
  *   - /ctx-doctor command      — Auto-reply command for diagnostics
@@ -30,7 +29,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -241,23 +240,6 @@ export default {
     db.ensureSession(sessionId, projectDir);
 
     const workspaceRouter = new WorkspaceRouter();
-
-    // Load routing instructions synchronously for prompt injection
-    let routingInstructions = "";
-    try {
-      const instructionsPath = resolve(
-        buildDir,
-        "..",
-        "configs",
-        "openclaw",
-        "AGENTS.md",
-      );
-      if (existsSync(instructionsPath)) {
-        routingInstructions = readFileSync(instructionsPath, "utf-8");
-      }
-    } catch {
-      // best effort
-    }
 
     // Async init: load routing module. Hooks await this.
     const initPromise = (async () => {
@@ -572,19 +554,6 @@ export default {
       },
       { priority: 10 },
     );
-
-    // ── 8. before_prompt_build — Routing instruction injection ──
-
-    if (routingInstructions) {
-      api.on(
-        "before_prompt_build",
-        () => {
-          log.debug("before_prompt_build[routing]", { hasInstructions: !!routingInstructions });
-          return { appendSystemContext: routingInstructions };
-        },
-        { priority: 5 },
-      );
-    }
 
     // ── 9. Context engine — Compaction management ──────────
 

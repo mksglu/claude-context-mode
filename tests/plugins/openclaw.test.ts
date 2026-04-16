@@ -415,24 +415,23 @@ describe("OpenClawPlugin", () => {
   // ── before_prompt_build ───────────────────────────────
 
   describe("before_prompt_build", () => {
-    it("returns appendSystemContext with routing instructions", async () => {
+    it("does not register routing instruction injection by default", async () => {
       const mock = await createTestPlugin(join(tempDir, "prompt-build"));
-      const promptHook = mock.lifecycle.find(
+      const routingHook = mock.lifecycle.find(
         (l) => l.event === "before_prompt_build" && l.opts?.priority === 5,
       );
-      expect(promptHook).toBeDefined();
 
-      const result = promptHook!.handler() as { appendSystemContext: string };
-      expect(result).toHaveProperty("appendSystemContext");
-      expect(result.appendSystemContext).toContain("context-mode");
+      expect(routingHook).toBeUndefined();
     });
 
-    it("has priority 5", async () => {
+    it("keeps only the resume injection hook at priority 10", async () => {
       const mock = await createTestPlugin(join(tempDir, "prompt-priority"));
-      const promptHook = mock.lifecycle.find(
-        (l) => l.event === "before_prompt_build" && l.opts?.priority === 5,
+      const promptHooks = mock.lifecycle.filter(
+        (l) => l.event === "before_prompt_build",
       );
-      expect(promptHook?.opts?.priority).toBe(5);
+
+      expect(promptHooks).toHaveLength(1);
+      expect(promptHooks[0]?.opts?.priority).toBe(10);
     });
   });
 
