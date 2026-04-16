@@ -400,6 +400,124 @@ describe("OpenClawPlugin", () => {
     });
   });
 
+  // ── generic persistence hooks ───────────────────────
+
+  describe("generic persistence hooks", () => {
+    it("captures file read events from persisted tool results in direct sessions", async () => {
+      const mock = await createTestPlugin(join(tempDir, "persisted-read"));
+      const sessionStartHook = mock.lifecycle.find((h) => h.event === "session_start");
+      const beforeMessageWriteHook = mock.lifecycle.find((h) => h.event === "before_message_write");
+      const toolResultPersistHook = mock.lifecycle.find((h) => h.event === "tool_result_persist");
+      const statsCmd = mock.commands.find((c) => c.name === "ctx-stats");
+
+      expect(sessionStartHook).toBeDefined();
+      expect(beforeMessageWriteHook).toBeDefined();
+      expect(toolResultPersistHook).toBeDefined();
+      expect(statsCmd).toBeDefined();
+
+      await sessionStartHook!.handler({ sessionId: randomUUID(), sessionKey: "agent:main:main" });
+
+      const assistantMessage = {
+        role: "assistant",
+        stopReason: "tool_use",
+        content: [{
+          type: "toolCall",
+          toolCallId: "call-1",
+          toolName: "Read",
+          arguments: { file_path: "/direct/file.ts" },
+        }],
+      };
+      const toolResultMessage = {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "file contents" }],
+      };
+
+      beforeMessageWriteHook!.handler(
+        { message: assistantMessage },
+        { agentId: "main", sessionKey: "agent:main:main" },
+      );
+      toolResultPersistHook!.handler(
+        {
+          toolName: "read",
+          toolCallId: "call-1",
+          message: toolResultMessage,
+          isSynthetic: false,
+        },
+        {
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          toolName: "read",
+          toolCallId: "call-1",
+        },
+      );
+
+      const stats = await statsCmd!.handler({});
+      expect(stats.text).toContain("Events captured: 1");
+      expect(stats.text).toContain("file_read: 1");
+    });
+
+    it("does not duplicate persisted tool result capture when after_tool_call already handled the session", async () => {
+      const mock = await createTestPlugin(join(tempDir, "persisted-dedupe"));
+      const sessionStartHook = mock.lifecycle.find((h) => h.event === "session_start");
+      const afterToolCallHook = mock.lifecycle.find((h) => h.event === "after_tool_call");
+      const beforeMessageWriteHook = mock.lifecycle.find((h) => h.event === "before_message_write");
+      const toolResultPersistHook = mock.lifecycle.find((h) => h.event === "tool_result_persist");
+      const statsCmd = mock.commands.find((c) => c.name === "ctx-stats");
+
+      await sessionStartHook!.handler({ sessionId: randomUUID(), sessionKey: "agent:main:main" });
+
+      await afterToolCallHook!.handler(
+        {
+          toolName: "read",
+          params: { file_path: "/direct/file.ts" },
+          result: "file contents",
+        },
+        { agentId: "main", sessionKey: "agent:main:main", toolName: "read" },
+      );
+
+      beforeMessageWriteHook!.handler(
+        {
+          message: {
+            role: "assistant",
+            stopReason: "tool_use",
+            content: [{
+              type: "toolCall",
+              toolCallId: "call-2",
+              toolName: "Read",
+              arguments: { file_path: "/direct/file.ts" },
+            }],
+          },
+        },
+        { agentId: "main", sessionKey: "agent:main:main" },
+      );
+      toolResultPersistHook!.handler(
+        {
+          toolName: "read",
+          toolCallId: "call-2",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-2",
+            toolName: "read",
+            content: [{ type: "text", text: "file contents" }],
+          },
+          isSynthetic: false,
+        },
+        {
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          toolName: "read",
+          toolCallId: "call-2",
+        },
+      );
+
+      const stats = await statsCmd!.handler({});
+      expect(stats.text).toContain("Events captured: 1");
+      expect(stats.text).toContain("file_read: 1");
+    });
+  });
+
   // ── command:new ───────────────────────────────────────
 
   describe("command:new", () => {

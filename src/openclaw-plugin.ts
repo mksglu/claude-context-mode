@@ -143,6 +143,32 @@ interface AfterToolCallEvent {
   durationMs?: number;
 }
 
+interface ToolHookContext {
+  sessionId?: string;
+  sessionKey?: string;
+  agentId?: string;
+  toolName?: string;
+  toolCallId?: string;
+}
+
+interface ToolResultPersistEvent {
+  toolName?: string;
+  toolCallId?: string;
+  message?: unknown;
+  isSynthetic?: boolean;
+}
+
+interface ToolResultPersistContext {
+  agentId?: string;
+  sessionKey?: string;
+  toolName?: string;
+  toolCallId?: string;
+}
+
+interface BeforeMessageWriteEvent {
+  message?: unknown;
+}
+
 /** Plugin config schema for OpenClaw validation. */
 const configSchema = {
   type: "object" as const,
@@ -257,7 +283,9 @@ export default {
 
     api.on(
       "before_tool_call",
-      async (event: unknown) => {
+      async (event: unknown, ctx?: unknown) => {
+        const toolCtx = ctx as ToolHookContext | undefined;
+        markTypedToolHookSupport(toolCtx);
         const { routing } = await initPromise;
         const e = event as BeforeToolCallEvent;
         const toolName = e.toolName ?? "";
@@ -304,14 +332,117 @@ export default {
       grep: "Grep",
       search: "Grep",
     };
+    const sessionsWithTypedToolHooks = new Set<string>();
+    const pendingPersistedToolCalls = new Map<string, {
+      toolName: string;
+      toolInput: Record<string, unknown>;
+    }>();
+
+    function mapOpenClawToolName(toolName: string): string {
+      return OPENCLAW_TOOL_MAP[toolName] ?? toolName;
+    }
+
+    function resolveHookSessionKey(ctx?: { sessionKey?: string; sessionId?: string }): string {
+      return ctx?.sessionKey ?? sessionKey ?? ctx?.sessionId ?? sessionId;
+    }
+
+    function resolveHookSessionId(ctx?: { sessionKey?: string; sessionId?: string }): string {
+      if (ctx?.sessionId) return ctx.sessionId;
+      const key = ctx?.sessionKey ?? sessionKey;
+      if (key) return db.getMostRecentSession(key) ?? sessionId;
+      return sessionId;
+    }
+
+    function markTypedToolHookSupport(ctx?: ToolHookContext): void {
+      const key = resolveHookSessionKey(ctx);
+      if (key) sessionsWithTypedToolHooks.add(key);
+    }
+
+    function hasTypedToolHookSupport(ctx?: { sessionKey?: string; sessionId?: string }): boolean {
+      const key = resolveHookSessionKey(ctx);
+      return key ? sessionsWithTypedToolHooks.has(key) : false;
+    }
+
+    function buildPendingToolCallKey(ctx: { sessionKey?: string; sessionId?: string } | undefined, toolCallId: string): string {
+      return `${resolveHookSessionKey(ctx)}:${toolCallId}`;
+    }
+
+    function extractPersistedToolCalls(message: unknown): Array<{
+      toolCallId: string;
+      toolName: string;
+      toolInput: Record<string, unknown>;
+    }> {
+      if (!message || typeof message !== "object") return [];
+      const record = message as { role?: string; content?: unknown };
+      if (record.role !== "assistant" || !Array.isArray(record.content)) return [];
+
+      const toolCalls: Array<{
+        toolCallId: string;
+        toolName: string;
+        toolInput: Record<string, unknown>;
+      }> = [];
+
+      for (const block of record.content) {
+        if (!block || typeof block !== "object") continue;
+        const typed = block as {
+          type?: string;
+          toolCallId?: string;
+          toolUseId?: string;
+          toolName?: string;
+          name?: string;
+          arguments?: unknown;
+          input?: unknown;
+        };
+        if (typed.type !== "toolCall") continue;
+
+        const toolCallId = typed.toolCallId ?? typed.toolUseId;
+        const toolName = typed.toolName ?? typed.name;
+        if (!toolCallId || !toolName) continue;
+
+        const rawInput = typed.arguments ?? typed.input;
+        const toolInput = rawInput && typeof rawInput === "object"
+          ? rawInput as Record<string, unknown>
+          : {};
+
+        toolCalls.push({
+          toolCallId,
+          toolName: mapOpenClawToolName(toolName),
+          toolInput,
+        });
+      }
+
+      return toolCalls;
+    }
+
+    function extractToolResultTextFromMessage(message: unknown): string | undefined {
+      if (!message || typeof message !== "object") return undefined;
+      const record = message as { content?: unknown };
+      if (typeof record.content === "string") return record.content;
+      if (!Array.isArray(record.content)) return undefined;
+
+      const chunks = record.content
+        .filter((block): block is { type?: string; text?: string } => !!block && typeof block === "object")
+        .filter((block) => block.type === "text" && typeof block.text === "string")
+        .map((block) => block.text as string);
+
+      return chunks.length > 0 ? chunks.join("\n") : undefined;
+    }
+
+    function isToolResultError(message: unknown): boolean {
+      if (!message || typeof message !== "object") return false;
+      const record = message as { isError?: unknown };
+      return record.isError === true;
+    }
 
     api.on(
       "after_tool_call",
-      async (event: unknown) => {
+      async (event: unknown, ctx?: unknown) => {
+        const toolCtx = ctx as ToolHookContext | undefined;
+        markTypedToolHookSupport(toolCtx);
         try {
           const e = event as AfterToolCallEvent;
           const rawToolName = e.toolName ?? "";
-          const mappedToolName = OPENCLAW_TOOL_MAP[rawToolName] ?? rawToolName;
+          const mappedToolName = mapOpenClawToolName(rawToolName);
           // Accept both result (v2+) and output (older builds)
           const rawResult = e.result ?? e.output;
           const resultStr =
@@ -332,8 +463,10 @@ export default {
 
           const events = extractEvents(hookInput);
 
-          // Resolve agent-specific sessionId from workspace paths in params
-          const routedSessionId = workspaceRouter.resolveSessionId(e.params ?? {}) ?? sessionId;
+          // Resolve agent-specific sessionId from hook context first, then workspace paths.
+          const routedSessionId = resolveHookSessionId(toolCtx)
+            ?? workspaceRouter.resolveSessionId(e.params ?? {})
+            ?? sessionId;
 
           if (events.length > 0) {
             for (const ev of events) {
@@ -365,6 +498,96 @@ export default {
           }
         } catch {
           // Silent — session capture must never break the tool call
+        }
+      },
+    );
+
+    // ── 2b. before_message_write / tool_result_persist — direct-session capture ──
+
+    api.on(
+      "before_message_write",
+      (event: unknown, ctx?: unknown) => {
+        try {
+          const messageCtx = ctx as { agentId?: string; sessionKey?: string; sessionId?: string } | undefined;
+          if (hasTypedToolHookSupport(messageCtx)) return;
+          const e = event as BeforeMessageWriteEvent;
+          const toolCalls = extractPersistedToolCalls(e.message);
+          for (const toolCall of toolCalls) {
+            pendingPersistedToolCalls.set(
+              buildPendingToolCallKey(messageCtx, toolCall.toolCallId),
+              {
+                toolName: toolCall.toolName,
+                toolInput: toolCall.toolInput,
+              },
+            );
+          }
+        } catch {
+          // best effort — message persistence must never break the session
+        }
+      },
+    );
+
+    api.on(
+      "tool_result_persist",
+      (event: unknown, ctx?: unknown) => {
+        try {
+          const persistCtx = ctx as ToolResultPersistContext | undefined;
+          if (hasTypedToolHookSupport(persistCtx)) return;
+          const e = event as ToolResultPersistEvent;
+          const toolCallId = e.toolCallId;
+          if (!toolCallId) return;
+
+          const pendingKey = buildPendingToolCallKey(persistCtx, toolCallId);
+          const pending = pendingPersistedToolCalls.get(pendingKey);
+          if (!pending) return;
+          pendingPersistedToolCalls.delete(pendingKey);
+
+          const rawToolName = e.toolName ?? pending.toolName;
+          const mappedToolName = mapOpenClawToolName(rawToolName);
+          const hookInput: HookInput = {
+            tool_name: mappedToolName,
+            tool_input: pending.toolInput,
+            tool_response: extractToolResultTextFromMessage(e.message),
+            tool_output: isToolResultError(e.message) ? { isError: true } : undefined,
+          };
+
+          const events = extractEvents(hookInput);
+          const routedSessionId = resolveHookSessionId(persistCtx);
+
+          if (events.length > 0) {
+            for (const ev of events) {
+              db.insertEvent(routedSessionId, ev as SessionEvent, "PostToolUse");
+            }
+            log.debug("tool_result_persist", {
+              tool: rawToolName,
+              mapped: mappedToolName,
+              sessionId: routedSessionId.slice(0, 8),
+              events: events.length,
+              synthetic: e.isSynthetic === true,
+            });
+          } else if (rawToolName) {
+            const data = JSON.stringify({
+              tool: rawToolName,
+              params: pending.toolInput,
+              synthetic: e.isSynthetic === true,
+            });
+            db.insertEvent(
+              routedSessionId,
+              {
+                type: "tool_call",
+                category: "openclaw",
+                data,
+                priority: 1,
+                data_hash: createHash("sha256")
+                  .update(data)
+                  .digest("hex")
+                  .slice(0, 16),
+              },
+              "PostToolUse",
+            );
+          }
+        } catch {
+          // Silent — persistence capture must never break message writes
         }
       },
     );
