@@ -464,6 +464,10 @@ puts JSON.generate({ count: data[:users].length })
 });
 
 describe.runIf(runtimes.go)("Go Execution", () => {
+  // Windows runners with a cold GOCACHE can take 30s+ on the first compile.
+  // Bumped to 90s so cold-cache CI runs do not flake.
+  const GO_TEST_TIMEOUT = 90_000;
+
   test("Go: hello world", async () => {
     const r = await executor.execute({
       language: "go",
@@ -471,7 +475,7 @@ describe.runIf(runtimes.go)("Go Execution", () => {
     });
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.includes("hello from go"));
-  });
+  }, GO_TEST_TIMEOUT);
 
   test("Go: loops + slices", async () => {
     const r = await executor.execute({
@@ -487,7 +491,7 @@ describe.runIf(runtimes.go)("Go Execution", () => {
     });
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.includes("sum: 15"));
-  });
+  }, GO_TEST_TIMEOUT);
 });
 
 describe.runIf(runtimes.php)("PHP Execution", () => {

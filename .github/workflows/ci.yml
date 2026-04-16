@@ -32,6 +32,25 @@ jobs:
           go-version: "stable"
           cache: false
 
+      # Cache GOCACHE across runs so the inline Go snippets tests execute
+      # do not pay the cold-compile cost every run (Windows is ~30s).
+      - name: Resolve Go cache paths
+        id: go-cache-paths
+        shell: bash
+        run: |
+          echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Go build + module cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.go-cache-paths.outputs.gocache }}
+            ${{ steps.go-cache-paths.outputs.gomodcache }}
+          key: go-${{ matrix.os }}-v1
+          restore-keys: |
+            go-${{ matrix.os }}-
+
       - uses: erlef/setup-beam@v1
         if: runner.os != 'Windows'
         with:
