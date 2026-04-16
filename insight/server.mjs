@@ -586,6 +586,7 @@ function serveStaticFile(pathname) {
 // ── Server (dual runtime) ────────────────────────────────
 
 const indexHTML = readFileSync(join(DIST_DIR, "index.html"), "utf8");
+const API_JSON_HEADERS = { "Content-Type": "application/json" };
 
 if (isBun) {
   // Bun: use Bun.serve
@@ -597,7 +598,7 @@ if (isBun) {
       const data = route(req.method, url.pathname, url.searchParams);
       if (data !== null) {
         return new Response(JSON.stringify(data), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+          headers: API_JSON_HEADERS,
         });
       }
       if (url.pathname.startsWith("/assets/") || url.pathname.match(/\.\w{2,4}$/)) {
@@ -613,8 +614,6 @@ if (isBun) {
   // Node: use http.createServer
   const server = createHttpServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
     if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     const data = route(req.method, url.pathname, url.searchParams);
