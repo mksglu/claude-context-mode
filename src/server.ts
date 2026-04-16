@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, type ChildProcess } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -115,6 +115,10 @@ function maybeIndexSessionEvents(store: ContentStore): void {
 // hardcoded configDir detection in tool handlers.
 
 let _detectedAdapter: HookAdapter | null = null;
+
+// Tracks the ctx_insight dashboard child so shutdown can terminate it.
+// See ctx_insight handler + shutdown() in main().
+let _insightChild: ChildProcess | null = null;
 
 /**
  * Get the platform-specific sessions directory from the detected adapter.
@@ -2191,7 +2195,15 @@ server.registerTool(
         // Port is free, proceed with spawn
       }
 
-      // Start server in background
+      // Kill any previous insight child this MCP spawned (e.g. re-invocation).
+      if (_insightChild && _insightChild.pid && !_insightChild.killed) {
+        try { _insightChild.kill("SIGTERM"); } catch { /* best effort */ }
+      }
+
+      // Start server in background. `detached: true` keeps MCP stdio free, but
+      // we track the handle and kill it in shutdown() so the dashboard does
+      // not orphan when Claude closes. The child also watches INSIGHT_PARENT_PID
+      // as a fallback for SIGKILL/crash paths.
       const { spawn } = await import("node:child_process");
       const child = spawn("node", [join(cacheDir, "server.mjs")], {
         cwd: cacheDir,
@@ -2200,12 +2212,14 @@ server.registerTool(
           PORT: String(port),
           INSIGHT_SESSION_DIR: getSessionDir(),
           INSIGHT_CONTENT_DIR: join(dirname(getSessionDir()), "content"),
+          INSIGHT_PARENT_PID: String(process.pid),
         },
         detached: true,
         stdio: "ignore",
       });
       child.on("error", () => {}); // prevent unhandled error crash
       child.unref();
+      _insightChild = child;
 
       // Wait for server to be ready
       await new Promise(r => setTimeout(r, 1500));
@@ -2279,6 +2293,10 @@ async function main() {
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
     // Remove MCP readiness sentinel (#230)
     try { unlinkSync(mcpSentinel); } catch { /* best effort */ }
+    // Stop ctx_insight dashboard so it does not outlive Claude.
+    if (_insightChild && _insightChild.pid && !_insightChild.killed) {
+      try { _insightChild.kill("SIGTERM"); } catch { /* best effort */ }
+    }
   };
   const gracefulShutdown = async () => {
     shutdown();

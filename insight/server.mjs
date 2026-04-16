@@ -637,6 +637,19 @@ if (isBun) {
   server.listen(PORT, "127.0.0.1");
 }
 
+// Parent watchdog: exit when the MCP process that spawned us disappears.
+// Fallback for SIGKILL / crash paths where shutdown() cannot run.
+const PARENT_PID = Number(process.env.INSIGHT_PARENT_PID);
+if (Number.isFinite(PARENT_PID) && PARENT_PID > 0) {
+  setInterval(() => {
+    try {
+      process.kill(PARENT_PID, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 5000).unref();
+}
+
 console.log(`\n  context-mode Insight`);
 console.log(`  http://localhost:${PORT}`);
 console.log(`  Runtime: ${isBun ? "Bun" : "Node.js"}\n`);
