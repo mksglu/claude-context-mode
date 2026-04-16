@@ -40,6 +40,12 @@ import { extractEvents, extractUserEvents } from "./session/extract.js";
 import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
+import {
+  classifySessionCapability,
+  createCapabilitySignals,
+  observeCapabilitySignal,
+  type SessionCapabilitySignals,
+} from "./openclaw/capability.js";
 
 import { WorkspaceRouter } from "./openclaw/workspace-router.js";
 
@@ -223,6 +229,65 @@ function getOrCreateDB(projectDir: string): OpenClawSessionDB {
 let _latestDb: OpenClawSessionDB | null = null;
 let _latestSessionId = "";
 let _latestPluginRoot = "";
+const _sessionCapabilities = new Map<string, SessionCapabilitySignals>();
+
+function resolveCapabilityKey(sessionId?: string, sessionKey?: string): string | undefined {
+  return sessionId ?? sessionKey;
+}
+
+function getCapabilitySignals(sessionId?: string, sessionKey?: string): SessionCapabilitySignals | undefined {
+  const key = resolveCapabilityKey(sessionId, sessionKey);
+  return key ? _sessionCapabilities.get(key) : undefined;
+}
+
+function updateCapabilitySignals(sessionId: string, sessionKey: string | undefined, signal: Parameters<typeof observeCapabilitySignal>[1]): void {
+  const key = resolveCapabilityKey(sessionId, sessionKey);
+  if (!key) return;
+  const current = _sessionCapabilities.get(key) ?? createCapabilitySignals(key);
+  _sessionCapabilities.set(key, observeCapabilitySignal(current, signal));
+}
+
+function recordDbPersisted(sessionId: string, sessionKey?: string): void {
+  updateCapabilitySignals(sessionId, sessionKey, "db_persisted");
+}
+
+function capabilitySummaryText(sessionId: string): string[] {
+  const report = classifySessionCapability(_sessionCapabilities.get(sessionId) ?? createCapabilitySignals(sessionId));
+  const evidenceLevel = report.evidence === "metadata" ? "metadata_only"
+    : report.evidence === "persistence_hook" ? "hook_observed"
+    : report.evidence === "prompt_hook" ? "hook_observed"
+    : report.evidence === "typed_tool_hook" ? "hook_observed"
+    : report.evidence;
+  return [
+    `- Capability state: ${report.state}`,
+    `- reason_code: ${report.reason}`,
+    `- evidence_level: ${evidenceLevel}`,
+    `- Token savings active: ${report.tokenSavingsActive ? "yes" : "no"}`,
+  ];
+}
+
+function capabilityDoctorText(sessionId: string): string[] {
+  const report = classifySessionCapability(_sessionCapabilities.get(sessionId) ?? createCapabilitySignals(sessionId));
+  const evidenceLevel = report.evidence === "metadata" ? "metadata_only"
+    : report.evidence === "persistence_hook" ? "hook_observed"
+    : report.evidence === "prompt_hook" ? "hook_observed"
+    : report.evidence === "typed_tool_hook" ? "hook_observed"
+    : report.evidence;
+  const nextAction = report.state === "full"
+    ? "No action needed, keep collecting persisted events."
+    : report.reason === "session_metadata_only"
+      ? "Wait for a persistence hook or typed tool hook, then verify DB insertion."
+      : report.reason === "persistence_hooks_observed"
+        ? "Verify db_persisted evidence from inserted events, then recheck ctx-stats."
+        : "Capture a stronger runtime signal, ideally db_persisted.";
+
+  return [
+    `- Capability state: ${report.state}`,
+    `- reason_code: ${report.reason}`,
+    `- evidence_level: ${evidenceLevel}`,
+    `- Recommended next action: ${nextAction}`,
+  ];
+}
 
 // ── Plugin Definition (object export) ─────────────────────
 
@@ -356,6 +421,7 @@ export default {
     function markTypedToolHookSupport(ctx?: ToolHookContext): void {
       const key = resolveHookSessionKey(ctx);
       if (key) sessionsWithTypedToolHooks.add(key);
+      if (ctx?.sessionId || key) updateCapabilitySignals(ctx?.sessionId ?? sessionId, key, "typed_tool_hook_observed");
     }
 
     function hasTypedToolHookSupport(ctx?: { sessionKey?: string; sessionId?: string }): boolean {
@@ -471,6 +537,7 @@ export default {
           if (events.length > 0) {
             for (const ev of events) {
               db.insertEvent(routedSessionId, ev as SessionEvent, "PostToolUse");
+              recordDbPersisted(routedSessionId, toolCtx?.sessionKey);
             }
             log.debug("after_tool_call", { tool: rawToolName, mapped: mappedToolName, sessionId: routedSessionId.slice(0, 8), events: events.length, durationMs: e.durationMs });
           } else if (rawToolName) {
@@ -511,6 +578,7 @@ export default {
           const messageCtx = ctx as { agentId?: string; sessionKey?: string; sessionId?: string } | undefined;
           if (hasTypedToolHookSupport(messageCtx)) return;
           const e = event as BeforeMessageWriteEvent;
+          updateCapabilitySignals(messageCtx?.sessionId ?? sessionId, messageCtx?.sessionKey, "persistence_hook_observed");
           const toolCalls = extractPersistedToolCalls(e.message);
           for (const toolCall of toolCalls) {
             pendingPersistedToolCalls.set(
@@ -557,6 +625,7 @@ export default {
           if (events.length > 0) {
             for (const ev of events) {
               db.insertEvent(routedSessionId, ev as SessionEvent, "PostToolUse");
+              recordDbPersisted(routedSessionId, persistCtx?.sessionKey);
             }
             log.debug("tool_result_persist", {
               tool: rawToolName,
@@ -681,6 +750,7 @@ export default {
           sessionId = sid as ReturnType<typeof randomUUID>;
           _latestSessionId = sessionId;
           sessionKey = key;
+          updateCapabilitySignals(sessionId, key, "session_metadata_observed");
           if (key) {
             workspaceRouter.registerSession(key, sessionId);
           }
@@ -745,10 +815,12 @@ export default {
           const e = event as BeforeModelResolveEvent;
           const messageText = e?.userMessage ?? e?.message ?? e?.content ?? "";
           log.debug("before_model_resolve", { hasMessage: !!messageText });
+          updateCapabilitySignals(sid, sessionKey, "prompt_hook_observed");
           if (!messageText) return;
           const events = extractUserEvents(messageText);
           for (const ev of events) {
             db.insertEvent(sid, ev as import("./types.js").SessionEvent, "PostToolUse");
+            recordDbPersisted(sid, sessionKey);
           }
         } catch {
           // best effort — never break model resolution
@@ -825,18 +897,16 @@ export default {
         name: "ctx-doctor",
         description: "Run context-mode diagnostics",
         handler: () => {
-          const bundlePath = resolve(_latestPluginRoot, "cli.bundle.mjs");
-          const fallbackPath = resolve(_latestPluginRoot, "build", "cli.js");
-          const cliPath = existsSync(bundlePath) ? bundlePath : fallbackPath;
-          const cmd = `node "${cliPath}" doctor`;
           return {
             text: [
               "## ctx-doctor",
               "",
+              ...capabilityDoctorText(_latestSessionId),
+              "",
               "Run this command to diagnose context-mode:",
               "",
               "```",
-              cmd,
+              `node "${existsSync(resolve(_latestPluginRoot, "cli.bundle.mjs")) ? resolve(_latestPluginRoot, "cli.bundle.mjs") : resolve(_latestPluginRoot, "build", "cli.js")}" doctor`,
               "```",
             ].join("\n"),
           };
@@ -876,12 +946,14 @@ function buildStatsText(db: SessionDB, sessionId: string): string {
   try {
     const events = db.getEvents(sessionId);
     const stats = db.getSessionStats(sessionId);
+    const capabilityLines = capabilitySummaryText(sessionId);
     const lines: string[] = [
       "## context-mode stats",
       "",
       `- Session: \`${sessionId.slice(0, 8)}…\``,
       `- Events captured: ${events.length}`,
       `- Compactions: ${stats?.compact_count ?? 0}`,
+      ...capabilityLines,
     ];
 
     // Summarize events by type

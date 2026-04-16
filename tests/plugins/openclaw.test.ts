@@ -289,6 +289,58 @@ describe("OpenClawPlugin", () => {
       expect(result.text).toContain("doctor");
     });
 
+    it("ctx-stats metadata-only reports unsupported capability", async () => {
+      const mock = await createTestPlugin(join(tempDir, "cmd-stats-metadata-only"));
+      const sessionStartHook = mock.lifecycle.find((h) => h.event === "session_start");
+      const statsCmd = mock.commands.find((c) => c.name === "ctx-stats");
+
+      await sessionStartHook!.handler({ sessionId: randomUUID(), sessionKey: "agent:main:main" });
+
+      const result = await statsCmd!.handler({});
+      expect(result.text).toContain("unsupported");
+      expect(result.text).toContain("reason_code: session_metadata_only");
+      expect(result.text).toContain("evidence_level: metadata_only");
+      expect(result.text).toContain("Token savings active: no");
+    });
+
+    it("ctx-stats after before_message_write reports degraded capability", async () => {
+      const mock = await createTestPlugin(join(tempDir, "cmd-stats-persistence-hook"));
+      const sessionStartHook = mock.lifecycle.find((h) => h.event === "session_start");
+      const beforeMessageWriteHook = mock.lifecycle.find((h) => h.event === "before_message_write");
+      const statsCmd = mock.commands.find((c) => c.name === "ctx-stats");
+
+      await sessionStartHook!.handler({ sessionId: randomUUID(), sessionKey: "agent:main:main" });
+
+      beforeMessageWriteHook!.handler(
+        {
+          message: {
+            role: "assistant",
+            content: [{ type: "toolCall", toolCallId: "call-1", toolName: "Read", arguments: { path: "/tmp/x" } }],
+          },
+        },
+        { agentId: "main", sessionKey: "agent:main:main" },
+      );
+
+      const result = await statsCmd!.handler({});
+      expect(result.text).toContain("degraded");
+      expect(result.text).toContain("reason_code: persistence_hooks_observed");
+      expect(result.text).toContain("evidence_level: hook_observed");
+      expect(result.text).toContain("Token savings active: no");
+    });
+
+    it("ctx-doctor includes reason_code, evidence_level, Recommended next action", async () => {
+      const mock = await createTestPlugin(join(tempDir, "cmd-doctor-capability"));
+      const sessionStartHook = mock.lifecycle.find((h) => h.event === "session_start");
+      const doctorCmd = mock.commands.find((c) => c.name === "ctx-doctor");
+
+      await sessionStartHook!.handler({ sessionId: randomUUID(), sessionKey: "agent:main:main" });
+
+      const result = await doctorCmd!.handler({});
+      expect(result.text).toContain("reason_code:");
+      expect(result.text).toContain("evidence_level:");
+      expect(result.text).toContain("Recommended next action");
+    });
+
     it("ctx-upgrade handler returns upgrade command", async () => {
       const mock = await createTestPlugin(join(tempDir, "cmd-upgrade-run"));
       const upgradeCmd = mock.commands.find((c) => c.name === "ctx-upgrade");
