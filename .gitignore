@@ -18,5 +18,6 @@ AGENTS.md
 context-mode-guidance-*/
 .claude/worktrees/
 .claude-worktrees/
+.worktrees/
 .vibetree/
 .cw/
