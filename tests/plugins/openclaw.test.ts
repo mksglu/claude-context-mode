@@ -300,6 +300,7 @@ describe("OpenClawPlugin", () => {
       expect(result.text).toContain("unsupported");
       expect(result.text).toContain("reason_code: session_metadata_only");
       expect(result.text).toContain("evidence_level: metadata_only");
+      expect(result.text).toContain("Active capture path: none");
       expect(result.text).toContain("Token savings active: no");
     });
 
@@ -325,6 +326,7 @@ describe("OpenClawPlugin", () => {
       expect(result.text).toContain("degraded");
       expect(result.text).toContain("reason_code: persistence_hooks_observed");
       expect(result.text).toContain("evidence_level: hook_observed");
+      expect(result.text).toContain("Active capture path: persistence_hooks");
       expect(result.text).toContain("Token savings active: no");
     });
 
@@ -338,6 +340,7 @@ describe("OpenClawPlugin", () => {
       const result = await doctorCmd!.handler({});
       expect(result.text).toContain("reason_code:");
       expect(result.text).toContain("evidence_level:");
+      expect(result.text).toContain("Active capture path:");
       expect(result.text).toContain("Recommended next action");
     });
 

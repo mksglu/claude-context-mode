@@ -44,6 +44,7 @@ import {
   classifySessionCapability,
   createCapabilitySignals,
   observeCapabilitySignal,
+  type SessionCapabilityReport,
   type SessionCapabilitySignals,
 } from "./openclaw/capability.js";
 
@@ -228,16 +229,21 @@ function getOrCreateDB(projectDir: string): OpenClawSessionDB {
 // is idempotent). These refs give handlers access to the current session's state.
 let _latestDb: OpenClawSessionDB | null = null;
 let _latestSessionId = "";
+let _latestSessionKey = "";
 let _latestPluginRoot = "";
+const MAX_CAPABILITY_SESSIONS = 256;
 const _sessionCapabilities = new Map<string, SessionCapabilitySignals>();
 
 function resolveCapabilityKey(sessionId?: string, sessionKey?: string): string | undefined {
-  return sessionId ?? sessionKey;
+  return sessionKey ?? sessionId;
 }
 
-function getCapabilitySignals(sessionId?: string, sessionKey?: string): SessionCapabilitySignals | undefined {
-  const key = resolveCapabilityKey(sessionId, sessionKey);
-  return key ? _sessionCapabilities.get(key) : undefined;
+function pruneCapabilityState(): void {
+  while (_sessionCapabilities.size > MAX_CAPABILITY_SESSIONS) {
+    const oldestKey = _sessionCapabilities.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    _sessionCapabilities.delete(oldestKey);
+  }
 }
 
 function updateCapabilitySignals(sessionId: string, sessionKey: string | undefined, signal: Parameters<typeof observeCapabilitySignal>[1]): void {
@@ -245,34 +251,58 @@ function updateCapabilitySignals(sessionId: string, sessionKey: string | undefin
   if (!key) return;
   const current = _sessionCapabilities.get(key) ?? createCapabilitySignals(key);
   _sessionCapabilities.set(key, observeCapabilitySignal(current, signal));
+  pruneCapabilityState();
 }
 
 function recordDbPersisted(sessionId: string, sessionKey?: string): void {
   updateCapabilitySignals(sessionId, sessionKey, "db_persisted");
 }
 
-function capabilitySummaryText(sessionId: string): string[] {
-  const report = classifySessionCapability(_sessionCapabilities.get(sessionId) ?? createCapabilitySignals(sessionId));
-  const evidenceLevel = report.evidence === "metadata" ? "metadata_only"
-    : report.evidence === "persistence_hook" ? "hook_observed"
-    : report.evidence === "prompt_hook" ? "hook_observed"
-    : report.evidence === "typed_tool_hook" ? "hook_observed"
-    : report.evidence;
+function resetCapabilitySignals(sessionId: string, sessionKey?: string): void {
+  const key = resolveCapabilityKey(sessionId, sessionKey);
+  if (!key) return;
+  _sessionCapabilities.set(key, createCapabilitySignals(key));
+  if (sessionKey && sessionId && sessionKey !== sessionId) {
+    _sessionCapabilities.delete(sessionId);
+  }
+  pruneCapabilityState();
+}
+
+function mapEvidenceLevel(report: SessionCapabilityReport): string {
+  switch (report.evidence) {
+    case "metadata":
+      return "metadata_only";
+    case "prompt_hook":
+    case "typed_tool_hook":
+    case "persistence_hook":
+      return "hook_observed";
+    default:
+      return report.evidence;
+  }
+}
+
+function resolveActiveCapturePath(report: SessionCapabilityReport): "typed_tool_hooks" | "persistence_hooks" | "none" {
+  if (report.reason === "typed_tool_hooks_observed") return "typed_tool_hooks";
+  if (report.reason === "persistence_hooks_observed") return "persistence_hooks";
+  if (report.reason === "db_persistence_observed") return "persistence_hooks";
+  return "none";
+}
+
+function capabilitySummaryText(sessionId: string, sessionKey?: string): string[] {
+  const capabilityKey = resolveCapabilityKey(sessionId, sessionKey) ?? sessionId;
+  const report = classifySessionCapability(_sessionCapabilities.get(capabilityKey) ?? createCapabilitySignals(capabilityKey));
   return [
-    `- Capability state: ${report.state}`,
+    `- Capability: ${report.state}`,
     `- reason_code: ${report.reason}`,
-    `- evidence_level: ${evidenceLevel}`,
+    `- evidence_level: ${mapEvidenceLevel(report)}`,
+    `- Active capture path: ${resolveActiveCapturePath(report)}`,
     `- Token savings active: ${report.tokenSavingsActive ? "yes" : "no"}`,
   ];
 }
 
-function capabilityDoctorText(sessionId: string): string[] {
-  const report = classifySessionCapability(_sessionCapabilities.get(sessionId) ?? createCapabilitySignals(sessionId));
-  const evidenceLevel = report.evidence === "metadata" ? "metadata_only"
-    : report.evidence === "persistence_hook" ? "hook_observed"
-    : report.evidence === "prompt_hook" ? "hook_observed"
-    : report.evidence === "typed_tool_hook" ? "hook_observed"
-    : report.evidence;
+function capabilityDoctorText(sessionId: string, sessionKey?: string): string[] {
+  const capabilityKey = resolveCapabilityKey(sessionId, sessionKey) ?? sessionId;
+  const report = classifySessionCapability(_sessionCapabilities.get(capabilityKey) ?? createCapabilitySignals(capabilityKey));
   const nextAction = report.state === "full"
     ? "No action needed, keep collecting persisted events."
     : report.reason === "session_metadata_only"
@@ -282,9 +312,10 @@ function capabilityDoctorText(sessionId: string): string[] {
         : "Capture a stronger runtime signal, ideally db_persisted.";
 
   return [
-    `- Capability state: ${report.state}`,
+    `- Capability: ${report.state}`,
     `- reason_code: ${report.reason}`,
-    `- evidence_level: ${evidenceLevel}`,
+    `- evidence_level: ${mapEvidenceLevel(report)}`,
+    `- Active capture path: ${resolveActiveCapturePath(report)}`,
     `- Recommended next action: ${nextAction}`,
   ];
 }
@@ -750,6 +781,8 @@ export default {
           sessionId = sid as ReturnType<typeof randomUUID>;
           _latestSessionId = sessionId;
           sessionKey = key;
+          _latestSessionKey = key ?? sid;
+          resetCapabilitySignals(sessionId, key);
           updateCapabilitySignals(sessionId, key, "session_metadata_observed");
           if (key) {
             workspaceRouter.registerSession(key, sessionId);
@@ -881,6 +914,7 @@ export default {
     // read the latest session's db/sessionId/pluginRoot.
     _latestDb = db;
     _latestSessionId = sessionId;
+    _latestSessionKey = sessionKey ?? sessionId;
     _latestPluginRoot = pluginRoot;
 
     if (api.registerCommand) {
@@ -888,7 +922,7 @@ export default {
         name: "ctx-stats",
         description: "Show context-mode session statistics",
         handler: () => {
-          const text = buildStatsText(_latestDb!, _latestSessionId);
+          const text = buildStatsText(_latestDb!, _latestSessionId, _latestSessionKey);
           return { text };
         },
       });
@@ -901,7 +935,7 @@ export default {
             text: [
               "## ctx-doctor",
               "",
-              ...capabilityDoctorText(_latestSessionId),
+              ...capabilityDoctorText(_latestSessionId, _latestSessionKey),
               "",
               "Run this command to diagnose context-mode:",
               "",
@@ -942,11 +976,11 @@ export default {
 
 // ── Stats helper ──────────────────────────────────────────
 
-function buildStatsText(db: SessionDB, sessionId: string): string {
+function buildStatsText(db: SessionDB, sessionId: string, sessionKey?: string): string {
   try {
     const events = db.getEvents(sessionId);
     const stats = db.getSessionStats(sessionId);
-    const capabilityLines = capabilitySummaryText(sessionId);
+    const capabilityLines = capabilitySummaryText(sessionId, sessionKey);
     const lines: string[] = [
       "## context-mode stats",
       "",
