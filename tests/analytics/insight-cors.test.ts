@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, cpSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -7,12 +7,10 @@ import Database from "better-sqlite3";
 
 const ROOT = resolve(import.meta.dirname, "../..");
 const SOURCE_SERVER = resolve(ROOT, "insight", "server.mjs");
-const DIST_INDEX = resolve(ROOT, "insight", "dist", "index.html");
+const DIST_INDEX_NAME = "index.html";
 
 const children: ChildProcess[] = [];
 const tempDirs: string[] = [];
-let originalDistIndex: string | null = null;
-let hadDistIndex = false;
 
 afterEach(() => {
   for (const child of children.splice(0)) {
@@ -21,12 +19,6 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
   }
-  try {
-    if (hadDistIndex && originalDistIndex !== null) writeFileSync(DIST_INDEX, originalDistIndex);
-    else if (!hadDistIndex) rmSync(resolve(ROOT, "insight", "dist"), { recursive: true, force: true });
-  } catch { /* best effort */ }
-  originalDistIndex = null;
-  hadDistIndex = false;
 });
 
 function seedFixtureDBs(baseDir: string): { sessionsDir: string; contentDir: string } {
@@ -143,14 +135,15 @@ function startNodeInsight(): { port: number } {
   const tempRoot = mkdtempSync(join(tmpdir(), "ctx-insight-cors-"));
   tempDirs.push(tempRoot);
 
-  hadDistIndex = existsSync(DIST_INDEX);
-  originalDistIndex = hadDistIndex ? readFileSync(DIST_INDEX, "utf8") : null;
-  mkdirSync(resolve(ROOT, "insight", "dist"), { recursive: true });
-  writeFileSync(DIST_INDEX, "<!doctype html><html><body>stub</body></html>");
+  const tempInsightDir = join(tempRoot, "insight");
+  mkdirSync(join(tempInsightDir, "dist"), { recursive: true });
+  cpSync(SOURCE_SERVER, join(tempInsightDir, "server.mjs"));
+  writeFileSync(join(tempInsightDir, "dist", DIST_INDEX_NAME), "<!doctype html><html><body>stub</body></html>");
+  symlinkSync(resolve(ROOT, "node_modules"), join(tempRoot, "node_modules"), "dir");
 
   const { sessionsDir, contentDir } = seedFixtureDBs(tempRoot);
   const port = 42000 + Math.floor(Math.random() * 1000);
-  const child = spawn("node", [SOURCE_SERVER], {
+  const child = spawn("node", [join(tempInsightDir, "server.mjs")], {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
