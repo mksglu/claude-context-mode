@@ -10,8 +10,21 @@ The context-mode adapter hooks into Pi Agent sessions specifically, intercepting
 
 ### Supported Configurations
 
-- **Pi Agent sessions** with coding tools (Read/Write/Edit/Bash) — fully supported.
-- **Custom agents** with coding tools — may work but are untested. The adapter relies on tool names matching Pi Agent's conventions.
+- **Pi Agent sessions** with coding tools (Read/Write/Edit/Bash) — capability-aware support. A session is reported as `full` only after DB-backed persistence is observed for that session.
+- **Direct `agent:main:main` sessions** — fail-closed. They may report `degraded` or `unsupported` until runtime evidence proves a working capture path. Do not assume token savings are active from installation alone.
+- **Custom agents** with coding tools — unproven. Treat support as `unsupported` until `ctx-stats` or `ctx-doctor` reports stronger evidence.
+
+## Capability Reporting
+
+Use `ctx-stats` or `ctx-doctor` and read these fields literally:
+
+- `Capability`
+- `reason_code`
+- `evidence_level`
+- `Active capture path`
+- `Token savings active`
+
+`Token savings active: yes` is reserved for sessions where DB-backed persistence has been observed for the current session.
 
 ## Installation
 

@@ -418,6 +418,13 @@ context-mode runs as a native [OpenClaw](https://github.com/openclaw) gateway pl
 
 **Verify:** The plugin registers 8 hooks via [`api.on()`](https://docs.openclaw.ai/tools/plugin) (lifecycle) and [`api.registerHook()`](https://docs.openclaw.ai/tools/plugin) (commands). Type `ctx stats` to confirm tools are loaded.
 
+> **OpenClaw support is capability-aware.** After installation, verify the current session with `ctx-stats` or `ctx-doctor`.
+> - `full` means DB-backed persistence was observed for this session.
+> - `degraded` means relevant hooks fired, but persistence is not yet proven.
+> - `unsupported` means no reliable capture path is proven yet.
+>
+> Do not treat installation success by itself as proof that token savings are active.
+
 **Routing:** Automatic. All tool interception, session tracking, and compaction recovery hooks activate automatically — no manual hook configuration or routing file needed.
 
 > **Minimum version:** OpenClaw >2026.1.29 — this includes the `api.on()` lifecycle fix from [PR #9761](https://github.com/openclaw/openclaw/pull/9761). On older versions, lifecycle hooks silently fail. The adapter falls back to DB snapshot reconstruction (less precise but preserves critical state).
@@ -877,7 +884,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `searc
 
 **KiloCode** — Partial. Shares the same plugin architecture as OpenCode via the OpenCodeAdapter. The TypeScript plugin captures PostToolUse events via `tool.execute.after`, but SessionStart availability depends on KiloCode's implementation. Events are stored but may not be automatically restored after compaction.
 
-**OpenClaw / Pi Agent** — High coverage. All tool lifecycle hooks (`after_tool_call`, `before_compaction`, `session_start`) fire via the native gateway plugin. User decisions aren't captured but file edits, git ops, errors, and tasks are fully tracked. Falls back to DB snapshot reconstruction if compaction hooks fail on older gateway versions. See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md).
+**OpenClaw / Pi Agent** — Capability-aware. `full` means DB-backed persistence was observed for the current session. `degraded` means relevant hooks were observed but persistence is not proven. `unsupported` means no reliable capture path is proven. Installation success alone is not proof that token savings are active. See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md).
 
 **Codex CLI** — MCP active, hooks ready. Hook scripts (PreToolUse, PostToolUse, SessionStart) are implemented and tested but Codex CLI doesn't dispatch them yet (Stage::UnderDevelopment). MCP tools work. Track: [openai/codex#16685](https://github.com/openai/codex/issues/16685).
 
