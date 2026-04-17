@@ -480,26 +480,27 @@ describe("evaluateFilePath", () => {
     // passes a ../-traversal relative path that resolves into ~/.ssh.
     const home = homedir();
     const projectRoot = resolve(home, "some/project");
-    const denyGlobs = [[`${home}/.ssh/**`]];
+    const denyGlob = resolve(home, ".ssh").replace(/\\/g, "/") + "/**";
 
     const result = evaluateFilePath(
       "../../.ssh/id_rsa",
-      denyGlobs,
-      false,
+      [[denyGlob]],
+      process.platform === "win32",
       projectRoot,
     );
     assert.equal(result.denied, true);
-    assert.equal(result.matchedPattern, `${home}/.ssh/**`);
+    assert.equal(result.matchedPattern, denyGlob);
   });
 
   test("evaluateFilePath: without projectRoot, absolute deny glob is still bypassable (regression guard)", () => {
     // Documents the pre-fix behavior: without projectRoot, `..` is not
     // resolved, so the raw string doesn't match the absolute glob.
     // This test exists so any change in behavior is intentional.
+    const absoluteSshGlob = resolve(homedir(), ".ssh").replace(/\\/g, "/") + "/**";
     const result = evaluateFilePath(
       "../../.ssh/id_rsa",
-      [["/Users/someone/.ssh/**"]],
-      false,
+      [[absoluteSshGlob]],
+      process.platform === "win32",
     );
     assert.equal(result.denied, false);
   });
