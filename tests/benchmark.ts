@@ -1,3 +1,7 @@
+import Database from "better-sqlite3";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PolyglotExecutor } from "../src/executor.js";
 import {
   detectRuntimes,
@@ -5,6 +9,7 @@ import {
   hasBunRuntime,
   type Language,
 } from "../src/runtime.js";
+import { ContentStore } from "../src/store.js";
 
 const runtimes = detectRuntimes();
 const executor = new PolyglotExecutor({ runtimes });
@@ -67,6 +72,86 @@ async function bench(
     `  ${name} [${language}]: avg=${result.avgMs}ms min=${result.minMs}ms p95=${result.p95Ms}ms`,
   );
   return result;
+}
+
+// ═══ Search-path micro-benchmarks ═══════════════════════════════════════════
+// Measures wall-clock cost on the FTS5 search hot path:
+//   - fuzzy-correct LRU cache: repeat-typo lookup, cold vs warm
+//   - token dedup: FTS5 MATCH cost with/without duplicated query tokens
+// Uses the real ContentStore for the cache path and raw FTS5 for the dedup
+// path (raw FTS5 isolates the engine-side cost without hitting ContentStore's
+// pre-deduped sanitize).
+
+const SEARCH_N_DOCS = 5000;
+const SEARCH_N_ITERS = 2000;
+const SEARCH_TOPICS = [
+  "error", "database", "connection", "timeout", "server", "authentication",
+  "middleware", "handler", "controller", "endpoint", "request", "response",
+  "session", "cookie", "token", "signature", "encryption", "compression",
+  "throttle", "retry", "backoff", "deadline", "cancelled", "succeeded",
+  "failed", "warning", "notice", "debug", "trace", "panic", "fatal",
+];
+
+function usPerCall(fn: () => void, iters: number): number {
+  const t0 = process.hrtime.bigint();
+  for (let i = 0; i < iters; i++) fn();
+  return Number(process.hrtime.bigint() - t0) / 1e3 / iters;
+}
+
+function cleanupSearchDB(path: string): void {
+  for (const p of [path, `${path}-wal`, `${path}-shm`]) {
+    try { rmSync(p); } catch { /* ignore */ }
+  }
+}
+
+function benchFuzzyCache(): { cold: number; warm: number } {
+  const dbPath = join(tmpdir(), `bench-fuzzy-${Date.now()}.db`);
+  const store = new ContentStore(dbPath);
+  try {
+    for (let i = 0; i < SEARCH_N_DOCS; i++) {
+      const body = SEARCH_TOPICS.map((w) => `${w}${i % 13}`).join(" ") + ` doc_${i}`;
+      store.indexPlainText(body, `src_${i}`);
+    }
+    const typo = "erorr"; // edit distance 2 from "error"
+    const t0 = process.hrtime.bigint();
+    store.fuzzyCorrect(typo);
+    const cold = Number(process.hrtime.bigint() - t0) / 1e3;
+    const warm = usPerCall(() => { store.fuzzyCorrect(typo); }, SEARCH_N_ITERS);
+    return { cold, warm };
+  } finally {
+    (store as unknown as { close?: () => void }).close?.();
+    cleanupSearchDB(dbPath);
+  }
+}
+
+function benchTokenDedup(): { dup: number; deduped: number } {
+  const dbPath = join(tmpdir(), `bench-dedup-${Date.now()}.db`);
+  const db = new Database(dbPath);
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    db.exec(`CREATE VIRTUAL TABLE fts USING fts5(content, source);`);
+    const insert = db.prepare("INSERT INTO fts (content, source) VALUES (?, ?)");
+    const tx = db.transaction((n: number) => {
+      for (let i = 0; i < n; i++) {
+        const body = SEARCH_TOPICS.map((w) => `${w}${i % 13}`).join(" ") + ` doc_${i}`;
+        insert.run(body, `src_${i}`);
+      }
+    });
+    tx(SEARCH_N_DOCS);
+    const stmt = db.prepare(
+      `SELECT source FROM fts WHERE fts MATCH ? ORDER BY bm25(fts) LIMIT 10`,
+    );
+    const dupQuery = `"error" AND "error" AND "error" AND "error" AND "error"`;
+    const oneQuery = `"error"`;
+    for (let i = 0; i < 100; i++) { stmt.all(dupQuery); stmt.all(oneQuery); }
+    const dup = usPerCall(() => { stmt.all(dupQuery); }, SEARCH_N_ITERS);
+    const deduped = usPerCall(() => { stmt.all(oneQuery); }, SEARCH_N_ITERS);
+    return { dup, deduped };
+  } finally {
+    db.close();
+    cleanupSearchDB(dbPath);
+  }
 }
 
 function printTable(results: BenchResult[]) {
@@ -311,6 +396,24 @@ print(f"filtered: {len(filtered)}")
       `  ${s.name}: ${r.stdout.length} bytes output (was ~${(s.rawSize / 1024).toFixed(0)}KB) → ${savings}% context saved`,
     );
   }
+
+  // === Search Path Performance (FTS5 hot path) ===
+  console.log("\n=== Search Path Performance ===");
+  console.log(
+    `Setup: ${SEARCH_N_DOCS} seeded documents, ${SEARCH_N_ITERS} iterations per measurement`,
+  );
+
+  const fuzzy = benchFuzzyCache();
+  console.log("\nfuzzy-correct LRU cache (ContentStore)");
+  console.log(`  cold (1st call, levenshtein over vocab) : ${fuzzy.cold.toFixed(1)} µs`);
+  console.log(`  warm (cache hit, avg of ${SEARCH_N_ITERS})      : ${fuzzy.warm.toFixed(2)} µs`);
+  console.log(`  speedup                                  : ${(fuzzy.cold / fuzzy.warm).toFixed(0)}×`);
+
+  const dedup = benchTokenDedup();
+  console.log(`\ntoken dedup (raw FTS5, ${SEARCH_N_DOCS} docs)`);
+  console.log(`  5× duplicate tokens (pre-dedup) : ${dedup.dup.toFixed(1)} µs/query`);
+  console.log(`  1 token (post-dedup)            : ${dedup.deduped.toFixed(1)} µs/query`);
+  console.log(`  speedup from dedup              : ${(dedup.dup / dedup.deduped).toFixed(2)}×`);
 
   // === Print Summary Table ===
   console.log("\n=== Full Results Table ===");
