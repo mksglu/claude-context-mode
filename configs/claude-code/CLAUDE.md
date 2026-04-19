@@ -51,7 +51,7 @@ Grep results can flood context. Use `ctx_execute(language: "shell", code: "grep 
 
 When spawning subagents (Agent/Task tool), the routing block is automatically injected into their prompt. Bash-type subagents are upgraded to general-purpose so they have access to MCP tools. You do NOT need to manually instruct subagents about context-mode.
 
-## Output constraints
+## Response limits
 
 - Keep responses under 500 words.
 - Write artifacts (code, configs, PRDs) to FILES — never return them as inline text. Return only: file path + 1-line description.
@@ -61,7 +61,7 @@ When spawning subagents (Agent/Task tool), the routing block is automatically in
 
 | Command | Action |
 |---------|--------|
-| `ctx stats` | Call the `ctx_stats` MCP tool and display the full output verbatim |
+| `ctx stats` | Call the `ctx_stats` MCP tool and print the response verbatim |
 | `ctx doctor` | Call the `ctx_doctor` MCP tool, run the returned shell command, display as checklist |
 | `ctx upgrade` | Call the `ctx_upgrade` MCP tool, run the returned shell command, display as checklist |
 | `ctx purge` | Call the `ctx_purge` MCP tool with confirm: true. Warns before wiping the knowledge base. |

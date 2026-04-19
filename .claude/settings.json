@@ -1,8 +1,20 @@
 {
   "permissions": {
     "deny": [
-      "Bash(sudo *)",
-      "Bash(rm -rf /*)",
+      "Bash(sudo:*)",
+      "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(rm -Rf:*)",
+      "Bash(rm -fR:*)",
+      "Bash(rm -r -f:*)",
+      "Bash(rm -f -r:*)",
+      "Bash(rm --recursive:*)",
+      "Bash(rm --force:*)",
+      "Bash(chmod 777:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(dd:*)",
+      "Bash(> /dev/*)",
       "Read(.env)",
       "Read(**/.env*)"
     ],
