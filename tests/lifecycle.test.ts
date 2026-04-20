@@ -9,7 +9,7 @@ import { describe, test, assert } from "vitest";
 import { spawn, execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { startLifecycleGuard } from "../src/lifecycle.js";
+import { startLifecycleGuard, makeDefaultIsParentAlive } from "../src/lifecycle.js";
 
 const TSX_PATH = execSync("which tsx", { encoding: "utf-8" }).trim();
 
@@ -178,6 +178,92 @@ describe("Lifecycle Guard", () => {
     });
 
     await new Promise((r) => setTimeout(r, 80));
+    cleanup();
+    assert.equal(shutdownCalled, true);
+  });
+});
+
+// Regression coverage for #311 — zombie context-mode servers persist because
+// the Claude Code process tree is
+//   Claude Code → start.mjs → npm exec → server
+// and when Claude Code dies, `start.mjs` reparents to init (PID 1) but
+// `npm exec` (our direct parent) keeps running, so a ppid-only check stays
+// green forever. The grandparent-orphan check closes this gap.
+describe("makeDefaultIsParentAlive — grandparent orphan detection (#311)", () => {
+  test("returns false when grandparent is reparented to init after startup", () => {
+    // Startup chain: server (ppid=100) → npm exec (ppid=50) → start.mjs (ppid=7, alive)
+    let currentGrandparent = 7;
+    const isAlive = makeDefaultIsParentAlive({
+      getPpid: () => 100,
+      readGrandparentPpid: () => currentGrandparent,
+    });
+
+    assert.equal(isAlive(), true, "alive at startup when grandparent is a normal process");
+
+    // Claude Code dies → start.mjs reparents to init.
+    currentGrandparent = 1;
+    assert.equal(isAlive(), false, "must detect grandparent reparenting (#311)");
+  });
+
+  test("does not false-positive when grandparent was already init at startup", () => {
+    // Daemon-style launch — grandparent is init from the start (e.g. launchd,
+    // systemd, or a detached nohup process). The check must skip in this case,
+    // otherwise the guard would shut down immediately on every poll.
+    const isAlive = makeDefaultIsParentAlive({
+      getPpid: () => 100,
+      readGrandparentPpid: () => 1,
+    });
+
+    // Multiple polls — never flip to false while ppid is stable.
+    assert.equal(isAlive(), true);
+    assert.equal(isAlive(), true);
+    assert.equal(isAlive(), true);
+  });
+
+  test("tolerates NaN grandparent (Windows / ps failure)", () => {
+    // On Windows readGrandparentPpidImpl returns NaN; the check must fall
+    // back to the original ppid-only path and stay green while ppid is stable.
+    const isAlive = makeDefaultIsParentAlive({
+      getPpid: () => 100,
+      readGrandparentPpid: () => NaN,
+    });
+
+    assert.equal(isAlive(), true);
+  });
+
+  test("direct ppid death still takes precedence over grandparent check", () => {
+    // If our own parent dies (ppid flips to init), shut down immediately —
+    // don't wait for a grandparent poll to confirm.
+    let ppid = 50;
+    const isAlive = makeDefaultIsParentAlive({
+      getPpid: () => ppid,
+      readGrandparentPpid: () => 7, // grandparent alive the whole time
+    });
+
+    assert.equal(isAlive(), true);
+    ppid = 1; // direct parent dies
+    assert.equal(isAlive(), false);
+  });
+
+  test("grandparent check kicks in through startLifecycleGuard end-to-end", async () => {
+    // Integration-shaped check: plug the orphan-aware factory into the
+    // real guard and prove it triggers onShutdown without touching stdin.
+    let currentGrandparent = 7;
+    const aliveCheck = makeDefaultIsParentAlive({
+      getPpid: () => 100,
+      readGrandparentPpid: () => currentGrandparent,
+    });
+
+    let shutdownCalled = false;
+    const cleanup = startLifecycleGuard({
+      checkIntervalMs: 30,
+      onShutdown: () => { shutdownCalled = true; },
+      isParentAlive: aliveCheck,
+    });
+
+    // Flip the grandparent to init — guard should notice within one interval.
+    currentGrandparent = 1;
+    await new Promise((r) => setTimeout(r, 100));
     cleanup();
     assert.equal(shutdownCalled, true);
   });
