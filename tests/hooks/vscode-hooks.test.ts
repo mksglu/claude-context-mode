@@ -116,13 +116,17 @@ describe("VS Code Copilot hooks", () => {
   const mcpSentinel = resolve(tmpdir(), `context-mode-mcp-ready-${process.pid}`);
 
   // Clean file-based guidance throttle markers between tests.
-  // Subprocess hooks use process.ppid (= this test's pid) for marker dir.
+  // Subprocess hooks use process.ppid (= this test's pid) for the legacy marker dir;
+  // the sessionId-scoped dir (#298) is derived from getSessionId() which falls back
+  // to `pid-${process.ppid}` when the hook input has no session_id.
   // VITEST_WORKER_ID is inherited by subprocesses, matching routing.mjs logic.
   beforeEach(() => {
     const wid = process.env.VITEST_WORKER_ID;
     const suffix = wid ? `${process.pid}-w${wid}` : String(process.pid);
-    const guidanceDir = resolve(tmpdir(), `context-mode-guidance-${suffix}`);
-    try { rmSync(guidanceDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    const legacyDir = resolve(tmpdir(), `context-mode-guidance-${suffix}`);
+    const sessionDir = resolve(tmpdir(), `context-mode-guidance-s-pid-${process.pid}`);
+    try { rmSync(legacyDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { rmSync(sessionDir, { recursive: true, force: true }); } catch { /* best effort */ }
     writeFileSync(mcpSentinel, String(process.pid));
   });
 

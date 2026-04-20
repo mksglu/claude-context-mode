@@ -18,6 +18,7 @@ import { homedir, tmpdir } from "node:os";
 import { readStdin } from "./core/stdin.mjs";
 import { routePreToolUse, initSecurity } from "./core/routing.mjs";
 import { formatDecision } from "./core/formatters.mjs";
+import { getSessionId } from "./session-helpers.mjs";
 
 // ─── Manual recursive copy (avoids cpSync libuv crash on non-ASCII paths, Windows + Node 24) ───
 function copyDirSync(src, dest) {
@@ -163,7 +164,7 @@ const tool = input.tool_name ?? "";
 const toolInput = input.tool_input ?? {};
 
 // ─── Route and format response ───
-const decision = routePreToolUse(tool, toolInput, process.env.CLAUDE_PROJECT_DIR, "claude-code");
+const decision = routePreToolUse(tool, toolInput, process.env.CLAUDE_PROJECT_DIR, "claude-code", getSessionId(input));
 const response = formatDecision("claude-code", decision);
 if (response !== null) {
   process.stdout.write(JSON.stringify(response) + "\n");

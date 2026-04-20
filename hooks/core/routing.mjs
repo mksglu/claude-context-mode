@@ -36,23 +36,41 @@ import { resolve } from "node:path";
 //   - In-memory Set for same-process (OpenCode ts-plugin, vitest)
 //   - File-based markers with O_EXCL for cross-process atomicity
 //     (Claude Code, Gemini, Cursor, VS Code Copilot)
-// Session scoped via process.ppid (= host PID, constant for session lifetime).
+//
+// Session identity is resolved in this order:
+//   1. sessionId passed in by the caller (stable across hook invocations)
+//   2. process.ppid fallback (works on macOS/Linux — host PID is stable)
+//
+// The ppid fallback is unreliable on Windows + Git Bash, where each hook
+// invocation spawns a fresh bash.exe with a different PID (#298). Callers
+// that have a stable session identifier (e.g. from the hook payload) should
+// pass it to routePreToolUse so the marker directory stays consistent across
+// invocations of the same logical session.
 const _guidanceShown = new Set();
-const _guidanceId = process.env.VITEST_WORKER_ID
-  ? `${process.ppid}-w${process.env.VITEST_WORKER_ID}`
-  : String(process.ppid);
-const _guidanceDir = resolve(tmpdir(), `context-mode-guidance-${_guidanceId}`);
 
-function guidanceOnce(type, content) {
+function defaultGuidanceId() {
+  return process.env.VITEST_WORKER_ID
+    ? `${process.ppid}-w${process.env.VITEST_WORKER_ID}`
+    : String(process.ppid);
+}
+
+function guidanceDirFor(sessionId) {
+  const id = sessionId ? `s-${sessionId}` : defaultGuidanceId();
+  return resolve(tmpdir(), `context-mode-guidance-${id}`);
+}
+
+function guidanceOnce(type, content, sessionId) {
   // Fast path: in-memory (same process)
   if (_guidanceShown.has(type)) return null;
 
-  // Ensure marker directory exists
-  try { mkdirSync(_guidanceDir, { recursive: true }); } catch {}
+  // Resolve marker directory for this session (stable even on Windows/Git Bash
+  // where process.ppid shifts every invocation — see #298).
+  const dir = guidanceDirFor(sessionId);
+  try { mkdirSync(dir, { recursive: true }); } catch {}
 
   // Atomic create-or-fail: O_CREAT | O_EXCL | O_WRONLY
   // First process to create the file wins; others get EEXIST.
-  const marker = resolve(_guidanceDir, type);
+  const marker = resolve(dir, type);
   try {
     const fd = openSync(marker, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY);
     closeSync(fd);
@@ -66,9 +84,13 @@ function guidanceOnce(type, content) {
   return { action: "context", additionalContext: content };
 }
 
-export function resetGuidanceThrottle() {
+export function resetGuidanceThrottle(sessionId) {
   _guidanceShown.clear();
-  try { rmSync(_guidanceDir, { recursive: true, force: true }); } catch {}
+  // Clear ppid-based dir (legacy / fallback callers) and the sessionId dir if given
+  try { rmSync(guidanceDirFor(), { recursive: true, force: true }); } catch {}
+  if (sessionId) {
+    try { rmSync(guidanceDirFor(sessionId), { recursive: true, force: true }); } catch {}
+  }
 }
 
 /**
@@ -150,8 +172,11 @@ const TOOL_ALIASES = {
  * @param {object} toolInput - The tool input/parameters
  * @param {string} [projectDir] - Project directory for security policy lookup
  * @param {string} [platform="claude-code"] - Platform ID for tool name formatting
+ * @param {string} [sessionId] - Stable session identifier from hook payload. When
+ *   provided, the guidance throttle uses it to scope marker files across hook
+ *   invocations even when process.ppid shifts (Windows/Git Bash — see #298).
  */
-export function routePreToolUse(toolName, toolInput, projectDir, platform) {
+export function routePreToolUse(toolName, toolInput, projectDir, platform, sessionId) {
   // Build platform-specific tool namer (defaults to claude-code for backward compat)
   const t = createToolNamer(platform || "claude-code");
 
@@ -272,17 +297,17 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform) {
     }
 
     // allow all other Bash commands, but inject routing nudge (once per session)
-    return guidanceOnce("bash", bashGuidance);
+    return guidanceOnce("bash", bashGuidance, sessionId);
   }
 
   // ─── Read: nudge toward execute_file (once per session) ───
   if (canonical === "Read") {
-    return guidanceOnce("read", readGuidance);
+    return guidanceOnce("read", readGuidance, sessionId);
   }
 
   // ─── Grep: nudge toward execute (once per session) ───
   if (canonical === "Grep") {
-    return guidanceOnce("grep", grepGuidance);
+    return guidanceOnce("grep", grepGuidance, sessionId);
   }
 
   // ─── WebFetch: deny + redirect to sandbox ───

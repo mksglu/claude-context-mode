@@ -29,16 +29,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_PATH = join(__dirname, "..", "..", "hooks", "pretooluse.mjs");
 
 // Clean guidance throttle markers before each test so guidance fires fresh.
-// Subprocess hooks use process.ppid (= this test's pid) + VITEST_WORKER_ID.
+// Subprocess hooks scope markers two ways (#298): the legacy ppid-based dir
+// (kept as fallback when no sessionId is passed) and the sessionId-scoped dir
+// (derived from getSessionId which falls back to `pid-${process.ppid}` when
+// the hook payload has no session_id).
 const _wid = process.env.VITEST_WORKER_ID;
 const _guidanceSuffix = _wid ? `${process.pid}-w${_wid}` : String(process.pid);
 const _guidanceDir = resolve(tmpdir(), `context-mode-guidance-${_guidanceSuffix}`);
+const _sessionGuidanceDir = resolve(tmpdir(), `context-mode-guidance-s-pid-${process.pid}`);
 
 // MCP readiness sentinel — subprocess hooks check process.ppid (= this test's pid)
 const mcpSentinel = resolve(tmpdir(), `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
   try { rmSync(_guidanceDir, { recursive: true, force: true }); } catch {}
+  try { rmSync(_sessionGuidanceDir, { recursive: true, force: true }); } catch {}
   writeFileSync(mcpSentinel, String(process.pid));
 });
 
