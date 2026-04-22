@@ -36,6 +36,14 @@ export interface SessionEvent {
   data: string;
   priority: number;
   data_hash: string;
+  /**
+   * Best-effort project attribution for this event.
+   * Empty string means unattributed/unknown.
+   */
+  project_dir?: string;
+  attribution_source?: string;
+  /** 0..1 confidence score for project attribution. */
+  attribution_confidence?: number;
 }
 
 // ─────────────────────────────────────────────────────────
