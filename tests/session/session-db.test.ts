@@ -89,6 +89,48 @@ describe("Insert & Retrieve", () => {
     assert.ok(events[0].created_at.length > 0);
     assert.ok(events[0].data_hash.length > 0);
   });
+
+  test("insertEvent stores project attribution metadata", () => {
+    const db = createTestDB();
+    const sid = "sess-attribution";
+    const event = makeEvent({ type: "file_read", data: "/workspace/repo/src/main.ts" });
+
+    db.insertEvent(
+      sid,
+      event,
+      "PostToolUse",
+      { projectDir: "/workspace/repo", source: "event_path", confidence: 0.91 },
+    );
+
+    const events = db.getEvents(sid);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].project_dir, "/workspace/repo");
+    assert.equal(events[0].attribution_source, "event_path");
+    assert.equal(events[0].attribution_confidence, 0.91);
+  });
+
+  test("getLatestAttributedProjectDir returns latest non-empty project", () => {
+    const db = createTestDB();
+    const sid = "sess-attribution-latest";
+
+    db.insertEvent(sid, makeEvent({ data: "no-path" }), "PostToolUse", {
+      projectDir: "",
+      source: "unknown",
+      confidence: 0,
+    });
+    db.insertEvent(sid, makeEvent({ data: "/repo-a/a.ts" }), "PostToolUse", {
+      projectDir: "/repo-a",
+      source: "event_path",
+      confidence: 0.7,
+    });
+    db.insertEvent(sid, makeEvent({ data: "/repo-b/b.ts" }), "PostToolUse", {
+      projectDir: "/repo-b",
+      source: "event_path",
+      confidence: 0.8,
+    });
+
+    assert.equal(db.getLatestAttributedProjectDir(sid), "/repo-b");
+  });
 });
 
 // ════════════════════════════════════════════

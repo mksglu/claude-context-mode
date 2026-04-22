@@ -14,7 +14,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
-const { loadSessionDB, loadExtract } = createSessionLoaders(HOOK_DIR);
+const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
 const OPTS = KIRO_OPTS;
 
 try {
@@ -22,6 +22,7 @@ try {
   const input = JSON.parse(raw);
 
   const { extractEvents } = await loadExtract();
+  const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
   const dbPath = getSessionDBPath(OPTS);
@@ -40,8 +41,19 @@ try {
     tool_output: input.tool_output,
   });
 
-  for (const event of events) {
-    db.insertEvent(sessionId, event, "PostToolUse");
+  const sessionStats = db.getSessionStats(sessionId);
+  const lastKnownProjectDir = typeof db.getLatestAttributedProjectDir === "function"
+    ? db.getLatestAttributedProjectDir(sessionId)
+    : null;
+  const attributions = resolveProjectAttributions(events, {
+    sessionOriginDir: sessionStats?.project_dir || projectDir,
+    inputProjectDir: projectDir,
+    workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
+    lastKnownProjectDir,
+  });
+
+  for (let i = 0; i < events.length; i++) {
+    db.insertEvent(sessionId, events[i], "PostToolUse", attributions[i]);
   }
 
   db.close();
