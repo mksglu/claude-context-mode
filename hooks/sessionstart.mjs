@@ -36,7 +36,7 @@ let additionalContext = ROUTING_BLOCK;
 
 try {
   const raw = await readStdin();
-  const input = JSON.parse(raw);
+  const input = raw.trim() ? JSON.parse(raw) : {};
   const source = input.source ?? "startup";
 
   if (source === "compact") {
