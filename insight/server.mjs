@@ -9,7 +9,7 @@
  */
 
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, extname } from "node:path";
+import { join, dirname, extname, normalize } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer as createHttpServer } from "node:http";
@@ -68,6 +68,107 @@ function safeAll(db, sql, params = []) {
 
 function safeGet(db, sql, params = []) {
   try { return db.prepare(sql).get(...params); } catch { return null; }
+}
+
+function hasColumn(db, table, column) {
+  try {
+    const rows = db.prepare(`PRAGMA table_xinfo(${table})`).all();
+    return rows.some(r => r.name === column);
+  } catch {
+    return false;
+  }
+}
+
+const UNKNOWN_PROJECT_KEY = "__unknown__";
+
+function normalizeFsPath(path) {
+  const norm = normalize(String(path || "")).replace(/\\/g, "/");
+  if (norm.length <= 1) return norm;
+  return norm.replace(/\/+$/, "");
+}
+
+function parseFileSearchPath(data) {
+  const marker = " in ";
+  const idx = String(data || "").lastIndexOf(marker);
+  if (idx < 0) return null;
+  const p = String(data || "").slice(idx + marker.length).trim();
+  return p || null;
+}
+
+function isLikelyPath(value) {
+  const v = String(value || "");
+  return v.includes("/") || v.includes("\\") || v.startsWith(".") || /^[A-Za-z]:[\\/]/.test(v);
+}
+
+function legacyProjectAttribution(db) {
+  const origins = new Map(
+    safeAll(db, "SELECT session_id, project_dir FROM session_meta")
+      .map((r) => [r.session_id, r.project_dir || UNKNOWN_PROJECT_KEY]),
+  );
+
+  const events = safeAll(db, `SELECT id, session_id, type, data FROM session_events ORDER BY id ASC`);
+  const lastProjectBySession = new Map();
+  const projectAgg = new Map();
+  let unknownEvents = 0;
+
+  function addProject(projectDir, sessionId) {
+    const key = projectDir || UNKNOWN_PROJECT_KEY;
+    const existing = projectAgg.get(key) || { project_dir: key, sessionsSet: new Set(), events: 0, compacts: 0, avg_confidence: 0, high_conf_events: 0 };
+    existing.events += 1;
+    existing.sessionsSet.add(sessionId);
+    projectAgg.set(key, existing);
+  }
+
+  for (const ev of events) {
+    const sessionId = ev.session_id;
+    const origin = origins.get(sessionId) || UNKNOWN_PROJECT_KEY;
+    const last = lastProjectBySession.get(sessionId) || "";
+    let projectDir = "";
+
+    if (ev.type === "cwd" && isLikelyPath(ev.data)) {
+      projectDir = normalizeFsPath(ev.data);
+    } else if (ev.type === "file_read" || ev.type === "file_write" || ev.type === "file_edit" || ev.type === "rule") {
+      if (isLikelyPath(ev.data)) {
+        const p = normalizeFsPath(ev.data);
+        if (origin !== UNKNOWN_PROJECT_KEY && (p === origin || p.startsWith(`${origin}/`))) projectDir = origin;
+        else projectDir = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : p;
+      }
+    } else if (ev.type === "file_search") {
+      const p = parseFileSearchPath(ev.data);
+      if (p && isLikelyPath(p)) {
+        const pp = normalizeFsPath(p);
+        if (origin !== UNKNOWN_PROJECT_KEY && (pp === origin || pp.startsWith(`${origin}/`))) projectDir = origin;
+        else projectDir = pp;
+      }
+    }
+
+    if (!projectDir) {
+      projectDir = last || origin || UNKNOWN_PROJECT_KEY;
+    }
+    if (!projectDir || projectDir === UNKNOWN_PROJECT_KEY) unknownEvents += 1;
+
+    addProject(projectDir, sessionId);
+    if (projectDir && projectDir !== UNKNOWN_PROJECT_KEY) {
+      lastProjectBySession.set(sessionId, projectDir);
+    }
+  }
+
+  const rows = [...projectAgg.values()].map((r) => ({
+    project_dir: r.project_dir,
+    sessions: r.sessionsSet.size,
+    events: r.events,
+    compacts: 0,
+    avg_confidence: 0,
+    high_conf_events: 0,
+  })).sort((a, b) => b.events - a.events);
+
+  return {
+    projectRows: rows,
+    total_events: events.length,
+    unknown_events: unknownEvents,
+    avg_confidence: 0,
+    high_conf_events: 0,
+  };
 }
 
 function listDBFiles(dir) {
@@ -362,13 +463,21 @@ function apiAnalytics() {
       GROUP BY se.session_id, se.data HAVING edit_count > 1
       ORDER BY edit_count DESC LIMIT 20`)
   );
-  const gitActivity = queryAllSessionDBs(db =>
-    safeAll(db, `SELECT se.data as action, se.created_at, se.session_id,
-      sm.project_dir, sm.started_at as session_start
+  const gitActivity = queryAllSessionDBs(db => {
+    if (hasColumn(db, "session_events", "project_dir")) {
+      return safeAll(db, `SELECT se.data as action, se.created_at, se.session_id,
+        COALESCE(NULLIF(se.project_dir, ''), sm.project_dir, '${UNKNOWN_PROJECT_KEY}') as project_dir,
+        sm.started_at as session_start
+        FROM session_events se
+        LEFT JOIN session_meta sm ON se.session_id = sm.session_id
+        WHERE se.type = 'git' ORDER BY se.created_at DESC LIMIT 20`);
+    }
+    return safeAll(db, `SELECT se.data as action, se.created_at, se.session_id,
+      COALESCE(sm.project_dir, '${UNKNOWN_PROJECT_KEY}') as project_dir, sm.started_at as session_start
       FROM session_events se
-      JOIN session_meta sm ON se.session_id = sm.session_id
-      WHERE se.type = 'git' ORDER BY se.created_at DESC LIMIT 20`)
-  );
+      LEFT JOIN session_meta sm ON se.session_id = sm.session_id
+      WHERE se.type = 'git' ORDER BY se.created_at DESC LIMIT 20`);
+  });
   const rawSubagents = queryAllSessionDBs(db =>
     safeAll(db, `SELECT data as task, created_at, session_id FROM session_events
       WHERE type = 'subagent' ORDER BY created_at ASC`)
@@ -393,12 +502,34 @@ function apiAnalytics() {
     timeSavedMin: parallelBursts.reduce((a, b) => a + (b.length - 1) * 2, 0),
     burstDetails: parallelBursts.map(b => ({ size: b.length, time: b[0].created_at })),
   };
-  const projectActivity = queryAllSessionDBs(db =>
-    safeAll(db, `SELECT project_dir, COUNT(*) as sessions, SUM(event_count) as events,
-      SUM(compact_count) as compacts
-      FROM session_meta WHERE project_dir IS NOT NULL
-      GROUP BY project_dir ORDER BY events DESC LIMIT 10`)
-  );
+  const projectActivity = queryAllSessionDBs(db => {
+    if (hasColumn(db, "session_events", "project_dir")) {
+      return safeAll(db, `SELECT
+        COALESCE(NULLIF(se.project_dir, ''), '${UNKNOWN_PROJECT_KEY}') as project_dir,
+        COUNT(DISTINCT se.session_id) as sessions,
+        COUNT(*) as events,
+        0 as compacts,
+        AVG(COALESCE(se.attribution_confidence, 0)) as avg_confidence,
+        SUM(CASE WHEN COALESCE(se.attribution_confidence, 0) >= 0.8 THEN 1 ELSE 0 END) as high_conf_events
+        FROM session_events se
+        GROUP BY project_dir
+        ORDER BY events DESC
+        LIMIT 20`);
+    }
+    return legacyProjectAttribution(db).projectRows;
+  });
+
+  const attributionSummary = queryAllSessionDBs(db => {
+    if (hasColumn(db, "session_events", "project_dir")) {
+      return safeAll(db, `SELECT
+        COUNT(*) as total_events,
+        SUM(CASE WHEN COALESCE(project_dir, '') = '' THEN 1 ELSE 0 END) as unknown_events,
+        AVG(COALESCE(attribution_confidence, 0)) as avg_confidence,
+        SUM(CASE WHEN COALESCE(attribution_confidence, 0) >= 0.8 THEN 1 ELSE 0 END) as high_conf_events
+        FROM session_events`);
+    }
+    return [legacyProjectAttribution(db)];
+  });
   const hourlyPattern = queryAllSessionDBs(db =>
     safeAll(db, `SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as count
       FROM session_events WHERE created_at IS NOT NULL
@@ -441,13 +572,22 @@ function apiAnalytics() {
   );
 
   // 2. Personal Commit Rate — commits per session
-  const commitRate = queryAllSessionDBs(db =>
-    safeAll(db, `SELECT sm.session_id, sm.project_dir,
+  const commitRate = queryAllSessionDBs(db => {
+    if (hasColumn(db, "session_events", "project_dir")) {
+      return safeAll(db, `SELECT
+        sm.session_id,
+        COALESCE(NULLIF(MAX(CASE WHEN se.type = 'git' THEN se.project_dir END), ''), sm.project_dir, '${UNKNOWN_PROJECT_KEY}') as project_dir,
+        SUM(CASE WHEN se.type = 'git' AND se.data = 'commit' THEN 1 ELSE 0 END) as commits
+        FROM session_meta sm
+        LEFT JOIN session_events se ON se.session_id = sm.session_id
+        GROUP BY sm.session_id`);
+    }
+    return safeAll(db, `SELECT sm.session_id, COALESCE(sm.project_dir, '${UNKNOWN_PROJECT_KEY}') as project_dir,
       SUM(CASE WHEN se.type = 'git' AND se.data = 'commit' THEN 1 ELSE 0 END) as commits
       FROM session_meta sm
       LEFT JOIN session_events se ON se.session_id = sm.session_id
-      GROUP BY sm.session_id`)
-  );
+      GROUP BY sm.session_id`);
+  });
 
   // 3. Sandbox Adoption — context-mode MCP tool usage vs total
   const sandboxAdoption = queryAllSessionDBs(db =>
@@ -482,6 +622,59 @@ function apiAnalytics() {
     sandbox_calls: (a.sandbox_calls || 0) + (b.sandbox_calls || 0),
     total_calls: (a.total_calls || 0) + (b.total_calls || 0),
   }), { sandbox_calls: 0, total_calls: 0 });
+  const attributionSchemaCoverage = queryAllSessionDBs(db => [{
+    has_attribution_columns: hasColumn(db, "session_events", "project_dir") ? 1 : 0,
+  }]);
+  const fallbackOnly = attributionSchemaCoverage.length > 0
+    && attributionSchemaCoverage.every((r) => !r.has_attribution_columns);
+
+  const mergedProjectActivity = mergeByKey(projectActivity, "project_dir", (a, b) => {
+    const aEvents = Number(a.events || 0);
+    const bEvents = Number(b.events || 0);
+    const aWeighted = Number(
+      (a.weighted_confidence_sum ?? (Number(a.avg_confidence || 0) * aEvents)) || 0,
+    );
+    const bWeighted = Number(
+      (b.weighted_confidence_sum ?? (Number(b.avg_confidence || 0) * bEvents)) || 0,
+    );
+    return {
+      project_dir: a.project_dir,
+      sessions: (a.sessions || 0) + (b.sessions || 0),
+      events: aEvents + bEvents,
+      compacts: (a.compacts || 0) + (b.compacts || 0),
+      weighted_confidence_sum: aWeighted + bWeighted,
+      high_conf_events: (a.high_conf_events || 0) + (b.high_conf_events || 0),
+    };
+  })
+    .map((p) => ({
+      project_dir: p.project_dir,
+      sessions: p.sessions || 0,
+      events: p.events || 0,
+      compacts: p.compacts || 0,
+      avg_confidence: (p.events || 0) > 0 ? (p.weighted_confidence_sum || 0) / p.events : 0,
+      high_conf_events: p.high_conf_events || 0,
+    }))
+    .sort((a, b) => (b.events || 0) - (a.events || 0));
+  const nonUnknownProjects = mergedProjectActivity.filter((p) => p.project_dir !== UNKNOWN_PROJECT_KEY);
+
+  const attributionAgg = attributionSummary.reduce((a, b) => ({
+    total_events: (a.total_events || 0) + (b.total_events || 0),
+    unknown_events: (a.unknown_events || 0) + (b.unknown_events || 0),
+    high_conf_events: (a.high_conf_events || 0) + (b.high_conf_events || 0),
+    // weighted sum for avg_confidence
+    weighted_confidence_sum: (a.weighted_confidence_sum || 0) + ((b.avg_confidence || 0) * (b.total_events || 0)),
+  }), { total_events: 0, unknown_events: 0, high_conf_events: 0, weighted_confidence_sum: 0 });
+
+  const attributedEvents = Math.max(0, attributionAgg.total_events - attributionAgg.unknown_events);
+  const unknownPct = attributionAgg.total_events > 0
+    ? Math.round(1000 * attributionAgg.unknown_events / attributionAgg.total_events) / 10
+    : 100;
+  const avgConfidencePct = attributionAgg.total_events > 0
+    ? Math.round(1000 * attributionAgg.weighted_confidence_sum / attributionAgg.total_events) / 10
+    : 0;
+  const highConfidencePct = attributionAgg.total_events > 0
+    ? Math.round(1000 * attributionAgg.high_conf_events / attributionAgg.total_events) / 10
+    : 0;
 
   return {
     totals: {
@@ -498,7 +691,7 @@ function apiAnalytics() {
       totalTasks: tasks.length, totalPrompts: prompts.length,
       promptsPerSession: sessionDurations.length > 0
         ? Math.round(10 * prompts.length / sessionDurations.length) / 10 : 0,
-      uniqueProjects: projectActivity.length,
+      uniqueProjects: nonUnknownProjects.length,
       totalCommits: commitRate.reduce((a, b) => a + (b.commits || 0), 0),
       commitsPerSession: sessionDurations.length > 0
         ? Math.round(10 * commitRate.reduce((a, b) => a + (b.commits || 0), 0) / sessionDurations.length) / 10 : 0,
@@ -506,6 +699,15 @@ function apiAnalytics() {
         ? Math.round(1000 * sandboxAgg.sandbox_calls / sandboxAgg.total_calls) / 10 : 0,
       totalRules: rulesFreshness.length,
       totalEditTestCycles: editTestCycles.reduce((a, b) => a + (b.cycles || 0), 0),
+    },
+    attribution: {
+      totalEvents: attributionAgg.total_events,
+      attributedEvents,
+      unknownEvents: attributionAgg.unknown_events,
+      unknownPct,
+      avgConfidencePct,
+      highConfidencePct,
+      isFallbackOnly: fallbackOnly,
     },
     sessionsByDate: mergeByKey(sessionsByDate, "date", (a, b) => ({
       date: a.date, count: a.count + b.count, events: a.events + b.events, compacts: a.compacts + b.compacts
@@ -518,9 +720,7 @@ function apiAnalytics() {
     timeToFirstCommit,
     exploreExecRatio: exploreExecRatio.reduce((a, b) => ({ explore: (a.explore||0)+(b.explore||0), execute: (a.execute||0)+(b.execute||0), total: (a.total||0)+(b.total||0) }), { explore: 0, execute: 0, total: 0 }),
     reworkData, gitActivity, subagents,
-    projectActivity: mergeByKey(projectActivity, "project_dir", (a, b) => ({
-      project_dir: a.project_dir, sessions: a.sessions + b.sessions, events: a.events + b.events, compacts: (a.compacts||0)+(b.compacts||0)
-    })).sort((a, b) => b.events - a.events),
+    projectActivity: mergedProjectActivity,
     hourlyPattern: mergeByKey(hourlyPattern, "hour", (a, b) => ({ hour: a.hour, count: a.count + b.count })),
     weeklyTrend: mergeByKey(weeklyTrend, "week", (a, b) => ({ week: a.week, sessions: a.sessions + b.sessions, events: a.events + b.events })),
     tasks, prompts,

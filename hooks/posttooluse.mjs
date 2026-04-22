@@ -10,7 +10,7 @@ import "./ensure-deps.mjs";
  * Must be fast (<20ms). No network, no LLM, just SQLite writes.
  */
 
-import { readStdin, getSessionId, getSessionDBPath } from "./session-helpers.mjs";
+import { readStdin, getSessionId, getSessionDBPath, getInputProjectDir } from "./session-helpers.mjs";
 import { createSessionLoaders } from "./session-loaders.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,13 +18,15 @@ import { fileURLToPath } from "node:url";
 // Resolve absolute path for imports — relative dynamic imports can fail
 // when Claude Code invokes hooks from a different working directory.
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
-const { loadSessionDB, loadExtract } = createSessionLoaders(HOOK_DIR);
+const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
 
 try {
   const raw = await readStdin();
   const input = JSON.parse(raw);
+  const projectDir = getInputProjectDir(input);
 
   const { extractEvents } = await loadExtract();
+  const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
   const dbPath = getSessionDBPath();
@@ -32,7 +34,7 @@ try {
   const sessionId = getSessionId(input);
 
   // Ensure session meta exists
-  db.ensureSession(sessionId, process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  db.ensureSession(sessionId, projectDir);
 
   // Extract and store events
   const events = extractEvents({
@@ -44,8 +46,19 @@ try {
     tool_output: input.tool_output,
   });
 
-  for (const event of events) {
-    db.insertEvent(sessionId, event, "PostToolUse");
+  const sessionStats = db.getSessionStats(sessionId);
+  const lastKnownProjectDir = typeof db.getLatestAttributedProjectDir === "function"
+    ? db.getLatestAttributedProjectDir(sessionId)
+    : null;
+  const attributions = resolveProjectAttributions(events, {
+    sessionOriginDir: sessionStats?.project_dir || projectDir,
+    inputProjectDir: projectDir,
+    workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
+    lastKnownProjectDir,
+  });
+
+  for (let i = 0; i < events.length; i++) {
+    db.insertEvent(sessionId, events[i], "PostToolUse", attributions[i]);
   }
 
   db.close();

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { createSessionLoaders } from "../session-loaders.mjs";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
-const { loadSessionDB, loadExtract } = createSessionLoaders(HOOK_DIR);
+const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
 const OPTS = CURSOR_OPTS;
 
 function normalizeToolName(toolName) {
@@ -38,6 +38,7 @@ try {
   }
 
   const { extractEvents } = await loadExtract();
+  const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
   const dbPath = getSessionDBPath(OPTS);
@@ -58,8 +59,20 @@ try {
   };
 
   const events = extractEvents(normalizedInput);
-  for (const event of events) {
-    db.insertEvent(sessionId, event, "PostToolUse");
+
+  const sessionStats = db.getSessionStats(sessionId);
+  const lastKnownProjectDir = typeof db.getLatestAttributedProjectDir === "function"
+    ? db.getLatestAttributedProjectDir(sessionId)
+    : null;
+  const attributions = resolveProjectAttributions(events, {
+    sessionOriginDir: sessionStats?.project_dir || projectDir,
+    inputProjectDir: projectDir,
+    workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
+    lastKnownProjectDir,
+  });
+
+  for (let i = 0; i < events.length; i++) {
+    db.insertEvent(sessionId, events[i], "PostToolUse", attributions[i]);
   }
 
   db.close();

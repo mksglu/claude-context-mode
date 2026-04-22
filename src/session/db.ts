@@ -9,6 +9,7 @@
 import { SQLiteBase, defaultDBPath } from "../db-base.js";
 import type { PreparedStatement } from "../db-base.js";
 import type { SessionEvent } from "../types.js";
+import type { ProjectAttribution } from "./project-attribution.js";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
@@ -69,6 +70,9 @@ export interface StoredEvent {
   category: string;
   priority: number;
   data: string;
+  project_dir: string;
+  attribution_source: string;
+  attribution_confidence: number;
   source_hook: string;
   created_at: string;
   data_hash: string;
@@ -112,6 +116,7 @@ const S = {
   getEventsByPriority: "getEventsByPriority",
   getEventsByTypeAndPriority: "getEventsByTypeAndPriority",
   getEventCount: "getEventCount",
+  getLatestAttributedProject: "getLatestAttributedProject",
   checkDuplicate: "checkDuplicate",
   evictLowestPriority: "evictLowestPriority",
   updateMetaLastEvent: "updateMetaLastEvent",
@@ -176,6 +181,9 @@ export class SessionDB extends SQLiteBase {
         category TEXT NOT NULL,
         priority INTEGER NOT NULL DEFAULT 2,
         data TEXT NOT NULL,
+        project_dir TEXT NOT NULL DEFAULT '',
+        attribution_source TEXT NOT NULL DEFAULT 'unknown',
+        attribution_confidence REAL NOT NULL DEFAULT 0,
         source_hook TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         data_hash TEXT NOT NULL DEFAULT ''
@@ -204,6 +212,24 @@ export class SessionDB extends SQLiteBase {
       );
     `);
 
+    // Migration: add per-event attribution columns for existing DBs.
+    try {
+      const colInfo = this.db.pragma("table_xinfo(session_events)") as Array<{ name: string }>;
+      const cols = new Set(colInfo.map((c) => c.name));
+      if (!cols.has("project_dir")) {
+        this.db.exec("ALTER TABLE session_events ADD COLUMN project_dir TEXT NOT NULL DEFAULT ''");
+      }
+      if (!cols.has("attribution_source")) {
+        this.db.exec("ALTER TABLE session_events ADD COLUMN attribution_source TEXT NOT NULL DEFAULT 'unknown'");
+      }
+      if (!cols.has("attribution_confidence")) {
+        this.db.exec("ALTER TABLE session_events ADD COLUMN attribution_confidence REAL NOT NULL DEFAULT 0");
+      }
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_session_events_project ON session_events(session_id, project_dir)");
+    } catch {
+      // best-effort migration only
+    }
+
   }
 
   protected prepareStatements(): void {
@@ -215,27 +241,46 @@ export class SessionDB extends SQLiteBase {
 
     // ── Events ──
     p(S.insertEvent,
-      `INSERT INTO session_events (session_id, type, category, priority, data, source_hook, data_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      `INSERT INTO session_events (
+         session_id, type, category, priority, data,
+         project_dir, attribution_source, attribution_confidence,
+         source_hook, data_hash
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
     p(S.getEvents,
-      `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
+      `SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              source_hook, created_at, data_hash
        FROM session_events WHERE session_id = ? ORDER BY id ASC LIMIT ?`);
 
     p(S.getEventsByType,
-      `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
+      `SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              source_hook, created_at, data_hash
        FROM session_events WHERE session_id = ? AND type = ? ORDER BY id ASC LIMIT ?`);
 
     p(S.getEventsByPriority,
-      `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
+      `SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              source_hook, created_at, data_hash
        FROM session_events WHERE session_id = ? AND priority >= ? ORDER BY id ASC LIMIT ?`);
 
     p(S.getEventsByTypeAndPriority,
-      `SELECT id, session_id, type, category, priority, data, source_hook, created_at, data_hash
+      `SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              source_hook, created_at, data_hash
        FROM session_events WHERE session_id = ? AND type = ? AND priority >= ? ORDER BY id ASC LIMIT ?`);
 
     p(S.getEventCount,
       `SELECT COUNT(*) AS cnt FROM session_events WHERE session_id = ?`);
+
+    p(S.getLatestAttributedProject,
+      `SELECT project_dir
+       FROM session_events
+       WHERE session_id = ? AND project_dir != ''
+       ORDER BY id DESC
+       LIMIT 1`);
 
     p(S.checkDuplicate,
       `SELECT 1 FROM (
@@ -307,13 +352,36 @@ export class SessionDB extends SQLiteBase {
    * Eviction: if session exceeds MAX_EVENTS_PER_SESSION, evicts the
    * lowest-priority (then oldest) event.
    */
-  insertEvent(sessionId: string, event: SessionEvent, sourceHook: string = "PostToolUse"): void {
+  insertEvent(
+    sessionId: string,
+    event: SessionEvent,
+    sourceHook: string = "PostToolUse",
+    attribution?: Partial<ProjectAttribution>,
+  ): void {
     // SHA256-based dedup hash (first 16 hex chars = 8 bytes of entropy)
     const dataHash = createHash("sha256")
       .update(event.data)
       .digest("hex")
       .slice(0, 16)
       .toUpperCase();
+    const projectDir = String(
+      attribution?.projectDir
+      ?? event.project_dir
+      ?? "",
+    ).trim();
+    const attributionSource = String(
+      attribution?.source
+      ?? event.attribution_source
+      ?? "unknown",
+    );
+    const rawConfidence = Number(
+      attribution?.confidence
+      ?? event.attribution_confidence
+      ?? 0,
+    );
+    const attributionConfidence = Number.isFinite(rawConfidence)
+      ? Math.max(0, Math.min(1, rawConfidence))
+      : 0;
 
     // Atomic: dedup check + eviction + insert in a single transaction
     // to prevent race conditions from concurrent hook calls.
@@ -335,6 +403,9 @@ export class SessionDB extends SQLiteBase {
         event.category,
         event.priority,
         event.data,
+        projectDir,
+        attributionSource,
+        attributionConfidence,
         sourceHook,
         dataHash,
       );
@@ -377,12 +448,21 @@ export class SessionDB extends SQLiteBase {
     return row.cnt;
   }
 
+  /**
+   * Return the most recently attributed project dir for a session.
+   */
+  getLatestAttributedProjectDir(sessionId: string): string | null {
+    const row = this.stmt(S.getLatestAttributedProject).get(sessionId) as { project_dir: string } | undefined;
+    return row?.project_dir || null;
+  }
+
   // ═══════════════════════════════════════════
   // Meta
   // ═══════════════════════════════════════════
 
   /**
    * Ensure a session metadata entry exists. Idempotent (INSERT OR IGNORE).
+   * `projectDir` is the session origin directory, not per-event attribution.
    */
   ensureSession(sessionId: string, projectDir: string): void {
     this.stmt(S.ensureSession).run(sessionId, projectDir);
