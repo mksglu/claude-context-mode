@@ -283,6 +283,7 @@ export type PlatformId =
   | "openclaw"
   | "codex"
   | "vscode-copilot"
+  | "jetbrains-copilot"
   | "cursor"
   | "antigravity"
   | "kiro"

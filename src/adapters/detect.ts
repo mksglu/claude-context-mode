@@ -15,6 +15,7 @@
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
  *   - VS Code Copilot: VSCODE_PID, VSCODE_CWD | ~/.vscode/
+ *   - JetBrains Copilot: IDEA_INITIAL_DIRECTORY, IDEA_HOME, JETBRAINS_CLIENT_ID | ~/.config/JetBrains/
  */
 
 import { existsSync } from "node:fs";
@@ -64,7 +65,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "cursor", "antigravity", "kiro", "pi", "zed",
+      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -85,6 +86,18 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
         reason: `${vars.join(" or ")} env var set`,
       };
     }
+  }
+
+  if (
+    process.env.IDEA_INITIAL_DIRECTORY
+    || process.env.IDEA_HOME
+    || process.env.JETBRAINS_CLIENT_ID
+  ) {
+    return {
+      platform: "jetbrains-copilot",
+      confidence: "high",
+      reason: "IDEA_INITIAL_DIRECTORY, IDEA_HOME, or JETBRAINS_CLIENT_ID env var set",
+    };
   }
 
   // ── Medium confidence: config directory existence ──────
@@ -171,6 +184,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
     };
   }
 
+  if (existsSync(resolve(home, ".config", "JetBrains"))) {
+    return {
+      platform: "jetbrains-copilot",
+      confidence: "medium",
+      reason: "~/.config/JetBrains/ directory exists",
+    };
+  }
+
   // ── Low confidence: fallback ───────────────────────────
 
   return {
@@ -217,6 +238,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "vscode-copilot": {
       const { VSCodeCopilotAdapter } = await import("./vscode-copilot/index.js");
       return new VSCodeCopilotAdapter();
+    }
+
+    case "jetbrains-copilot": {
+      const { JetBrainsCopilotAdapter } = await import("./jetbrains-copilot/index.js");
+      return new JetBrainsCopilotAdapter();
     }
 
     case "cursor": {
