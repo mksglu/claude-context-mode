@@ -30,6 +30,17 @@ const root = resolve(__dirname, "..");
 const NATIVE_DEPS = ["better-sqlite3"];
 
 export function ensureDeps() {
+  // Skip bootstrap when a built-in SQLite binding is available: Bun's
+  // `bun:sqlite`, or Node's `node:sqlite` from v22.5+. On those runtimes
+  // the better-sqlite3 install/rebuild is unnecessary, and probing the
+  // native addon SIGSEGVs on Node v24 under V8 GC pressure on Linux —
+  // which writes a coredump even when the parent hook recovers via
+  // try/catch. Inlined rather than factored out so the standalone
+  // extraction in tests/core/cli.test.ts keeps working.
+  if (globalThis.Bun) return;
+  const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+  if (nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 5)) return;
+
   for (const pkg of NATIVE_DEPS) {
     const pkgDir = resolve(root, "node_modules", pkg);
     if (!existsSync(pkgDir)) {
@@ -81,6 +92,14 @@ function probeNativeInChildProcess(pluginRoot) {
 }
 
 export function ensureNativeCompat(pluginRoot) {
+  // Same rationale as ensureDeps(): skip on runtimes where a built-in
+  // SQLite backend is available. Gate is inlined (not factored into a
+  // helper) so the regex-extracted copy of this function used by
+  // tests/core/cli.test.ts resolves every identifier at runtime.
+  if (globalThis.Bun) return;
+  const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+  if (nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 5)) return;
+
   try {
     const abi = process.versions.modules;
     const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
