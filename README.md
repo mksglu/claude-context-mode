@@ -220,9 +220,9 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 </details>
 
 <details>
-<summary><strong>JetBrains Copilot</strong> — IntelliJ / PyCharm / JetBrains Client with full hook support</summary>
+<summary><strong>JetBrains Copilot</strong> — IntelliJ / PyCharm / JetBrains Client with full hook support (shared agent with VS Code)</summary>
 
-**Prerequisites:** Node.js 20+, a JetBrains IDE 2024.2+ with the [GitHub Copilot plugin](https://plugins.jetbrains.com/plugin/17718-github-copilot) installed and signed in.
+**Prerequisites:** Node.js 20+, a JetBrains IDE 2024.2+ with the [GitHub Copilot plugin](https://plugins.jetbrains.com/plugin/17718-github-copilot) **v1.5.57 or later** (MCP GA). The plugin bundles the same Copilot agent runtime as VS Code, so hook config is byte-for-byte identical; only MCP server registration differs.
 
 **Install:**
 
@@ -232,7 +232,9 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
    npm install -g context-mode
    ```
 
-2. Create `.idea/mcp.json` in your project root:
+2. Register the MCP server **via IDE Settings UI** — not a project file. Open
+   `Settings` → `Tools` → `GitHub Copilot` → `Model Context Protocol (MCP)` →
+   `Configure`, and paste:
 
    ```json
    {
@@ -245,22 +247,26 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
    }
    ```
 
-3. Register hooks (easiest: `context-mode upgrade` from the project root writes the full block). Minimal manual version:
+   (The plugin persists this internally; the on-disk location is managed by
+   the IDE. **Do not create `.idea/mcp.json` — it is not read.**)
+
+3. Register hooks by running `context-mode upgrade` from the project root,
+   which writes `.github/hooks/context-mode.json`. Manual equivalent:
 
    ```json
    {
      "hooks": {
        "PreToolUse": [
-         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot pretooluse" }]}
+         { "type": "command", "command": "context-mode hook jetbrains-copilot pretooluse" }
        ],
        "PostToolUse": [
-         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot posttooluse" }]}
+         { "type": "command", "command": "context-mode hook jetbrains-copilot posttooluse" }
        ],
        "PreCompact": [
-         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot precompact" }]}
+         { "type": "command", "command": "context-mode hook jetbrains-copilot precompact" }
        ],
        "SessionStart": [
-         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot sessionstart" }]}
+         { "type": "command", "command": "context-mode hook jetbrains-copilot sessionstart" }
        ]
      }
    }
@@ -268,13 +274,13 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 
 4. Restart the IDE.
 
-**Verify:** `context-mode doctor` should report `PreToolUse hook configured in .idea/mcp.json` and `MCP registration: context-mode found in .idea/mcp.json`.
+**Verify:** In Copilot Chat (agent mode) prompt "What MCP tools do you have?" — expect six `ctx_*` entries. Run `context-mode doctor`; `PreToolUse hook` and `SessionStart hook` checks should PASS against `.github/hooks/context-mode.json`. The `MCP registration` check will emit a WARN noting that JetBrains stores MCP config via the Settings UI — verify it there.
 
-**Routing:** Automatic. The SessionStart hook injects routing instructions; it also picks up project rules from `.idea/copilot-instructions.md` (falling back to `.github/copilot-instructions.md` for repos shared with VS Code).
+**Routing:** Automatic. The shared Copilot agent reads `.github/hooks/*.json` at session start (same path as VS Code). The SessionStart hook injects routing instructions and picks up project rules from `.idea/copilot-instructions.md` (falling back to `.github/copilot-instructions.md` for repos shared with VS Code).
 
 **Session storage:** `~/.config/JetBrains/context-mode/sessions/<projectHash>.db`.
 
-Full setup guide including troubleshooting: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md)
+Full setup guide: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md). Checked-in hook config reference: [`configs/jetbrains-copilot/hooks.json`](configs/jetbrains-copilot/hooks.json).
 
 </details>
 

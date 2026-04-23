@@ -392,14 +392,16 @@ JetBrains Copilot uses the same JSON stdin/stdout paradigm as Claude Code and VS
 3. `IDEA_HOME` env var present → `idea-${process.pid}`
 4. `pid-${process.ppid}`
 
-**Configuration:**
-- Primary: `.idea/mcp.json` (contains both `servers` and `hooks` blocks)
-- Fallback: `.claude/settings.json` (for projects migrating from Claude Code)
+**Configuration (two independent files, different owners):**
+- **Hook config:** `.github/hooks/context-mode.json` — **same path and schema as VS Code Copilot.** Read unconditionally by the shared Copilot agent runtime at `loadEventsForWorkspace()`. Commit-friendly.
+- **MCP server registration:** managed via IDE Settings UI (`Settings > Tools > GitHub Copilot > MCP`), persisted by the plugin to an internal (undocumented) path. **Not** `.idea/mcp.json` — that file is not read by the plugin.
+- Fallback for hooks: `.claude/settings.json` (for projects migrating from Claude Code).
 
 **Environment Detection:**
-- `IDEA_INITIAL_DIRECTORY` — project root (high confidence)
+- `IDEA_INITIAL_DIRECTORY` — project root (high confidence, set in Copilot plugin subprocess)
 - `IDEA_HOME` — IDE install path (high confidence)
 - `JETBRAINS_CLIENT_ID` — JetBrains Client session ID (high confidence)
+- `TERMINAL_EMULATOR=JetBrains-JediTerm` — always exported to the IDE built-in terminal (high confidence, gated on absence of active Claude / Cursor / OpenCode session IDs so those tools running inside the JetBrains terminal still win)
 - `~/.config/JetBrains/` directory exists (medium confidence)
 
 **Client-info detection:** `JetBrains Client`, `IntelliJ IDEA`, `PyCharm` → `jetbrains-copilot`.
@@ -416,8 +418,11 @@ context-mode hook jetbrains-copilot sessionstart
 
 **Rule file:** The SessionStart hook reads `.idea/copilot-instructions.md` on startup, falling back to `.github/copilot-instructions.md` for repos shared with VS Code Copilot.
 
+**Plugin version required for MCP:** v1.5.57+ (MCP GA, 2025-08-13). Older builds do not load MCP servers.
+
 **Known Issues / Caveats:**
-- No native "plugin version" query — `getInstalledVersion()` reports `configured` when `.idea/mcp.json` registers the server, otherwise `unknown`.
+- MCP registration is not CLI-inspectable — `doctor`'s `MCP registration` check emits a WARN with a "verify in IDE Settings UI" hint rather than a pass/fail.
+- `getInstalledVersion()` reports `configured` when `.github/hooks/context-mode.json` exists with hook entries, otherwise `unknown`.
 - JetBrains Client's `JETBRAINS_CLIENT_ID` only survives as long as the client process; a client restart creates a new session ID.
 
 ---

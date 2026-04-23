@@ -242,9 +242,12 @@ describe("JetBrainsCopilotAdapter", () => {
   // ── Config paths ──────────────────────────────────────
 
   describe("config paths", () => {
-    it("settings path is .idea/mcp.json", () => {
+    it("settings path is .github/hooks/context-mode.json (shared with VS Code Copilot)", () => {
+      // JetBrains Copilot bundles the same agent runtime as VS Code Copilot;
+      // the agent unconditionally reads .github/hooks/*.json for hook config.
+      // MCP server registration is separate and lives in the IDE Settings UI.
       expect(adapter.getSettingsPath()).toBe(
-        resolve(".idea", "mcp.json"),
+        resolve(".github", "hooks", "context-mode.json"),
       );
     });
 
@@ -346,7 +349,7 @@ describe("JetBrainsCopilotAdapter", () => {
   // ── getInstalledVersion ───────────────────────────────
 
   describe("getInstalledVersion", () => {
-    it("returns 'unknown' when no .idea/mcp.json exists", () => {
+    it("returns 'unknown' when no hook config file exists", () => {
       expect(adapter.getInstalledVersion()).toBe("unknown");
     });
   });

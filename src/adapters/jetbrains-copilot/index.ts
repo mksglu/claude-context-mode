@@ -184,7 +184,13 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
   }
 
   getSettingsPath(): string {
-    return resolve(".idea", "mcp.json");
+    // JetBrains Copilot bundles the same agent runtime as VS Code Copilot.
+    // That shared agent unconditionally reads hook config from
+    // `.github/hooks/*.json` at session start (see Copilot agent's
+    // `loadEventsForWorkspace()`), so both platforms use the same hook path.
+    // MCP server registration in JetBrains is separate — managed via the IDE
+    // Settings UI (`Settings > Tools > GitHub Copilot > MCP`), NOT this file.
+    return resolve(".github", "hooks", "context-mode.json");
   }
 
   getSessionDir(): string {
@@ -259,7 +265,7 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
   }
 
   readSettings(): Record<string, unknown> | null {
-    // Primary: .idea/mcp.json (JetBrains project-local MCP config)
+    // Primary: .github/hooks/context-mode.json (shared Copilot agent hook config)
     try {
       const raw = readFileSync(this.getSettingsPath(), "utf-8");
       return JSON.parse(raw) as Record<string, unknown>;
@@ -277,7 +283,7 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
 
   writeSettings(settings: Record<string, unknown>): void {
     const configPath = this.getSettingsPath();
-    mkdirSync(resolve(".idea"), { recursive: true });
+    mkdirSync(resolve(".github", "hooks"), { recursive: true });
     writeFileSync(
       configPath,
       JSON.stringify(settings, null, 2) + "\n",
@@ -297,13 +303,13 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
         results.push({
           check: "PreToolUse hook",
           status: "pass",
-          message: "PreToolUse hook configured in .idea/mcp.json",
+          message: "PreToolUse hook configured in .github/hooks/context-mode.json",
         });
       } else {
         results.push({
           check: "PreToolUse hook",
           status: "fail",
-          message: "PreToolUse not found in .idea/mcp.json",
+          message: "PreToolUse not found in .github/hooks/context-mode.json",
           fix: "context-mode upgrade",
         });
       }
@@ -312,13 +318,13 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
         results.push({
           check: "SessionStart hook",
           status: "pass",
-          message: "SessionStart hook configured in .idea/mcp.json",
+          message: "SessionStart hook configured in .github/hooks/context-mode.json",
         });
       } else {
         results.push({
           check: "SessionStart hook",
           status: "fail",
-          message: "SessionStart not found in .idea/mcp.json",
+          message: "SessionStart not found in .github/hooks/context-mode.json",
           fix: "context-mode upgrade",
         });
       }
@@ -326,7 +332,7 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
       results.push({
         check: "Hook configuration",
         status: "fail",
-        message: "Could not read .idea/mcp.json",
+        message: "Could not read .github/hooks/context-mode.json",
         fix: "context-mode upgrade",
       });
     }
@@ -341,50 +347,27 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
   }
 
   checkPluginRegistration(): DiagnosticResult {
-    try {
-      const mcpConfigPath = resolve(".idea", "mcp.json");
-      const raw = readFileSync(mcpConfigPath, "utf-8");
-      const config = JSON.parse(raw) as Record<string, unknown>;
-
-      const servers = (config.mcpServers ?? config.servers) as Record<string, unknown> | undefined;
-      if (servers) {
-        const hasPlugin = Object.keys(servers).some((k) =>
-          k.includes("context-mode"),
-        );
-        if (hasPlugin) {
-          return {
-            check: "MCP registration",
-            status: "pass",
-            message: "context-mode found in .idea/mcp.json",
-          };
-        }
-      }
-
-      return {
-        check: "MCP registration",
-        status: "fail",
-        message: "context-mode not found in .idea/mcp.json",
-        fix: "Add context-mode server to .idea/mcp.json",
-      };
-    } catch {
-      return {
-        check: "MCP registration",
-        status: "warn",
-        message: "Could not read .idea/mcp.json",
-      };
-    }
+    // JetBrains Copilot stores MCP server registration via the IDE Settings UI
+    // (Settings > Tools > GitHub Copilot > MCP > Configure), not in a
+    // project-scoped file we can inspect. The on-disk location is managed
+    // internally by the plugin. We can't verify MCP registration from this
+    // CLI context — surface a warn result with the verification path.
+    return {
+      check: "MCP registration",
+      status: "warn",
+      message:
+        "JetBrains stores MCP config via Settings UI — not CLI-inspectable",
+      fix: "Verify in IDE: Settings > Tools > GitHub Copilot > MCP > ensure a context-mode server entry exists",
+    };
   }
 
   getInstalledVersion(): string {
-    // JetBrains IDEs register context-mode via .idea/mcp.json rather than as a
-    // platform plugin, so there is no extension-registry version to query.
-    // Report "configured" when the project has an mcp.json entry, otherwise "unknown".
+    // JetBrains Copilot registers MCP servers via Settings UI (not
+    // CLI-inspectable). All we can check is whether hook config has been
+    // written to .github/hooks/context-mode.json by `context-mode upgrade`.
     const settings = this.readSettings();
-    const servers = settings?.mcpServers ?? settings?.servers;
-    if (servers && typeof servers === "object") {
-      const hasContextMode = Object.keys(servers as Record<string, unknown>).some((k) => k.includes("context-mode"));
-      if (hasContextMode) return "configured";
-    }
+    const hooks = settings?.hooks as Record<string, unknown> | undefined;
+    if (hooks && Object.keys(hooks).length > 0) return "configured";
     return "unknown";
   }
 
