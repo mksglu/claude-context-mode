@@ -94,7 +94,17 @@ troubleshooting:
 | `IDEA_INITIAL_DIRECTORY`| Project root; used as `projectDir` by hooks & adapter |
 | `IDEA_HOME`             | IDE install path; signals JetBrains detection         |
 | `JETBRAINS_CLIENT_ID`   | JetBrains Client session ID (stable across restarts)  |
+| `TERMINAL_EMULATOR`     | Set to `JetBrains-JediTerm` inside the IDE's built-in terminal; lets `context-mode upgrade` detect JetBrains even when `IDEA_*` vars aren't exported to the shell |
 | `CLAUDE_PROJECT_DIR`    | Fallback project root (for mixed-tool setups)         |
+
+> **Note on `context-mode upgrade` from the IDE terminal.** JetBrains IDEs don't
+> export `IDEA_INITIAL_DIRECTORY` / `JETBRAINS_CLIENT_ID` to the built-in terminal
+> — those vars only appear inside the Copilot plugin's subprocess. Detection
+> therefore also looks at `TERMINAL_EMULATOR=JetBrains-JediTerm`, which *is*
+> reliably exported. If you have `CLAUDE_PROJECT_DIR` stale in your shell profile,
+> this signal still wins and `upgrade` writes the JetBrains config. To force a
+> specific platform, prefix the command: `CONTEXT_MODE_PLATFORM=jetbrains-copilot
+> context-mode upgrade`.
 
 ## 6) Session persistence
 

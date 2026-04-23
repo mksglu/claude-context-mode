@@ -42,6 +42,20 @@ export const PLATFORM_ENV_VARS = [
 ] as const satisfies ReadonlyArray<readonly [PlatformId, readonly string[]]>;
 
 /**
+ * Every env var that can influence `detectPlatform()`. Tests use this to
+ * scrub the environment before asserting on a specific detection branch —
+ * keep it in sync whenever a new signal is added.
+ */
+export const DETECTION_ENV_VARS: readonly string[] = [
+  ...PLATFORM_ENV_VARS.flatMap(([, vars]) => [...vars]),
+  "CONTEXT_MODE_PLATFORM",
+  "IDEA_INITIAL_DIRECTORY",
+  "IDEA_HOME",
+  "JETBRAINS_CLIENT_ID",
+  "TERMINAL_EMULATOR",
+];
+
+/**
  * Detect the current platform by checking env vars and config dirs.
  *
  * @param clientInfo - Optional MCP clientInfo from initialize handshake.
@@ -74,6 +88,29 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
         reason: `CONTEXT_MODE_PLATFORM=${platformOverride} override`,
       };
     }
+  }
+
+  // ── High confidence: JetBrains IDE built-in terminal ───
+  // JetBrains IDEs export TERMINAL_EMULATOR=JetBrains-JediTerm to their
+  // built-in terminal but do NOT export IDEA_INITIAL_DIRECTORY / IDEA_HOME /
+  // JETBRAINS_CLIENT_ID there — those only appear inside the Copilot plugin
+  // subprocess. So when the user runs `context-mode upgrade` from the IDE's
+  // terminal, we need this signal to detect JetBrains. Gated on the absence
+  // of active runtime signals from other tools so a Claude Code / Cursor /
+  // OpenCode session running inside the terminal still wins.
+  if (
+    process.env.TERMINAL_EMULATOR === "JetBrains-JediTerm"
+    && !process.env.CLAUDE_SESSION_ID
+    && !process.env.CURSOR_SESSION_ID
+    && !process.env.CURSOR_TRACE_ID
+    && !process.env.OPENCODE_PID
+    && !process.env.CODEX_THREAD_ID
+  ) {
+    return {
+      platform: "jetbrains-copilot",
+      confidence: "high",
+      reason: "TERMINAL_EMULATOR=JetBrains-JediTerm (running inside JetBrains IDE terminal)",
+    };
   }
 
   // ── High confidence: environment variables ─────────────

@@ -20,15 +20,12 @@ vi.mock("node:fs", async () => {
 
 // Imports after vi.mock so the mock is in place before detect.ts resolves fs.
 import * as fs from "node:fs";
-import { detectPlatform, PLATFORM_ENV_VARS } from "../../src/adapters/detect.js";
+import { detectPlatform, DETECTION_ENV_VARS } from "../../src/adapters/detect.js";
 
 const existsSyncMock = vi.mocked(fs.existsSync);
 
 // Derived from detect.ts's source-of-truth list so renames can't drift.
-const ALL_PLATFORM_ENV_VARS = [
-  ...PLATFORM_ENV_VARS.flatMap(([, vars]) => [...vars]),
-  "CONTEXT_MODE_PLATFORM",
-];
+const ALL_PLATFORM_ENV_VARS = DETECTION_ENV_VARS;
 
 describe("detectPlatform — config directory branches", () => {
   const home = homedir();

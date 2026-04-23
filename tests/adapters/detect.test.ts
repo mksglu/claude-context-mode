@@ -41,6 +41,7 @@ describe("detectPlatform", () => {
     delete process.env.IDEA_INITIAL_DIRECTORY;
     delete process.env.IDEA_HOME;
     delete process.env.JETBRAINS_CLIENT_ID;
+    delete process.env.TERMINAL_EMULATOR;
     delete process.env.CONTEXT_MODE_PLATFORM;
     vi.restoreAllMocks();
   });
@@ -207,6 +208,42 @@ describe("detectPlatform", () => {
     const signal = detectPlatform();
     expect(signal.platform).toBe("jetbrains-copilot");
     expect(signal.confidence).toBe("high");
+  });
+
+  it("returns jetbrains-copilot when TERMINAL_EMULATOR=JetBrains-JediTerm (JetBrains IDE built-in terminal)", () => {
+    process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("jetbrains-copilot");
+    expect(signal.confidence).toBe("high");
+    expect(signal.reason).toContain("TERMINAL_EMULATOR");
+  });
+
+  it("TERMINAL_EMULATOR=JetBrains-JediTerm beats a stale CLAUDE_PROJECT_DIR from shell profile", () => {
+    process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm";
+    process.env.CLAUDE_PROJECT_DIR = "/some/path";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("jetbrains-copilot");
+  });
+
+  it("CLAUDE_SESSION_ID (active Claude Code session) beats TERMINAL_EMULATOR", () => {
+    process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm";
+    process.env.CLAUDE_SESSION_ID = "sess-abc";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("claude-code");
+  });
+
+  it("CURSOR_TRACE_ID (active Cursor session) beats TERMINAL_EMULATOR", () => {
+    process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm";
+    process.env.CURSOR_TRACE_ID = "trace-xyz";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("cursor");
+  });
+
+  it("OPENCODE_PID (active OpenCode session) beats TERMINAL_EMULATOR", () => {
+    process.env.TERMINAL_EMULATOR = "JetBrains-JediTerm";
+    process.env.OPENCODE_PID = "12345";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
   });
 
   // ── MCP clientInfo detection ─────────────────────────────
