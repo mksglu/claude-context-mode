@@ -1,12 +1,16 @@
 /**
- * OpenCode TypeScript plugin entry point for context-mode.
+ * OpenCode / KiloCode TypeScript plugin entry point for context-mode.
  *
  * Provides three hooks:
  *   - tool.execute.before  — Routing enforcement (deny/modify/passthrough)
  *   - tool.execute.after   — Session event capture
  *   - experimental.session.compacting — Compaction snapshot generation
  *
- * Loaded by OpenCode via: import("context-mode/plugin").ContextModePlugin(ctx)
+ * KiloCode loads this via: import("context-mode") → expects default export
+ * with shape { server: (input) => Promise<Hooks> } (PluginModule).
+ *
+ * OpenCode loads this via: import("context-mode/plugin") → also supports
+ * the named export ContextModePlugin for backward compat.
  *
  * Constraints:
  *   - No SessionStart hook (OpenCode doesn't support it — #14808, #5409)
@@ -28,9 +32,10 @@ import { AdapterPlatformType, OpenCodeAdapter } from "./adapters/opencode/index.
 
 // ── Types ─────────────────────────────────────────────────
 
-/** OpenCode plugin context passed to the factory function. */
+/** KiloCode/OpenCode plugin input — both platforms pass at least `directory`. */
 interface PluginContext {
   directory: string;
+  [key: string]: unknown;
 }
 
 /** OpenCode tool.execute.before — first parameter */
@@ -79,10 +84,13 @@ function getPlatform(): AdapterPlatformType {
 // ── Plugin Factory ────────────────────────────────────────
 
 /**
- * OpenCode plugin factory. Called once when OpenCode loads the plugin.
+ * Plugin factory. Called once when KiloCode/OpenCode loads the plugin.
  * Returns an object mapping hook event names to async handler functions.
-*/
-export const ContextModePlugin = async (ctx: PluginContext) => {
+ *
+ * KiloCode expects: export default { server: (input) => Promise<Hooks> }
+ * OpenCode expects: export const ContextModePlugin = (ctx) => Promise<Hooks>
+ */
+async function createContextModePlugin(ctx: PluginContext) {
   // Resolve build dir from compiled JS location
   const adapter = new OpenCodeAdapter(getPlatform());
   const buildDir = dirname(fileURLToPath(import.meta.url));
@@ -110,7 +118,7 @@ export const ContextModePlugin = async (ctx: PluginContext) => {
 
       let decision;
       try {
-        decision = routing.routePreToolUse(toolName, toolInput, projectDir, "opencode");
+        decision = routing.routePreToolUse(toolName, toolInput, projectDir, getPlatform());
       } catch {
         return; // Routing failure → allow passthrough
       }
@@ -175,4 +183,10 @@ export const ContextModePlugin = async (ctx: PluginContext) => {
       }
     },
   };
-};
+}
+
+// ── Exports ──────────────────────────────────────────────
+// KiloCode PluginModule: default export with { server } shape
+// OpenCode compat: named export for direct import("context-mode/plugin")
+export default { server: createContextModePlugin };
+export { createContextModePlugin as ContextModePlugin };

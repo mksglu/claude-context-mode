@@ -871,10 +871,16 @@ describe("SKILL.md prefers MCP tool over Bash", () => {
 // ── Package exports ───────────────────────────────────────────────────
 
 describe("Package exports", () => {
-  test("default export exposes ContextModePlugin factory", async () => {
+  test("named export exposes ContextModePlugin factory", async () => {
     const mod = await import("../../src/opencode-plugin.js");
     expect(mod.ContextModePlugin).toBeDefined();
     expect(typeof mod.ContextModePlugin).toBe("function");
+  });
+
+  test("default export has KiloCode PluginModule shape { server }", async () => {
+    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    expect(mod.default).toBeDefined();
+    expect(typeof mod.default.server).toBe("function");
   });
 
   test("default export does not leak CLI internals", async () => {
