@@ -141,20 +141,21 @@ describe("createToolNamer", () => {
 });
 
 describe("KNOWN_PLATFORMS", () => {
-  it("contains all 12 platforms", () => {
+  it("contains all 13 platforms", () => {
     expect(KNOWN_PLATFORMS).toContain("claude-code");
     expect(KNOWN_PLATFORMS).toContain("gemini-cli");
     expect(KNOWN_PLATFORMS).toContain("antigravity");
     expect(KNOWN_PLATFORMS).toContain("opencode");
     expect(KNOWN_PLATFORMS).toContain("kilo");
     expect(KNOWN_PLATFORMS).toContain("vscode-copilot");
+    expect(KNOWN_PLATFORMS).toContain("jetbrains-copilot");
     expect(KNOWN_PLATFORMS).toContain("kiro");
     expect(KNOWN_PLATFORMS).toContain("zed");
     expect(KNOWN_PLATFORMS).toContain("cursor");
     expect(KNOWN_PLATFORMS).toContain("codex");
     expect(KNOWN_PLATFORMS).toContain("openclaw");
     expect(KNOWN_PLATFORMS).toContain("pi");
-    expect(KNOWN_PLATFORMS.length).toBe(12);
+    expect(KNOWN_PLATFORMS.length).toBe(13);
   });
 });
 

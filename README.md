@@ -220,6 +220,65 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 </details>
 
 <details>
+<summary><strong>JetBrains Copilot</strong> — IntelliJ / PyCharm / JetBrains Client with full hook support</summary>
+
+**Prerequisites:** Node.js 20+, a JetBrains IDE 2024.2+ with the [GitHub Copilot plugin](https://plugins.jetbrains.com/plugin/17718-github-copilot) installed and signed in.
+
+**Install:**
+
+1. Install context-mode globally:
+
+   ```bash
+   npm install -g context-mode
+   ```
+
+2. Create `.idea/mcp.json` in your project root:
+
+   ```json
+   {
+     "servers": {
+       "context-mode": {
+         "command": "npx",
+         "args": ["-y", "context-mode"]
+       }
+     }
+   }
+   ```
+
+3. Register hooks (easiest: `context-mode upgrade` from the project root writes the full block). Minimal manual version:
+
+   ```json
+   {
+     "hooks": {
+       "PreToolUse": [
+         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot pretooluse" }]}
+       ],
+       "PostToolUse": [
+         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot posttooluse" }]}
+       ],
+       "PreCompact": [
+         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot precompact" }]}
+       ],
+       "SessionStart": [
+         { "matcher": "", "hooks": [{ "type": "command", "command": "context-mode hook jetbrains-copilot sessionstart" }]}
+       ]
+     }
+   }
+   ```
+
+4. Restart the IDE.
+
+**Verify:** `context-mode doctor` should report `PreToolUse hook configured in .idea/mcp.json` and `MCP registration: context-mode found in .idea/mcp.json`.
+
+**Routing:** Automatic. The SessionStart hook injects routing instructions; it also picks up project rules from `.idea/copilot-instructions.md` (falling back to `.github/copilot-instructions.md` for repos shared with VS Code).
+
+**Session storage:** `~/.config/JetBrains/context-mode/sessions/<projectHash>.db`.
+
+Full setup guide including troubleshooting: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md)
+
+</details>
+
+<details>
 <summary><strong>Cursor</strong> — hooks with stop support</summary>
 
 **Prerequisites:** Node.js 18+, Cursor with agent mode.

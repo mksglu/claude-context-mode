@@ -34,6 +34,18 @@ describe("CLIENT_NAME_TO_PLATFORM", () => {
     expect(CLIENT_NAME_TO_PLATFORM["Kiro CLI"]).toBe("kiro");
   });
 
+  it('maps "JetBrains Client" to "jetbrains-copilot"', () => {
+    expect(CLIENT_NAME_TO_PLATFORM["JetBrains Client"]).toBe("jetbrains-copilot");
+  });
+
+  it('maps "IntelliJ IDEA" to "jetbrains-copilot"', () => {
+    expect(CLIENT_NAME_TO_PLATFORM["IntelliJ IDEA"]).toBe("jetbrains-copilot");
+  });
+
+  it('maps "PyCharm" to "jetbrains-copilot"', () => {
+    expect(CLIENT_NAME_TO_PLATFORM["PyCharm"]).toBe("jetbrains-copilot");
+  });
+
   it("returns undefined for unknown client name", () => {
     expect(CLIENT_NAME_TO_PLATFORM["some-unknown-client"]).toBeUndefined();
   });

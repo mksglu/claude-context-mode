@@ -259,8 +259,16 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
   }
 
   readSettings(): Record<string, unknown> | null {
+    // Primary: .idea/mcp.json (JetBrains project-local MCP config)
     try {
       const raw = readFileSync(this.getSettingsPath(), "utf-8");
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      /* fall through to Claude Code fallback */
+    }
+    // Fallback: .claude/settings.json (for projects migrating from Claude Code)
+    try {
+      const raw = readFileSync(resolve(".claude", "settings.json"), "utf-8");
       return JSON.parse(raw) as Record<string, unknown>;
     } catch {
       return null;
@@ -368,6 +376,15 @@ export class JetBrainsCopilotAdapter implements HookAdapter {
   }
 
   getInstalledVersion(): string {
+    // JetBrains IDEs register context-mode via .idea/mcp.json rather than as a
+    // platform plugin, so there is no extension-registry version to query.
+    // Report "configured" when the project has an mcp.json entry, otherwise "unknown".
+    const settings = this.readSettings();
+    const servers = settings?.mcpServers ?? settings?.servers;
+    if (servers && typeof servers === "object") {
+      const hasContextMode = Object.keys(servers as Record<string, unknown>).some((k) => k.includes("context-mode"));
+      if (hasContextMode) return "configured";
+    }
     return "unknown";
   }
 

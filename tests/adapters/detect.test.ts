@@ -9,6 +9,7 @@ import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
 import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
 import { KiroAdapter } from "../../src/adapters/kiro/index.js";
+import { JetBrainsCopilotAdapter } from "../../src/adapters/jetbrains-copilot/index.js";
 
 // ─────────────────────────────────────────────────────────
 // detectPlatform — env var detection
@@ -37,6 +38,9 @@ describe("detectPlatform", () => {
     delete process.env.CURSOR_TRACE_ID;
     delete process.env.VSCODE_PID;
     delete process.env.VSCODE_CWD;
+    delete process.env.IDEA_INITIAL_DIRECTORY;
+    delete process.env.IDEA_HOME;
+    delete process.env.JETBRAINS_CLIENT_ID;
     delete process.env.CONTEXT_MODE_PLATFORM;
     vi.restoreAllMocks();
   });
@@ -181,6 +185,30 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
+  // ── JetBrains Copilot ──────────────────────────────────
+
+  it("returns jetbrains-copilot when IDEA_INITIAL_DIRECTORY is set", () => {
+    process.env.IDEA_INITIAL_DIRECTORY = "/home/user/project";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("jetbrains-copilot");
+    expect(signal.confidence).toBe("high");
+    expect(signal.reason).toMatch(/IDEA_INITIAL_DIRECTORY|IDEA_HOME|JETBRAINS_CLIENT_ID/);
+  });
+
+  it("returns jetbrains-copilot when IDEA_HOME is set", () => {
+    process.env.IDEA_HOME = "/Applications/IntelliJ IDEA.app";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("jetbrains-copilot");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns jetbrains-copilot when JETBRAINS_CLIENT_ID is set", () => {
+    process.env.JETBRAINS_CLIENT_ID = "42";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("jetbrains-copilot");
+    expect(signal.confidence).toBe("high");
+  });
+
   // ── MCP clientInfo detection ─────────────────────────────
 
   it("returns antigravity when clientInfo name is antigravity-client", () => {
@@ -263,7 +291,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "kilo", "openclaw", "vscode-copilot", "antigravity", "kiro", "pi", "zed"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "kilo", "openclaw", "vscode-copilot", "jetbrains-copilot", "antigravity", "kiro", "pi", "zed"]).toContain(signal.platform);
   });
 });
 
@@ -321,6 +349,11 @@ describe("getAdapter", () => {
   it("returns KiroAdapter for kiro", async () => {
     const adapter = await getAdapter("kiro");
     expect(adapter).toBeInstanceOf(KiroAdapter);
+  });
+
+  it("returns JetBrainsCopilotAdapter for jetbrains-copilot", async () => {
+    const adapter = await getAdapter("jetbrains-copilot");
+    expect(adapter).toBeInstanceOf(JetBrainsCopilotAdapter);
   });
 
   it("returns ClaudeCodeAdapter for unknown platform", async () => {

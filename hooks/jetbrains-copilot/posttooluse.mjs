@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+import "../suppress-stderr.mjs";
+import "../ensure-deps.mjs";
+/**
+ * JetBrains Copilot PostToolUse hook — session event capture.
+ *
+ * Captures session events from tool calls (13 categories) and stores
+ * them in the per-project SessionDB for later resume snapshot building.
+ *
+ * Must be fast (<20ms). No network, no LLM, just SQLite writes.
+ */
+
+import { createSessionLoaders } from "../session-loaders.mjs";
+import { readStdin, getSessionId, getSessionDBPath, getProjectDir, JETBRAINS_OPTS } from "../session-helpers.mjs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+
+const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
+const { loadSessionDB, loadExtract } = createSessionLoaders(HOOK_DIR);
+const OPTS = JETBRAINS_OPTS;
+const DEBUG_DIR = join(homedir(), ".config", "JetBrains", "context-mode");
+const DEBUG_LOG = join(DEBUG_DIR, "posttooluse-debug.log");
+
+try {
+  mkdirSync(DEBUG_DIR, { recursive: true });
+  const raw = await readStdin();
+  const input = JSON.parse(raw);
+
+  appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] CALL: ${input.tool_name}\n`);
+
+  const { extractEvents } = await loadExtract();
+  const { SessionDB } = await loadSessionDB();
+
+  const dbPath = getSessionDBPath(OPTS);
+  const db = new SessionDB({ dbPath });
+  const sessionId = getSessionId(input, OPTS);
+
+  db.ensureSession(sessionId, getProjectDir(OPTS));
+
+  const events = extractEvents({
+    tool_name: input.tool_name,
+    tool_input: input.tool_input ?? {},
+    tool_response: typeof input.tool_response === "string"
+      ? input.tool_response
+      : JSON.stringify(input.tool_response ?? ""),
+    tool_output: input.tool_output,
+  });
+
+  for (const event of events) {
+    db.insertEvent(sessionId, event, "PostToolUse");
+  }
+
+  appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] OK: ${input.tool_name} → ${events.length} events\n`);
+  db.close();
+} catch (err) {
+  try {
+    appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ERR: ${err?.message || err}\n`);
+  } catch { /* silent */ }
+}
+
+// PostToolUse — no stdout output

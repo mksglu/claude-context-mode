@@ -8,7 +8,7 @@ context-mode supports eight platforms across three hook paradigms:
 
 | Paradigm | Platforms |
 |----------|-----------|
-| **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, Cursor, Codex CLI |
+| **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, Codex CLI |
 | **TS Plugin** | OpenCode |
 | **MCP-only** | Antigravity, Kiro |
 
@@ -363,6 +363,62 @@ context-mode hook vscode-copilot sessionstart
 - Matchers are parsed but IGNORED (all hooks fire on all tools)
 - Tool input property names use camelCase (`filePath` not `file_path`)
 - Response must be wrapped in `hookSpecificOutput` with `hookEventName`
+
+---
+
+### JetBrains Copilot
+
+**Status:** Fully supported (IntelliJ IDEA, PyCharm, WebStorm, GoLand, JetBrains Client, etc.)
+
+**Hook Paradigm:** JSON stdin/stdout
+
+JetBrains Copilot uses the same JSON stdin/stdout paradigm as Claude Code and VS Code Copilot, sharing the same PascalCase hook names and `hookSpecificOutput` wrapper format. The adapter lives in `src/adapters/jetbrains-copilot/` and the hook scripts in `hooks/jetbrains-copilot/`.
+
+**Hook Names:**
+- `PreToolUse` -- fires before a tool is executed
+- `PostToolUse` -- fires after a tool completes
+- `PreCompact` -- fires before context compaction
+- `SessionStart` -- fires when a session starts (source: `startup` | `compact` | `resume` | `clear`)
+
+**Blocking:** `permissionDecision: "deny"` (same as Claude Code)
+
+**Arg Modification:** `updatedInput` inside `hookSpecificOutput` wrapper (same as VS Code Copilot)
+
+**Output Modification:** `additionalContext` inside `hookSpecificOutput`, or `decision: "block"` + `reason`
+
+**Session ID:** `sessionId` (camelCase). Fallback chain:
+1. `input.sessionId`
+2. `JETBRAINS_CLIENT_ID` env var → `jetbrains-${id}`
+3. `IDEA_HOME` env var present → `idea-${process.pid}`
+4. `pid-${process.ppid}`
+
+**Configuration:**
+- Primary: `.idea/mcp.json` (contains both `servers` and `hooks` blocks)
+- Fallback: `.claude/settings.json` (for projects migrating from Claude Code)
+
+**Environment Detection:**
+- `IDEA_INITIAL_DIRECTORY` — project root (high confidence)
+- `IDEA_HOME` — IDE install path (high confidence)
+- `JETBRAINS_CLIENT_ID` — JetBrains Client session ID (high confidence)
+- `~/.config/JetBrains/` directory exists (medium confidence)
+
+**Client-info detection:** `JetBrains Client`, `IntelliJ IDEA`, `PyCharm` → `jetbrains-copilot`.
+
+**Hook Commands:**
+```
+context-mode hook jetbrains-copilot pretooluse
+context-mode hook jetbrains-copilot posttooluse
+context-mode hook jetbrains-copilot precompact
+context-mode hook jetbrains-copilot sessionstart
+```
+
+**Session Storage:** `~/.config/JetBrains/context-mode/sessions/<projectHash>.db`
+
+**Rule file:** The SessionStart hook reads `.idea/copilot-instructions.md` on startup, falling back to `.github/copilot-instructions.md` for repos shared with VS Code Copilot.
+
+**Known Issues / Caveats:**
+- No native "plugin version" query — `getInstalledVersion()` reports `configured` when `.idea/mcp.json` registers the server, otherwise `unknown`.
+- JetBrains Client's `JETBRAINS_CLIENT_ID` only survives as long as the client process; a client restart creates a new session ID.
 
 ---
 

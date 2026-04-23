@@ -85,6 +85,13 @@ export const KIRO_OPTS = {
   sessionIdEnv: undefined,    // No session ID env var — uses ppid fallback
 };
 
+/** JetBrains Copilot (IntelliJ IDEA / PyCharm / JetBrains Client) platform options. */
+export const JETBRAINS_OPTS = {
+  configDir: ".config/JetBrains",
+  projectDirEnv: "IDEA_INITIAL_DIRECTORY",
+  sessionIdEnv: "JETBRAINS_CLIENT_ID",
+};
+
 /**
  * Read all of stdin as a string (event-based, cross-platform safe).
  */

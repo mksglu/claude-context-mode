@@ -39,6 +39,7 @@ src/
     opencode/      → OpenCode adapter
     codex/         → Codex CLI adapter
     vscode-copilot/ → VS Code Copilot adapter
+    jetbrains-copilot/ → JetBrains Copilot adapter (IntelliJ, PyCharm, JetBrains Client)
   openclaw/
     workspace-router.ts → Workspace path resolution for Pi Agent sessions
   openclaw-plugin.ts   → OpenClaw gateway plugin entry (sync register)
@@ -287,6 +288,8 @@ npx skills add mksglu/context-mode --skill context-mode-ops
 | Cursor hooks | `tests/hooks/cursor-hooks.test.ts` |
 | Gemini hooks | `tests/hooks/gemini-hooks.test.ts` |
 | VS Code hooks | `tests/hooks/vscode-hooks.test.ts` |
+| JetBrains hooks | `tests/hooks/jetbrains-hooks.test.ts` |
+| JetBrains adapter | `tests/adapters/jetbrains-copilot.test.ts` |
 | Kiro hooks | `tests/hooks/kiro-hooks.test.ts` |
 | Session DB | `tests/session/session-db.test.ts` |
 | Session extract | `tests/session/session-extract.test.ts` |
