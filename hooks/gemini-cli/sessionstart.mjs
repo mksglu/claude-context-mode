@@ -118,5 +118,13 @@ try {
   } catch { /* ignore logging failure */ }
 }
 
-const output = `SessionStart:compact hook success: Success\nSessionStart hook additional context: \n${additionalContext}`;
-process.stdout.write(output);
+// When CTX_QUIET is set, output only a minimal status marker instead of the
+// full routing block + additional context. The routing instructions are still
+// active — they're just not echoed to the terminal.
+const quiet = process.env.CTX_QUIET === '1' || process.env.CTX_QUIET === 'true';
+if (quiet) {
+  process.stdout.write('ℹ context-mode active\n');
+} else {
+  const output = `SessionStart:compact hook success: Success\nSessionStart hook additional context: \n${additionalContext}`;
+  process.stdout.write(output);
+}

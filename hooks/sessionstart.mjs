@@ -147,9 +147,22 @@ try {
   } catch { /* ignore logging failure */ }
 }
 
-console.log(JSON.stringify({
-  hookSpecificOutput: {
-    hookEventName: "SessionStart",
-    additionalContext,
-  },
-}));
+// When CTX_QUIET is set, suppress the verbose additionalContext from the output.
+// The routing instructions are still injected into the agent's context — they
+// just won't be echoed to the terminal on session start.
+const quiet = process.env.CTX_QUIET === '1' || process.env.CTX_QUIET === 'true';
+if (quiet) {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: "context-mode active (quiet mode)",
+    },
+  }));
+} else {
+  console.log(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext,
+    },
+  }));
+}
