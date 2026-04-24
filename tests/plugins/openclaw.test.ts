@@ -1270,4 +1270,36 @@ describe("registerContextModeInOpenclawConfig", () => {
     const cfg = JSON.parse(readFileSync(runtimePath, "utf8"));
     expect(cfg.plugins.load?.paths ?? []).not.toContain(pluginRoot);
   });
+
+  it("preserves unrelated fields on the existing mcp.servers entry when refreshing the path", () => {
+    writeFileSync(
+      runtimePath,
+      JSON.stringify({
+        mcp: {
+          servers: {
+            "context-mode": {
+              command: "node",
+              args: ["/old/path/server.bundle.mjs"],
+              env: { CTX_LOG_LEVEL: "debug" },
+              cwd: "/opt/custom",
+              timeout: 45000,
+            },
+          },
+        },
+      }),
+    );
+    registerContextModeInOpenclawConfig(runtimePath, "/new/path");
+    const entry = JSON.parse(readFileSync(runtimePath, "utf8")).mcp.servers["context-mode"];
+    expect(entry.args[0]).toEqual("/new/path/server.bundle.mjs");
+    expect(entry.env).toEqual({ CTX_LOG_LEVEL: "debug" });
+    expect(entry.cwd).toEqual("/opt/custom");
+    expect(entry.timeout).toEqual(45000);
+  });
+
+  it("throws a useful error when the runtime config is not valid JSON", () => {
+    writeFileSync(runtimePath, "{ this is not json");
+    expect(() => registerContextModeInOpenclawConfig(runtimePath, pluginRoot)).toThrow(
+      /Failed to parse.*valid JSON/,
+    );
+  });
 });

@@ -59,7 +59,11 @@ export function registerContextModeInOpenclawConfig(runtimePath, pluginRoot) {
     !Array.isArray(existing.args) ||
     existing.args[0] !== serverBundle;
   if (needsWrite) {
-    servers["context-mode"] = { command: "node", args: [serverBundle] };
+    // Preserve any unrelated fields a user (or future OpenClaw version) may have
+    // added — e.g. `env`, `cwd`, `timeout` — and only overwrite the two this
+    // helper owns. Full-reset would silently drop those.
+    const base = existing && typeof existing === "object" ? existing : {};
+    servers["context-mode"] = { ...base, command: "node", args: [serverBundle] };
     messages.push(`registered mcp.servers.context-mode → ${serverBundle}`);
   }
 
