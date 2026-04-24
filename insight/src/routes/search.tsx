@@ -79,7 +79,7 @@ function SearchPage() {
                       <pre
                         className="text-xs text-muted-foreground whitespace-pre-wrap break-words font-mono leading-relaxed"
                         dangerouslySetInnerHTML={{
-                          __html: (r.highlighted || esc(r.content))
+                          __html: (r.highlighted ? esc(r.highlighted) : esc(r.content))
                             .replace(/«/g, '<mark class="bg-amber-500/20 text-foreground rounded px-0.5">')
                             .replace(/»/g, "</mark>"),
                         }}
