@@ -69,42 +69,11 @@ else
   echo "  ⚠ could not verify discovery (openclaw not in PATH or plugin not found) — continuing anyway"
 fi
 
-# 5. Register in runtime config (idempotent)
+# 5. Register in runtime config (idempotent) — delegates to
+# scripts/lib/register-openclaw-config.mjs so the logic can be unit-tested
+# and so we can extend it (now also registers mcp.servers.context-mode).
 echo "→ registering in $OPENCLAW_JSON..."
-node -e "
-const fs = require('fs');
-const [runtimePath, pluginRoot] = process.argv.slice(1);
-let cfg;
-try {
-  cfg = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
-} catch (e) {
-  console.error('  ✗ Failed to parse ' + runtimePath + ' — is it valid JSON?');
-  process.exit(1);
-}
-const plugins = cfg.plugins ??= {};
-
-// Remove plugins.load.paths entry (causes duplicate registration)
-const load = plugins.load ?? {};
-const paths = load.paths ?? [];
-const idx = paths.indexOf(pluginRoot);
-if (idx !== -1) {
-  paths.splice(idx, 1);
-  if (!paths.length) delete load.paths;
-  if (!Object.keys(load).length) delete plugins.load;
-  console.log('  removed plugins.load.paths entry (caused duplicate registration)');
-}
-
-// Add to plugins.allow
-const allow = plugins.allow ??= [];
-if (!allow.includes('context-mode')) allow.unshift('context-mode');
-
-// Add to plugins.entries
-const entries = plugins.entries ??= {};
-if (!entries['context-mode']) entries['context-mode'] = { enabled: true };
-
-fs.writeFileSync(runtimePath, JSON.stringify(cfg, null, 2) + '\n');
-console.log('  plugins.allow:', JSON.stringify(allow));
-" "$OPENCLAW_JSON" "$PLUGIN_ROOT"
+node "$PLUGIN_ROOT/scripts/lib/register-openclaw-config.mjs" "$OPENCLAW_JSON" "$PLUGIN_ROOT"
 
 # 6. Restart gateway
 echo "→ restarting openclaw gateway..."

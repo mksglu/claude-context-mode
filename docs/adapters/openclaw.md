@@ -50,6 +50,17 @@ The state directory doesn't exist at the expected path. If you installed OpenCla
 **Plugin installed but not loading**
 Clear the jiti cache (`rm -f /tmp/jiti/context-mode-*.cjs`) and restart the gateway. If the issue persists, verify the plugin appears in `openclaw plugins list`.
 
+**Plugin loads but `ctx_*` tools are missing from the agent's tool list**
+The plugin registers its hooks via `api.on(...)` / `api.registerCommand(...)`, but the agent-callable `ctx_*` tools live in the MCP server (`server.bundle.mjs`). OpenClaw surfaces them by spawning the server as an MCP sidecar declared in `mcp.servers.context-mode`. The install script writes this entry automatically (step 5); if you configured OpenClaw manually, verify with `openclaw mcp list` and add it if missing:
+
+```bash
+openclaw mcp set context-mode \
+  "{\"command\":\"node\",\"args\":[\"/absolute/path/to/context-mode/server.bundle.mjs\"]}"
+openclaw gateway restart
+```
+
+After the restart, the agent's tool inventory should include `context-mode__ctx_execute`, `context-mode__ctx_search`, `context-mode__ctx_fetch_and_index`, and the rest of the `ctx_*` surface (OpenClaw prefixes MCP-sourced tools with the server name).
+
 ## Hook Registration
 
 The adapter uses two different registration APIs, matching OpenClaw's internal architecture:
