@@ -4,48 +4,48 @@ You have context-mode MCP tools available. These rules are NOT optional — they
 
 ## Think in Code — MANDATORY
 
-When you need to analyze, count, filter, compare, search, parse, transform, or process data: **write code** that does the work via `ctx_execute(language, code)` and `console.log()` only the answer. Do NOT read raw data into context to process mentally. Your role is to PROGRAM the analysis, not to COMPUTE it. Write robust, pure JavaScript — no npm dependencies, only Node.js built-ins (`fs`, `path`, `child_process`). Always use `try/catch`, handle `null`/`undefined`, and ensure compatibility with both Node.js and Bun. One script replaces ten tool calls and saves 100x context.
+When you need to analyze, count, filter, compare, search, parse, transform, or process data: **write code** that does the work via `context-mode__ctx_execute(language, code)` and `console.log()` only the answer. Do NOT read raw data into context to process mentally. Your role is to PROGRAM the analysis, not to COMPUTE it. Write robust, pure JavaScript — no npm dependencies, only Node.js built-ins (`fs`, `path`, `child_process`). Always use `try/catch`, handle `null`/`undefined`, and ensure compatibility with both Node.js and Bun. One script replaces ten tool calls and saves 100x context.
 
 ## BLOCKED commands — do NOT attempt these
 
 ### curl / wget — BLOCKED
 Any shell command containing `curl` or `wget` will be intercepted and blocked by the context-mode plugin. Do NOT retry.
 Instead use:
-- `ctx_fetch_and_index(url, source)` to fetch and index web pages
-- `ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
+- `context-mode__ctx_fetch_and_index(url, source)` to fetch and index web pages
+- `context-mode__ctx_execute(language: "javascript", code: "const r = await fetch(...)")` to run HTTP calls in sandbox
 
 ### Inline HTTP — BLOCKED
 Any shell command containing `fetch('http`, `requests.get(`, `requests.post(`, `http.get(`, or `http.request(` will be intercepted and blocked. Do NOT retry with shell.
 Instead use:
-- `ctx_execute(language, code)` to run HTTP calls in sandbox — only stdout enters context
+- `context-mode__ctx_execute(language, code)` to run HTTP calls in sandbox — only stdout enters context
 
 ### Direct web fetching — BLOCKED
 Do NOT use any direct URL fetching tool. Use the sandbox equivalent.
 Instead use:
-- `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` to query the indexed content
+- `context-mode__ctx_fetch_and_index(url, source)` then `context-mode__ctx_search(queries)` to query the indexed content
 
 ## REDIRECTED tools — use sandbox equivalents
 
 ### Shell (>20 lines output)
 Shell is ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`, and other short-output commands.
 For everything else, use:
-- `ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
-- `ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
+- `context-mode__ctx_batch_execute(commands, queries)` — run multiple commands + search in ONE call
+- `context-mode__ctx_execute(language: "shell", code: "...")` — run in sandbox, only stdout enters context
 
 ### File reading (for analysis)
 If you are reading a file to **edit** it → reading is correct (edit needs content in context).
-If you are reading to **analyze, explore, or summarize** → use `ctx_execute_file(path, language, code)` instead. Only your printed summary enters context.
+If you are reading to **analyze, explore, or summarize** → use `context-mode__ctx_execute_file(path, language, code)` instead. Only your printed summary enters context.
 
 ### grep / search (large results)
-Search results can flood context. Use `ctx_execute(language: "shell", code: "grep ...")` to run searches in sandbox. Only your printed summary enters context.
+Search results can flood context. Use `context-mode__ctx_execute(language: "shell", code: "grep ...")` to run searches in sandbox. Only your printed summary enters context.
 
 ## Tool selection hierarchy
 
-1. **GATHER**: `ctx_batch_execute(commands, queries)` — Primary tool. Runs all commands, auto-indexes output, returns search results. ONE call replaces 30+ individual calls. Each command: `{label: "descriptive header", command: "..."}`. Label becomes FTS5 chunk title — descriptive labels improve search.
-2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — Query indexed content. Pass ALL questions as array in ONE call.
-3. **PROCESSING**: `ctx_execute(language, code)` | `ctx_execute_file(path, language, code)` — Sandbox execution. Only stdout enters context.
-4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — Fetch, chunk, index, query. Raw HTML never enters context.
-5. **INDEX**: `ctx_index(content, source)` — Store content in FTS5 knowledge base for later search.
+1. **GATHER**: `context-mode__ctx_batch_execute(commands, queries)` — Primary tool. Runs all commands, auto-indexes output, returns search results. ONE call replaces 30+ individual calls. Each command: `{label: "descriptive header", command: "..."}`. Label becomes FTS5 chunk title — descriptive labels improve search.
+2. **FOLLOW-UP**: `context-mode__ctx_search(queries: ["q1", "q2", ...])` — Query indexed content. Pass ALL questions as array in ONE call.
+3. **PROCESSING**: `context-mode__ctx_execute(language, code)` | `context-mode__ctx_execute_file(path, language, code)` — Sandbox execution. Only stdout enters context.
+4. **WEB**: `context-mode__ctx_fetch_and_index(url, source)` then `context-mode__ctx_search(queries)` — Fetch, chunk, index, query. Raw HTML never enters context.
+5. **INDEX**: `context-mode__ctx_index(content, source)` — Store content in FTS5 knowledge base for later search.
 
 ## Output constraints
 
