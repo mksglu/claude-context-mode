@@ -19,22 +19,13 @@
     "sandbox",
     "code-execution",
     "fts5",
-    "bm25",
-    "pi-package"
+    "bm25"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/mksglu/context-mode"
   },
   "homepage": "https://github.com/mksglu/context-mode#readme",
-  "pi": {
-    "extensions": [
-      "./build/pi-extension.js"
-    ],
-    "skills": [
-      "./skills"
-    ]
-  },
   "openclaw": {
     "extensions": [
       "./build/openclaw-plugin.js"
@@ -84,7 +75,7 @@
     "test:use-cases": "npx tsx tests/use-cases.ts",
     "test:compare": "npx tsx tests/context-comparison.ts",
     "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",
-    "install:openclaw": "node -e \"if(process.platform==='win32'){console.error('OpenClaw install requires bash (Git Bash or WSL)');process.exit(1)}else{require('child_process').execSync('bash scripts/install-openclaw-plugin.sh',{stdio:'inherit'})}\"",
+    "install:openclaw": "node -e \"if(process.platform==='win32'){console.error('OpenClaw install requires bash (Git Bash or WSL)');process.exit(1)}else{const args=process.argv.slice(1).join(' ');require('child_process').execSync('bash scripts/install-openclaw-plugin.sh '+args,{stdio:'inherit'})}\"",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {

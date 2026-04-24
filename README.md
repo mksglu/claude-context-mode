@@ -396,23 +396,35 @@ context-mode runs as a native [OpenClaw](https://github.com/openclaw) gateway pl
 
 **Install:**
 
-1. Clone and install:
+**Quick install** (one-liner):
 
-   ```bash
-   git clone https://github.com/mksglu/context-mode.git
-   cd context-mode
-   npm run install:openclaw
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/install.sh | bash
+```
 
-   The installer uses `$OPENCLAW_STATE_DIR` from your environment (default: `/openclaw`). To specify a custom path:
+For a custom state directory:
 
-   ```bash
-   npm run install:openclaw -- /path/to/openclaw-state
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/install.sh | bash -s -- ~/.openclaw
+```
 
-   Common locations: **Docker** — `/openclaw` (the default). **Local** — `~/.openclaw` or wherever you set `OPENCLAW_STATE_DIR`.
+**Manual install:**
 
-   The installer handles everything: `npm install`, `npm run build`, `better-sqlite3` native rebuild, extension registration in `runtime.json`, and gateway restart via SIGUSR1.
+```bash
+git clone https://github.com/mksglu/context-mode.git
+cd context-mode
+npm run install:openclaw
+```
+
+The installer uses `$OPENCLAW_STATE_DIR` from your environment (default: `/openclaw`). To specify a custom path:
+
+```bash
+npm run install:openclaw -- ~/.openclaw
+```
+
+Common locations: **Docker** — `/openclaw` (the default). **Local** — `~/.openclaw` or wherever you set `OPENCLAW_STATE_DIR`.
+
+The installer handles everything: `npm install`, `npm run build`, `better-sqlite3` native rebuild, extension registration in `openclaw.json`, and gateway restart via SIGUSR1.
 
 2. Open a Pi Agent session.
 
@@ -638,39 +650,31 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 
 **Install:**
 
-1. Install context-mode globally:
+1. Clone the extension:
 
    ```bash
-   npm install -g context-mode
+   git clone https://github.com/mksglu/context-mode.git ~/.pi/extensions/context-mode
+   cd ~/.pi/extensions/context-mode
+   npm install
+   npm run build
    ```
 
-2. Install the package into Pi:
-
-   ```bash
-   pi install npm:context-mode
-   ```
-
-   Alternative — add it manually to `~/.pi/agent/settings.json` (or `.pi/settings.json` for project-level):
-
-   ```json
-   {
-     "packages": ["npm:context-mode"]
-   }
-   ```
-
-3. Add to `~/.pi/agent/mcp.json` (or `.pi/mcp.json` for project-level):
+2. Add to `~/.pi/agent/mcp.json` (or `.pi/mcp.json` for project-level):
 
    ```json
    {
      "mcpServers": {
        "context-mode": {
-         "command": "context-mode"
+         "command": "node",
+         "args": ["/home/youruser/.pi/extensions/context-mode/node_modules/context-mode/start.mjs"]
        }
      }
    }
    ```
 
-4. Restart Pi.
+   > **Note:** JSON does not expand `~`. Replace `/home/youruser` with your actual home directory (run `echo $HOME` to find it).
+
+3. Restart Pi.
 
 **Verify:** In a Pi session, type `ctx stats`. Context-mode tools should appear and respond.
 

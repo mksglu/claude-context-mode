@@ -15,7 +15,21 @@ The context-mode adapter hooks into Pi Agent sessions specifically, intercepting
 
 ## Installation
 
-### Quick install
+### Quick install (one-liner)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/install.sh | bash
+```
+
+For a custom state directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/install.sh | bash -s -- ~/.openclaw
+```
+
+This clones context-mode, builds it, and registers the plugin into OpenClaw — all in one step.
+
+### Quick install (from clone)
 
 ```bash
 npm run install:openclaw
@@ -45,7 +59,7 @@ See [`scripts/install-openclaw-plugin.sh`](../../scripts/install-openclaw-plugin
 OpenClaw creates this file on first launch. Start OpenClaw once (`openclaw gateway start`), then re-run the install script. This is the most common issue for users who install context-mode before ever starting OpenClaw.
 
 **"OPENCLAW_STATE_DIR (/path) does not exist. Is OpenClaw installed?"**
-The state directory doesn't exist at the expected path. If you installed OpenClaw via npm (not git clone), check where it stores state — common locations are `~/.openclaw` or `/openclaw`. Pass the correct path: `npm run install:openclaw -- /path/to/state`.
+The state directory doesn't exist at the expected path. If you installed OpenClaw via npm (not git clone), check where it stores state — common locations are `~/.openclaw` or `/openclaw`. Pass the correct path: `npm run install:openclaw -- ~/.openclaw` or `curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/install.sh | bash -s -- ~/.openclaw`.
 
 **Plugin installed but not loading**
 Clear the jiti cache (`rm -f /tmp/jiti/context-mode-*.cjs`) and restart the gateway. If the issue persists, verify the plugin appears in `openclaw plugins list`.
