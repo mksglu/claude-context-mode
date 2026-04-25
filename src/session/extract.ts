@@ -436,7 +436,7 @@ function extractSubagent(input: HookInput): SessionEvent[] {
  * MCP tool calls (context7, playwright, claude-mem, ctx-stats, etc.).
  */
 function extractMcp(input: HookInput): SessionEvent[] {
-  const { tool_name, tool_input } = input;
+  const { tool_name, tool_input, tool_response } = input;
   if (!tool_name.startsWith("mcp__")) return [];
 
   // Extract readable tool name: last segment after __
@@ -447,10 +447,19 @@ function extractMcp(input: HookInput): SessionEvent[] {
   const firstArg = Object.values(tool_input).find((v): v is string => typeof v === "string");
   const argStr = firstArg ? `: ${safeString(String(firstArg))}` : "";
 
+  // Append tool_response so ctx_search can find what the MCP returned — not
+  // just the call shape. Without this, bodies from external MCPs (jira tickets,
+  // grafana loki lines, sentry issues, context7 docs) are invisible to search.
+  // No truncation: matches the rule_content precedent above — SQLite TEXT is
+  // unbounded and large responses are the ones a cache most wants to preserve.
+  const responseStr = tool_response && tool_response.length > 0
+    ? `\nresponse: ${safeString(tool_response)}`
+    : "";
+
   return [{
     type: "mcp",
     category: "mcp",
-    data: safeString(`${toolShort}${argStr}`),
+    data: safeString(`${toolShort}${argStr}${responseStr}`),
     priority: 3,
   }];
 }

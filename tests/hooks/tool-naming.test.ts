@@ -53,7 +53,7 @@ const mcpSentinel = resolve(tmpdir(), `context-mode-mcp-ready-${process.ppid}`);
 
 beforeEach(() => {
   if (typeof resetGuidanceThrottle === "function") resetGuidanceThrottle();
-  writeFileSync(mcpSentinel, String(process.pid));
+  writeFileSync(mcpSentinel, String(process.ppid));
 });
 
 afterEach(() => {

@@ -26,4 +26,4 @@ Open the personal analytics dashboard in the browser.
 4. Tell the user:
    - "Dashboard is running at http://localhost:4747"
    - "Refresh the page to see updated metrics"
-   - "To stop: kill the PID shown above, or close the terminal"
+   - "Dashboard stops automatically when Claude exits. To stop sooner: kill the PID shown above."

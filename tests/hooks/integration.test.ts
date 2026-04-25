@@ -29,16 +29,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_PATH = join(__dirname, "..", "..", "hooks", "pretooluse.mjs");
 
 // Clean guidance throttle markers before each test so guidance fires fresh.
-// Subprocess hooks use process.ppid (= this test's pid) + VITEST_WORKER_ID.
+// Subprocess hooks scope markers two ways (#298): the legacy ppid-based dir
+// (kept as fallback when no sessionId is passed) and the sessionId-scoped dir
+// (derived from getSessionId which falls back to `pid-${process.ppid}` when
+// the hook payload has no session_id).
 const _wid = process.env.VITEST_WORKER_ID;
 const _guidanceSuffix = _wid ? `${process.pid}-w${_wid}` : String(process.pid);
 const _guidanceDir = resolve(tmpdir(), `context-mode-guidance-${_guidanceSuffix}`);
+const _sessionGuidanceDir = resolve(tmpdir(), `context-mode-guidance-s-pid-${process.pid}`);
 
 // MCP readiness sentinel — subprocess hooks check process.ppid (= this test's pid)
 const mcpSentinel = resolve(tmpdir(), `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
   try { rmSync(_guidanceDir, { recursive: true, force: true }); } catch {}
+  try { rmSync(_sessionGuidanceDir, { recursive: true, force: true }); } catch {}
   writeFileSync(mcpSentinel, String(process.pid));
 });
 
@@ -571,5 +576,108 @@ describe("UTF-8 BOM handling (core/stdin.mjs path)", () => {
       tool_input: { command: "curl -s http://example.com" },
     }, undefined, { bom: true });
     assertRedirect(result, "context-mode");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// resolveConfigDir — respects platform CONFIG_DIR env vars (#289)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("resolveConfigDir (#289)", () => {
+  const HELPERS_PATH = join(__dirname, "..", "..", "hooks", "session-helpers.mjs");
+
+  async function loadHelpers(env: Record<string, string> = {}) {
+    // Use a subprocess to isolate env var changes
+    const code = `
+      ${Object.entries(env).map(([k, v]) => `process.env[${JSON.stringify(k)}] = ${JSON.stringify(v)};`).join("\n")}
+      const { resolveConfigDir, GEMINI_OPTS, CODEX_OPTS, VSCODE_OPTS, CURSOR_OPTS, KIRO_OPTS } = await import(${JSON.stringify(HELPERS_PATH)});
+      const result = {
+        claude_default: resolveConfigDir(),
+        gemini_default: resolveConfigDir(GEMINI_OPTS),
+        codex_default: resolveConfigDir(CODEX_OPTS),
+        vscode_default: resolveConfigDir(VSCODE_OPTS),
+        cursor_default: resolveConfigDir(CURSOR_OPTS),
+        kiro_default: resolveConfigDir(KIRO_OPTS),
+      };
+      process.stdout.write(JSON.stringify(result));
+    `;
+    const r = spawnSync("node", ["--input-type=module", "-e", code], {
+      encoding: "utf-8",
+      env: { ...process.env, ...env, CONTEXT_MODE_SESSION_SUFFIX: "" },
+      timeout: 10000,
+    });
+    return JSON.parse(r.stdout);
+  }
+
+  test("defaults to ~/<configDir> when no env var set", async () => {
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const result = await loadHelpers({
+      CLAUDE_CONFIG_DIR: "",
+      GEMINI_CLI_HOME: "",
+      CODEX_HOME: "",
+    });
+    expect(result.claude_default).toBe(join(home, ".claude"));
+    expect(result.gemini_default).toBe(join(home, ".gemini"));
+    expect(result.codex_default).toBe(join(home, ".codex"));
+    expect(result.vscode_default).toBe(join(home, ".vscode"));
+    expect(result.cursor_default).toBe(join(home, ".cursor"));
+    expect(result.kiro_default).toBe(join(home, ".kiro"));
+  });
+
+  test("CLAUDE_CONFIG_DIR overrides Claude Code config path", async () => {
+    const result = await loadHelpers({ CLAUDE_CONFIG_DIR: "/custom/claude-work" });
+    expect(result.claude_default).toBe("/custom/claude-work");
+    // Other platforms unaffected
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    expect(result.gemini_default).toBe(join(home, ".gemini"));
+  });
+
+  test("GEMINI_CLI_HOME overrides Gemini CLI config path", async () => {
+    const result = await loadHelpers({ GEMINI_CLI_HOME: "/custom/gemini" });
+    expect(result.gemini_default).toBe("/custom/gemini");
+  });
+
+  test("CODEX_HOME overrides Codex CLI config path", async () => {
+    const result = await loadHelpers({ CODEX_HOME: "/custom/codex" });
+    expect(result.codex_default).toBe("/custom/codex");
+  });
+
+  test("tilde expansion works in env var values", async () => {
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const result = await loadHelpers({ CLAUDE_CONFIG_DIR: "~/.claude-work" });
+    expect(result.claude_default).toBe(join(home, ".claude-work"));
+  });
+
+  test("platforms without configDirEnv ignore env vars", async () => {
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    // VS Code Copilot, Cursor, Kiro have no configDirEnv
+    const result = await loadHelpers({});
+    expect(result.vscode_default).toBe(join(home, ".vscode"));
+    expect(result.cursor_default).toBe(join(home, ".cursor"));
+    expect(result.kiro_default).toBe(join(home, ".kiro"));
+  });
+
+  test("session DB path uses resolved config dir", async () => {
+    const customDir = mkdtempSync(join(tmpdir(), "ctx-config-dir-test-"));
+    try {
+      const code = `
+        process.env.CLAUDE_CONFIG_DIR = ${JSON.stringify(customDir)};
+        process.env.CLAUDE_PROJECT_DIR = "/test/project";
+        process.env.CONTEXT_MODE_SESSION_SUFFIX = "";
+        const { getSessionDBPath } = await import(${JSON.stringify(HELPERS_PATH)});
+        process.stdout.write(getSessionDBPath());
+      `;
+      const r = spawnSync("node", ["--input-type=module", "-e", code], {
+        encoding: "utf-8",
+        env: { ...process.env, CLAUDE_CONFIG_DIR: customDir, CLAUDE_PROJECT_DIR: "/test/project", CONTEXT_MODE_SESSION_SUFFIX: "" },
+        timeout: 10000,
+      });
+      expect(r.stdout).toContain(customDir);
+      expect(r.stdout).toContain("context-mode");
+      expect(r.stdout).toContain("sessions");
+      expect(r.stdout).toMatch(/\.db$/);
+    } finally {
+      rmSync(customDir, { recursive: true, force: true });
+    }
   });
 });

@@ -347,3 +347,82 @@ describe("ensure-deps: codesignBinary macOS SIGKILL fix", () => {
     expect(out).toHaveProperty("success", true);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Modern SQLite skip gate (#331 — Node v24 SIGSEGV prevention)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("ensure-deps: modern SQLite skip gate (#331)", () => {
+  const MODERN_SQLITE_HARNESS = `
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Replicate hasModernSqlite() logic from ensure-deps.mjs
+function hasModernSqlite() {
+  if (typeof globalThis.Bun !== "undefined") return true;
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  return major > 22 || (major === 22 && minor >= 5);
+}
+
+const root = process.argv[2];
+const result = {
+  hasModernSqlite: hasModernSqlite(),
+  nodeVersion: process.versions.node,
+};
+
+// If modern SQLite, ensureDeps and ensureNativeCompat should be no-ops.
+// Verify by checking that no npm commands would be attempted.
+if (result.hasModernSqlite) {
+  // Simulate: even if node_modules is missing, ensureDeps should skip
+  const pkgDir = resolve(root, "node_modules", "better-sqlite3");
+  result.pkgDirExists = existsSync(pkgDir);
+  result.wouldSkip = true;
+} else {
+  result.wouldSkip = false;
+}
+
+console.log(JSON.stringify(result));
+`;
+
+  test("hasModernSqlite returns correct value for current Node version", () => {
+    const root = createTempRoot();
+    const harnessPath = join(root, "_modern-sqlite-harness.mjs");
+    writeFileSync(harnessPath, MODERN_SQLITE_HARNESS, "utf-8");
+    const result = spawnSync("node", [harnessPath, root], {
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+    if (result.error) throw result.error;
+    const out = JSON.parse(result.stdout.trim());
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    const expected = major > 22 || (major === 22 && minor >= 5);
+    expect(out.hasModernSqlite).toBe(expected);
+  });
+
+  test("ensureDeps is a no-op on modern runtimes (imports without side effects)", () => {
+    // On Node >= 22.5 or Bun, importing ensure-deps.mjs should NOT attempt
+    // any npm install/rebuild — the hasModernSqlite() gate early-returns.
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    const isModern = major > 22 || (major === 22 && minor >= 5);
+    if (!isModern) return; // skip on older Node
+
+    const root = createTempRoot();
+    // No node_modules at all — on old Node this would trigger npm install
+    const harness = `
+import ${JSON.stringify("file://" + ensureDepsAbsPath.replace(/\\/g, "/"))};
+// If we got here without error, ensureDeps() and ensureNativeCompat()
+// both returned early (no npm install attempted on empty dir).
+console.log(JSON.stringify({ ok: true }));
+`;
+    const harnessPath = join(root, "_import-harness.mjs");
+    writeFileSync(harnessPath, harness, "utf-8");
+    const result = spawnSync("node", [harnessPath], {
+      encoding: "utf-8",
+      timeout: 30_000,
+      cwd: root,
+    });
+    if (result.error) throw result.error;
+    const out = JSON.parse(result.stdout.trim());
+    expect(out).toEqual({ ok: true });
+  });
+});

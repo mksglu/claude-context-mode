@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -429,19 +429,54 @@ export function evaluateCommandDenyOnly(
  *
  * Normalizes backslashes to forward slashes before matching so that
  * Windows paths work with Unix-style glob patterns.
+ *
+ * When `projectRoot` is supplied, the path is also matched in its
+ * fully-resolved absolute form **and** — when the file exists — in
+ * its canonical form (`fs.realpathSync`). This prevents two classes
+ * of bypass:
+ *
+ *   1. `..` traversal: a relative path like `../../.ssh/id_rsa` no
+ *      longer evades absolute-path deny rules.
+ *   2. Symlink escape: a project-local path whose realpath points
+ *      outside the project (e.g. `safe.log -> ~/.ssh/id_rsa`) no
+ *      longer evades absolute-path deny rules.
+ *
+ * realpath is best-effort: if the file does not exist yet (ENOENT)
+ * or the syscall fails for any reason, the lexical resolved form is
+ * still checked. This keeps the function usable for paths that will
+ * be created during execution.
  */
 export function evaluateFilePath(
   filePath: string,
   denyGlobs: string[][],
   caseInsensitive: boolean = process.platform === "win32",
+  projectRoot?: string,
 ): { denied: boolean; matchedPattern?: string } {
-  // Normalize backslashes to forward slashes for cross-platform matching
-  const normalized = filePath.replace(/\\/g, "/");
+  const toForward = (path: string): string => path.replace(/\\/g, "/");
+
+  // Match against the raw input, the lexically-resolved absolute path,
+  // and the canonical (symlink-resolved) path when the file exists.
+  // Deduplicated so absolute inputs and paths that don't cross symlinks
+  // don't pay the matching cost multiple times.
+  const candidates = new Set<string>();
+  candidates.add(toForward(filePath));
+  if (projectRoot) {
+    const lexical = resolve(projectRoot, filePath);
+    candidates.add(toForward(lexical));
+    try {
+      candidates.add(toForward(realpathSync(lexical)));
+    } catch {
+      // File does not exist yet, or realpath failed — rely on lexical form.
+    }
+  }
 
   for (const globs of denyGlobs) {
     for (const glob of globs) {
-      if (fileGlobToRegex(glob, caseInsensitive).test(normalized)) {
-        return { denied: true, matchedPattern: glob };
+      const regex = fileGlobToRegex(glob, caseInsensitive);
+      for (const candidate of candidates) {
+        if (regex.test(candidate)) {
+          return { denied: true, matchedPattern: glob };
+        }
       }
     }
   }

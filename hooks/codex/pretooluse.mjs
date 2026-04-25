@@ -10,7 +10,7 @@ import "../suppress-stderr.mjs";
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readStdin, getInputProjectDir, CODEX_OPTS } from "../session-helpers.mjs";
+import { readStdin, getInputProjectDir, getSessionId, CODEX_OPTS } from "../session-helpers.mjs";
 import { routePreToolUse, initSecurity } from "../core/routing.mjs";
 import { formatDecision } from "../core/formatters.mjs";
 
@@ -23,7 +23,7 @@ const tool = input.tool_name ?? "";
 const toolInput = input.tool_input ?? {};
 const projectDir = getInputProjectDir(input, CODEX_OPTS);
 
-const decision = routePreToolUse(tool, toolInput, projectDir, "codex");
+const decision = routePreToolUse(tool, toolInput, projectDir, "codex", getSessionId(input, CODEX_OPTS));
 const response = formatDecision("codex", decision);
 const output = response ?? {
   hookSpecificOutput: { hookEventName: "PreToolUse" },
