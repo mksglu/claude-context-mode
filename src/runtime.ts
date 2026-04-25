@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 export type Language =
@@ -95,10 +95,11 @@ function resolveWindowsBash(): string | null {
   }
 }
 
-function getVersion(cmd: string): string {
+function getVersion(cmd: string, args: string[] = ["--version"]): string {
   try {
-    return execSync(`${cmd} --version`, {
+    return execFileSync(cmd, args, {
       encoding: "utf-8",
+      shell: process.platform === "win32",
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 5000,
     })
@@ -184,7 +185,7 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
       `  Ruby:       ${runtimes.ruby} (${getVersion(runtimes.ruby)})`,
     );
   if (runtimes.go)
-    lines.push(`  Go:         ${runtimes.go} (${getVersion(runtimes.go)})`);
+    lines.push(`  Go:         ${runtimes.go} (${getVersion(runtimes.go, ["version"])})`);
   if (runtimes.rust)
     lines.push(
       `  Rust:       ${runtimes.rust} (${getVersion(runtimes.rust)})`,

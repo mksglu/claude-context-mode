@@ -180,7 +180,7 @@ OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks a
 
 ### Codex CLI
 
-**Status:** Supported (MCP active, hooks ready — waiting for upstream dispatch)
+**Status:** Supported (MCP active, hooks stable)
 
 **Hook Paradigm:** JSON stdin/stdout
 
@@ -210,9 +210,8 @@ context-mode hook codex sessionstart
 ```
 
 **Known Issues / Caveats:**
-- Hook dispatch is NOT yet active in Codex CLI sessions. `codex_hooks` feature flag is `Stage::UnderDevelopment` — the flag is accepted but hooks don't fire during real sessions (verified v0.118.0 by beta tester). Our hook scripts are ready and will work once Codex enables dispatch. Track: [openai/codex#16685](https://github.com/openai/codex/issues/16685).
-- **MCP exec-mode regression (v0.118.0):** All MCP tool calls are cancelled in `codex exec` with "user cancelled MCP tool call". Caused by `tool_call_mcp_elicitation` feature flag going stable — adds approval prompt that exec-mode can't handle. **Workaround: pin to Codex ≤0.116.0 for exec-mode MCP.** Confirmed by upstream maintainer @etraut-openai. Track: [openai/codex#16685](https://github.com/openai/codex/issues/16685).
 - PreToolUse `additionalContext` is unsupported — context injection works via PostToolUse and SessionStart instead. The codex formatter handles this automatically (deny works, context is dropped). Source: `codex-rs/hooks/src/engine/output_parser.rs:267`.
+- PreToolUse input rewriting still needs upstream `updatedInput` support. Track: [openai/codex#18491](https://github.com/openai/codex/issues/18491).
 - `tool_name` is always "Bash" (Codex only has one tool type)
 - updatedInput and updatedMCPToolOutput are in the schema but NOT implemented
 - Default hook timeout: 600 seconds
@@ -504,8 +503,6 @@ The dispatcher resolves the hook script relative to the installed package and dy
 | `vscode-copilot` | `pretooluse`, `posttooluse`, `precompact`, `sessionstart` |
 | `cursor` | `pretooluse`, `posttooluse`, `stop` |
 | `codex` | `pretooluse`, `posttooluse`, `sessionstart` |
-
-† Codex hook dispatches are ready but Codex CLI doesn't fire hooks yet (Stage::UnderDevelopment).
 
 OpenCode uses a TS plugin paradigm (no command dispatcher). Antigravity and Kiro have no hook support.
 

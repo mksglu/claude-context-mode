@@ -118,5 +118,13 @@ try {
   } catch { /* ignore logging failure */ }
 }
 
-const output = `SessionStart:compact hook success: Success\nSessionStart hook additional context: \n${additionalContext}`;
-process.stdout.write(output);
+// Emit structured JSON rather than plain text so Gemini CLI treats the
+// routing block as hook metadata instead of user-visible output (#299).
+// Matches the format already used by Claude Code and VS Code Copilot
+// SessionStart hooks.
+console.log(JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: "SessionStart",
+    additionalContext,
+  },
+}));

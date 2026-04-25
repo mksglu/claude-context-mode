@@ -8,8 +8,8 @@
 import { describe, test, beforeAll, afterAll } from "vitest";
 import { strict as assert } from "node:assert";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { tmpdir, homedir } from "node:os";
 
 import {
   parseBashPattern,
@@ -473,6 +473,36 @@ describe("evaluateFilePath", () => {
     );
     assert.equal(result.denied, true);
     assert.equal(result.matchedPattern, "**/.env");
+  });
+
+  test("evaluateFilePath: traversal does not bypass absolute deny glob when projectRoot is supplied", () => {
+    // An absolute deny rule for ~/.ssh/** should still match when the caller
+    // passes a ../-traversal relative path that resolves into ~/.ssh.
+    const home = homedir();
+    const projectRoot = resolve(home, "some/project");
+    const denyGlob = resolve(home, ".ssh").replace(/\\/g, "/") + "/**";
+
+    const result = evaluateFilePath(
+      "../../.ssh/id_rsa",
+      [[denyGlob]],
+      process.platform === "win32",
+      projectRoot,
+    );
+    assert.equal(result.denied, true);
+    assert.equal(result.matchedPattern, denyGlob);
+  });
+
+  test("evaluateFilePath: without projectRoot, absolute deny glob is still bypassable (regression guard)", () => {
+    // Documents the pre-fix behavior: without projectRoot, `..` is not
+    // resolved, so the raw string doesn't match the absolute glob.
+    // This test exists so any change in behavior is intentional.
+    const absoluteSshGlob = resolve(homedir(), ".ssh").replace(/\\/g, "/") + "/**";
+    const result = evaluateFilePath(
+      "../../.ssh/id_rsa",
+      [[absoluteSshGlob]],
+      process.platform === "win32",
+    );
+    assert.equal(result.denied, false);
   });
 });
 

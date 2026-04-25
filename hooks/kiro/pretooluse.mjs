@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readStdin } from "../core/stdin.mjs";
 import { routePreToolUse, initSecurity } from "../core/routing.mjs";
+import { getSessionId, KIRO_OPTS } from "../session-helpers.mjs";
 
 const __hookDir = dirname(fileURLToPath(import.meta.url));
 await initSecurity(resolve(__hookDir, "..", "..", "build"));
@@ -24,7 +25,7 @@ const tool = input.tool_name ?? "";
 const toolInput = input.tool_input ?? {};
 const projectDir = input.cwd ?? process.cwd();
 
-const decision = routePreToolUse(tool, toolInput, projectDir, "kiro");
+const decision = routePreToolUse(tool, toolInput, projectDir, "kiro", getSessionId(input, KIRO_OPTS));
 
 if (!decision) process.exit(0);
 

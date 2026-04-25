@@ -121,4 +121,99 @@ describe("guidance throttle", () => {
     const r2 = routePreToolUse("Bash", { command: "pwd" }, PROJECT_DIR);
     expect(r2).toBeNull();
   });
+
+  // Regression coverage for #298 — Windows/Git Bash spawns a new bash.exe per
+  // hook invocation, so process.ppid differs every call. The legacy marker-dir
+  // naming (scoped to ppid) created a fresh directory each time and the
+  // throttle never fired. The sessionId parameter scopes the marker directory
+  // to a stable per-session identifier passed in from the hook payload.
+  describe("sessionId scoping (#298 — stable across shifting ppids)", () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+
+    const SESSION_A = "a1b2c3d4-session-alpha";
+    const SESSION_B = "e5f6a7b8-session-beta";
+
+    function sessionDir(sessionId: string) {
+      return path.resolve(os.tmpdir(), `context-mode-guidance-s-${sessionId}`);
+    }
+
+    function clearSessionDir(sessionId: string) {
+      try { fs.rmSync(sessionDir(sessionId), { recursive: true, force: true }); } catch {}
+    }
+
+    beforeEach(() => {
+      clearSessionDir(SESSION_A);
+      clearSessionDir(SESSION_B);
+    });
+
+    afterEach(() => {
+      clearSessionDir(SESSION_A);
+      clearSessionDir(SESSION_B);
+    });
+
+    it("second call with same sessionId is throttled even when in-memory Set is cleared", () => {
+      const r1 = routePreToolUse("Read", { file_path: "/tmp/a.ts" }, PROJECT_DIR, "claude-code", SESSION_A);
+      expect(r1?.action).toBe("context");
+
+      // Simulate a fresh Node.js process (as happens on every Windows Git Bash
+      // hook invocation): in-memory state is gone, but the on-disk marker must
+      // still block the second call.
+      resetGuidanceThrottle();
+
+      const r2 = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR, "claude-code", SESSION_A);
+      expect(r2).toBeNull();
+      // The marker must live under the session-scoped directory, not the ppid one
+      expect(fs.existsSync(path.resolve(sessionDir(SESSION_A), "read"))).toBe(true);
+    });
+
+    it("different sessionIds get independent throttles", () => {
+      const rA = routePreToolUse("Read", { file_path: "/tmp/a.ts" }, PROJECT_DIR, "claude-code", SESSION_A);
+      expect(rA?.action).toBe("context");
+
+      // Clear in-memory to ensure we're reading the file-based marker
+      resetGuidanceThrottle();
+
+      // Different session → fresh throttle → guidance fires again
+      const rB = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR, "claude-code", SESSION_B);
+      expect(rB?.action).toBe("context");
+    });
+
+    it("sessionId routing is immune to process.ppid changes", () => {
+      // Claim the ppid-based fallback marker so we can prove the sessionId path
+      // is independent of it. This mirrors what happens when a prior invocation
+      // ran with a different ppid and wrote a marker in the legacy dir.
+      const ppidSuffix = process.env.VITEST_WORKER_ID
+        ? `${process.ppid}-w${process.env.VITEST_WORKER_ID}`
+        : String(process.ppid);
+      const ppidDir = path.resolve(os.tmpdir(), `context-mode-guidance-${ppidSuffix}`);
+      try { fs.mkdirSync(ppidDir, { recursive: true }); } catch {}
+      try { fs.writeFileSync(path.resolve(ppidDir, "bash"), "", "utf-8"); } catch {}
+
+      // A sessionId-scoped call should NOT see the ppid marker — different namespace.
+      const r = routePreToolUse("Bash", { command: "ls" }, PROJECT_DIR, "claude-code", SESSION_A);
+      expect(r?.action).toBe("context");
+    });
+
+    it("resetGuidanceThrottle(sessionId) clears the session-scoped dir", () => {
+      const r1 = routePreToolUse("Grep", { pattern: "foo" }, PROJECT_DIR, "claude-code", SESSION_A);
+      expect(r1?.action).toBe("context");
+      expect(fs.existsSync(path.resolve(sessionDir(SESSION_A), "grep"))).toBe(true);
+
+      resetGuidanceThrottle(SESSION_A);
+
+      const r2 = routePreToolUse("Grep", { pattern: "bar" }, PROJECT_DIR, "claude-code", SESSION_A);
+      expect(r2?.action).toBe("context");
+    });
+
+    it("no sessionId passed → falls back to ppid-based behavior (backward compat)", () => {
+      // Legacy callers that haven't been updated yet must continue to work.
+      const r1 = routePreToolUse("Read", { file_path: "/tmp/a.ts" }, PROJECT_DIR);
+      expect(r1?.action).toBe("context");
+
+      const r2 = routePreToolUse("Read", { file_path: "/tmp/b.ts" }, PROJECT_DIR);
+      expect(r2).toBeNull();
+    });
+  });
 });
