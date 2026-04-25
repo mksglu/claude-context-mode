@@ -614,7 +614,7 @@ if (isBun) {
   // Node: use http.createServer
   const server = createHttpServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
-    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (req.method === "OPTIONS") { res.writeHead(405); res.end(); return; }
 
     const data = route(req.method, url.pathname, url.searchParams);
     if (data !== null) {

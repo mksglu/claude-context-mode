@@ -131,7 +131,7 @@ async function waitForInsight(port: number): Promise<void> {
   throw new Error(`Insight server did not become ready: ${lastError ?? "unknown error"}`);
 }
 
-function startNodeInsight(): { port: number } {
+function startInsight(runtime: "node" | "bun" = "node"): { port: number } {
   const tempRoot = mkdtempSync(join(tmpdir(), "ctx-insight-cors-"));
   tempDirs.push(tempRoot);
 
@@ -142,8 +142,9 @@ function startNodeInsight(): { port: number } {
   symlinkSync(resolve(ROOT, "node_modules"), join(tempRoot, "node_modules"), "dir");
 
   const { sessionsDir, contentDir } = seedFixtureDBs(tempRoot);
-  const port = 42000 + Math.floor(Math.random() * 1000);
-  const child = spawn("node", [join(tempInsightDir, "server.mjs")], {
+  const port = 49152 + Math.floor(Math.random() * 16383);
+  const cmd = runtime === "bun" ? "bun" : "node";
+  const child = spawn(cmd, [join(tempInsightDir, "server.mjs")], {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
@@ -157,8 +158,8 @@ function startNodeInsight(): { port: number } {
 }
 
 describe("Insight API same-machine cross-origin policy", () => {
-  test("does not advertise permissive CORS headers on sensitive session endpoints", async () => {
-    const { port } = startNodeInsight();
+  test("does not advertise permissive CORS headers on sensitive session endpoints (Node)", async () => {
+    const { port } = startInsight("node");
     await waitForInsight(port);
 
     const res = await fetch(`http://127.0.0.1:${port}/api/sessions/abcd1234/events/sess-1`, {
@@ -172,8 +173,8 @@ describe("Insight API same-machine cross-origin policy", () => {
     expect(body.events[0].data).toContain("sk-live-local-demo");
   });
 
-  test("does not allow permissive DELETE preflight headers for API routes", async () => {
-    const { port } = startNodeInsight();
+  test("OPTIONS returns 405 instead of permissive preflight (Node)", async () => {
+    const { port } = startInsight("node");
     await waitForInsight(port);
 
     const res = await fetch(`http://127.0.0.1:${port}/api/content/feedface/source/7`, {
@@ -184,8 +185,23 @@ describe("Insight API same-machine cross-origin policy", () => {
       },
     });
 
-    expect([204, 405]).toContain(res.status);
+    expect(res.status).toBe(405);
     expect(res.headers.get("access-control-allow-origin")).toBeNull();
     expect(res.headers.get("access-control-allow-methods")).toBeNull();
+  });
+
+});
+
+describe.runIf(typeof Bun !== "undefined" || process.env.TEST_BUN_RUNTIME === "1")("Insight API CORS — Bun runtime", () => {
+  test("does not advertise permissive CORS headers (Bun)", async () => {
+    const { port } = startInsight("bun");
+    await waitForInsight(port);
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/sessions/abcd1234/events/sess-1`, {
+      headers: { Origin: "http://127.0.0.1:8081" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
   });
 });
