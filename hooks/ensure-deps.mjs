@@ -28,8 +28,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
 
 const NATIVE_DEPS = ["better-sqlite3"];
+const NATIVE_BINARIES = {
+  "better-sqlite3": ["build", "Release", "better_sqlite3.node"],
+};
+
+/**
+ * Check if the current runtime has built-in SQLite support, making
+ * better-sqlite3 unnecessary. Bun has bun:sqlite, Node >= 22.5 has node:sqlite.
+ * When true, skip the entire better-sqlite3 bootstrap to avoid SIGSEGV
+ * coredumps on Node v24 (#331) and unnecessary install overhead.
+ */
+function hasModernSqlite() {
+  if (typeof globalThis.Bun !== "undefined") return true;
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  return major > 22 || (major === 22 && minor >= 5);
+}
 
 export function ensureDeps() {
+  if (hasModernSqlite()) return;
   for (const pkg of NATIVE_DEPS) {
     const pkgDir = resolve(root, "node_modules", pkg);
     if (!existsSync(pkgDir)) {
@@ -41,10 +57,7 @@ export function ensureDeps() {
           timeout: 120000,
         });
       } catch { /* best effort — hook degrades gracefully without DB */ }
-    } else if (
-      !existsSync(resolve(pkgDir, "build", "Release")) &&
-      !existsSync(resolve(pkgDir, "prebuilds"))
-    ) {
+    } else if (!existsSync(resolve(pkgDir, ...NATIVE_BINARIES[pkg]))) {
       // Package installed but native binary missing (e.g., npm ignore-scripts=true)
       try {
         execSync(`npm rebuild ${pkg} --ignore-scripts=false`, {
@@ -81,6 +94,7 @@ function probeNativeInChildProcess(pluginRoot) {
 }
 
 export function ensureNativeCompat(pluginRoot) {
+  if (hasModernSqlite()) return;
   try {
     const abi = process.versions.modules;
     const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
@@ -101,21 +115,19 @@ export function ensureNativeCompat(pluginRoot) {
       // Cached binary is stale/corrupt — fall through to rebuild
     }
 
-    if (!existsSync(binaryPath)) return;
-
     // Probe: try loading better-sqlite3 with current Node
-    if (probeNativeInChildProcess(pluginRoot)) {
+    if (existsSync(binaryPath) && probeNativeInChildProcess(pluginRoot)) {
       // Load succeeded — cache the working binary for this ABI
       copyFileSync(binaryPath, abiCachePath);
     } else {
-      // ABI mismatch — rebuild for current Node version
-      execSync("npm rebuild better-sqlite3", {
+      // ABI mismatch or missing native binary — rebuild for current Node version
+      execSync("npm rebuild better-sqlite3 --ignore-scripts=false", {
         cwd: pluginRoot,
         stdio: "pipe",
         timeout: 60000,
       });
       codesignBinary(binaryPath);
-      if (existsSync(binaryPath)) {
+      if (existsSync(binaryPath) && probeNativeInChildProcess(pluginRoot)) {
         copyFileSync(binaryPath, abiCachePath);
       }
     }

@@ -1,11 +1,18 @@
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
-import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { existsSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { afterAll, describe, expect, test } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
+import {
+  cleanOrphanedWALFiles,
+  defaultDBPath,
+  deleteDBFiles,
+  isSQLiteCorruptionError,
+  renameCorruptDB,
+  withRetry,
+} from "../../src/db-base.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -605,5 +612,280 @@ describe("SessionDB — corrupt DB recovery", () => {
 
   test("non-corruption errors still throw", () => {
     assert.throws(() => new SessionDB({ dbPath: tmpdir() }));
+  });
+});
+
+// ════════════════════════════════════════════
+// DB-BASE PRIMITIVES (framework-free utilities shared with SessionDB)
+// ════════════════════════════════════════════
+
+/** Create a temporary directory that auto-cleans via the shared cleanups array. */
+function mkTmpDir(prefix = "db-base-test-"): string {
+  const d = mkdtempSync(join(tmpdir(), prefix));
+  cleanups.push(() => rmSync(d, { recursive: true, force: true }));
+  return d;
+}
+
+describe("withRetry — SQLITE_BUSY retry loop", () => {
+  test("returns result immediately when fn succeeds on first attempt", () => {
+    let calls = 0;
+    const result = withRetry(() => { calls++; return 42; });
+    assert.equal(result, 42);
+    assert.equal(calls, 1);
+  });
+
+  test("retries on SQLITE_BUSY error and eventually returns", () => {
+    let calls = 0;
+    const result = withRetry(() => {
+      calls++;
+      if (calls < 3) throw new Error("SQLITE_BUSY: database is locked");
+      return "ok";
+    }, [1, 1, 1]);
+    assert.equal(result, "ok");
+    assert.equal(calls, 3);
+  });
+
+  test("retries on 'database is locked' string (bun:sqlite shape)", () => {
+    let calls = 0;
+    const result = withRetry(() => {
+      calls++;
+      if (calls < 2) throw new Error("database is locked");
+      return "ok";
+    }, [1]);
+    assert.equal(result, "ok");
+    assert.equal(calls, 2);
+  });
+
+  test("rethrows non-busy errors immediately without retry", () => {
+    let calls = 0;
+    assert.throws(
+      () => withRetry(() => { calls++; throw new Error("SQLITE_CORRUPT: disk image malformed"); }, [1, 1, 1]),
+      /SQLITE_CORRUPT/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  test("rethrows generic Error without retry", () => {
+    let calls = 0;
+    assert.throws(
+      () => withRetry(() => { calls++; throw new Error("boom"); }, [1, 1]),
+      /boom/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  test("handles non-Error throws (string) — rethrows if not busy-shaped", () => {
+    let calls = 0;
+    assert.throws(
+      () => withRetry(() => { calls++; throw "plain string"; }, [1]),
+    );
+    assert.equal(calls, 1);
+  });
+
+  test("retries when non-Error throw is busy-shaped string", () => {
+    let calls = 0;
+    const result = withRetry(() => {
+      calls++;
+      if (calls < 2) throw "SQLITE_BUSY";
+      return 7;
+    }, [1]);
+    assert.equal(result, 7);
+    assert.equal(calls, 2);
+  });
+
+  test("throws descriptive error after exhausting all retries", () => {
+    let calls = 0;
+    const err = (() => {
+      try {
+        withRetry(() => { calls++; throw new Error("SQLITE_BUSY"); }, [1, 1]);
+      } catch (e) { return e as Error; }
+      throw new Error("expected throw");
+    })();
+    assert.match(err.message, /after 2 retries/);
+    assert.match(err.message, /Original error: SQLITE_BUSY/);
+    assert.equal(calls, 3);
+  });
+
+  test("respects delays array length — attempts = delays.length + 1", () => {
+    let calls = 0;
+    assert.throws(
+      () => withRetry(() => { calls++; throw new Error("SQLITE_BUSY"); }, [1, 1, 1, 1]),
+      /after 4 retries/,
+    );
+    assert.equal(calls, 5);
+  });
+
+  test("empty delays array means single attempt and no retries", () => {
+    let calls = 0;
+    assert.throws(
+      () => withRetry(() => { calls++; throw new Error("SQLITE_BUSY"); }, []),
+      /after 0 retries/,
+    );
+    assert.equal(calls, 1);
+  });
+
+  test("waits between retries (busy-wait respects delay)", () => {
+    let calls = 0;
+    const start = Date.now();
+    const result = withRetry(() => {
+      calls++;
+      if (calls < 2) throw new Error("SQLITE_BUSY");
+      return "done";
+    }, [50]);
+    const elapsed = Date.now() - start;
+    assert.equal(result, "done");
+    assert.equal(calls, 2);
+    assert.ok(elapsed >= 45, `expected ≥45ms, got ${elapsed}ms`);
+  });
+});
+
+describe("isSQLiteCorruptionError — known corruption signatures", () => {
+  test("matches SQLITE_CORRUPT", () => {
+    expect(isSQLiteCorruptionError("SQLITE_CORRUPT: database disk image is malformed")).toBe(true);
+  });
+
+  test("matches SQLITE_NOTADB", () => {
+    expect(isSQLiteCorruptionError("SQLITE_NOTADB: file is not a database")).toBe(true);
+  });
+
+  test("matches 'database disk image is malformed' without prefix", () => {
+    expect(isSQLiteCorruptionError("database disk image is malformed")).toBe(true);
+  });
+
+  test("matches 'file is not a database' without prefix", () => {
+    expect(isSQLiteCorruptionError("file is not a database")).toBe(true);
+  });
+
+  test("returns false for unrelated error messages", () => {
+    expect(isSQLiteCorruptionError("SQLITE_BUSY: database is locked")).toBe(false);
+    expect(isSQLiteCorruptionError("ENOENT: no such file or directory")).toBe(false);
+    expect(isSQLiteCorruptionError("boom")).toBe(false);
+    expect(isSQLiteCorruptionError("")).toBe(false);
+  });
+
+  test("matches corruption signatures embedded in longer messages", () => {
+    expect(isSQLiteCorruptionError("Error: SqliteError: SQLITE_CORRUPT: stack\n  at ...")).toBe(true);
+  });
+});
+
+describe("renameCorruptDB — quarantine on corruption", () => {
+  test("renames main DB file with .corrupt-<ts> suffix", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "c.db");
+    writeFileSync(dbPath, "garbage");
+    renameCorruptDB(dbPath);
+    const files = readdirSync(dir);
+    const found = files.find(f => f.startsWith("c.db.corrupt-"));
+    assert.ok(found, `expected quarantined file in ${files.join(", ")}`);
+    assert.equal(existsSync(dbPath), false);
+  });
+
+  test("renames sidecar -wal and -shm files when present", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "c.db");
+    writeFileSync(dbPath, "db");
+    writeFileSync(dbPath + "-wal", "wal");
+    writeFileSync(dbPath + "-shm", "shm");
+    renameCorruptDB(dbPath);
+    const files = readdirSync(dir);
+    assert.ok(files.some(f => f.startsWith("c.db.corrupt-")));
+    assert.ok(files.some(f => f.startsWith("c.db-wal.corrupt-")));
+    assert.ok(files.some(f => f.startsWith("c.db-shm.corrupt-")));
+  });
+
+  test("does not throw when sidecar files are missing", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "c.db");
+    writeFileSync(dbPath, "db");
+    assert.doesNotThrow(() => renameCorruptDB(dbPath));
+    assert.equal(existsSync(dbPath), false);
+  });
+
+  test("does not throw when the main DB file is also missing", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "missing.db");
+    assert.doesNotThrow(() => renameCorruptDB(dbPath));
+  });
+});
+
+describe("cleanOrphanedWALFiles — WAL cleanup when DB is gone", () => {
+  test("removes -wal and -shm when main DB does not exist", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "orphan.db");
+    writeFileSync(dbPath + "-wal", "wal");
+    writeFileSync(dbPath + "-shm", "shm");
+    cleanOrphanedWALFiles(dbPath);
+    assert.equal(existsSync(dbPath + "-wal"), false);
+    assert.equal(existsSync(dbPath + "-shm"), false);
+  });
+
+  test("does nothing when main DB still exists", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "live.db");
+    writeFileSync(dbPath, "db");
+    writeFileSync(dbPath + "-wal", "wal");
+    writeFileSync(dbPath + "-shm", "shm");
+    cleanOrphanedWALFiles(dbPath);
+    assert.equal(existsSync(dbPath + "-wal"), true);
+    assert.equal(existsSync(dbPath + "-shm"), true);
+  });
+
+  test("tolerates missing sidecars", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "nothing-here.db");
+    assert.doesNotThrow(() => cleanOrphanedWALFiles(dbPath));
+  });
+});
+
+describe("deleteDBFiles — unconditional cleanup of all three files", () => {
+  test("removes main, -wal, and -shm when all present", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "delete-me.db");
+    writeFileSync(dbPath, "db");
+    writeFileSync(dbPath + "-wal", "wal");
+    writeFileSync(dbPath + "-shm", "shm");
+    deleteDBFiles(dbPath);
+    assert.equal(existsSync(dbPath), false);
+    assert.equal(existsSync(dbPath + "-wal"), false);
+    assert.equal(existsSync(dbPath + "-shm"), false);
+  });
+
+  test("tolerates any subset of files being absent", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "partial.db");
+    writeFileSync(dbPath, "db");
+    assert.doesNotThrow(() => deleteDBFiles(dbPath));
+    assert.equal(existsSync(dbPath), false);
+  });
+
+  test("tolerates completely missing paths", () => {
+    const dir = mkTmpDir();
+    const dbPath = join(dir, "never-existed.db");
+    assert.doesNotThrow(() => deleteDBFiles(dbPath));
+  });
+});
+
+describe("defaultDBPath — process-scoped temp path", () => {
+  test("embeds the current process.pid in the filename", () => {
+    const p = defaultDBPath();
+    expect(p).toContain(`-${process.pid}.db`);
+  });
+
+  test("respects the prefix argument", () => {
+    const p = defaultDBPath("my-prefix");
+    const base = p.split(/[\\/]/).pop() ?? "";
+    expect(base.startsWith("my-prefix-")).toBe(true);
+    expect(base.endsWith(".db")).toBe(true);
+  });
+
+  test("defaults to the 'context-mode' prefix", () => {
+    const p = defaultDBPath();
+    const base = p.split(/[\\/]/).pop() ?? "";
+    expect(base.startsWith("context-mode-")).toBe(true);
+  });
+
+  test("returns a path under the OS tmpdir", () => {
+    const p = defaultDBPath();
+    expect(p.startsWith(tmpdir())).toBe(true);
   });
 });

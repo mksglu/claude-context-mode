@@ -9,17 +9,16 @@ import "./ensure-deps.mjs";
  * snapshot (<2KB XML), and stores it for injection after compact.
  */
 
-import { readStdin, getSessionId, getSessionDBPath } from "./session-helpers.mjs";
+import { readStdin, getSessionId, getSessionDBPath, resolveConfigDir } from "./session-helpers.mjs";
 import { createSessionLoaders } from "./session-loaders.mjs";
 import { appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 // Resolve absolute path for imports
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadSnapshot } = createSessionLoaders(HOOK_DIR);
-const DEBUG_LOG = join(homedir(), ".claude", "context-mode", "precompact-debug.log");
+const DEBUG_LOG = join(resolveConfigDir(), "context-mode", "precompact-debug.log");
 
 try {
   const raw = await readStdin();

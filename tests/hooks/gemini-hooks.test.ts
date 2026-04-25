@@ -13,8 +13,10 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, rmSync, existsSync, unlinkSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
+import { resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(__dirname, "..", "..");
 const HOOKS_DIR = join(__dirname, "..", "..", "hooks", "gemini-cli");
 
 interface HookResult {
@@ -169,6 +171,41 @@ describe("Gemini CLI hooks", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("SessionStart");
+    });
+
+    // Regression for #299 — the earlier plain-text output was rendered
+    // verbatim in Gemini CLI, spilling the full routing block (~10 KB) as
+    // user-visible startup noise. Structured JSON is treated as hook metadata.
+    test("sessionstart outputs structured JSON (hidden from user in Gemini CLI)", () => {
+      const result = runHook("sessionstart.mjs", {
+        source: "startup",
+        session_id: "test-gemini-json-shape",
+      }, geminiEnv());
+
+      expect(result.exitCode).toBe(0);
+
+      // stdout must parse as JSON — no leading plaintext banner
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.hookSpecificOutput).toBeDefined();
+      expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
+      expect(typeof parsed.hookSpecificOutput.additionalContext).toBe("string");
+      expect(parsed.hookSpecificOutput.additionalContext).toContain("context-mode");
+
+      // The old plaintext markers must not leak through — they are exactly
+      // what rendered as visible noise in Gemini CLI before the fix.
+      expect(result.stdout).not.toContain("SessionStart:compact hook success");
+      expect(result.stdout).not.toContain("SessionStart hook additional context:");
+    });
+
+    test("sessionstart source uses JSON.stringify, not plaintext output (#299)", () => {
+      // Mirrors the vscode-copilot sessionstart source check — enforces the
+      // plaintext path cannot be reintroduced without breaking this test.
+      const hookSrc = readFileSync(resolve(ROOT, "hooks/gemini-cli/sessionstart.mjs"), "utf-8");
+      expect(hookSrc).toContain("JSON.stringify");
+      expect(hookSrc).toContain("hookSpecificOutput");
+      expect(hookSrc).toContain("hookEventName");
+      expect(hookSrc).toContain('"SessionStart"');
+      expect(hookSrc).not.toContain("SessionStart:compact hook success");
     });
   });
 

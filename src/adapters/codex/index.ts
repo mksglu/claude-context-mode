@@ -9,11 +9,9 @@
  *   - Config: ~/.codex/hooks.json + ~/.codex/config.toml (TOML for MCP/features)
  *   - Session dir: ~/.codex/context-mode/sessions/
  *
- * IMPORTANT: Hook dispatch is NOT yet active in Codex CLI (v0.118.0).
- * codex_hooks feature flag is Stage::UnderDevelopment — hooks are implemented
- * in codex-rs/hooks/ but not wired into the tool execution pipeline.
- * Our adapter is ready; it will work once Codex enables dispatch.
- * Track: https://github.com/openai/codex/issues/16685
+ * Hook dispatch is stable in Codex CLI. PreToolUse deny decisions work,
+ * while input rewriting remains blocked on upstream updatedInput support.
+ * Track: https://github.com/openai/codex/issues/18491
  */
 
 import { createHash } from "node:crypto";
@@ -292,9 +290,9 @@ export class CodexAdapter implements HookAdapter {
     return [
       {
         check: "Hook support",
-        status: "warn",
+        status: "pass",
         message:
-          "Codex CLI hooks are implemented but dispatch is not yet active (Stage::UnderDevelopment, v0.118.0). Enable flag: [features] codex_hooks = true in ~/.codex/config.toml. Track: openai/codex#16685",
+          "Codex CLI hooks are stable. Configure ~/.codex/hooks.json for PreToolUse, PostToolUse, and SessionStart.",
       },
     ];
   }

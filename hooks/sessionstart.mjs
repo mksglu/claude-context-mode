@@ -20,13 +20,12 @@ import { createToolNamer } from "./core/tool-naming.mjs";
 
 const toolNamer = createToolNamer("claude-code");
 const ROUTING_BLOCK = createRoutingBlock(toolNamer);
-import { readStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath } from "./session-helpers.mjs";
+import { readStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath, resolveConfigDir } from "./session-helpers.mjs";
 import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLatestSessionEvents } from "./session-directive.mjs";
 import { createSessionLoaders } from "./session-loaders.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 
 // Resolve absolute path for imports (fileURLToPath for Windows compat)
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
@@ -93,7 +92,7 @@ try {
     const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
     db.ensureSession(sessionId, projectDir);
     const claudeMdPaths = [
-      join(homedir(), ".claude", "CLAUDE.md"),
+      join(resolveConfigDir(), "CLAUDE.md"),
       join(projectDir, "CLAUDE.md"),
       join(projectDir, ".claude", "CLAUDE.md"),
     ];
@@ -140,8 +139,9 @@ try {
     const { appendFileSync } = await import("node:fs");
     const { join: pjoin } = await import("node:path");
     const { homedir } = await import("node:os");
+    const { resolveConfigDir: _resolve } = await import("./session-helpers.mjs");
     appendFileSync(
-      pjoin(homedir(), ".claude", "context-mode", "sessionstart-debug.log"),
+      pjoin(_resolve(), "context-mode", "sessionstart-debug.log"),
       `[${new Date().toISOString()}] ${err?.message || err}\n${err?.stack || ""}\n`,
     );
   } catch { /* ignore logging failure */ }

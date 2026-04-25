@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, type ChildProcess } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -115,6 +115,10 @@ function maybeIndexSessionEvents(store: ContentStore): void {
 // hardcoded configDir detection in tool handlers.
 
 let _detectedAdapter: HookAdapter | null = null;
+
+// Tracks the ctx_insight dashboard child so shutdown can terminate it.
+// See ctx_insight handler + shutdown() in main().
+let _insightChild: ChildProcess | null = null;
 
 /**
  * Get the platform-specific sessions directory from the detected adapter.
@@ -371,8 +375,14 @@ function checkFilePathDenyPolicy(
   toolName: string,
 ): ToolResult | null {
   try {
-    const denyGlobs = readToolDenyPatterns("Read", process.env.CLAUDE_PROJECT_DIR);
-    const result = evaluateFilePath(filePath, denyGlobs);
+    const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+    const denyGlobs = readToolDenyPatterns("Read", projectDir);
+    const result = evaluateFilePath(
+      filePath,
+      denyGlobs,
+      process.platform === "win32",
+      projectDir,
+    );
     if (result.denied) {
       return trackResponse(toolName, {
         content: [{
@@ -1048,6 +1058,7 @@ server.registerTool(
       "- README files, migration guides, changelog entries\n" +
       "- Any content with code examples you may need to reference precisely\n\n" +
       "After indexing, use 'search' to retrieve specific sections on-demand.\n" +
+      "When `path` is provided, a content hash is stored for automatic stale detection in search results.\n" +
       "Do NOT use for: log files, test output, CSV, build output — use 'execute_file' for those.",
     inputSchema: z.object({
       content: z
@@ -1162,7 +1173,8 @@ server.registerTool(
     title: "Search Indexed Content",
     description:
       "Search indexed content. Requires prior indexing via ctx_batch_execute, ctx_index, or ctx_fetch_and_index. " +
-      "Pass ALL search questions as queries array in ONE call.\n\n" +
+      "Pass ALL search questions as queries array in ONE call. " +
+      "File-backed sources are auto-refreshed when the source file changes.\n\n" +
       "TIPS: 2-4 specific terms per query. Use 'source' to scope results.",
     inputSchema: z.object({
       queries: z.preprocess(coerceJsonArray, z
@@ -1282,6 +1294,11 @@ server.registerTool(
       }
 
       let output = sections.join("\n\n---\n\n");
+
+      // Report auto-refreshed stale sources
+      if (store.lastRefreshCount > 0) {
+        output = `> Auto-refreshed ${store.lastRefreshCount} stale source${store.lastRefreshCount > 1 ? "s" : ""} (file changed since indexing).\n\n` + output;
+      }
 
       // Add throttle warning after threshold
       if (searchCallCount >= SEARCH_MAX_RESULTS_AFTER) {
@@ -2191,7 +2208,15 @@ server.registerTool(
         // Port is free, proceed with spawn
       }
 
-      // Start server in background
+      // Kill any previous insight child this MCP spawned (e.g. re-invocation).
+      if (_insightChild && _insightChild.pid && !_insightChild.killed) {
+        try { _insightChild.kill("SIGTERM"); } catch { /* best effort */ }
+      }
+
+      // Start server in background. `detached: true` keeps MCP stdio free, but
+      // we track the handle and kill it in shutdown() so the dashboard does
+      // not orphan when Claude closes. The child also watches INSIGHT_PARENT_PID
+      // as a fallback for SIGKILL/crash paths.
       const { spawn } = await import("node:child_process");
       const child = spawn("node", [join(cacheDir, "server.mjs")], {
         cwd: cacheDir,
@@ -2200,12 +2225,14 @@ server.registerTool(
           PORT: String(port),
           INSIGHT_SESSION_DIR: getSessionDir(),
           INSIGHT_CONTENT_DIR: join(dirname(getSessionDir()), "content"),
+          INSIGHT_PARENT_PID: String(process.pid),
         },
         detached: true,
         stdio: "ignore",
       });
       child.on("error", () => {}); // prevent unhandled error crash
       child.unref();
+      _insightChild = child;
 
       // Wait for server to be ready
       await new Promise(r => setTimeout(r, 1500));
@@ -2279,6 +2306,10 @@ async function main() {
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
     // Remove MCP readiness sentinel (#230)
     try { unlinkSync(mcpSentinel); } catch { /* best effort */ }
+    // Stop ctx_insight dashboard so it does not outlive Claude.
+    if (_insightChild && _insightChild.pid && !_insightChild.killed) {
+      try { _insightChild.kill("SIGTERM"); } catch { /* best effort */ }
+    }
   };
   const gracefulShutdown = async () => {
     shutdown();

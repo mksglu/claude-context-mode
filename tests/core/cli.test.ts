@@ -226,12 +226,25 @@ async function loadEnsureNativeCompat(): Promise<(pluginRoot: string) => void> {
   const match = src.match(/^export function ensureNativeCompat\b[\s\S]*?^}/m);
   if (!match) throw new Error("ensureNativeCompat not found in hooks/ensure-deps.mjs");
 
+  // Also extract hasModernSqlite if ensureNativeCompat calls it (#331)
+  const helperMatch = src.match(/^function hasModernSqlite\b[\s\S]*?^}/m);
+  const helpers = helperMatch ? helperMatch[0] + "\n" : "";
+
+  // Extract codesignBinary and probeNativeInChildProcess helpers if present
+  const codesignMatch = src.match(/^function codesignBinary\b[\s\S]*?^}/m);
+  const probeMatch = src.match(/^function probeNativeInChildProcess\b[\s\S]*?^}/m);
+  const codesign = codesignMatch ? codesignMatch[0] + "\n" : "";
+  const probe = probeMatch ? probeMatch[0] + "\n" : "";
+
   const tmpFile = join(tmpdir(), `abi-test-${Date.now()}.mjs`);
   writeFileSync(tmpFile, [
     'import { existsSync, copyFileSync } from "node:fs";',
     'import { resolve } from "node:path";',
     'import { createRequire } from "node:module";',
     'import { execSync } from "node:child_process";',
+    helpers,
+    codesign,
+    probe,
     `${match[0]}`,
   ].join("\n"));
 

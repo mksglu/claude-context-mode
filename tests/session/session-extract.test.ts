@@ -1426,3 +1426,78 @@ describe("Zero-truncation architecture", () => {
     assert.ok(events.length >= 1);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// SLICE N: MCP EVENT EXTRACTION (extractMcp)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe("MCP Events", () => {
+  test("captures tool_response content so ctx_search can find details, not just the call", () => {
+    const input = {
+      tool_name: "mcp__jira__jira_get",
+      tool_input: { ticket: "CVX-5909" },
+      tool_response: JSON.stringify({
+        key: "CVX-5909",
+        summary: "MQTT reconnect storm after broker failover",
+        description: "Agents see intermittent disconnects during broker failover...",
+      }),
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "mcp");
+    assert.equal(events[0].category, "mcp");
+    assert.ok(events[0].data.includes("jira_get"), "data should include tool short name");
+    assert.ok(events[0].data.includes("CVX-5909"), "data should include first string arg");
+    // Response body is now searchable, not just the call shape
+    assert.ok(
+      events[0].data.includes("MQTT reconnect storm"),
+      "data should include tool_response body so FTS5 can index it",
+    );
+  });
+
+  test("preserves full response even for large payloads (no truncation)", () => {
+    // Large grafana loki export — exactly the kind of response we most want the
+    // cache to preserve to avoid re-fetching. No cap: matches rule_content
+    // precedent (extract.ts File Events path).
+    const bigResponse = "log_line_".repeat(5000); // ~45KB
+    const input = {
+      tool_name: "mcp__grafana__query_loki_logs",
+      tool_input: { query: '{app="mqtt"} |= "error"' },
+      tool_response: bigResponse,
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.length, 1);
+    assert.ok(
+      events[0].data.includes(bigResponse),
+      "large tool_response must be preserved in full",
+    );
+  });
+
+  test("gracefully handles missing tool_response (regression)", () => {
+    // Pre-existing behavior: when tool_response is absent, no response suffix.
+    const input = {
+      tool_name: "mcp__context-mode__ctx_stats",
+      tool_input: {},
+      // tool_response omitted
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "mcp");
+    assert.equal(events[0].data, "ctx_stats", "no \\nresponse: suffix when tool_response absent");
+  });
+
+  test("gracefully handles empty tool_response", () => {
+    const input = {
+      tool_name: "mcp__context-mode__ctx_stats",
+      tool_input: {},
+      tool_response: "",
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].data, "ctx_stats", "empty tool_response should not add suffix");
+  });
+});

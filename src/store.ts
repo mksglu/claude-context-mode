@@ -12,6 +12,7 @@ import type { Database as DatabaseInstance } from "better-sqlite3";
 import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -401,7 +402,9 @@ export class ContentStore {
         label TEXT NOT NULL,
         chunk_count INTEGER NOT NULL DEFAULT 0,
         code_chunk_count INTEGER NOT NULL DEFAULT 0,
-        indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        file_path TEXT,
+        content_hash TEXT
       );
 
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
@@ -426,15 +429,19 @@ export class ContentStore {
 
       CREATE INDEX IF NOT EXISTS idx_sources_label ON sources(label);
     `);
+
+    // Stale detection columns — safe for existing DBs (ALTER is O(1) in SQLite)
+    try { this.#db.exec("ALTER TABLE sources ADD COLUMN file_path TEXT"); } catch { /* already exists */ }
+    try { this.#db.exec("ALTER TABLE sources ADD COLUMN content_hash TEXT"); } catch { /* already exists */ }
   }
 
   #prepareStatements(): void {
     // Write path
     this.#stmtInsertSourceEmpty = this.#db.prepare(
-      "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, 0, 0)",
+      "INSERT INTO sources (label, chunk_count, code_chunk_count, file_path, content_hash) VALUES (?, 0, 0, ?, ?)",
     );
     this.#stmtInsertSource = this.#db.prepare(
-      "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES (?, ?, ?)",
+      "INSERT INTO sources (label, chunk_count, code_chunk_count, file_path, content_hash) VALUES (?, ?, ?, ?, ?)",
     );
     this.#stmtInsertChunk = this.#db.prepare(
       "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
@@ -653,7 +660,7 @@ export class ContentStore {
       "SELECT content FROM chunks WHERE source_id = ?",
     );
     this.#stmtSourceMeta = this.#db.prepare(
-      "SELECT label, chunk_count, code_chunk_count, indexed_at FROM sources WHERE label = ?",
+      "SELECT label, chunk_count, code_chunk_count, indexed_at, file_path, content_hash FROM sources WHERE label = ?",
     );
     this.#stmtStats = this.#db.prepare(`
       SELECT
@@ -691,7 +698,11 @@ export class ContentStore {
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
-    return withRetry(() => this.#insertChunks(chunks, label, text));
+    // Stale detection: store file_path + SHA-256 for file-backed sources
+    const filePath = path ?? undefined;
+    const contentHash = filePath ? createHash("sha256").update(text).digest("hex") : undefined;
+
+    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash));
   }
 
   // ── Index Plain Text ──
@@ -761,7 +772,7 @@ export class ContentStore {
    * into both FTS5 tables within a transaction and extracts vocabulary.
    * Uses cached prepared statements from #prepareStatements().
    */
-  #insertChunks(chunks: Chunk[], label: string, text: string): IndexResult {
+  #insertChunks(chunks: Chunk[], label: string, text: string, filePath?: string, contentHash?: string): IndexResult {
     const codeChunks = chunks.filter((c) => c.hasCode).length;
 
     // Atomic dedup + insert: delete previous source with same label,
@@ -773,11 +784,11 @@ export class ContentStore {
       this.#stmtDeleteSourcesByLabel.run(label);
 
       if (chunks.length === 0) {
-        const info = this.#stmtInsertSourceEmpty.run(label);
+        const info = this.#stmtInsertSourceEmpty.run(label, filePath ?? null, contentHash ?? null);
         return Number(info.lastInsertRowid);
       }
 
-      const info = this.#stmtInsertSource.run(label, chunks.length, codeChunks);
+      const info = this.#stmtInsertSource.run(label, chunks.length, codeChunks, filePath ?? null, contentHash ?? null);
       const sourceId = Number(info.lastInsertRowid);
 
       for (const chunk of chunks) {
@@ -1043,6 +1054,9 @@ export class ContentStore {
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
   ): SearchResult[] {
+    // Step 0: Auto-refresh stale file-backed sources before searching
+    this.#refreshStaleSources();
+
     // Step 1: RRF fusion (porter OR + trigram OR → merge)
     const rrfResults = this.#rrfSearch(query, limit, source, contentType, sourceMatchMode);
     if (rrfResults.length > 0) {
@@ -1073,12 +1087,47 @@ export class ContentStore {
     return [];
   }
 
+  /** Number of sources auto-refreshed in the last searchWithFallback call. */
+  lastRefreshCount = 0;
+
+  /**
+   * Check all file-backed sources for staleness and auto re-index changed files.
+   * Uses mtime as a fast gate — only computes SHA-256 when mtime has advanced
+   * past indexed_at. Gracefully skips deleted files and non-file sources.
+   */
+  #refreshStaleSources(): void {
+    this.lastRefreshCount = 0;
+    const sources = this.#db.prepare(
+      "SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL",
+    ).all() as Array<{ label: string; file_path: string; content_hash: string; indexed_at: string }>;
+
+    for (const src of sources) {
+      try {
+        if (!existsSync(src.file_path)) continue; // file deleted — keep cached results
+        const mtime = statSync(src.file_path).mtime;
+        const indexedAt = new Date(src.indexed_at + "Z");
+        if (mtime <= indexedAt) continue; // file unchanged — fast path
+
+        // mtime advanced — check hash to confirm real change (not just touch)
+        const newContent = readFileSync(src.file_path, "utf-8");
+        const newHash = createHash("sha256").update(newContent).digest("hex");
+        if (newHash === src.content_hash) continue; // content identical — skip
+
+        // File genuinely changed — re-index
+        this.index({ path: src.file_path, source: src.label });
+        this.lastRefreshCount++;
+      } catch {
+        // Graceful degradation — never break search for stale detection
+      }
+    }
+  }
+
   // ── Sources ──
 
-  getSourceMeta(label: string): { label: string; chunkCount: number; codeChunkCount: number; indexedAt: string } | null {
-    const row = this.#stmtSourceMeta.get(label) as { label: string; chunk_count: number; code_chunk_count: number; indexed_at: string } | undefined;
+  getSourceMeta(label: string): { label: string; chunkCount: number; codeChunkCount: number; indexedAt: string; filePath: string | null; contentHash: string | null } | null {
+    const row = this.#stmtSourceMeta.get(label) as { label: string; chunk_count: number; code_chunk_count: number; indexed_at: string; file_path: string | null; content_hash: string | null } | undefined;
     if (!row) return null;
-    return { label: row.label, chunkCount: row.chunk_count, codeChunkCount: row.code_chunk_count, indexedAt: row.indexed_at };
+    return { label: row.label, chunkCount: row.chunk_count, codeChunkCount: row.code_chunk_count, indexedAt: row.indexed_at, filePath: row.file_path ?? null, contentHash: row.content_hash ?? null };
   }
 
   listSources(): Array<{ label: string; chunkCount: number }> {

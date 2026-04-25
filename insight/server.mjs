@@ -586,6 +586,7 @@ function serveStaticFile(pathname) {
 // ── Server (dual runtime) ────────────────────────────────
 
 const indexHTML = readFileSync(join(DIST_DIR, "index.html"), "utf8");
+const API_JSON_HEADERS = { "Content-Type": "application/json" };
 
 if (isBun) {
   // Bun: use Bun.serve
@@ -597,7 +598,7 @@ if (isBun) {
       const data = route(req.method, url.pathname, url.searchParams);
       if (data !== null) {
         return new Response(JSON.stringify(data), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+          headers: API_JSON_HEADERS,
         });
       }
       if (url.pathname.startsWith("/assets/") || url.pathname.match(/\.\w{2,4}$/)) {
@@ -613,9 +614,7 @@ if (isBun) {
   // Node: use http.createServer
   const server = createHttpServer((req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
-    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (req.method === "OPTIONS") { res.writeHead(405); res.end(); return; }
 
     const data = route(req.method, url.pathname, url.searchParams);
     if (data !== null) {
@@ -635,6 +634,19 @@ if (isBun) {
     res.end(indexHTML);
   });
   server.listen(PORT, "127.0.0.1");
+}
+
+// Parent watchdog: exit when the MCP process that spawned us disappears.
+// Fallback for SIGKILL / crash paths where shutdown() cannot run.
+const PARENT_PID = Number(process.env.INSIGHT_PARENT_PID);
+if (Number.isFinite(PARENT_PID) && PARENT_PID > 0) {
+  setInterval(() => {
+    try {
+      process.kill(PARENT_PID, 0);
+    } catch {
+      process.exit(0);
+    }
+  }, 5000).unref();
 }
 
 console.log(`\n  context-mode Insight`);
