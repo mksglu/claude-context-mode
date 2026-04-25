@@ -154,3 +154,115 @@ describe("escapeXML", () => {
     assert.equal(escapeXML("café 🎉 <x>"), "café 🎉 &lt;x&gt;");
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// Additional edge cases — codepoint boundary arithmetic,
+// modern emoji sequences, and marker-length arithmetic.
+// ─────────────────────────────────────────────────────────
+
+describe("capBytes — codepoint boundary edge cases", () => {
+  test("byte-safe across 3-byte UTF-8 (CJK) input at every cap", () => {
+    // Each "日" is 3 bytes in UTF-8 — the gap between ASCII and 4-byte emoji
+    // that the existing surrogate test does not exercise.
+    const input = "日本語テスト".repeat(5);
+    for (let cap = 0; cap <= Buffer.byteLength(input) + 4; cap++) {
+      const out = capBytes(input, cap);
+      assert.ok(
+        Buffer.byteLength(out) <= cap,
+        `cap=${cap} produced ${Buffer.byteLength(out)} bytes`,
+      );
+      assert.ok(
+        !out.includes("\uFFFD"),
+        `cap=${cap} leaked replacement char: ${JSON.stringify(out)}`,
+      );
+    }
+  });
+
+  test("handles ZWJ emoji sequences without splitting surrogate pairs", () => {
+    // Family emoji is 3 surrogate-pair emoji joined by ZWJ (U+200D).
+    // Each component has a surrogate pair; slicing mid-pair would leak U+FFFD.
+    const family = "👨\u200D👩\u200D👧";
+    for (let cap = 0; cap <= Buffer.byteLength(family) + 4; cap++) {
+      const out = capBytes(family, cap);
+      assert.ok(Buffer.byteLength(out) <= cap);
+      assert.ok(
+        !out.includes("\uFFFD"),
+        `cap=${cap} leaked replacement char: ${JSON.stringify(out)}`,
+      );
+    }
+  });
+
+  test("tolerates a lone low surrogate in input and truncates to ASCII prefix", () => {
+    // Lone low surrogate (not preceded by a high one) is malformed UTF-16.
+    // When the byte budget ends inside the 3-byte ASCII prefix, the output
+    // must be a deterministic ASCII prefix plus the ellipsis — not a
+    // mid-codepoint slice and not a panic. We pin the exact expected output
+    // to lock the `byteSafePrefix` arithmetic rather than assert a tautology.
+    const malformed = "abc\uDC00def";
+    assert.equal(capBytes(malformed, 5), "ab...");
+    assert.equal(capBytes(malformed, 6), "abc...");
+    // A cap above ASCII prefix still must not panic or crash on the encoder.
+    const out = capBytes(malformed, 7);
+    assert.ok(Buffer.byteLength(out) <= 7);
+  });
+
+  test("returns input unchanged when cap >= input byte length (mixed-width sweep)", () => {
+    // Locks the contract: no truncation work above the threshold, regardless
+    // of how the bytes are distributed across 1/3/4-byte codepoints.
+    const input = "🎉日a".repeat(20);
+    const inputBytes = Buffer.byteLength(input);
+    for (let cap = inputBytes; cap <= inputBytes + 10; cap++) {
+      assert.equal(capBytes(input, cap), input, `cap=${cap} mutated input`);
+    }
+  });
+});
+
+describe("capBytes — marker-boundary arithmetic", () => {
+  test("cap exactly equal to ellipsis marker length returns just the marker", () => {
+    // Marker "..." is 3 bytes. cap=3 with over-budget input → "..." alone.
+    assert.equal(capBytes("long input", 3), "...");
+  });
+
+  test("cap one byte above marker length returns one content byte + marker", () => {
+    const out = capBytes("abcdef", 4);
+    assert.equal(out, "a...");
+    assert.equal(Buffer.byteLength(out), 4);
+  });
+});
+
+describe("escapeXML — consecutive and pre-escaped input", () => {
+  test("escapes runs of reserved characters independently", () => {
+    assert.equal(escapeXML("&&&"), "&amp;&amp;&amp;");
+    assert.equal(escapeXML("<<<"), "&lt;&lt;&lt;");
+    assert.equal(escapeXML(`"""`), "&quot;&quot;&quot;");
+  });
+
+  test("re-escapes already-escaped input (not idempotent by design)", () => {
+    // escapeXML is a one-shot transform; calling it on pre-escaped input
+    // will double-escape. Lock this so nobody introduces silent idempotency
+    // that would mangle legitimate ampersand-prefixed content.
+    assert.equal(escapeXML("&amp;"), "&amp;amp;");
+    assert.equal(escapeXML("&lt;tag&gt;"), "&amp;lt;tag&amp;gt;");
+  });
+});
+
+describe("truncateJSON — exact-size boundaries", () => {
+  test("returns full serialization unchanged when cap equals its byte length", () => {
+    const value = { k: "v", n: 42 };
+    const serialized = JSON.stringify(value, null, 2);
+    const out = truncateJSON(value, Buffer.byteLength(serialized));
+    assert.equal(out, serialized);
+  });
+
+  test("appends marker and honors cap when cap is one byte below full size", () => {
+    const value = { text: "hello world from truncateJSON" };
+    const full = JSON.stringify(value, null, 2);
+    const cap = Buffer.byteLength(full) - 1;
+    const out = truncateJSON(value, cap);
+    assert.ok(out.endsWith("... [truncated]"));
+    assert.ok(
+      Buffer.byteLength(out) <= cap,
+      `expected <= ${cap} bytes, got ${Buffer.byteLength(out)}`,
+    );
+  });
+});
