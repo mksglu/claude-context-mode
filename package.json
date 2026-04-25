@@ -19,13 +19,22 @@
     "sandbox",
     "code-execution",
     "fts5",
-    "bm25"
+    "bm25",
+    "pi-package"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/mksglu/context-mode"
   },
   "homepage": "https://github.com/mksglu/context-mode#readme",
+  "pi": {
+    "extensions": [
+      "./build/pi-extension.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "openclaw": {
     "extensions": [
       "./build/openclaw-plugin.js"

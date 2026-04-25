@@ -25,6 +25,22 @@ import type { PlatformId, DetectionSignal, HookAdapter } from "./types.js";
 import { CLIENT_NAME_TO_PLATFORM } from "./client-map.js";
 
 /**
+ * High-confidence env vars per platform, checked in priority order.
+ * Single source of truth — consumed by detectPlatform() below and by
+ * tests that need to clear platform-related env vars deterministically.
+ */
+export const PLATFORM_ENV_VARS = [
+  ["claude-code", ["CLAUDE_PROJECT_DIR", "CLAUDE_SESSION_ID"]],
+  ["gemini-cli", ["GEMINI_PROJECT_DIR", "GEMINI_CLI"]],
+  ["openclaw", ["OPENCLAW_HOME", "OPENCLAW_CLI"]],
+  ["kilo", ["KILO", "KILO_PID"]],
+  ["opencode", ["OPENCODE", "OPENCODE_PID"]],
+  ["codex", ["CODEX_CI", "CODEX_THREAD_ID"]],
+  ["cursor", ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
+  ["vscode-copilot", ["VSCODE_PID", "VSCODE_CWD"]],
+] as const satisfies ReadonlyArray<readonly [PlatformId, readonly string[]]>;
+
+/**
  * Detect the current platform by checking env vars and config dirs.
  *
  * @param clientInfo - Optional MCP clientInfo from initialize handshake.
@@ -61,68 +77,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
 
   // ── High confidence: environment variables ─────────────
 
-  if (process.env.CLAUDE_PROJECT_DIR || process.env.CLAUDE_SESSION_ID) {
-    return {
-      platform: "claude-code",
-      confidence: "high",
-      reason: "CLAUDE_PROJECT_DIR or CLAUDE_SESSION_ID env var set",
-    };
-  }
-
-  if (process.env.GEMINI_PROJECT_DIR || process.env.GEMINI_CLI) {
-    return {
-      platform: "gemini-cli",
-      confidence: "high",
-      reason: "GEMINI_PROJECT_DIR or GEMINI_CLI env var set",
-    };
-  }
-
-  if (process.env.OPENCLAW_HOME || process.env.OPENCLAW_CLI) {
-    return {
-      platform: "openclaw",
-      confidence: "high",
-      reason: "OPENCLAW_HOME or OPENCLAW_CLI env var set",
-    };
-  }
-
-  if (process.env.KILO || process.env.KILO_PID) {
-    return {
-      platform: "kilo",
-      confidence: "high",
-      reason: "KILO or KILO_PID env var set",
-    };
-  }
-
-  if (process.env.OPENCODE || process.env.OPENCODE_PID) {
-    return {
-      platform: "opencode",
-      confidence: "high",
-      reason: "OPENCODE or OPENCODE_PID env var set",
-    };
-  }
-
-  if (process.env.CODEX_CI || process.env.CODEX_THREAD_ID) {
-    return {
-      platform: "codex",
-      confidence: "high",
-      reason: "CODEX_CI or CODEX_THREAD_ID env var set",
-    };
-  }
-
-  if (process.env.CURSOR_TRACE_ID || process.env.CURSOR_CLI) {
-    return {
-      platform: "cursor",
-      confidence: "high",
-      reason: "CURSOR_TRACE_ID or CURSOR_CLI env var set",
-    };
-  }
-
-  if (process.env.VSCODE_PID || process.env.VSCODE_CWD) {
-    return {
-      platform: "vscode-copilot",
-      confidence: "high",
-      reason: "VSCODE_PID or VSCODE_CWD env var set",
-    };
+  for (const [platform, vars] of PLATFORM_ENV_VARS) {
+    if (vars.some((v) => process.env[v])) {
+      return {
+        platform,
+        confidence: "high",
+        reason: `${vars.join(" or ")} env var set`,
+      };
+    }
   }
 
   // ── Medium confidence: config directory existence ──────
