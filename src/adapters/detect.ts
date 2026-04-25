@@ -15,6 +15,7 @@
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
  *   - VS Code Copilot: VSCODE_PID, VSCODE_CWD | ~/.vscode/
+ *   - Qwen Code:      QWEN_PROJECT_DIR, QWEN_SESSION_ID | ~/.qwen/
  */
 
 import { existsSync } from "node:fs";
@@ -48,7 +49,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "cursor", "antigravity", "kiro", "pi", "zed",
+      "vscode-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -122,6 +123,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
       platform: "vscode-copilot",
       confidence: "high",
       reason: "VSCODE_PID or VSCODE_CWD env var set",
+    };
+  }
+
+  if (process.env.QWEN_PROJECT_DIR || process.env.QWEN_SESSION_ID) {
+    return {
+      platform: "qwen-code",
+      confidence: "high",
+      reason: "QWEN_PROJECT_DIR or QWEN_SESSION_ID env var set",
     };
   }
 
@@ -209,6 +218,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
     };
   }
 
+  if (existsSync(resolve(home, ".qwen"))) {
+    return {
+      platform: "qwen-code",
+      confidence: "medium",
+      reason: "~/.qwen/ directory exists",
+    };
+  }
+
   // ── Low confidence: fallback ───────────────────────────
 
   return {
@@ -275,6 +292,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "zed": {
       const { ZedAdapter } = await import("./zed/index.js");
       return new ZedAdapter();
+    }
+
+    case "qwen-code": {
+      const { QwenCodeAdapter } = await import("./qwen-code/index.js");
+      return new QwenCodeAdapter();
     }
 
     default: {

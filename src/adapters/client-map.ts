@@ -23,4 +23,5 @@ export const CLIENT_NAME_TO_PLATFORM: Record<string, PlatformId> = {
   "Pi Coding Agent": "pi",
   "Zed": "zed",
   "zed": "zed",
+  "qwen-code": "qwen-code",
 };

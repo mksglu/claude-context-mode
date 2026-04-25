@@ -288,6 +288,7 @@ export type PlatformId =
   | "kiro"
   | "pi"
   | "zed"
+  | "qwen-code"
   | "unknown";
 
 /** Detection signal used to identify which platform is running. */
