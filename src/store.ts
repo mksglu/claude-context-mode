@@ -694,7 +694,10 @@ export class ContentStore {
       throw new Error("Either content or path must be provided");
     }
 
-    const text = content ?? readFileSync(path!, "utf-8");
+    // `??` would let `content: ""` win over a valid `path` (issue #350) —
+    // some MCP clients materialize optional fields as empty strings. Treat
+    // empty content as missing so we read the file instead of indexing "".
+    const text = content && content.length > 0 ? content : readFileSync(path!, "utf-8");
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 

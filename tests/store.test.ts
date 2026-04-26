@@ -98,6 +98,25 @@ describe("Basic Indexing", () => {
     store.close();
   });
 
+  // Regression: issue #350. Some MCP clients materialize optional `content`
+  // as an empty string when only `path` is intended. Empty content must not
+  // mask the path read; the file should be indexed.
+  test("index with empty content + path falls back to reading file (#350)", () => {
+    const store = createStore();
+    const result = store.index({
+      content: "",
+      path: join(fixtureDir, "context7-react-docs.md"),
+      source: "issue-350-repro",
+    });
+    assert.ok(
+      result.totalChunks > 0,
+      "Empty content with path should read file, not index empty string",
+    );
+    assert.ok(result.codeChunks > 0, "Indexed file has code blocks");
+    assert.equal(result.label, "issue-350-repro");
+    store.close();
+  });
+
   test("index throws when neither content nor path provided", () => {
     const store = createStore();
     assert.throws(() => store.index({}), /Either content or path/);
