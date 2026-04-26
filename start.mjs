@@ -96,36 +96,42 @@ if (cacheMatch) {
 // This hook lives outside the plugin directory (~/.claude/hooks/) so it works
 // even when the plugin cache is completely broken. It creates symlinks for any
 // missing plugin cache directories on every session start.
+// Pure Node.js — no bash dependency. Works on Windows, macOS (SIP), Linux.
 try {
   const globalHooksDir = resolve(homedir(), ".claude", "hooks");
-  const healHookPath = resolve(globalHooksDir, "context-mode-cache-heal.sh");
+  const healHookPath = resolve(globalHooksDir, "context-mode-cache-heal.mjs");
+  // Also clean up old bash version if it exists
+  const oldBashHook = resolve(globalHooksDir, "context-mode-cache-heal.sh");
+  if (existsSync(oldBashHook)) {
+    try { const { unlinkSync: ul } = await import("node:fs"); ul(oldBashHook); } catch {}
+  }
   if (!existsSync(healHookPath)) {
     if (!existsSync(globalHooksDir)) mkdirSync(globalHooksDir, { recursive: true });
-    const healScript = `#!/usr/bin/env bash
-# context-mode plugin cache self-heal (auto-deployed)
-# Fixes anthropics/claude-code#46915: auto-update breaks CLAUDE_PLUGIN_ROOT
-set -euo pipefail
-PLUGINS_FILE="$HOME/.claude/plugins/installed_plugins.json"
-[[ -f "$PLUGINS_FILE" ]] || exit 0
-node -e '
-const fs=require("fs"),path=require("path");
+    const healScript = `#!/usr/bin/env node
+// context-mode plugin cache self-heal (auto-deployed)
+// Fixes anthropics/claude-code#46915: auto-update breaks CLAUDE_PLUGIN_ROOT
+// Pure Node.js — no bash/shell dependency.
+import{existsSync,readdirSync,statSync,symlinkSync,readFileSync}from"node:fs";
+import{dirname,join,resolve}from"node:path";
+import{homedir}from"node:os";
 try{
-  const ip=JSON.parse(fs.readFileSync(process.argv[1],"utf-8"));
+  const f=resolve(homedir(),".claude","plugins","installed_plugins.json");
+  if(!existsSync(f))process.exit(0);
+  const ip=JSON.parse(readFileSync(f,"utf-8"));
   for(const[k,es]of Object.entries(ip.plugins||{})){
     if(!k.toLowerCase().includes("context-mode"))continue;
     for(const e of es){
       const p=e.installPath;
-      if(!p||fs.existsSync(p))continue;
-      const parent=path.dirname(p);
-      if(!fs.existsSync(parent))continue;
-      const dirs=fs.readdirSync(parent).filter(d=>/^\\d+\\.\\d+/.test(d)&&fs.statSync(path.join(parent,d)).isDirectory());
+      if(!p||existsSync(p))continue;
+      const parent=dirname(p);
+      if(!existsSync(parent))continue;
+      const dirs=readdirSync(parent).filter(d=>/^\\d+\\.\\d+/.test(d)&&statSync(join(parent,d)).isDirectory());
       if(!dirs.length)continue;
       dirs.sort((a,b)=>{const pa=a.split(".").map(Number),pb=b.split(".").map(Number);for(let i=0;i<3;i++){if((pa[i]||0)!==(pb[i]||0))return(pa[i]||0)-(pb[i]||0)}return 0});
-      try{fs.symlinkSync(path.join(parent,dirs[dirs.length-1]),p)}catch{}
+      try{symlinkSync(join(parent,dirs[dirs.length-1]),p,process.platform==="win32"?"junction":undefined)}catch{}
     }
   }
 }catch{}
-' "$PLUGINS_FILE" 2>/dev/null || true
 `;
     writeFileSync(healHookPath, healScript, { mode: 0o755 });
   }

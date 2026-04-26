@@ -48,28 +48,6 @@ try {
   }
 } catch { /* best effort — don't block install */ }
 
-// ── 0. Self-heal Layer 3: Backward symlink for stale registry (anthropics/claude-code#46915) ──
-// When this install completes, installed_plugins.json may still point to an old
-// non-existent path. Create a symlink from that old path → our new directory.
-try {
-  const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-  if (existsSync(ipPath)) {
-    const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
-    for (const [key, entries] of Object.entries(ip.plugins || {})) {
-      if (!key.toLowerCase().includes("context-mode")) continue;
-      for (const entry of entries) {
-        const rp = entry.installPath;
-        if (!rp || existsSync(rp)) continue;
-        const rpParent = dirname(rp);
-        if (!existsSync(rpParent)) mkdirSync(rpParent, { recursive: true });
-        try {
-          symlinkSync(pkgRoot, rp, process.platform === "win32" ? "junction" : undefined);
-        } catch { /* may fail if path is locked or permissions */ }
-      }
-    }
-  }
-} catch { /* best effort — don't block install */ }
-
 // ── 1. OpenClaw detection ────────────────────────────────────────────
 if (process.env.OPENCLAW_STATE_DIR) {
   console.log("\n  OpenClaw detected. Run: npm run install:openclaw\n");
