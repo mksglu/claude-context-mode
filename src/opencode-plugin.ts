@@ -78,7 +78,7 @@ interface CompactingHookOutput {
 
 // ── Helpers ───────────────────────────────────────────────
 function getPlatform(): AdapterPlatformType {
-  return process.env.KILO ? "kilo" : "opencode";
+  return process.env.KILO_PID ? "kilo" : "opencode";
 }
 
 // ── Plugin Factory ────────────────────────────────────────
