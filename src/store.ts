@@ -727,11 +727,18 @@ export class ContentStore {
   }): IndexResult {
     const { content, path, source } = options;
 
-    if (!content && !path) {
+    // Treat empty string as "no content" so an empty `content` paired with a
+    // valid `path` falls back to reading the file. Some MCP clients
+    // materialize optional string fields as `""` and the previous
+    // `content ?? readFileSync(path)` kept the empty string, indexing 0
+    // chunks. See issue #350.
+    const hasContent = typeof content === "string" && content.length > 0;
+
+    if (!hasContent && !path) {
       throw new Error("Either content or path must be provided");
     }
 
-    const text = content ?? readFileSync(path!, "utf-8");
+    const text = hasContent ? content! : readFileSync(path!, "utf-8");
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
