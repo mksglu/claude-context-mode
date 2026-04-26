@@ -3,9 +3,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
 import { execSync, type ChildProcess } from "node:child_process";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { request as httpsRequest } from "node:https";
@@ -304,16 +304,22 @@ function healCacheMidSession(): void {
     const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
     if (!existsSync(ipPath)) return;
     const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
+    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    // Plugin root: build/ for tsc, plugin root for bundle
+    const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
     for (const [key, entries] of Object.entries((ip.plugins ?? {}) as Record<string, Array<{ installPath?: string }>>)) {
-      if (!key.toLowerCase().includes("context-mode")) continue;
+      if (key !== "context-mode@context-mode") continue;
       for (const entry of entries) {
         const rp = entry.installPath;
         if (!rp || existsSync(rp)) continue;
+        // Path traversal guard
+        if (!resolve(rp).startsWith(cacheRoot + sep)) continue;
+        // Remove dangling symlink
+        try { if (lstatSync(rp).isSymbolicLink()) unlinkSync(rp); } catch {}
         const parent = dirname(rp);
         if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-        const target = resolve(__pkg_dir, "..");
-        if (existsSync(target)) {
-          symlinkSync(target, rp, process.platform === "win32" ? "junction" : undefined);
+        if (existsSync(pluginRoot)) {
+          symlinkSync(pluginRoot, rp, process.platform === "win32" ? "junction" : undefined);
         }
       }
     }

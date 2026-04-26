@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execSync } from "node:child_process";
-import { existsSync, chmodSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, lstatSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { existsSync, chmodSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, lstatSync, unlinkSync } from "node:fs";
+import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
@@ -59,7 +59,7 @@ if (cacheMatch) {
       if (newest && newest !== myVersion) {
         const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
         for (const [key, entries] of Object.entries(ip.plugins || {})) {
-          if (!key.toLowerCase().includes("context-mode")) continue;
+          if (key !== "context-mode@context-mode") continue;
           for (const entry of entries) {
             entry.installPath = resolve(cacheParent, newest);
             entry.version = newest;
@@ -71,19 +71,23 @@ if (cacheMatch) {
     }
 
     // Reverse heal: if registry points to non-existent dir, create symlink to us
+    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
     if (existsSync(ipPath)) {
       const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
       for (const [key, entries] of Object.entries(ip.plugins || {})) {
-        if (!key.toLowerCase().includes("context-mode")) continue;
+        if (key !== "context-mode@context-mode") continue;
         for (const entry of entries) {
           const rp = entry.installPath;
-          if (rp && !existsSync(rp) && rp !== __dirname) {
-            try {
-              const rpParent = dirname(rp);
-              if (!existsSync(rpParent)) mkdirSync(rpParent, { recursive: true });
-              symlinkSync(__dirname, rp, process.platform === "win32" ? "junction" : undefined);
-            } catch { /* best effort */ }
-          }
+          if (!rp || existsSync(rp) || rp === __dirname) continue;
+          // Path traversal guard: only allow paths inside plugin cache
+          if (!resolve(rp).startsWith(cacheRoot + sep)) continue;
+          try {
+            // Remove dangling symlink before creating new one
+            try { if (lstatSync(rp).isSymbolicLink()) unlinkSync(rp); } catch {}
+            const rpParent = dirname(rp);
+            if (!existsSync(rpParent)) mkdirSync(rpParent, { recursive: true });
+            symlinkSync(__dirname, rp, process.platform === "win32" ? "junction" : undefined);
+          } catch { /* best effort */ }
         }
       }
     }
@@ -92,7 +96,7 @@ if (cacheMatch) {
   }
 }
 
-// ── Self-heal Layer 4: Deploy global SessionStart hook ──
+// ── Self-heal Layer 4: Deploy global SessionStart hook + register in settings.json ──
 // This hook lives outside the plugin directory (~/.claude/hooks/) so it works
 // even when the plugin cache is completely broken. It creates symlinks for any
 // missing plugin cache directories on every session start.
@@ -100,10 +104,10 @@ if (cacheMatch) {
 try {
   const globalHooksDir = resolve(homedir(), ".claude", "hooks");
   const healHookPath = resolve(globalHooksDir, "context-mode-cache-heal.mjs");
-  // Also clean up old bash version if it exists
+  // Clean up old bash version if it exists
   const oldBashHook = resolve(globalHooksDir, "context-mode-cache-heal.sh");
   if (existsSync(oldBashHook)) {
-    try { const { unlinkSync: ul } = await import("node:fs"); ul(oldBashHook); } catch {}
+    try { unlinkSync(oldBashHook); } catch {}
   }
   if (!existsSync(healHookPath)) {
     if (!existsSync(globalHooksDir)) mkdirSync(globalHooksDir, { recursive: true });
@@ -111,20 +115,23 @@ try {
 // context-mode plugin cache self-heal (auto-deployed)
 // Fixes anthropics/claude-code#46915: auto-update breaks CLAUDE_PLUGIN_ROOT
 // Pure Node.js — no bash/shell dependency.
-import{existsSync,readdirSync,statSync,symlinkSync,readFileSync}from"node:fs";
-import{dirname,join,resolve}from"node:path";
+import{existsSync,readdirSync,statSync,symlinkSync,lstatSync,unlinkSync,readFileSync}from"node:fs";
+import{dirname,join,resolve,sep}from"node:path";
 import{homedir}from"node:os";
 try{
   const f=resolve(homedir(),".claude","plugins","installed_plugins.json");
   if(!existsSync(f))process.exit(0);
+  const cacheRoot=resolve(homedir(),".claude","plugins","cache");
   const ip=JSON.parse(readFileSync(f,"utf-8"));
   for(const[k,es]of Object.entries(ip.plugins||{})){
-    if(!k.toLowerCase().includes("context-mode"))continue;
+    if(k!=="context-mode@context-mode")continue;
     for(const e of es){
       const p=e.installPath;
       if(!p||existsSync(p))continue;
+      if(!resolve(p).startsWith(cacheRoot+sep))continue;
       const parent=dirname(p);
       if(!existsSync(parent))continue;
+      try{if(lstatSync(p).isSymbolicLink())unlinkSync(p)}catch{}
       const dirs=readdirSync(parent).filter(d=>/^\\d+\\.\\d+/.test(d)&&statSync(join(parent,d)).isDirectory());
       if(!dirs.length)continue;
       dirs.sort((a,b)=>{const pa=a.split(".").map(Number),pb=b.split(".").map(Number);for(let i=0;i<3;i++){if((pa[i]||0)!==(pb[i]||0))return(pa[i]||0)-(pb[i]||0)}return 0});
@@ -134,6 +141,24 @@ try{
 }catch{}
 `;
     writeFileSync(healHookPath, healScript, { mode: 0o755 });
+  }
+  // Register the hook in ~/.claude/settings.json (Claude Code doesn't auto-discover hook files)
+  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  if (existsSync(settingsPath)) {
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    const hooks = settings.hooks ?? {};
+    const sessionStart = hooks.SessionStart ?? [];
+    const alreadyRegistered = sessionStart.some((h) =>
+      h.hooks?.some((hh) => hh.command?.includes("context-mode-cache-heal")),
+    );
+    if (!alreadyRegistered) {
+      sessionStart.push({
+        hooks: [{ type: "command", command: `node ${healHookPath}` }],
+      });
+      hooks.SessionStart = sessionStart;
+      settings.hooks = hooks;
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+    }
   }
 } catch { /* best effort */ }
 

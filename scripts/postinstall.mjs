@@ -8,9 +8,9 @@
  *    Creates a directory junction so npm's %~dp0\node_modules\... resolves.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, lstatSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { dirname, resolve, join } from "node:path";
+import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
@@ -32,12 +32,16 @@ try {
   const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
   if (existsSync(ipPath)) {
     const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
+    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
     for (const [key, entries] of Object.entries(ip.plugins || {})) {
-      if (!key.toLowerCase().includes("context-mode")) continue;
+      if (key !== "context-mode@context-mode") continue;
       for (const entry of entries) {
         const rp = entry.installPath;
         if (!rp || existsSync(rp)) continue;
-        // Registry points to a missing dir — symlink it to us
+        // Path traversal guard
+        if (!resolve(rp).startsWith(cacheRoot + sep)) continue;
+        // Remove dangling symlink
+        try { if (lstatSync(rp).isSymbolicLink()) unlinkSync(rp); } catch {}
         const rpParent = dirname(rp);
         if (!existsSync(rpParent)) mkdirSync(rpParent, { recursive: true });
         try {

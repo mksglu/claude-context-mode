@@ -785,15 +785,27 @@ describe("empty stdin resilience (#322)", () => {
 // Plugin Cache Self-Heal Tests
 // ═══════════════════════════════════════════════════════════════════════
 
-import { symlinkSync, lstatSync, readdirSync, statSync } from "node:fs";
+import { symlinkSync, lstatSync, unlinkSync as fsUnlinkSync } from "node:fs";
+import { sep } from "node:path";
+
+/**
+ * Validate path is inside a plugin cache root (prevents path traversal).
+ */
+function isInsidePluginCache(p: string, cacheRoot: string): boolean {
+  const resolved = resolve(p);
+  const root = resolve(cacheRoot);
+  return resolved.startsWith(root + sep) || resolved === root;
+}
 
 /**
  * Inline heal function — mirrors the logic in start.mjs and server.ts.
  * Tests verify the ALGORITHM, not the specific file it lives in.
+ * Includes: path traversal guard, dangling symlink cleanup, exact key match.
  */
 function healRegistryMismatch(
   currentDir: string,
   installedPluginsPath: string,
+  pluginCacheRoot?: string,
 ): { healed: boolean; action?: string; from?: string; to?: string } {
   if (!existsSync(installedPluginsPath)) return { healed: false };
   if (!existsSync(currentDir)) return { healed: false };
@@ -806,10 +818,20 @@ function healRegistryMismatch(
   }
 
   for (const [key, entries] of Object.entries(ip.plugins ?? {})) {
-    if (!key.toLowerCase().includes("context-mode")) continue;
+    if (key !== "context-mode@context-mode") continue;
     for (const entry of entries) {
       const registryPath = entry.installPath;
       if (!registryPath || existsSync(registryPath)) continue;
+
+      // Path traversal guard
+      if (pluginCacheRoot && !isInsidePluginCache(registryPath, pluginCacheRoot)) continue;
+
+      // Remove dangling symlink before creating new one
+      try {
+        const stat = lstatSync(registryPath);
+        if (stat.isSymbolicLink()) fsUnlinkSync(registryPath);
+      } catch { /* path doesn't exist at all — fine */ }
+
       try {
         const parent = dirname(registryPath);
         if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
@@ -825,18 +847,51 @@ function healRegistryMismatch(
 
 /**
  * Global hook deployer — mirrors start.mjs auto-deploy logic.
+ * Deploys .mjs (not .sh) and registers in settings.json.
  */
-function deployGlobalHealHook(hooksDir: string): { deployed: boolean; path?: string } {
-  const hookPath = join(hooksDir, "context-mode-cache-heal.sh");
-  if (existsSync(hookPath)) return { deployed: false };
-  try {
-    if (!existsSync(hooksDir)) mkdirSync(hooksDir, { recursive: true });
-    const script = `#!/usr/bin/env bash\n# context-mode cache heal\nexit 0\n`;
-    writeFileSync(hookPath, script, { mode: 0o755 });
-    return { deployed: true, path: hookPath };
-  } catch {
-    return { deployed: false };
+function deployGlobalHealHook(
+  hooksDir: string,
+  settingsPath: string,
+): { deployed: boolean; registered: boolean; path?: string } {
+  const hookPath = join(hooksDir, "context-mode-cache-heal.mjs");
+  let deployed = false;
+  let registered = false;
+
+  // Deploy script
+  if (!existsSync(hookPath)) {
+    try {
+      if (!existsSync(hooksDir)) mkdirSync(hooksDir, { recursive: true });
+      const script = `#!/usr/bin/env node\n// context-mode cache heal\nprocess.exit(0);\n`;
+      writeFileSync(hookPath, script, { mode: 0o755 });
+      deployed = true;
+    } catch {
+      return { deployed: false, registered: false };
+    }
   }
+
+  // Register in settings.json
+  if (existsSync(settingsPath)) {
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      const hooks = settings.hooks ?? {};
+      const sessionStart = hooks.SessionStart ?? [];
+      const cmd = `node ${hookPath}`;
+      const alreadyRegistered = sessionStart.some((h: { hooks?: Array<{ command?: string }> }) =>
+        h.hooks?.some((hh: { command?: string }) => hh.command?.includes("context-mode-cache-heal")),
+      );
+      if (!alreadyRegistered) {
+        sessionStart.push({
+          hooks: [{ type: "command", command: cmd }],
+        });
+        hooks.SessionStart = sessionStart;
+        settings.hooks = hooks;
+        writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+        registered = true;
+      }
+    } catch { /* best effort */ }
+  }
+
+  return { deployed, registered, path: hookPath };
 }
 
 describe("plugin cache self-heal", () => {
@@ -896,23 +951,18 @@ describe("plugin cache self-heal", () => {
       writeRegistry(join(cacheParent, "1.0.94"));
 
       const result = healRegistryMismatch(realDir, ipPath);
-
       expect(result.healed).toBe(false);
     });
 
     test("no-op when installed_plugins.json missing", () => {
       const realDir = createVersionDir("1.0.89");
-
       const result = healRegistryMismatch(realDir, join(tempDir, "nonexistent.json"));
-
       expect(result.healed).toBe(false);
     });
 
     test("no-op when currentDir does not exist", () => {
       writeRegistry(join(cacheParent, "1.0.94"));
-
       const result = healRegistryMismatch(join(cacheParent, "1.0.89"), ipPath);
-
       expect(result.healed).toBe(false);
     });
 
@@ -920,57 +970,108 @@ describe("plugin cache self-heal", () => {
       const realDir = createVersionDir("1.0.89");
       const missingPath = join(cacheParent, "1.0.94");
       writeRegistry(missingPath);
-
       healRegistryMismatch(realDir, ipPath);
-
       const target = readFileSync(missingPath + "/package.json", "utf-8");
       expect(JSON.parse(target).version).toBe("1.0.89");
     });
-  });
 
-  describe("healRegistryMismatch — additional cases", () => {
-    test("heals multiple times for different registry paths", () => {
+    test("replaces dangling symlink with valid one", () => {
       const realDir = createVersionDir("1.0.89");
-      const missing1 = join(cacheParent, "1.0.94");
-      writeRegistry(missing1);
+      const missingPath = join(cacheParent, "1.0.94");
+      writeRegistry(missingPath);
+      // Create dangling symlink (points to non-existent target)
+      symlinkSync(join(cacheParent, "DELETED"), missingPath);
+      expect(lstatSync(missingPath).isSymbolicLink()).toBe(true);
+      expect(existsSync(missingPath)).toBe(false); // dangling
 
-      const r1 = healRegistryMismatch(realDir, ipPath);
-      expect(r1.healed).toBe(true);
+      const result = healRegistryMismatch(realDir, ipPath);
 
-      // Now registry points to yet another version
-      const missing2 = join(cacheParent, "1.0.95");
-      writeRegistry(missing2);
+      expect(result.healed).toBe(true);
+      expect(existsSync(missingPath)).toBe(true); // now valid
+      const target = readFileSync(missingPath + "/package.json", "utf-8");
+      expect(JSON.parse(target).version).toBe("1.0.89");
+    });
 
-      const r2 = healRegistryMismatch(realDir, ipPath);
-      expect(r2.healed).toBe(true);
-      expect(existsSync(missing2)).toBe(true);
+    test("rejects path traversal outside plugin cache", () => {
+      const realDir = createVersionDir("1.0.89");
+      const evilPath = join(tempDir, "..", "evil-dir");
+      writeRegistry(evilPath);
+
+      const result = healRegistryMismatch(realDir, ipPath, join(tempDir, "plugins", "cache"));
+      expect(result.healed).toBe(false);
+      expect(existsSync(evilPath)).toBe(false);
+    });
+
+    test("ignores non-context-mode plugin keys", () => {
+      const realDir = createVersionDir("1.0.89");
+      const ip = {
+        version: 2,
+        plugins: {
+          "evil-plugin@evil": [{ scope: "user", installPath: join(cacheParent, "1.0.94"), version: "1.0.94" }],
+        },
+      };
+      writeFileSync(ipPath, JSON.stringify(ip));
+      const result = healRegistryMismatch(realDir, ipPath);
+      expect(result.healed).toBe(false);
     });
 
     test("handles malformed installed_plugins.json gracefully", () => {
       const realDir = createVersionDir("1.0.89");
       writeFileSync(ipPath, "not json");
-
       const result = healRegistryMismatch(realDir, ipPath);
       expect(result.healed).toBe(false);
+    });
+
+    test("heals multiple times for different registry paths", () => {
+      const realDir = createVersionDir("1.0.89");
+      const missing1 = join(cacheParent, "1.0.94");
+      writeRegistry(missing1);
+      const r1 = healRegistryMismatch(realDir, ipPath);
+      expect(r1.healed).toBe(true);
+
+      const missing2 = join(cacheParent, "1.0.95");
+      writeRegistry(missing2);
+      const r2 = healRegistryMismatch(realDir, ipPath);
+      expect(r2.healed).toBe(true);
+      expect(existsSync(missing2)).toBe(true);
     });
   });
 
   describe("deployGlobalHealHook", () => {
-    test("creates hook script in specified directory", () => {
-      const hooksDir = join(tempDir, "hooks");
+    let settingsPath: string;
 
-      const result = deployGlobalHealHook(hooksDir);
-
-      expect(result.deployed).toBe(true);
-      expect(existsSync(join(hooksDir, "context-mode-cache-heal.sh"))).toBe(true);
+    beforeEach(() => {
+      settingsPath = join(tempDir, "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [] } }));
     });
 
-    test("no-op if hook already exists", () => {
+    test("creates .mjs hook script in specified directory", () => {
       const hooksDir = join(tempDir, "hooks");
-      deployGlobalHealHook(hooksDir); // first deploy
+      const result = deployGlobalHealHook(hooksDir, settingsPath);
 
-      const result = deployGlobalHealHook(hooksDir); // second deploy
+      expect(result.deployed).toBe(true);
+      expect(existsSync(join(hooksDir, "context-mode-cache-heal.mjs"))).toBe(true);
+    });
+
+    test("registers hook in settings.json SessionStart", () => {
+      const hooksDir = join(tempDir, "hooks");
+      const result = deployGlobalHealHook(hooksDir, settingsPath);
+
+      expect(result.registered).toBe(true);
+      const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      const cmds = settings.hooks.SessionStart.flatMap((h: any) =>
+        h.hooks?.map((hh: any) => hh.command) ?? [],
+      );
+      expect(cmds.some((c: string) => c.includes("context-mode-cache-heal"))).toBe(true);
+    });
+
+    test("no-op if hook already deployed and registered", () => {
+      const hooksDir = join(tempDir, "hooks");
+      deployGlobalHealHook(hooksDir, settingsPath);
+      const result = deployGlobalHealHook(hooksDir, settingsPath);
+
       expect(result.deployed).toBe(false);
+      expect(result.registered).toBe(false);
     });
   });
 });
