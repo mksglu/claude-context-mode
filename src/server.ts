@@ -32,6 +32,7 @@ import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats } from "./session/analytics.js";
+import { buildFetchProxyRuntimeCode } from "./fetch-proxy.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -1464,6 +1465,7 @@ server.registerTool(
 
 let _turndownPath: string | null = null;
 let _gfmPluginPath: string | null = null;
+let _undiciPath: string | null = null;
 
 function resolveTurndownPath(): string {
   if (!_turndownPath) {
@@ -1481,6 +1483,14 @@ function resolveGfmPluginPath(): string {
   return _gfmPluginPath;
 }
 
+function resolveUndiciPath(): string {
+  if (!_undiciPath) {
+    const require = createRequire(import.meta.url);
+    _undiciPath = require.resolve("undici");
+  }
+  return _undiciPath;
+}
+
 // ─────────────────────────────────────────────────────────
 // Tool: fetch_and_index
 // ─────────────────────────────────────────────────────────
@@ -1491,6 +1501,7 @@ function resolveGfmPluginPath(): string {
 function buildFetchCode(url: string, outputPath: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
+  const proxyRuntimeCode = buildFetchProxyRuntimeCode(resolveUndiciPath());
   const escapedOutputPath = JSON.stringify(outputPath);
   return `
 const TurndownService = require(${turndownPath});
@@ -1498,6 +1509,7 @@ const { gfm } = require(${gfmPath});
 const fs = require('fs');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
+${proxyRuntimeCode}
 
 function emit(ct, content) {
   // Write content to file to bypass executor stdout truncation (100KB limit).
@@ -1507,7 +1519,7 @@ function emit(ct, content) {
 }
 
 async function main() {
-  const resp = await fetch(url);
+  const resp = await fetchWithProxy(url);
   if (!resp.ok) { console.error("HTTP " + resp.status); process.exit(1); }
   const contentType = resp.headers.get('content-type') || '';
 
