@@ -1403,6 +1403,103 @@ describe("fuzzyCorrect LRU cache", () => {
   });
 });
 
+describe("fuzzyCorrect cache stats", () => {
+  test("fresh store reports zero counters and base capacity", () => {
+    const store = createStore();
+    const stats = store.getFuzzyCacheStats();
+
+    assert.equal(stats.size, 0);
+    assert.equal(stats.capacity, 256);
+    assert.equal(stats.hits, 0);
+    assert.equal(stats.misses, 0);
+    assert.equal(stats.evictions, 0);
+    assert.equal(stats.lookups, 0);
+    assert.equal(stats.hitRate, 0);
+
+    store.close();
+  });
+
+  test("miss increments lookups + misses, hit increments lookups + hits", () => {
+    const store = createStore();
+    store.index({ content: "authentication middleware", source: "stats-hit" });
+
+    store.fuzzyCorrect("authentiction"); // miss
+    let stats = store.getFuzzyCacheStats();
+    assert.equal(stats.lookups, 1);
+    assert.equal(stats.misses, 1);
+    assert.equal(stats.hits, 0);
+
+    store.fuzzyCorrect("authentiction"); // hit
+    stats = store.getFuzzyCacheStats();
+    assert.equal(stats.lookups, 2);
+    assert.equal(stats.misses, 1);
+    assert.equal(stats.hits, 1);
+    assert.equal(stats.hitRate, 0.5);
+
+    store.close();
+  });
+
+  test("eviction counter increments when cache overflows base capacity", () => {
+    const store = createStore();
+    const vocab = Array.from({ length: 30 }, (_, i) => `uniqueword${i}abc`).join(" ");
+    store.index({ content: vocab, source: "stats-evict" });
+
+    const capSize = 256;
+    for (let i = 0; i < capSize + 5; i++) {
+      store.fuzzyCorrect(`uniquewrd${i}abc`);
+    }
+
+    const stats = store.getFuzzyCacheStats();
+    assert.ok(stats.evictions >= 5, `expected >=5 evictions, got ${stats.evictions}`);
+
+    store.close();
+  });
+
+  test("clear() on insert resets counters and capacity to base", () => {
+    const store = createStore();
+    store.index({ content: "authentication middleware", source: "stats-clear-v1" });
+
+    store.fuzzyCorrect("authentiction");
+    store.fuzzyCorrect("authentiction");
+
+    let stats = store.getFuzzyCacheStats();
+    assert.ok(stats.lookups > 0);
+
+    store.index({ content: "completely fresh new vocabulary words", source: "stats-clear-v2" });
+
+    stats = store.getFuzzyCacheStats();
+    assert.equal(stats.lookups, 0);
+    assert.equal(stats.hits, 0);
+    assert.equal(stats.misses, 0);
+    assert.equal(stats.evictions, 0);
+    assert.equal(stats.size, 0);
+    assert.equal(stats.capacity, 256);
+
+    store.close();
+  });
+
+  test("hitRate handles lookups=0 without NaN", () => {
+    const store = createStore();
+    const stats = store.getFuzzyCacheStats();
+    assert.equal(stats.hitRate, 0);
+    assert.ok(Number.isFinite(stats.hitRate));
+    store.close();
+  });
+
+  test("returned stats object is a snapshot (not live reference)", () => {
+    const store = createStore();
+    store.index({ content: "authentication", source: "stats-snapshot" });
+
+    const snapshot = store.getFuzzyCacheStats();
+    store.fuzzyCorrect("authentiction");
+    store.fuzzyCorrect("authentiction");
+
+    assert.equal(snapshot.lookups, 0, "snapshot must not change after subsequent calls");
+
+    store.close();
+  });
+});
+
 // ═══════════════════════════════════════════════════════════
 // 6. Intent Search
 // ═══════════════════════════════════════════════════════════

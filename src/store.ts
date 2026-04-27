@@ -352,6 +352,13 @@ export class ContentStore {
   #fuzzyCache = new Map<string, string | null>();
   static readonly FUZZY_CACHE_SIZE = 256;
 
+  // Fuzzy cache observability counters. Hits/misses/evictions are scoped to
+  // the current cache lifetime — they reset whenever #fuzzyCache.clear() runs.
+  #fuzzyCacheHits = 0;
+  #fuzzyCacheMisses = 0;
+  #fuzzyCacheEvictions = 0;
+  #fuzzyCacheLookups = 0;
+
   constructor(dbPath?: string) {
     const Database = loadDatabase();
     this.#dbPath =
@@ -914,13 +921,18 @@ export class ContentStore {
     const word = query.toLowerCase().trim();
     if (word.length < 3) return null;
 
+    this.#fuzzyCacheLookups++;
+
     // Cache hit: promote to tail (Map preserves insertion order → LRU).
     if (this.#fuzzyCache.has(word)) {
       const cached = this.#fuzzyCache.get(word) ?? null;
       this.#fuzzyCache.delete(word);
       this.#fuzzyCache.set(word, cached);
+      this.#fuzzyCacheHits++;
       return cached;
     }
+
+    this.#fuzzyCacheMisses++;
 
     const maxDist = maxEditDistance(word.length);
 
@@ -950,11 +962,38 @@ export class ContentStore {
     // Evict the oldest entry before insert if we hit the size cap.
     if (this.#fuzzyCache.size >= ContentStore.FUZZY_CACHE_SIZE) {
       const oldestKey = this.#fuzzyCache.keys().next().value;
-      if (oldestKey !== undefined) this.#fuzzyCache.delete(oldestKey);
+      if (oldestKey !== undefined) {
+        this.#fuzzyCache.delete(oldestKey);
+        this.#fuzzyCacheEvictions++;
+      }
     }
     this.#fuzzyCache.set(word, result);
 
     return result;
+  }
+
+  // Snapshot of fuzzy cache observability state. Returns a fresh object on
+  // each call — callers may keep references without seeing live mutations.
+  // hitRate is per-cache-lifetime (resets on #fuzzyCache.clear()).
+  getFuzzyCacheStats(): {
+    size: number;
+    capacity: number;
+    hits: number;
+    misses: number;
+    evictions: number;
+    lookups: number;
+    hitRate: number;
+  } {
+    const lookups = this.#fuzzyCacheLookups;
+    return {
+      size: this.#fuzzyCache.size,
+      capacity: ContentStore.FUZZY_CACHE_SIZE,
+      hits: this.#fuzzyCacheHits,
+      misses: this.#fuzzyCacheMisses,
+      evictions: this.#fuzzyCacheEvictions,
+      lookups,
+      hitRate: lookups > 0 ? this.#fuzzyCacheHits / lookups : 0,
+    };
   }
 
   // ── Reciprocal Rank Fusion (Cormack et al. 2009) ──
@@ -1281,7 +1320,13 @@ export class ContentStore {
     // Invalidate fuzzy cache when new vocab words actually land. INSERT OR
     // IGNORE reports changes=0 for duplicates, so re-indexing identical
     // content does not thrash the cache during iterative workflows.
-    if (inserted > 0) this.#fuzzyCache.clear();
+    if (inserted > 0) {
+      this.#fuzzyCache.clear();
+      this.#fuzzyCacheHits = 0;
+      this.#fuzzyCacheMisses = 0;
+      this.#fuzzyCacheEvictions = 0;
+      this.#fuzzyCacheLookups = 0;
+    }
   }
 
   // ── Chunking ──
