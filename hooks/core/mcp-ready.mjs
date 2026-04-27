@@ -17,8 +17,14 @@ import { join } from "node:path";
 
 const SENTINEL_PREFIX = "context-mode-mcp-ready-";
 
-/** Resolve the temp root — hardcoded /tmp on Unix to avoid TMPDIR mismatch. */
+/**
+ * Resolve the temp root — hardcoded /tmp on Unix to avoid TMPDIR mismatch.
+ * Tests may override via CONTEXT_MODE_MCP_SENTINEL_DIR to isolate scan from
+ * leftover sentinels in the real /tmp.
+ */
 export function sentinelDir() {
+  const override = process.env.CONTEXT_MODE_MCP_SENTINEL_DIR;
+  if (override && override.length > 0) return override;
   return process.platform === "win32" ? tmpdir() : "/tmp";
 }
 

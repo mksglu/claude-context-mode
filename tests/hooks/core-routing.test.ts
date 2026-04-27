@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 
 // Dynamic import for .mjs module
 let routePreToolUse: (
@@ -35,7 +35,12 @@ beforeAll(async () => {
 
 // MCP readiness sentinel — most tests expect MCP to be ready (deny behavior).
 // Tests for graceful degradation (#230) remove sentinel explicitly.
-const _sentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
+//
+// Use an isolated temp dir for sentinels so the directory scan in isMCPReady()
+// is not polluted by leftover sentinels from real MCP servers running on the
+// developer's machine. The hook honors CONTEXT_MODE_MCP_SENTINEL_DIR.
+const _sentinelDir = mkdtempSync(join(tmpdir(), "ctx-test-sentinels-"));
+process.env.CONTEXT_MODE_MCP_SENTINEL_DIR = _sentinelDir;
 const mcpSentinel = resolve(_sentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
@@ -45,6 +50,11 @@ beforeEach(() => {
 
 afterEach(() => {
   try { unlinkSync(mcpSentinel); } catch {}
+});
+
+afterAll(() => {
+  try { rmSync(_sentinelDir, { recursive: true, force: true }); } catch {}
+  delete process.env.CONTEXT_MODE_MCP_SENTINEL_DIR;
 });
 
 describe("routePreToolUse", () => {
