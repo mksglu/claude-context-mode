@@ -747,7 +747,9 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>Pi Coding Agent</strong> — extension with full hook support</summary>
 
-**Prerequisites:** Node.js 18+, Pi Coding Agent installed.
+**Prerequisites:** Node.js 18+, Pi Coding Agent installed, and an MCP adapter extension for Pi.
+
+Pi does not ship MCP support in core. context-mode's Pi extension provides lifecycle hooks and session continuity, but the sandbox tools (`ctx_execute`, `ctx_search`, `ctx_fetch_and_index`, etc.) are served by context-mode's MCP server. Install an MCP adapter such as [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) before configuring the context-mode MCP server.
 
 **Install:**
 
@@ -785,7 +787,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 
 4. Restart Pi.
 
-**Verify:** In a Pi session, type `ctx stats`. Context-mode tools should appear and respond.
+**Verify:** In a Pi session, type `ctx stats` or use your MCP adapter's tool discovery UI (for example, `/mcp` in `pi-mcp-adapter`). Context-mode's MCP tools should be available and respond.
 
 **Routing:** Automatic. The extension registers all key lifecycle events (`tool_call`, `tool_result`, `session_start`, `session_before_compact`), providing full session continuity and routing enforcement.
 
