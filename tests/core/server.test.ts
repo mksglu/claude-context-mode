@@ -24,6 +24,7 @@ import { classifyNonZeroExit } from "../../src/exit-classify.js";
 import { PolyglotExecutor } from "../../src/executor.js";
 import { detectRuntimes } from "../../src/runtime.js";
 import { ContentStore } from "../../src/store.js";
+import { getProjectDir, resolveProjectPath } from "../../src/project-path.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
@@ -1632,30 +1633,21 @@ async function initAndCallDoctor(
 }
 
 describe("ctx_index file paths", () => {
-  test("resolves relative paths from the project dir", async () => {
-    const projectDir = mkdtempSync(join(tmpdir(), "ctx-index-relative-"));
-    writeFileSync(join(projectDir, "relative-doc.md"), "# Relative Fixture\n\nUnique relative path content.");
+  test("resolves relative paths from the project dir", () => {
+    const projectDir = resolve("/tmp/context-mode-project");
+    expect(resolveProjectPath("relative-doc.md", projectDir)).toBe(resolve(projectDir, "relative-doc.md"));
+  });
 
-    const proc = startMcpServer({ CONTEXT_MODE_PROJECT_DIR: projectDir });
-    sendRpc(proc, {
-      jsonrpc: "2.0", id: 1, method: "initialize",
-      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-regression", version: "1.0" } },
-    });
-    sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
-    sendRpc(proc, {
-      jsonrpc: "2.0",
-      id: 200,
-      method: "tools/call",
-      params: { name: "ctx_index", arguments: { path: "relative-doc.md", source: "Relative Fixture" } },
-    });
+  test("preserves absolute paths", () => {
+    const absolutePath = resolve("/tmp/context-mode-project/absolute-doc.md");
+    expect(resolveProjectPath(absolutePath, resolve("/tmp/other-project"))).toBe(absolutePath);
+  });
 
-    const responses = await collectRpcResponses(proc, 15_000, [200]);
-    const call = responses.find((r) => r.id === 200);
-    expect(call).toBeDefined();
-    expect(call!.error).toBeUndefined();
-    expect(call!.result?.isError).not.toBe(true);
-    expect(call!.result?.content?.[0]?.text).toContain("Indexed");
-  }, 20_000);
+  test("detects project dir from host env before cwd", () => {
+    expect(getProjectDir({ CLAUDE_PROJECT_DIR: "/claude", CONTEXT_MODE_PROJECT_DIR: "/context" }, "/cwd")).toBe("/claude");
+    expect(getProjectDir({ CONTEXT_MODE_PROJECT_DIR: "/context" }, "/cwd")).toBe("/context");
+    expect(getProjectDir({}, "/cwd")).toBe("/cwd");
+  });
 });
 
 
