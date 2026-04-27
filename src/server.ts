@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
 import { execSync, type ChildProcess } from "node:child_process";
-import { join, dirname, resolve, sep } from "node:path";
+import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { request as httpsRequest } from "node:https";
@@ -150,6 +150,10 @@ function getProjectDir(): string {
     || process.env.PI_PROJECT_DIR
     || process.env.CONTEXT_MODE_PROJECT_DIR
     || process.cwd();
+}
+
+function resolveProjectPath(filePath: string): string {
+  return isAbsolute(filePath) ? filePath : resolve(getProjectDir(), filePath);
 }
 
 /**
@@ -1141,16 +1145,18 @@ server.registerTool(
     }
 
     try {
+      const resolvedPath = path ? resolveProjectPath(path) : undefined;
+
       // Track the raw bytes being indexed (content or file)
       if (content) trackIndexed(Buffer.byteLength(content));
-      else if (path) {
+      else if (resolvedPath) {
         try {
           const fs = await import("fs");
-          trackIndexed(fs.readFileSync(path).byteLength);
+          trackIndexed(fs.readFileSync(resolvedPath).byteLength);
         } catch { /* ignore — file read errors handled by store */ }
       }
       const store = getStore();
-      const result = store.index({ content, path, source });
+      const result = store.index({ content, path: resolvedPath, source: source ?? path });
 
       return trackResponse("ctx_index", {
         content: [

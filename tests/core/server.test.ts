@@ -1553,10 +1553,10 @@ interface DoctorJsonRpcResponse {
   error?: { code: number; message: string };
 }
 
-function startMcpServer(): ChildProcess {
+function startMcpServer(env: NodeJS.ProcessEnv = {}): ChildProcess {
   return spawn("node", [mcpEntry], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
+    env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1", ...env },
   });
 }
 
@@ -1630,6 +1630,34 @@ async function initAndCallDoctor(
   }
   return collectRpcResponses(proc, windowMs, ids);
 }
+
+describe("ctx_index file paths", () => {
+  test("resolves relative paths from the project dir", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "ctx-index-relative-"));
+    writeFileSync(join(projectDir, "relative-doc.md"), "# Relative Fixture\n\nUnique relative path content.");
+
+    const proc = startMcpServer({ CONTEXT_MODE_PROJECT_DIR: projectDir });
+    sendRpc(proc, {
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-regression", version: "1.0" } },
+    });
+    sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+    sendRpc(proc, {
+      jsonrpc: "2.0",
+      id: 200,
+      method: "tools/call",
+      params: { name: "ctx_index", arguments: { path: "relative-doc.md", source: "Relative Fixture" } },
+    });
+
+    const responses = await collectRpcResponses(proc, 15_000, [200]);
+    const call = responses.find((r) => r.id === 200);
+    expect(call).toBeDefined();
+    expect(call!.error).toBeUndefined();
+    expect(call!.result?.isError).not.toBe(true);
+    expect(call!.result?.content?.[0]?.text).toContain("Indexed");
+  }, 20_000);
+});
+
 
 describe("ctx_doctor — resource cleanup regression (#247)", () => {
   test("single ctx_doctor call returns a markdown checklist", async () => {
