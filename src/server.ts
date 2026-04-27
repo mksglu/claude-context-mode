@@ -72,7 +72,7 @@ const executor = new PolyglotExecutor({
 });
 
 // ─────────────────────────────────────────────────────────
-// FS read tracking preload for batch_execute
+// FS read tracking preload for ctx_batch_execute
 // ─────────────────────────────────────────────────────────
 // NODE_OPTIONS is denied by the executor's #buildSafeEnv (security).
 // Instead, we inject it as an inline shell env prefix in each batch command.
@@ -581,7 +581,7 @@ export function formatBatchQueryResults(
 
   for (const query of queries) {
     if (outputSize > maxOutput) {
-      sections.push(`## ${query}\n(output cap reached — use search(queries: ["${query}"]) for details)\n`);
+      sections.push(`## ${query}\n(output cap reached — use ctx_search(queries: ["${query}"]) for details)\n`);
       continue;
     }
 
@@ -654,7 +654,7 @@ server.registerTool(
         .describe(
           "What you're looking for in the output. When provided and output is large (>5KB), " +
           "indexes output into knowledge base and returns section titles + previews — not full content. " +
-          "Use search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
+          "Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'." +
           "\n\nTIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.",
         ),
     }),
@@ -869,7 +869,7 @@ function indexStdout(
     content: [
       {
         type: "text" as const,
-        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}\nUse search(queries: ["..."]) to query this content. Use source: "${indexed.label}" to scope results.`,
+        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}\nUse ctx_search(queries: ["..."]) to query this content. Use source: "${indexed.label}" to scope results.`,
       },
     ],
   };
@@ -891,7 +891,7 @@ function intentSearch(
   const totalLines = stdout.split("\n").length;
   const totalBytes = Buffer.byteLength(stdout);
 
-  // Index into the PERSISTENT store so user can search() later
+  // Index into the PERSISTENT store so user can ctx_search() later
   const persistent = getStore();
   const indexed = persistent.indexPlainText(stdout, source);
 
@@ -911,7 +911,7 @@ function intentSearch(
       lines.push(`Searchable terms: ${distinctiveTerms.join(", ")}`);
     }
     lines.push("");
-    lines.push("Use search() to explore the indexed content.");
+    lines.push("Use ctx_search(queries: [...]) to explore the indexed content.");
     return lines.join("\n");
   }
 
@@ -933,7 +933,7 @@ function intentSearch(
   }
 
   lines.push("");
-  lines.push("Use search(queries: [...]) to retrieve full content of any section.");
+  lines.push("Use ctx_search(queries: [...]) to retrieve full content of any section.");
 
   return lines.join("\n");
 }
@@ -1103,9 +1103,9 @@ server.registerTool(
       "- Skill prompts and instructions that are too large for context\n" +
       "- README files, migration guides, changelog entries\n" +
       "- Any content with code examples you may need to reference precisely\n\n" +
-      "After indexing, use 'search' to retrieve specific sections on-demand.\n" +
+      "After indexing, use 'ctx_search' to retrieve specific sections on-demand.\n" +
       "When `path` is provided, a content hash is stored for automatic stale detection in search results.\n" +
-      "Do NOT use for: log files, test output, CSV, build output — use 'execute_file' for those.",
+      "Do NOT use for: log files, test output, CSV, build output — use 'ctx_execute_file' for those.",
     inputSchema: z.object({
       content: z
         .string()
@@ -1156,7 +1156,7 @@ server.registerTool(
         content: [
           {
             type: "text" as const,
-            text: `Indexed ${result.totalChunks} sections (${result.codeChunks} with code) from: ${result.label}\nUse search(queries: ["..."]) to query this content. Use source: "${result.label}" to scope results.`,
+            text: `Indexed ${result.totalChunks} sections (${result.codeChunks} with code) from: ${result.label}\nUse ctx_search(queries: ["..."]) to query this content. Use source: "${result.label}" to scope results.`,
           },
         ],
       });
@@ -1299,7 +1299,7 @@ server.registerTool(
             type: "text" as const,
             text: `BLOCKED: ${searchCallCount} search calls in ${Math.round((now - searchWindowStart) / 1000)}s. ` +
               "You're flooding context. STOP making individual search calls. " +
-              "Use batch_execute(commands, queries) for your next research step.",
+              "Use ctx_batch_execute(commands, queries) for your next research step.",
           }],
           isError: true,
         });
@@ -1351,7 +1351,7 @@ server.registerTool(
       if (searchCallCount >= SEARCH_MAX_RESULTS_AFTER) {
         output += `\n\n⚠ search call #${searchCallCount}/${SEARCH_BLOCK_AFTER} in this window. ` +
           `Results limited to ${effectiveLimit}/query. ` +
-          `Batch queries: search(queries: ["q1","q2","q3"]) or use batch_execute.`;
+          `Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`;
       }
 
       if (output.trim().length === 0) {
@@ -1466,7 +1466,7 @@ server.registerTool(
     title: "Fetch & Index URL",
     description:
       "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, " +
-      "and returns a ~3KB preview. Full content stays in sandbox — use search() for deeper lookups.\n\n" +
+      "and returns a ~3KB preview. Full content stays in sandbox — use ctx_search() for deeper lookups.\n\n" +
       "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.\n\n" +
       "Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.\n\n" +
       "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
@@ -1506,7 +1506,7 @@ server.registerTool(
           return trackResponse("ctx_fetch_and_index", {
             content: [{
               type: "text" as const,
-              text: `Cached: **${meta.label}** — ${meta.chunkCount} sections, indexed ${ageStr} (fresh, TTL: 24h).\nTo refresh: call ctx_fetch_and_index again with \`force: true\`.\n\nYou MUST call search() to answer questions about this content — this cached response contains no content.\nUse: search(queries: [...], source: "${meta.label}")`,
+              text: `Cached: **${meta.label}** — ${meta.chunkCount} sections, indexed ${ageStr} (fresh, TTL: 24h).\nTo refresh: call ctx_fetch_and_index again with \`force: true\`.\n\nYou MUST call ctx_search() to answer questions about this content — this cached response contains no content.\nUse: ctx_search(queries: [...], source: "${meta.label}")`,
             }],
           });
         }
@@ -1585,13 +1585,13 @@ server.registerTool(
       // Build preview — first ~3KB of markdown for immediate use
       const PREVIEW_LIMIT = 3072;
       const preview = markdown.length > PREVIEW_LIMIT
-        ? markdown.slice(0, PREVIEW_LIMIT) + "\n\n…[truncated — use search() for full content]"
+        ? markdown.slice(0, PREVIEW_LIMIT) + "\n\n…[truncated — use ctx_search() for full content]"
         : markdown;
       const totalKB = (Buffer.byteLength(markdown) / 1024).toFixed(1);
 
       const text = [
         `Fetched and indexed **${indexed.totalChunks} sections** (${totalKB}KB) from: ${indexed.label}`,
-        `Full content indexed in sandbox — use search(queries: [...], source: "${indexed.label}") for specific lookups.`,
+        `Full content indexed in sandbox — use ctx_search(queries: [...], source: "${indexed.label}") for specific lookups.`,
         "",
         "---",
         "",
@@ -1627,8 +1627,8 @@ server.registerTool(
     description:
       "Execute multiple commands in ONE call, auto-index all output, and search with multiple queries. " +
       "Returns search results directly — no follow-up calls needed.\n\n" +
-      "THIS IS THE PRIMARY TOOL. Use this instead of multiple execute() calls.\n\n" +
-      "One batch_execute call replaces 30+ execute calls + 10+ search calls.\n" +
+      "THIS IS THE PRIMARY TOOL. Use this instead of multiple ctx_execute() calls.\n\n" +
+      "One ctx_batch_execute call replaces 30+ ctx_execute calls + 10+ ctx_search calls.\n" +
       "Provide all commands to run and all queries to search — everything happens in one round trip.\n\n" +
       "THINK IN CODE: When commands produce data you need to analyze, add processing commands that filter and summarize. Don't pull raw output into context — let the sandbox do the work.\n\n" +
       "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
@@ -1767,7 +1767,7 @@ server.registerTool(
       }
 
       // Run all search queries — source scoped only.
-      // Cross-source search remains available via explicit search().
+      // Cross-source search remains available via explicit ctx_search().
       const queryResults = formatBatchQueryResults(store, queries, source);
 
       // Get searchable terms for edge cases where follow-up is needed

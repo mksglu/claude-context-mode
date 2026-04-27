@@ -77,7 +77,7 @@ MCP server        → detects markdown file on next getStore() call
 LLM               → searches source:"session-events" for details on demand
 ```
 
-Raw session events are **never injected into context**. Only a compact summary table + search queries are injected. The LLM searches for details via the existing `search()` MCP tool.
+Raw session events are **never injected into context**. Only a compact summary table + search queries are injected. The LLM searches for details via the existing `ctx_search()` MCP tool.
 
 ## Prerequisites
 
@@ -304,7 +304,7 @@ If your change doesn't fit any existing file, discuss with the maintainer before
 
 ### Output quality matters
 
-When your change affects tool output (execute, search, fetch_and_index, etc.), always compare before and after:
+When your change affects tool output (ctx_execute, ctx_search, ctx_fetch_and_index, etc.), always compare before and after:
 
 1. Run the same prompt **before** your change (on `main`)
 2. Run it **again** with your change
