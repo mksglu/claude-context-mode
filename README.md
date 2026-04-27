@@ -979,7 +979,7 @@ After compaction, the model receives a **Session Guide** — a structured narrat
 - **Session Intent** — mode classification (implement, investigate, review, discuss)
 - **User Role** — behavioral directives set during the session
 
-Detailed event data is also indexed into FTS5 for on-demand retrieval via `search()`.
+Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_search()`.
 
 </details>
 

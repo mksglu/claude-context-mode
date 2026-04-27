@@ -2543,6 +2543,143 @@ describe("Content-type-aware title boost in reranking", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 12. Phrase-frequency reward in reranking
+//
+// Adds a phrase-frequency component on top of the existing minSpan proximity.
+// minSpan returns a single number (the tightest window), so a doc with 3×
+// adjacent phrase hits ties a doc with 1× adjacent phrase hit at the same
+// span — and length-normalization actually favors the longer doc. The reward
+// counts ordered adjacent-pair occurrences (term[i] followed by term[i+1]
+// within 30 chars) and adds a saturating boost (cap 0.5 at 4 hits) so
+// frequency breaks the tie without unbounded keyword-stuffing wins.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("Phrase-frequency reward in reranking", () => {
+  test("multiple phrase occurrences outrank a single tight phrase at similar minSpan", () => {
+    const store = createStore();
+    try {
+      // Three adjacent occurrences. minSpan ≈ 6 chars (one occurrence).
+      store.indexPlainText(
+        "Cache invalidation matters. Cache invalidation is hard. Cache invalidation strategy is documented here too.",
+        "phrase-frequent",
+      );
+      // One adjacent occurrence padded with filler so contentLen is comparable.
+      store.indexPlainText(
+        "Cache invalidation appears here once. " +
+          "The remainder of this paragraph deliberately discusses unrelated topics like deployment, monitoring, and on-call rotations.",
+        "phrase-once",
+      );
+
+      const results = store.searchWithFallback("cache invalidation", 5);
+      assert.ok(results.length >= 2, "Should find both chunks");
+      assert.equal(
+        results[0].source,
+        "phrase-frequent",
+        `Expected phrase-frequent first, got: ${results[0].source}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("phrase-frequency reward respects query order (regression guard)", () => {
+    const store = createStore();
+    try {
+      // Adjacent in query order.
+      store.indexPlainText(
+        "Lorem ipsum dolor sit amet. The cache invalidation pipeline runs on every write.",
+        "phrase-ordered",
+      );
+      // Reversed order — no ordered phrase hits.
+      store.indexPlainText(
+        "Lorem ipsum dolor sit amet. The invalidation step is followed by a cache flush.",
+        "phrase-reversed",
+      );
+
+      const results = store.searchWithFallback("cache invalidation", 5);
+      assert.ok(results.length >= 2);
+      assert.equal(
+        results[0].source,
+        "phrase-ordered",
+        `Expected phrase-ordered first, got: ${results[0].source}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("3-term query: only consecutive-pair adjacency contributes to frequency", () => {
+    const store = createStore();
+    try {
+      // "alpha beta" adjacent (pair 0→1 hits) AND "beta gamma" adjacent (pair 1→2 hits)
+      // Three contiguous mentions of "alpha beta gamma" → 2 pairs per mention × 3 mentions = 6 pair-hits.
+      store.indexPlainText(
+        "alpha beta gamma matters. alpha beta gamma is hard. alpha beta gamma works well in practice.",
+        "all-adjacent",
+      );
+      // "alpha beta" adjacent BUT "beta gamma" separated by ~80 chars of filler.
+      // Pair 0→1 hits once, pair 1→2 misses → only 1 pair-hit.
+      store.indexPlainText(
+        "alpha beta runs the pipeline; the rest of this paragraph deliberately " +
+          "talks about deployment monitoring oncall rotations and other unrelated topics gamma.",
+        "split-adjacency",
+      );
+
+      const results = store.searchWithFallback("alpha beta gamma", 5);
+      assert.ok(results.length >= 2);
+      assert.equal(
+        results[0].source,
+        "all-adjacent",
+        `Expected all-adjacent first, got: ${results[0].source}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("saturation: 8-hit stuffed doc cannot beat 4-hit doc by more than the cap allows", () => {
+    const store = createStore();
+    try {
+      // 8 adjacent occurrences — well above saturation (4).
+      store.indexPlainText(
+        "cache invalidation cache invalidation cache invalidation cache invalidation " +
+          "cache invalidation cache invalidation cache invalidation cache invalidation",
+        "stuffed-eight",
+      );
+      // 4 adjacent occurrences — exactly at saturation.
+      store.indexPlainText(
+        "cache invalidation cache invalidation cache invalidation cache invalidation",
+        "stuffed-four",
+      );
+      // 1 adjacent occurrence inside a long natural paragraph.
+      // Without a cap, stuffed-eight (8 hits) could outrank everything; with
+      // the cap binding at 4, stuffed-eight and stuffed-four collapse to the
+      // same phrase contribution. The natural doc earns a smaller phrase
+      // contribution but still benefits from comparable proximity, so it must
+      // remain competitive in the top-3.
+      store.indexPlainText(
+        "Cache invalidation in a real system requires careful coordination across " +
+          "distributed nodes. Replication lag, eventual consistency, and leader-election " +
+          "races all interact in subtle ways that complicate a naive flush-on-write " +
+          "strategy used by many caching layers in production environments today.",
+        "natural-prose",
+      );
+
+      const results = store.searchWithFallback("cache invalidation", 5);
+      assert.ok(results.length >= 3, "Should find all three chunks");
+
+      const top3 = results.slice(0, 3).map((r) => r.source);
+      assert.ok(
+        top3.includes("natural-prose"),
+        `Cap must bind so natural-prose stays competitive; got top3=${top3.join(", ")}`,
+      );
+    } finally {
+      store.close();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 9. Search Relevance Eval — ranking quality under competitive conditions
 //
 // Indexes 12 heterogeneous markdown sources into a single store and asserts

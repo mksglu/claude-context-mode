@@ -253,6 +253,43 @@ function findAllPositions(text: string, term: string): number[] {
 }
 
 /**
+ * Count matched adjacent pairs across consecutive query terms.
+ * For each pair (term[i], term[i+1]), pairs each left position with at most one
+ * right position whose offset falls within `gap` chars of `p + len(term[i])`.
+ * `positionLists` must be sorted ascending (output of `findAllPositions` is).
+ * Each right position is consumed by at most one left, so `"foo foo bar"`
+ * counts 1 pair, not 2 — matches IR phrase-occurrence intent and avoids
+ * inflating boosts for repeated-token queries.
+ * Used by reranker to layer a frequency signal on top of minSpan proximity:
+ * 30-char gap covers natural prose without rewarding distant matches.
+ */
+function countAdjacentPairs(
+  positionLists: number[][],
+  terms: string[],
+  gap: number = 30,
+): number {
+  if (positionLists.length < 2 || terms.length < 2) return 0;
+  let total = 0;
+  const pairs = Math.min(positionLists.length, terms.length) - 1;
+  for (let i = 0; i < pairs; i++) {
+    const left = positionLists[i];
+    const right = positionLists[i + 1];
+    const leftLen = terms[i].length;
+    let j = 0;
+    for (const p of left) {
+      const minStart = p + leftLen;
+      const maxStart = minStart + gap;
+      while (j < right.length && right[j] < minStart) j++;
+      if (j < right.length && right[j] <= maxStart) {
+        total++;
+        j++;
+      }
+    }
+  }
+  return total;
+}
+
+/**
  * Find minimum span (window) covering at least one position from each list.
  * Uses a sweep-line approach: advance the pointer at the current minimum.
  */
@@ -690,11 +727,18 @@ export class ContentStore {
   }): IndexResult {
     const { content, path, source } = options;
 
-    if (!content && !path) {
+    // Treat empty string as "no content" so an empty `content` paired with a
+    // valid `path` falls back to reading the file. Some MCP clients
+    // materialize optional string fields as `""` and the previous
+    // `content ?? readFileSync(path)` kept the empty string, indexing 0
+    // chunks. See issue #350.
+    const hasContent = typeof content === "string" && content.length > 0;
+
+    if (!hasContent && !path) {
       throw new Error("Either content or path must be provided");
     }
 
-    const text = content ?? readFileSync(path!, "utf-8");
+    const text = hasContent ? content! : readFileSync(path!, "utf-8");
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
@@ -1027,8 +1071,13 @@ export class ContentStore {
         const titleWeight = r.contentType === "code" ? 0.6 : 0.3;
         const titleBoost = titleHits > 0 ? titleWeight * (titleHits / terms.length) : 0;
 
-        // Proximity boost for multi-term queries
+        // Proximity boost for multi-term queries. minSpan picks the single
+        // tightest window — frequency doesn't move it, so a long doc with one
+        // tight occurrence outranks a short doc with several. Phrase-frequency
+        // reward layers a saturating frequency signal on top: cap 0.5 (below
+        // proximity max ≈1.0, in title-boost range), saturates at 4 hits.
         let proximityBoost = 0;
+        let phraseBoost = 0;
         if (terms.length >= 2) {
           const content = r.content.toLowerCase();
           const positions = terms.map((t) => findAllPositions(content, t));
@@ -1036,10 +1085,13 @@ export class ContentStore {
           if (!positions.some((p) => p.length === 0)) {
             const minSpan = findMinSpan(positions);
             proximityBoost = 1 / (1 + minSpan / Math.max(content.length, 1));
+
+            const adjacentPairs = countAdjacentPairs(positions, terms);
+            phraseBoost = 0.5 * Math.min(1, adjacentPairs / 4);
           }
         }
 
-        return { result: r, boost: titleBoost + proximityBoost };
+        return { result: r, boost: titleBoost + proximityBoost + phraseBoost };
       })
       .sort((a, b) => b.boost - a.boost || a.result.rank - b.result.rank)
       .map(({ result }) => result);

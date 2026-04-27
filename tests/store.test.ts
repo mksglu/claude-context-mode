@@ -104,6 +104,23 @@ describe("Basic Indexing", () => {
     store.close();
   });
 
+  test("index reads file when content is empty string and path is provided (regression #350)", () => {
+    // Some MCP clients send `content: ""` together with `path`. The previous
+    // implementation used `content ?? readFileSync(path)` which kept the empty
+    // string and indexed 0 chunks. Empty content + a valid path must fall
+    // back to reading the file.
+    const store = createStore();
+    const result = store.index({
+      content: "",
+      path: join(fixtureDir, "context7-react-docs.md"),
+      source: "Context7: empty-content path repro",
+    });
+    assert.ok(result.totalChunks > 0, "Should chunk the fixture from path even when content is empty string");
+    assert.ok(result.codeChunks > 0, "React docs have code blocks");
+    assert.equal(result.label, "Context7: empty-content path repro");
+    store.close();
+  });
+
   test("stats update after indexing", () => {
     const store = createStore();
     store.index({
