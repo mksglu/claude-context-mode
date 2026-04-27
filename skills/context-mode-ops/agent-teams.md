@@ -71,7 +71,7 @@ Spawn the **pair** (Architect + Staff Engineer) for each affected platform:
 | Hook, PreToolUse, PostToolUse, SessionStart, PreCompact | **Hooks Architect** | Hook lifecycle, matcher patterns, stdin/stdout protocol |
 | Session, compaction, resume, snapshot, continuity | **Session Architect** | SessionDB schema, event extraction, resume flow, PreCompact |
 | Executor, sandbox, polyglot, truncation, timeout | **Executor Architect** | Language runtimes, smart truncation, FTS5 indexing pipeline |
-| Fetch, turndown, HTML, markdown conversion, web | **Web/Fetch Architect** | fetch_and_index, HTML→markdown, chunking, URL handling |
+| Fetch, turndown, HTML, markdown conversion, web | **Web/Fetch Architect** | ctx_fetch_and_index, HTML→markdown, chunking, URL handling |
 | Performance, benchmark, tokens, context savings | **Performance Engineer** | Token counting, context savings ratio, benchmark comparisons |
 | Version, release, publish, npm, manifest | **Release Engineer** | version-sync, manifest files, npm publish, GitHub releases |
 
