@@ -207,6 +207,8 @@ Codex CLI's Rust backend (codex-rs) includes a full hook system with 5 events, u
 context-mode hook codex pretooluse
 context-mode hook codex posttooluse
 context-mode hook codex sessionstart
+context-mode hook codex userpromptsubmit
+context-mode hook codex stop
 ```
 
 **Known Issues / Caveats:**

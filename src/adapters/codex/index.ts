@@ -241,6 +241,28 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           ],
         },
       ],
+      UserPromptSubmit: [
+        {
+          matcher: "",
+          hooks: [
+            {
+              type: "command",
+              command: `node ${pluginRoot}/hooks/codex/userpromptsubmit.mjs`,
+            },
+          ],
+        },
+      ],
+      Stop: [
+        {
+          matcher: "",
+          hooks: [
+            {
+              type: "command",
+              command: `node ${pluginRoot}/hooks/codex/stop.mjs`,
+            },
+          ],
+        },
+      ],
     };
   }
 
@@ -271,7 +293,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         check: "Hook support",
         status: "pass",
         message:
-          "Codex CLI hooks are stable. Configure ~/.codex/hooks.json for PreToolUse, PostToolUse, and SessionStart.",
+          "Codex CLI hooks are stable. Configure ~/.codex/hooks.json for PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, and Stop.",
       },
     ];
   }

@@ -61,7 +61,7 @@ export abstract class ClaudeCodeBaseAdapter extends BaseAdapter {
       toolName: input.tool_name ?? "",
       toolInput: input.tool_input ?? {},
       sessionId: this.extractSessionId(input),
-      projectDir: process.env[this.projectDirEnvVar],
+      projectDir: process.env[this.projectDirEnvVar] ?? process.cwd(),
       raw,
     };
   }
@@ -74,7 +74,7 @@ export abstract class ClaudeCodeBaseAdapter extends BaseAdapter {
       toolOutput: input.tool_output,
       isError: input.is_error,
       sessionId: this.extractSessionId(input),
-      projectDir: process.env[this.projectDirEnvVar],
+      projectDir: process.env[this.projectDirEnvVar] ?? process.cwd(),
       raw,
     };
   }
@@ -83,7 +83,7 @@ export abstract class ClaudeCodeBaseAdapter extends BaseAdapter {
     const input = raw as ClaudeCodeWireInput;
     return {
       sessionId: this.extractSessionId(input),
-      projectDir: process.env[this.projectDirEnvVar],
+      projectDir: process.env[this.projectDirEnvVar] ?? process.cwd(),
       raw,
     };
   }
@@ -110,7 +110,7 @@ export abstract class ClaudeCodeBaseAdapter extends BaseAdapter {
     return {
       sessionId: this.extractSessionId(input),
       source,
-      projectDir: process.env[this.projectDirEnvVar],
+      projectDir: process.env[this.projectDirEnvVar] ?? process.cwd(),
       raw,
     };
   }

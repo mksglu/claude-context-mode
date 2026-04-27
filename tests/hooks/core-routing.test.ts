@@ -309,39 +309,50 @@ describe("routePreToolUse", () => {
       expect(result!.reason).toContain("ctx_search");
     });
 
-    it("allows WebFetch when MCP server not ready (#230)", () => {
-      // Remove sentinel to simulate MCP not started
+    it("blocks WebFetch even when per-process sentinel is absent (#347)", () => {
+      // After #347 directory-scan: isMCPReady scans all sentinels, not just per-process.
+      // Removing per-process sentinel no longer disables blocking.
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("WebFetch", { url: "https://example.com" });
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("deny");
+      expect(result!.reason).toContain("WebFetch blocked");
     });
 
-    it("allows mcp_web_fetch alias when MCP server not ready (#230)", () => {
+    it("blocks mcp_web_fetch alias even when per-process sentinel is absent (#347)", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("mcp_web_fetch", { url: "https://example.com" });
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("deny");
+      expect(result!.reason).toContain("WebFetch blocked");
     });
   });
 
   // ─── MCP readiness: all redirects degrade gracefully (#230) ───
 
-  describe("MCP readiness graceful degradation (#230)", () => {
-    it("allows curl when MCP server not ready", () => {
+  describe("MCP readiness: always blocks after directory-scan (#347)", () => {
+    it("blocks curl even when per-process sentinel is absent", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("Bash", { command: "curl https://example.com" });
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain("curl/wget blocked");
     });
 
-    it("allows inline HTTP when MCP server not ready", () => {
+    it("blocks inline HTTP even when per-process sentinel is absent", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("Bash", { command: "node -e \"fetch('https://example.com')\"" });
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain("Inline HTTP blocked");
     });
 
-    it("allows build tools when MCP server not ready", () => {
+    it("blocks build tools even when per-process sentinel is absent", () => {
       try { unlinkSync(mcpSentinel); } catch {}
       const result = routePreToolUse("Bash", { command: "./gradlew build" });
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
+      expect((result!.updatedInput as Record<string, string>).command).toContain("Build tool redirected");
     });
   });
 

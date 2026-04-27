@@ -1,6 +1,6 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
@@ -214,11 +214,13 @@ describe("CodexAdapter", () => {
   // ── generateHookConfig ────────────────────────────────
 
   describe("generateHookConfig", () => {
-    it("generates hooks.json with PreToolUse, PostToolUse, SessionStart entries", () => {
+    it("generates hooks.json with Codex-supported continuity entries", () => {
       const config = adapter.generateHookConfig("/path/to/plugin");
       expect(config).toHaveProperty("PreToolUse");
       expect(config).toHaveProperty("PostToolUse");
       expect(config).toHaveProperty("SessionStart");
+      expect(config).toHaveProperty("UserPromptSubmit");
+      expect(config).toHaveProperty("Stop");
     });
   });
 });
@@ -240,16 +242,65 @@ describe("Codex pretooluse hook script", () => {
       turn_id: "t1",
     });
 
-    const stdout = execSync(
-      `printf '%s' '${input.replace(/'/g, "'\\''")}' | node ${hookScript}`,
-      {
-        encoding: "utf-8",
-        timeout: 10000,
-      },
-    );
+    const stdout = execFileSync(process.execPath, [hookScript], {
+      input,
+      encoding: "utf-8",
+      timeout: 10000,
+    });
 
     const parsed = JSON.parse(stdout.trim());
     expect(parsed.hookSpecificOutput).toBeDefined();
     expect(parsed.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+  });
+});
+
+describe("Codex userpromptsubmit hook script", () => {
+  it("outputs valid JSON with UserPromptSubmit hookEventName", () => {
+    const hookScript = resolve(__dirname, "../../hooks/codex/userpromptsubmit.mjs");
+    const input = JSON.stringify({
+      session_id: "test-userprompt",
+      cwd: "/tmp",
+      hook_event_name: "UserPromptSubmit",
+      model: "o3",
+      permission_mode: "default",
+      prompt: "remember this decision",
+      transcript_path: null,
+      turn_id: "t1",
+    });
+
+    const stdout = execFileSync(process.execPath, [hookScript], {
+      input,
+      encoding: "utf-8",
+      timeout: 10000,
+    });
+
+    const parsed = JSON.parse(stdout.trim());
+    expect(parsed.hookSpecificOutput).toBeDefined();
+    expect(parsed.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+  });
+});
+
+describe("Codex stop hook script", () => {
+  it("outputs valid JSON without requesting continuation", () => {
+    const hookScript = resolve(__dirname, "../../hooks/codex/stop.mjs");
+    const input = JSON.stringify({
+      session_id: "test-stop",
+      cwd: "/tmp",
+      hook_event_name: "Stop",
+      model: "o3",
+      permission_mode: "default",
+      last_assistant_message: "done",
+      stop_hook_active: false,
+      transcript_path: null,
+      turn_id: "t1",
+    });
+
+    const stdout = execFileSync(process.execPath, [hookScript], {
+      input,
+      encoding: "utf-8",
+      timeout: 10000,
+    });
+
+    expect(JSON.parse(stdout.trim())).toEqual({});
   });
 });
