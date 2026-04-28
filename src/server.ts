@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
 import { execSync, type ChildProcess } from "node:child_process";
-import { join, dirname, resolve, sep } from "node:path";
+import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { request as httpsRequest } from "node:https";
@@ -29,7 +29,6 @@ import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
 import { getWorktreeSuffix } from "./session/db.js";
 import type { HookAdapter } from "./adapters/types.js";
-import { getProjectDir, resolveProjectPath } from "./project-path.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
@@ -130,6 +129,31 @@ function getSessionDir(): string {
   const dir = join(homedir(), ".claude", "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Project directory detection across supported platforms.
+ *
+ * Priority:
+ *   1. Platform-specific env var (set by host IDE before MCP server spawn)
+ *   2. CONTEXT_MODE_PROJECT_DIR (set by start.mjs for ALL platforms — universal)
+ *   3. process.cwd() (last resort)
+ *
+ * CONTEXT_MODE_PROJECT_DIR guarantees correct projectDir even for platforms
+ * that don't set their own env var (Cursor, OpenClaw, Codex, Kiro, Zed).
+ */
+function getProjectDir(): string {
+  return process.env.CLAUDE_PROJECT_DIR
+    || process.env.GEMINI_PROJECT_DIR
+    || process.env.VSCODE_CWD
+    || process.env.OPENCODE_PROJECT_DIR
+    || process.env.PI_PROJECT_DIR
+    || process.env.CONTEXT_MODE_PROJECT_DIR
+    || process.cwd();
+}
+
+function resolveProjectPath(filePath: string): string {
+  return isAbsolute(filePath) ? filePath : resolve(getProjectDir(), filePath);
 }
 
 /**

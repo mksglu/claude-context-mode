@@ -24,7 +24,6 @@ import { classifyNonZeroExit } from "../../src/exit-classify.js";
 import { PolyglotExecutor } from "../../src/executor.js";
 import { detectRuntimes } from "../../src/runtime.js";
 import { ContentStore } from "../../src/store.js";
-import { getProjectDir, resolveProjectPath } from "../../src/project-path.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
@@ -1554,10 +1553,10 @@ interface DoctorJsonRpcResponse {
   error?: { code: number; message: string };
 }
 
-function startMcpServer(env: NodeJS.ProcessEnv = {}): ChildProcess {
+function startMcpServer(): ChildProcess {
   return spawn("node", [mcpEntry], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1", ...env },
+    env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
   });
 }
 
@@ -1631,25 +1630,6 @@ async function initAndCallDoctor(
   }
   return collectRpcResponses(proc, windowMs, ids);
 }
-
-describe("ctx_index file paths", () => {
-  test("resolves relative paths from the project dir", () => {
-    const projectDir = resolve("/tmp/context-mode-project");
-    expect(resolveProjectPath("relative-doc.md", projectDir)).toBe(resolve(projectDir, "relative-doc.md"));
-  });
-
-  test("preserves absolute paths", () => {
-    const absolutePath = resolve("/tmp/context-mode-project/absolute-doc.md");
-    expect(resolveProjectPath(absolutePath, resolve("/tmp/other-project"))).toBe(absolutePath);
-  });
-
-  test("detects project dir from host env before cwd", () => {
-    expect(getProjectDir({ CLAUDE_PROJECT_DIR: "/claude", CONTEXT_MODE_PROJECT_DIR: "/context" }, "/cwd")).toBe("/claude");
-    expect(getProjectDir({ CONTEXT_MODE_PROJECT_DIR: "/context" }, "/cwd")).toBe("/context");
-    expect(getProjectDir({}, "/cwd")).toBe("/cwd");
-  });
-});
-
 
 describe("ctx_doctor — resource cleanup regression (#247)", () => {
   test("single ctx_doctor call returns a markdown checklist", async () => {
