@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/mksglu-context-mode-badge.png)](https://mseep.ai/app/mksglu-context-mode)
+
 # Context Mode
 
 **The other half of the context problem.**
