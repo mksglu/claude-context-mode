@@ -14,6 +14,12 @@
  * @param {object | null} decision - Normalized decision from routePreToolUse
  * @returns {object | null} Claude Code hook response, or null for passthrough
  */
+
+// In `claude --print` (headless) the CLI has no TTY to surface an "ask" prompt,
+// so the agent stalls forever. Launchers running headless set CLAUDE_CODE_HEADLESS=1;
+// when set, we mirror gemini-cli.mjs and passthrough on ask instead of blocking.
+const isHeadless = () => process.env.CLAUDE_CODE_HEADLESS === "1";
+
 export function formatDecision(decision) {
   if (!decision) return null;
 
@@ -28,6 +34,7 @@ export function formatDecision(decision) {
       };
 
     case "ask":
+      if (isHeadless()) return null;
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",

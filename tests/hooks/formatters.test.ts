@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 
 // Dynamic import for .mjs modules
 let claudeCodeFormat: (decision: unknown) => unknown;
@@ -89,6 +89,46 @@ describe("formatDecision", () => {
     it("returns null for null decision", () => {
       const result = claudeCodeFormat(null);
       expect(result).toBeNull();
+    });
+
+    // ─── Headless mode (--print, no TTY) — passthrough on ask ───
+    describe("when CLAUDE_CODE_HEADLESS=1 (headless --print mode)", () => {
+      let saved: string | undefined;
+      beforeEach(() => {
+        saved = process.env.CLAUDE_CODE_HEADLESS;
+        process.env.CLAUDE_CODE_HEADLESS = "1";
+      });
+      afterEach(() => {
+        if (saved === undefined) delete process.env.CLAUDE_CODE_HEADLESS;
+        else process.env.CLAUDE_CODE_HEADLESS = saved;
+      });
+
+      it("returns null for ask (passthrough — no TTY to surface prompt, prevents --print hang)", () => {
+        const result = claudeCodeFormat(askDecision);
+        expect(result).toBeNull();
+      });
+
+      it("still formats deny normally (only ask is bypassed)", () => {
+        const result = claudeCodeFormat(denyDecision) as Record<string, unknown>;
+        expect(result).not.toBeNull();
+        const output = result.hookSpecificOutput as Record<string, unknown>;
+        expect(output.permissionDecision).toBe("deny");
+        expect(output.reason).toBe(denyDecision.reason);
+      });
+
+      it("still formats modify normally", () => {
+        const result = claudeCodeFormat(modifyDecision) as Record<string, unknown>;
+        expect(result).not.toBeNull();
+        const output = result.hookSpecificOutput as Record<string, unknown>;
+        expect(output.updatedInput).toEqual(modifyDecision.updatedInput);
+      });
+
+      it("still formats context normally", () => {
+        const result = claudeCodeFormat(contextDecision) as Record<string, unknown>;
+        expect(result).not.toBeNull();
+        const output = result.hookSpecificOutput as Record<string, unknown>;
+        expect(output.additionalContext).toBe(contextDecision.additionalContext);
+      });
     });
   });
 
