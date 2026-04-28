@@ -39,6 +39,7 @@ This puts the `context-mode` binary in PATH, which is required for:
 | **PostToolUse equivalent** | `PostToolUse` | `AfterTool` | `PostToolUse` | `PostToolUse` | `postToolUse` | `tool.execute.after` | `PostToolUse` | -- | -- |
 | **PreCompact equivalent** | `PreCompact` | `PreCompress` | `PreCompact` | `PreCompact` | -- | `experimental.session.compacting` | -- | -- | -- |
 | **SessionStart** | `SessionStart` | `SessionStart` | `SessionStart` | `SessionStart` | -- (buggy in Cursor) | -- | `SessionStart` | -- | -- |
+| **UserPromptSubmit** | `UserPromptSubmit` | -- | -- | -- | -- | -- | `UserPromptSubmit` | -- | -- |
 | **Stop equivalent** | -- | -- | `Stop` | `Stop` | `stop` | -- | `Stop` | -- | -- |
 | **Can modify args** | Yes | Yes | Yes | Yes | Yes | Yes | No | -- | -- |
 | **Can modify output** | Yes | Yes | Yes | Yes | No | Yes (caveat) | No | -- | -- |
@@ -596,7 +597,7 @@ The dispatcher resolves the hook script relative to the installed package and dy
 | `vscode-copilot` | `pretooluse`, `posttooluse`, `precompact`, `sessionstart` |
 | `jetbrains-copilot` | `pretooluse`, `posttooluse`, `precompact`, `sessionstart` |
 | `cursor` | `pretooluse`, `posttooluse`, `stop` |
-| `codex` | `pretooluse`, `posttooluse`, `sessionstart` |
+| `codex` | `pretooluse`, `posttooluse`, `sessionstart`, `userpromptsubmit`, `stop` |
 
 OpenCode uses a TS plugin paradigm (no command dispatcher). Antigravity and Kiro have no hook support.
 

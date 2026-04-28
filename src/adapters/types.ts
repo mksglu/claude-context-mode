@@ -3,9 +3,9 @@
  *
  * Defines the contract that each platform adapter must implement.
  * Three paradigms exist across supported platforms:
- *   A) JSON stdin/stdout — Claude Code, Gemini CLI, VS Code Copilot, Copilot CLI, Cursor
+ *   A) JSON stdin/stdout — Claude Code, Gemini CLI, VS Code Copilot, Copilot CLI, Cursor, Codex CLI
  *   B) TS Plugin Functions — OpenCode
- *   C) MCP-only (no hooks) — Codex CLI
+ *   C) MCP-only (no hooks) — Antigravity and other manual-routing adapters
  *
  * The MCP server layer is 100% portable and needs no adapter.
  * Only the hook layer requires platform-specific adapters.
