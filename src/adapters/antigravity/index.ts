@@ -4,7 +4,7 @@
  * Implements HookAdapter for Antigravity's MCP-only paradigm.
  *
  * Antigravity hook specifics:
- *   - NO hook support (MCP-only integration path)
+ *   - NO hook support (MCP-only, same as Codex CLI)
  *   - Config: ~/.gemini/antigravity/mcp_config.json (JSON format)
  *   - MCP: full support via mcpServers in mcp_config.json
  *   - All capabilities are false — MCP is the only integration path

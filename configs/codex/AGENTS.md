@@ -1,6 +1,6 @@
 # context-mode — MANDATORY routing rules
 
-context-mode MCP tools and Codex hooks are available. Rules protect context window from flooding. Hooks capture tool/session events; these instructions keep the model routing correctly. Follow strictly.
+context-mode MCP tools available. Rules protect context window from flooding. One unrouted command dumps 56 KB into context. Codex CLI has NO hooks — these instructions are ONLY enforcement. Follow strictly.
 
 ## Think in Code — MANDATORY
 
@@ -61,9 +61,10 @@ Session history is persistent and searchable. On resume, search BEFORE asking th
 |------|---------|
 | What were we working on? | `ctx_search(queries: ["summary"], source: "compaction", sort: "timeline")` |
 | What did we decide? | `ctx_search(queries: ["decision"], source: "decision", sort: "timeline")` |
-| What did the user ask? | `ctx_search(queries: ["user prompt request"], source: "user-prompt", sort: "timeline")` |
 | What NOT to repeat? | `ctx_search(queries: ["rejected"], source: "rejected-approach")` |
 | What constraints exist? | `ctx_search(queries: ["constraint"], source: "constraint")` |
+
+Note: user-prompt history not available.
 
 DO NOT ask "what were we working on?" — SEARCH FIRST.
 If search returns 0 results, proceed as a fresh session.
