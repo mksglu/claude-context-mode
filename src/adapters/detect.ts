@@ -34,7 +34,7 @@ export const PLATFORM_ENV_VARS = [
   ["claude-code", ["CLAUDE_PROJECT_DIR", "CLAUDE_SESSION_ID"]],
   ["gemini-cli", ["GEMINI_PROJECT_DIR", "GEMINI_CLI"]],
   ["openclaw", ["OPENCLAW_HOME", "OPENCLAW_CLI"]],
-  ["kilo", ["KILO", "KILO_PID"]],
+  ["kilo", ["KILO", "KILO_PID", "KILOCODE_VERSION"]],
   ["opencode", ["OPENCODE", "OPENCODE_PID"]],
   ["codex", ["CODEX_CI", "CODEX_THREAD_ID"]],
   ["cursor", ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
@@ -53,6 +53,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   // ── Highest priority: MCP clientInfo ──────────────────
   if (clientInfo?.name) {
     const platform = CLIENT_NAME_TO_PLATFORM[clientInfo.name];
+    
     if (platform) {
       return {
         platform,

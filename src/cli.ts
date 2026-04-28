@@ -31,6 +31,8 @@ import {
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
 import type { HookAdapter } from "./adapters/types.js";
 
+const GIT_REPOSITORY = "https://github.com/mksglu/context-mode.git";
+
 /* -------------------------------------------------------
  * Hook dispatcher — `context-mode hook <platform> <event>`
  * ------------------------------------------------------- */
@@ -116,7 +118,7 @@ const args = process.argv.slice(2);
 if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
-  upgrade();
+  upgrade(args[1]);
 } else if (args[0] === "hook") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
@@ -173,10 +175,10 @@ function defaultPluginRoot(): string {
 function cachePluginRoot(platform: string): string {
   if (process.platform === "win32") {
     const localApp = process.env.LOCALAPPDATA;
-    if (localApp) return resolve(localApp, platform, "node_modules", "context-mode");
-    return resolve(homedir(), "AppData", "Local", platform, "node_modules", "context-mode");
+    if (localApp) return resolve(localApp, platform, "packages", "context-mode@latest", "node_modules", "context-mode");
+    return resolve(homedir(), "AppData", "Local", platform, "packages", "context-mode@latest", "node_modules", "context-mode");
   }
-  return resolve(homedir(), ".cache", platform, "node_modules", "context-mode");
+  return resolve(homedir(), ".cache", platform, "packages", "context-mode@latest", "node_modules", "context-mode");
 }
 
 function getPluginRoot(): string {
@@ -570,8 +572,19 @@ async function insight(port: number) {
  * Upgrade — adapter-aware hook configuration
  * ------------------------------------------------------- */
 
-async function upgrade() {
+async function upgrade(source = 'remote') {
   if (process.stdout.isTTY) console.clear();
+
+  // local mode is available only from context-mode git clone otherwise ignore local mode
+  try {
+    const gitCheck = execFileSync("git", ["remote", "get-url", "origin"], { stdio: "pipe" }).toString().trim();
+    
+    if (source !== "remote" && gitCheck !== GIT_REPOSITORY) {
+      source = "remote"
+    }
+  } catch {
+    source = "remote"
+  }
 
   // Detect platform
   const detection = detectPlatform();
@@ -588,17 +601,26 @@ async function upgrade() {
   const s = p.spinner();
 
   // Step 1: Pull latest from GitHub
-  p.log.step("Pulling latest from GitHub...");
+  if (source==="remote") {
+    p.log.step("Pulling latest from GitHub...");
+  } else {
+    p.log.step("Copying local branch...");
+  }
   const localVersion = getLocalVersion();
   const tmpDir = join(tmpdir(), `context-mode-upgrade-${Date.now()}`);
 
   s.start("Cloning mksglu/context-mode");
   try {
-    execFileSync(
-      "git", ["clone", "--depth", "1", "https://github.com/mksglu/context-mode.git", tmpDir],
-      { stdio: "pipe", timeout: 30000 },
-    );
-    s.stop("Downloaded");
+    if (source === 'remote'){
+      execFileSync(
+        "git", ["clone", "--depth", "1", GIT_REPOSITORY, tmpDir],
+        { stdio: "pipe", timeout: 30000 },
+      );
+      s.stop("Downloaded");
+    } else {
+      cpSync(".", tmpDir, { recursive: true });
+      s.stop("Copied");
+    }
 
     const srcDir = tmpDir;
     const newPkg = JSON.parse(
@@ -606,7 +628,7 @@ async function upgrade() {
     );
     const newVersion = newPkg.version ?? "unknown";
     
-    if (newVersion === localVersion) {
+    if (newVersion === localVersion && source === "remote") {
       p.log.success(color.green("Already on latest") + ` — v${localVersion}`);
       rmSync(tmpDir, { recursive: true, force: true });
       return;

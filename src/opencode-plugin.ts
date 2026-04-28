@@ -29,6 +29,7 @@ import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
 import { AdapterPlatformType, OpenCodeAdapter } from "./adapters/opencode/index.js";
+import { PLATFORM_ENV_VARS } from "./adapters/detect.js";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -78,7 +79,14 @@ interface CompactingHookOutput {
 
 // ── Helpers ───────────────────────────────────────────────
 function getPlatform(): AdapterPlatformType {
-  return process.env.KILO_PID ? "kilo" : "opencode";
+  const [platform, vars] = PLATFORM_ENV_VARS.filter(p => p[0]==="kilo")[0];
+  for (const _var of vars){
+    if (process.env[_var]) {
+      return platform;
+    }
+  }
+  
+  return "opencode";
 }
 
 // ── Plugin Factory ────────────────────────────────────────

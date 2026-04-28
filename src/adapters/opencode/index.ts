@@ -426,12 +426,13 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getInstalledVersion(): string {
-    // Check ~/.cache/opencode/node_modules/ for context-mode
     try {
       const pkgPath = resolve(
         homedir(),
         ".cache",
         this.platform,
+        "packages",
+        "context-mode@latest",
         "node_modules",
         "context-mode",
         "package.json",

@@ -20,3 +20,6 @@ context-mode-guidance-*/
 .claude-worktrees/
 .vibetree/
 .cw/
+# CocoIndex Code (ccc)
+/.cocoindex_code/
+/.kilo/
