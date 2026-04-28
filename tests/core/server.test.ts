@@ -1208,6 +1208,25 @@ describe("Platform-aware session paths via adapter", () => {
     expect(statsMatch![0]).not.toMatch(/["']\.claude["']/);
   });
 
+  test("ctx_search uses platform-aware auto-memory config dir", () => {
+    const searchMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_search"[\s\S]*?^\);/m,
+    );
+    expect(searchMatch).not.toBeNull();
+    expect(searchMatch![0]).toContain("getMemoryConfigDir()");
+    expect(searchMatch![0]).not.toContain("CLAUDE_CONFIG_DIR");
+    expect(searchMatch![0]).not.toMatch(/join\(homedir\(\),\s*["']\.claude["']\)/);
+  });
+
+  test("ctx_search timeline opens the worktree-suffixed SessionDB", () => {
+    const searchMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_search"[\s\S]*?^\);/m,
+    );
+    expect(searchMatch).not.toBeNull();
+    expect(searchMatch![0]).toContain("getWorktreeSuffix()");
+    expect(searchMatch![0]).toMatch(/\$\{hashProjectDir\(\)\}\$\{getWorktreeSuffix\(\)\}\.db/);
+  });
+
   // ── Adapter methods used for session paths ──
   test("session paths derived from adapter.getSessionDir or getSessionDBPath", () => {
     // Either directly uses adapter methods or a helper that delegates to them

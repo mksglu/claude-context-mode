@@ -1,12 +1,12 @@
 /**
- * Auto-memory search — searches CLAUDE.md and MEMORY.md files for
+ * Auto-memory search — searches agent instruction and memory files for
  * persisted decisions, preferences, and context from prior sessions.
  *
  * Returns results in a format compatible with the unified search pipeline.
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 
 const DEBUG = process.env.DEBUG?.includes("context-mode");
@@ -20,13 +20,13 @@ export interface AutoMemoryResult {
 }
 
 /**
- * Search auto-memory files (CLAUDE.md, MEMORY.md, user identity files)
+ * Search auto-memory files (CLAUDE.md, AGENTS.md, MEMORY.md, user identity files)
  * for content matching any of the given queries.
  *
  * Scans:
- *   1. Project-level: <projectDir>/CLAUDE.md
- *   2. User-level: <configDir>/CLAUDE.md
- *   3. User memory: <configDir>/memory/*.md
+ *   1. Project-level: <projectDir>/{CLAUDE,AGENTS.override,AGENTS,GEMINI,MEMORY}.md
+ *   2. User-level: <configDir>/{CLAUDE,AGENTS.override,AGENTS,GEMINI,MEMORY}.md
+ *   3. User memory: <configDir>/{memory,memories}/*.md
  *
  * @param queries  Array of search terms
  * @param limit    Max results to return
@@ -45,35 +45,42 @@ export function searchAutoMemory(
 
   // Collect candidate files
   const candidates: Array<{ path: string; label: string }> = [];
+  const seen = new Set<string>();
+  const instructionFiles = ["CLAUDE.md", "AGENTS.override.md", "AGENTS.md", "GEMINI.md", "MEMORY.md"];
 
-  // 1. Project-level CLAUDE.md
-  if (projectDir) {
-    const projectClaude = join(projectDir, "CLAUDE.md");
-    if (existsSync(projectClaude)) {
-      candidates.push({ path: projectClaude, label: "project/CLAUDE.md" });
-    }
-  }
+  const addCandidate = (path: string, label: string): void => {
+    if (seen.has(path) || !existsSync(path)) return;
+    seen.add(path);
+    candidates.push({ path, label });
+  };
 
-  // 2. User-level CLAUDE.md
-  const userClaude = join(effectiveConfigDir, "CLAUDE.md");
-  if (existsSync(userClaude)) {
-    candidates.push({ path: userClaude, label: "user/CLAUDE.md" });
-  }
-
-  // 3. User memory directory
-  const memoryDir = join(effectiveConfigDir, "memory");
-  if (existsSync(memoryDir)) {
+  const addMemoryDir = (dir: string, labelPrefix: string): void => {
+    if (!existsSync(dir)) return;
     try {
-      const files = readdirSync(memoryDir).filter(f => f.endsWith(".md"));
+      const files = readdirSync(dir).filter(f => f.endsWith(".md"));
       for (const file of files) {
-        candidates.push({
-          path: join(memoryDir, file),
-          label: `memory/${file}`,
-        });
+        addCandidate(join(dir, file), `${labelPrefix}/${file}`);
       }
     } catch (e) {
       if (DEBUG) process.stderr.write(`[ctx] auto-memory dir scan failed: ${e}\n`);
     }
+  };
+
+  // 1. Project-level instruction files
+  if (projectDir) {
+    for (const file of instructionFiles) {
+      addCandidate(join(projectDir, file), `project/${file}`);
+    }
+  }
+
+  // 2. User-level instruction files
+  for (const file of instructionFiles) {
+    addCandidate(join(effectiveConfigDir, file), `user/${file}`);
+  }
+
+  // 3. User memory directories. Codex uses "memories"; Claude/Qwen use "memory".
+  for (const dirName of ["memory", "memories"]) {
+    addMemoryDir(join(effectiveConfigDir, dirName), dirName);
   }
 
   // Search each candidate file for matching queries

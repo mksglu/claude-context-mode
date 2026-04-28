@@ -133,6 +133,20 @@ function getSessionDir(): string {
 }
 
 /**
+ * Get the platform-specific config root used for auto-memory files.
+ * Falls back to Claude only before adapter detection.
+ */
+function getMemoryConfigDir(): string {
+  if (_detectedAdapter) {
+    if (_detectedAdapter.name === "Codex CLI" && process.env.CODEX_HOME) {
+      return process.env.CODEX_HOME;
+    }
+    return dirname(_detectedAdapter.getSettingsPath());
+  }
+  return process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME || join(homedir(), ".claude");
+}
+
+/**
  * Project directory detection across supported platforms.
  *
  * Priority:
@@ -1330,14 +1344,14 @@ server.registerTool(
       if (sort === "timeline") {
         try {
           const sessionsDir = getSessionDir();
-          const dbFile = join(sessionsDir, `${hashProjectDir()}.db`);
+          const dbFile = join(sessionsDir, `${hashProjectDir()}${getWorktreeSuffix()}.db`);
           if (existsSync(dbFile)) {
             timelineDB = new SessionDB({ dbPath: dbFile });
           }
         } catch { /* SessionDB unavailable — search ContentStore + auto-memory only */ }
       }
 
-      const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+      const configDir = getMemoryConfigDir();
 
       try {
       for (const q of queryList) {

@@ -58,7 +58,7 @@ function safeStringAny(value: unknown): string {
 /**
  * Category 1 & 2: rule + file
  *
- * CLAUDE.md / .claude/ reads → emit both a "rule" event (priority 1) AND a
+ * Agent instruction/memory reads → emit both a "rule" event (priority 1) AND a
  * "file_read" event (priority 1) because the file is being actively accessed.
  *
  * Other Edit/Write/Read tool calls → emit a file_edit / file_write / file_read
@@ -71,8 +71,11 @@ function extractFileAndRule(input: HookInput): SessionEvent[] {
   if (tool_name === "Read") {
     const filePath = String(tool_input["file_path"] ?? "");
 
-    // Rule detection: CLAUDE.md or anything inside a .claude/ directory
-    const isRuleFile = /CLAUDE\.md$|\.claude[\\/]/i.test(filePath);
+    // Rule detection: platform instruction files and agent memory directories.
+    const isRuleFile =
+      /(CLAUDE|AGENTS(?:\.override)?|GEMINI|MEMORY)\.md$/i.test(filePath) ||
+      /[\\/]\.claude[\\/]/i.test(filePath) ||
+      /[\\/]\.(codex|qwen|gemini)[\\/](memory|memories)[\\/]/i.test(filePath);
     if (isRuleFile) {
       events.push({
         type: "rule",

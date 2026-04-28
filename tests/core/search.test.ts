@@ -3089,6 +3089,7 @@ describe("default sort is relevance (backward compatible)", () => {
 describe("searchAutoMemory", () => {
   const AUTO_MEM_ROOT = join(tmpdir(), `ctx-auto-memory-test-${Date.now()}`);
   const CLAUDE_CONFIG = join(AUTO_MEM_ROOT, ".claude");
+  const CODEX_CONFIG = join(AUTO_MEM_ROOT, ".codex");
   const QWEN_CONFIG = join(AUTO_MEM_ROOT, ".qwen");
   const PROJECT_DIR = join(AUTO_MEM_ROOT, "project");
 
@@ -3099,6 +3100,14 @@ describe("searchAutoMemory", () => {
     writeFileSync(
       join(PROJECT_DIR, "CLAUDE.md"),
       "Project instructions: use TypeScript strict mode. Analytics pipeline config here.",
+    );
+    writeFileSync(
+      join(PROJECT_DIR, "AGENTS.md"),
+      "Codex project instruction marker: use platform-aware memory roots.",
+    );
+    writeFileSync(
+      join(PROJECT_DIR, "AGENTS.override.md"),
+      "Codex project override marker: prefer active override instructions.",
     );
 
     // Create user-level configDir for .claude
@@ -3132,6 +3141,16 @@ describe("searchAutoMemory", () => {
     mkdirSync(qwenMemDir, { recursive: true });
     writeFileSync(join(QWEN_CONFIG, "CLAUDE.md"), "Qwen user config.");
     writeFileSync(join(qwenMemDir, "note.md"), "Qwen analytics note content.");
+
+    // Create user-level configDir for .codex
+    const codexMemDir = join(CODEX_CONFIG, "memories");
+    mkdirSync(codexMemDir, { recursive: true });
+    writeFileSync(join(CODEX_CONFIG, "AGENTS.md"), "Codex user instruction marker.");
+    writeFileSync(join(CODEX_CONFIG, "AGENTS.override.md"), "Codex user override marker.");
+    writeFileSync(
+      join(codexMemDir, "MEMORY.md"),
+      "Codex memory marker: timeline proof should read .codex/memories.",
+    );
   })();
 
   test("returns empty for non-existent project and config directories", () => {
@@ -3157,6 +3176,50 @@ describe("searchAutoMemory", () => {
     for (const r of results) {
       expect(r.origin).toBe("auto-memory");
     }
+  });
+
+  test("finds Codex AGENTS.md and .codex/memories files", () => {
+    const projectResults = searchAutoMemory(
+      ["platform-aware memory roots"],
+      10,
+      PROJECT_DIR,
+      CODEX_CONFIG,
+    );
+    expect(projectResults.some(r => r.source === "project/AGENTS.md")).toBe(true);
+
+    const userResults = searchAutoMemory(
+      ["Codex user instruction marker"],
+      10,
+      undefined,
+      CODEX_CONFIG,
+    );
+    expect(userResults.some(r => r.source === "user/AGENTS.md")).toBe(true);
+
+    const memoryResults = searchAutoMemory(
+      ["timeline proof"],
+      10,
+      undefined,
+      CODEX_CONFIG,
+    );
+    expect(memoryResults.some(r => r.source === "memories/MEMORY.md")).toBe(true);
+  });
+
+  test("finds Codex AGENTS.override.md files", () => {
+    const projectResults = searchAutoMemory(
+      ["active override instructions"],
+      10,
+      PROJECT_DIR,
+      CODEX_CONFIG,
+    );
+    expect(projectResults.some(r => r.source === "project/AGENTS.override.md")).toBe(true);
+
+    const userResults = searchAutoMemory(
+      ["Codex user override marker"],
+      10,
+      undefined,
+      CODEX_CONFIG,
+    );
+    expect(userResults.some(r => r.source === "user/AGENTS.override.md")).toBe(true);
   });
 
   test("case-insensitive search", () => {

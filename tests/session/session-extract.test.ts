@@ -88,6 +88,45 @@ describe("Rule Events", () => {
     assert.equal(ruleEvents.length, 1);
   });
 
+  test("extracts rule event for Codex AGENTS.md", () => {
+    const input = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/AGENTS.md" },
+      tool_response: "# Instructions\nUse context-mode timeline memory.",
+    };
+
+    const events = extractEvents(input);
+    const ruleEvents = events.filter(e => e.type === "rule");
+    assert.equal(ruleEvents.length, 1);
+    assert.ok(ruleEvents[0].data.includes("AGENTS.md"));
+  });
+
+  test("extracts rule event for Codex AGENTS.override.md", () => {
+    const input = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/AGENTS.override.md" },
+      tool_response: "# Override instructions\nPrefer override guidance.",
+    };
+
+    const events = extractEvents(input);
+    const ruleEvents = events.filter(e => e.type === "rule");
+    assert.equal(ruleEvents.length, 1);
+    assert.ok(ruleEvents[0].data.includes("AGENTS.override.md"));
+  });
+
+  test("extracts rule event for Codex memories files", () => {
+    const input = {
+      tool_name: "Read",
+      tool_input: { file_path: "/home/user/.codex/memories/MEMORY.md" },
+      tool_response: "Always preserve Codex memory.",
+    };
+
+    const events = extractEvents(input);
+    const ruleEvents = events.filter(e => e.type === "rule");
+    assert.equal(ruleEvents.length, 1);
+    assert.ok(ruleEvents[0].data.includes("MEMORY.md"));
+  });
+
   test("CLAUDE.md read yields both rule AND file events", () => {
     const input = {
       tool_name: "Read",
