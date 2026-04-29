@@ -38,7 +38,14 @@ beforeAll(() => {
   // Copy package.json (needed for module resolution)
   cpSync(join(PROJECT_ROOT, "package.json"), join(fakePluginDir, "package.json"));
 
-  // DO NOT copy build/session/ — this simulates marketplace install
+  // Copy build/ outputs needed by hooks (routing-block.js, tool-naming.js)
+  // but NOT build/session/ — this simulates marketplace install without session module
+  if (existsSync(join(PROJECT_ROOT, "build"))) {
+    cpSync(join(PROJECT_ROOT, "build"), join(fakePluginDir, "build"), { recursive: true });
+    // Remove session/ to simulate marketplace install (bundle-first approach)
+    try { rmSync(join(fakePluginDir, "build", "session"), { recursive: true, force: true }); } catch {}
+  }
+
   // Verify build/session/ does NOT exist in our fake install
   expect(existsSync(join(fakePluginDir, "build", "session"))).toBe(false);
 

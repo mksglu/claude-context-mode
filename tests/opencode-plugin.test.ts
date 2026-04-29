@@ -2,10 +2,11 @@ import "./setup-home";
 /**
  * Tests for the OpenCode TypeScript plugin entry point.
  *
- * Tests the ContextModePlugin factory and its three hooks:
+ * Tests the ContextModePlugin factory and its four hooks:
  *   - tool.execute.before (routing enforcement)
  *   - tool.execute.after (session event capture)
  *   - experimental.session.compacting (snapshot generation)
+ *   - experimental.chat.messages.transform (routing block injection)
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
@@ -54,16 +55,18 @@ describe("ContextModePlugin", () => {
   // ── Factory ───────────────────────────────────────────
 
   describe("factory", () => {
-    it("returns object with 3 hook handlers", async () => {
+    it("returns object with 4 hook handlers", async () => {
       const plugin = await createTestPlugin(join(tempDir, "factory-test"));
 
       expect(plugin).toHaveProperty("tool.execute.before");
       expect(plugin).toHaveProperty("tool.execute.after");
       expect(plugin).toHaveProperty("experimental.session.compacting");
+      expect(plugin).toHaveProperty("experimental.chat.messages.transform");
 
       expect(typeof plugin["tool.execute.before"]).toBe("function");
       expect(typeof plugin["tool.execute.after"]).toBe("function");
       expect(typeof plugin["experimental.session.compacting"]).toBe("function");
+      expect(typeof plugin["experimental.chat.messages.transform"]).toBe("function");
     });
 
     it("does not write AGENTS.md routing instructions on startup", async () => {
@@ -253,6 +256,68 @@ describe("ContextModePlugin", () => {
         output2,
       );
       expect(snap2.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── experimental.chat.messages.transform ─────────────
+
+  describe("experimental.chat.messages.transform", () => {
+    it("injects routing block into first user message", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "transform-inject"));
+
+      const messages = [
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "hello" }],
+        },
+      ];
+      const output = { messages };
+
+      await plugin["experimental.chat.messages.transform"]({}, output);
+
+      expect(messages[0].parts.length).toBe(2);
+      expect(messages[0].parts[0].text).toContain("<context_window_protection>");
+      expect(messages[0].parts[1].text).toBe("hello");
+    });
+
+    it("skips injection when routing block already present", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "transform-skip"));
+
+      const messages = [
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "<context_window_protection> already here" }],
+        },
+      ];
+      const output = { messages };
+
+      await plugin["experimental.chat.messages.transform"]({}, output);
+
+      expect(messages[0].parts.length).toBe(1);
+    });
+
+    it("handles empty messages gracefully", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "transform-empty"));
+
+      const output = { messages: [] };
+      await expect(
+        plugin["experimental.chat.messages.transform"]({}, output),
+      ).resolves.toBeUndefined();
+    });
+
+    it("handles messages with no user role gracefully", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "transform-no-user"));
+
+      const messages = [
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "hi" }] },
+      ];
+      const output = { messages };
+
+      await expect(
+        plugin["experimental.chat.messages.transform"]({}, output),
+      ).resolves.toBeUndefined();
+
+      expect(messages[0].parts.length).toBe(1);
     });
   });
 

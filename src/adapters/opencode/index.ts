@@ -100,10 +100,10 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     preToolUse: true,
     postToolUse: true,
     preCompact: true, // experimental
-    sessionStart: false,
+    sessionStart: true, // experimental
     canModifyArgs: true,
     canModifyOutput: true, // with TUI bug caveat for bash (#13575)
-    canInjectSessionContext: false,
+    canInjectSessionContext: true,
   };
 
   private platform: AdapterPlatformType;
@@ -302,6 +302,17 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
           ],
         },
       ],
+      [OPENCODE_HOOK_NAMES.SESSION_START]: [
+        {
+          matcher: "",
+          hooks: [
+            {
+              type: "plugin",
+              command: "context-mode",
+            },
+          ],
+        },
+      ],
     };
   }
 
@@ -389,12 +400,12 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     }
 
     // Warn about SessionStart limitation
-    results.push({
-      check: "SessionStart hook",
-      status: "warn",
-      message:
-        `SessionStart not supported in ${this.name} (see issues #14808, #5409)`,
-    });
+    // results.push({
+    //   check: "SessionStart hook",
+    //   status: "warn",
+    //   message:
+    //     `SessionStart not supported in ${this.name} (see issues #14808, #5409)`,
+    // });
 
     return results;
   }

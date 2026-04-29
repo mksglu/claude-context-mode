@@ -8,7 +8,7 @@
  *
  * OpenCode hook system reference:
  *   - I/O: TS plugin functions (not JSON stdin/stdout)
- *   - Hook names: tool.execute.before, tool.execute.after, experimental.session.compacting
+ *   - Hook names: tool.execute.before, tool.execute.after, experimental.session.compacting, experimental.chat.messages.transform
  *   - Arg modification: output.args mutation
  *   - Blocking: throw Error in tool.execute.before
  *   - SessionStart: broken (#14808, no hook #5409)
@@ -24,6 +24,7 @@ export const HOOK_TYPES = {
   BEFORE: "tool.execute.before",
   AFTER: "tool.execute.after",
   COMPACTING: "experimental.session.compacting",
+  SESSION_START: "experimental.chat.messages.transform",
 } as const;
 
 export type HookType = (typeof HOOK_TYPES)[keyof typeof HOOK_TYPES];
@@ -39,6 +40,7 @@ export type HookType = (typeof HOOK_TYPES)[keyof typeof HOOK_TYPES];
 export const REQUIRED_HOOKS: HookType[] = [
   HOOK_TYPES.BEFORE,
   HOOK_TYPES.AFTER,
+  HOOK_TYPES.SESSION_START
 ];
 
 /**

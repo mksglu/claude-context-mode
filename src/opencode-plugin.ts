@@ -30,6 +30,8 @@ import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
 import { AdapterPlatformType, OpenCodeAdapter } from "./adapters/opencode/index.js";
 import { PLATFORM_ENV_VARS } from "./adapters/detect.js";
+import { createToolNamer } from "./tool-naming.js";
+import { createRoutingBlock } from "./routing-block.js";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -77,9 +79,31 @@ interface CompactingHookOutput {
   prompt?: string;
 }
 
+/** OpenCode experimental.chat.messages.transform paramters */
+interface TransformChatMessageInfo {
+  role: string;
+}
+
+interface TransformChatMessagePart {
+  type: string;
+  text: string;
+}
+
+interface TransformChatMessage {
+  info: TransformChatMessageInfo;
+  parts: TransformChatMessagePart[];
+}
+
+interface TransformChatMessageHookInput {}
+
+interface TransformChatMessageHookOutput {
+  messages: TransformChatMessage[];
+}
+
 // ── Helpers ───────────────────────────────────────────────
 function getPlatform(): AdapterPlatformType {
-  const [platform, vars] = PLATFORM_ENV_VARS.filter(p => p[0]==="kilo")[0];
+  const [ kiloEnv ] = PLATFORM_ENV_VARS.filter(p => p[0]==="kilo");
+  const [platform, vars] = kiloEnv;
   for (const _var of vars){
     if (process.env[_var]) {
       return platform;
@@ -190,6 +214,19 @@ async function createContextModePlugin(ctx: PluginContext) {
         return "";
       }
     },
+    "experimental.chat.messages.transform": async (input: TransformChatMessageHookInput, output: TransformChatMessageHookOutput) => {
+      if (!output.messages || !output.messages.length) return;
+
+      const firstUser = output.messages.find(m => m.info.role === "user");
+      if (!firstUser || !firstUser.parts || !firstUser.parts.length) return;
+      if (firstUser.parts.some(p => p.type === "text" && p.text.includes('<context_window_protection>'))) return;
+
+      const t = createToolNamer(getPlatform());
+      const prompt = createRoutingBlock(t, { includeCommands: true });
+
+      const [ ref ] = firstUser.parts;
+      firstUser.parts.unshift({ ...ref, type: 'text', text: prompt });
+    }
   };
 }
 

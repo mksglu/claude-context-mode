@@ -1115,7 +1115,7 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     "utf-8",
   );
   const routingBlockSrc = readFileSync(
-    resolve(__dirname, "../../hooks/routing-block.mjs"),
+    resolve(__dirname, "../../src/routing-block.ts"),
     "utf-8",
   );
 
