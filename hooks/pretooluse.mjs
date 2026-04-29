@@ -166,6 +166,33 @@ const toolInput = input.tool_input ?? {};
 // ─── Route and format response ───
 const decision = routePreToolUse(tool, toolInput, process.env.CLAUDE_PROJECT_DIR, "claude-code", getSessionId(input));
 const response = formatDecision("claude-code", decision);
+
+// ─── Write latency marker for cross-hook timing (Category 27) ───
+// Marker writes MUST happen before stdout write — stdout is the last action
+// so the process can exit immediately after, avoiding CI test timeouts.
+try {
+  const sessionId = getSessionId(input);
+  if (tool) {
+    const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${tool}.txt`);
+    writeFileSync(markerPath, String(Date.now()), "utf-8");
+  }
+} catch { /* latency tracking is best-effort — never block hook */ }
+
+// ─── Write rejected-approach marker for PostToolUse to pick up ───
+// PreToolUse cannot safely load SessionDB (native module loading breaks hook stdout).
+// Write a marker file instead; PostToolUse reads it and writes the event.
+if (decision && (decision.action === "deny" || decision.action === "modify")) {
+  try {
+    const sessionId = getSessionId(input);
+    const reason = decision.action === "deny"
+      ? (decision.reason || "denied")
+      : "Redirected to context-mode sandbox";
+    const markerPath = resolve(tmpdir(), `context-mode-rejected-${sessionId}.txt`);
+    writeFileSync(markerPath, `${tool}:${reason}`, "utf-8");
+  } catch { /* best-effort — never block hook */ }
+}
+
+// ─── stdout write is the LAST action — process exits immediately after ───
 if (response !== null) {
   process.stdout.write(JSON.stringify(response) + "\n");
 }

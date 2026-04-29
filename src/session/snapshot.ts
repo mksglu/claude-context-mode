@@ -370,6 +370,32 @@ function buildSkillsSection(skillEvents: StoredEvent[], searchTool: string): str
   return lines.join("\n");
 }
 
+function buildRolesSection(roleEvents: StoredEvent[], searchTool: string): string {
+  if (roleEvents.length === 0) return "";
+
+  const seen = new Set<string>();
+  const summaryLines: string[] = [];
+  const queryTerms: string[] = [];
+
+  for (const ev of roleEvents) {
+    if (seen.has(ev.data)) continue;
+    seen.add(ev.data);
+    summaryLines.push(`    ${escapeXML(ev.data)}`);
+    queryTerms.push(ev.data);
+  }
+
+  if (summaryLines.length === 0) return "";
+
+  const queries = buildQueries(queryTerms);
+  const lines = [
+    `  <roles count="${summaryLines.length}">`,
+    ...summaryLines,
+    toolCall(searchTool, queries),
+    `  </roles>`,
+  ];
+  return lines.join("\n");
+}
+
 function buildIntentSection(intentEvents: StoredEvent[]): string {
   if (intentEvents.length === 0) return "";
   const lastIntent = intentEvents[intentEvents.length - 1];
@@ -407,6 +433,7 @@ export function buildResumeSnapshot(
   const subagentEvents: StoredEvent[] = [];
   const intentEvents: StoredEvent[] = [];
   const skillEvents: StoredEvent[] = [];
+  const roleEvents: StoredEvent[] = [];
 
   for (const ev of events) {
     switch (ev.category) {
@@ -421,6 +448,7 @@ export function buildResumeSnapshot(
       case "subagent": subagentEvents.push(ev); break;
       case "intent": intentEvents.push(ev); break;
       case "skill": skillEvents.push(ev); break;
+      case "role": roleEvents.push(ev); break;
     }
   }
 
@@ -461,6 +489,9 @@ export function buildResumeSnapshot(
 
   const skills = buildSkillsSection(skillEvents, searchTool);
   if (skills) sections.push(skills);
+
+  const roles = buildRolesSection(roleEvents, searchTool);
+  if (roles) sections.push(roles);
 
   const intent = buildIntentSection(intentEvents);
   if (intent) sections.push(intent);

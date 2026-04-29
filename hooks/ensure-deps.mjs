@@ -33,10 +33,12 @@ const NATIVE_BINARIES = {
 };
 
 /**
- * Check if the current runtime has built-in SQLite support, making
- * better-sqlite3 unnecessary. Bun has bun:sqlite, Node >= 22.5 has node:sqlite.
- * When true, skip the entire better-sqlite3 bootstrap to avoid SIGSEGV
- * coredumps on Node v24 (#331) and unnecessary install overhead.
+ * Check if the current runtime has built-in SQLite support.
+ * Bun has bun:sqlite, Node >= 22.5 has node:sqlite.
+ *
+ * Used to skip the SIGSEGV-prone child-process probe on modern Node (#331),
+ * but NOT to skip installing better-sqlite3 — the bundle unconditionally
+ * requires it as a fallback on non-Linux platforms (#371).
  */
 function hasModernSqlite() {
   if (typeof globalThis.Bun !== "undefined") return true;
@@ -45,7 +47,8 @@ function hasModernSqlite() {
 }
 
 export function ensureDeps() {
-  if (hasModernSqlite()) return;
+  // Bun ships bun:sqlite and never needs better-sqlite3
+  if (typeof globalThis.Bun !== "undefined") return;
   for (const pkg of NATIVE_DEPS) {
     const pkgDir = resolve(root, "node_modules", pkg);
     if (!existsSync(pkgDir)) {
@@ -95,7 +98,13 @@ function probeNativeInChildProcess(pluginRoot) {
 }
 
 export function ensureNativeCompat(pluginRoot) {
-  if (hasModernSqlite()) return;
+  // Bun ships bun:sqlite — no native addon needed
+  if (typeof globalThis.Bun !== "undefined") return;
+
+  // On Node >= 22.5, skip the child-process probe that can cause SIGSEGV (#331).
+  // The binary install/rebuild still runs — only the dlopen probe is skipped.
+  const skipProbe = hasModernSqlite();
+
   try {
     const abi = process.versions.modules;
     const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
@@ -104,16 +113,35 @@ export function ensureNativeCompat(pluginRoot) {
 
     if (!existsSync(nativeDir)) return;
 
-    // Fast path: cached binary for this ABI already exists — swap in and verify
+    // Fast path: cached binary for this ABI already exists — swap in
     if (existsSync(abiCachePath)) {
       copyFileSync(abiCachePath, binaryPath);
       codesignBinary(binaryPath);
+      if (skipProbe) return; // Trust the cached binary — skip SIGSEGV-prone probe
       // Validate via child process — dlopen cache is per-process, so in-process
       // require() can't detect a swapped binary on disk (#148)
       if (probeNativeInChildProcess(pluginRoot)) {
         return; // Cache hit validated
       }
       // Cached binary is stale/corrupt — fall through to rebuild
+    }
+
+    if (skipProbe) {
+      // On modern Node: if binary exists, trust it; if missing, rebuild without probing
+      if (!existsSync(binaryPath)) {
+        execSync(`${process.platform === "win32" ? "npm.cmd" : "npm"} rebuild better-sqlite3 --ignore-scripts=false`, {
+          cwd: pluginRoot,
+          stdio: "pipe",
+          timeout: 60000,
+          shell: true,
+        });
+        codesignBinary(binaryPath);
+        // Cache the rebuilt binary for this ABI
+        if (existsSync(binaryPath)) {
+          copyFileSync(binaryPath, abiCachePath);
+        }
+      }
+      return;
     }
 
     // Probe: try loading better-sqlite3 with current Node

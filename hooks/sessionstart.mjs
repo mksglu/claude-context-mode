@@ -17,6 +17,7 @@ import "./ensure-deps.mjs";
 
 import { createRoutingBlock } from "./routing-block.mjs";
 import { createToolNamer } from "./core/tool-naming.mjs";
+import { buildAutoInjection } from "./auto-injection.mjs";
 
 const toolNamer = createToolNamer("claude-code");
 const ROUTING_BLOCK = createRoutingBlock(toolNamer);
@@ -54,6 +55,22 @@ try {
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath());
       additionalContext += buildSessionDirective("compact", eventMeta, toolNamer);
+
+      // Auto-inject behavioral state on compaction (role, decisions, skills, intent)
+      const autoInjection = buildAutoInjection(events);
+      if (autoInjection) {
+        additionalContext += "\n\n" + autoInjection;
+      }
+
+      // Write session-resume event
+      try {
+        db.insertEvent(sessionId, {
+          type: "resume_completed",
+          category: "session-resume",
+          data: `Session resumed from ${source}. Prior events loaded.`,
+          priority: 1,
+        }, "SessionStart");
+      } catch { /* best-effort */ }
     }
 
     db.close();

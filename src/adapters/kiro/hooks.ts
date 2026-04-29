@@ -1,3 +1,5 @@
+import { buildNodeCommand } from "../types.js";
+
 /**
  * adapters/kiro/hooks — Kiro CLI hook definitions and matchers.
  *
@@ -77,7 +79,7 @@ export function isContextModeHook(
 export function buildHookCommand(hookType: string, pluginRoot?: string): string {
   const scriptName = HOOK_SCRIPTS[hookType];
   if (pluginRoot && scriptName) {
-    return `node "${pluginRoot}/hooks/kiro/${scriptName}"`;
+    return buildNodeCommand(`${pluginRoot}/hooks/kiro/${scriptName}`);
   }
   return `context-mode hook kiro ${hookType.toLowerCase()}`;
 }

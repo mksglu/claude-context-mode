@@ -42,6 +42,15 @@ try {
 
     db.upsertResume(sessionId, snapshot, events.length);
     db.incrementCompactCount(sessionId);
+
+    // Write compaction category event for analytics
+    const fileEvents = events.filter(e => e.category === "file");
+    db.insertEvent(sessionId, {
+      type: "compaction_summary",
+      category: "compaction",
+      data: `Session compacted. ${events.length} events, ${fileEvents.length} files touched.`,
+      priority: 1,
+    }, "PreCompact");
   }
 
   db.close();

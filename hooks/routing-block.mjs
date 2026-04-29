@@ -22,12 +22,14 @@ export function createRoutingBlock(t, options = {}) {
   </priority_instructions>
 
   <tool_selection_hierarchy>
+    0. MEMORY: ${t("ctx_search")}(sort: "timeline")
+       - After resume, check prior context before asking user.
     1. GATHER: ${t("ctx_batch_execute")}(commands, queries)
        - Primary research tool. Runs commands, auto-indexes, searches. ONE call replaces many steps.
        - Each command: {label: "section header", command: "shell command"}
        - label becomes FTS5 chunk title — descriptive labels improve search.
     2. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
-       - All follow-up questions. ONE call, many queries.
+       - All follow-up questions. ONE call, many queries (default relevance mode).
     3. PROCESSING: ${t("ctx_execute")}(language, code) | ${t("ctx_execute_file")}(path, language, code)
        - API calls, log analysis, data processing.
   </tool_selection_hierarchy>
@@ -65,6 +67,10 @@ export function createRoutingBlock(t, options = {}) {
       - Key findings
     </response_format>
   </output_constraints>
+  <session_continuity>
+    Skills, roles, and decisions set during this session remain active until the user revokes them.
+    Do not drop behavioral directives as context grows.
+  </session_continuity>
 ${includeCommands ? `
   <ctx_commands>
     "ctx stats" | "ctx-stats" | "/ctx-stats" | context savings question

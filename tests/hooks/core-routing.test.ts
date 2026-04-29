@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from "vitest";
 import { spawn } from "node:child_process";
 import {
   writeFileSync,
@@ -6,6 +6,8 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  mkdtempSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -48,7 +50,12 @@ beforeAll(async () => {
 
 // MCP readiness sentinel — most tests expect MCP to be ready (deny behavior).
 // Tests for graceful degradation (#230) remove sentinel explicitly.
-const _sentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
+//
+// Use an isolated temp dir for sentinels so the directory scan in isMCPReady()
+// is not polluted by leftover sentinels from real MCP servers running on the
+// developer's machine. The hook honors CONTEXT_MODE_MCP_SENTINEL_DIR.
+const _sentinelDir = mkdtempSync(join(tmpdir(), "ctx-test-sentinels-"));
+process.env.CONTEXT_MODE_MCP_SENTINEL_DIR = _sentinelDir;
 const mcpSentinel = resolve(_sentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
@@ -58,6 +65,11 @@ beforeEach(() => {
 
 afterEach(() => {
   try { unlinkSync(mcpSentinel); } catch {}
+});
+
+afterAll(() => {
+  try { rmSync(_sentinelDir, { recursive: true, force: true }); } catch {}
+  delete process.env.CONTEXT_MODE_MCP_SENTINEL_DIR;
 });
 
 describe("routePreToolUse", () => {
@@ -557,9 +569,17 @@ describe("mcp-ready: contract", () => {
 
   describe("sentinelDir platform branch", () => {
     let originalPlatform: NodeJS.Platform;
-    beforeEach(() => { originalPlatform = process.platform; });
+    let originalEnv: string | undefined;
+    beforeEach(() => {
+      originalPlatform = process.platform;
+      originalEnv = process.env.CONTEXT_MODE_MCP_SENTINEL_DIR;
+      delete process.env.CONTEXT_MODE_MCP_SENTINEL_DIR;
+    });
     afterEach(() => {
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      if (originalEnv !== undefined) {
+        process.env.CONTEXT_MODE_MCP_SENTINEL_DIR = originalEnv;
+      }
     });
 
     it("returns os.tmpdir() on win32", () => {

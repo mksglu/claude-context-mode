@@ -92,6 +92,7 @@ export interface SearchResult {
   contentType: "code" | "prose";
   matchLayer?: "porter" | "trigram" | "fuzzy" | "rrf" | "rrf-fuzzy";
   highlighted?: string;
+  timestamp?: string;
 }
 
 /**

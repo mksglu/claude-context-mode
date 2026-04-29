@@ -130,6 +130,7 @@ const S = {
   deleteMeta: "deleteMeta",
   deleteResume: "deleteResume",
   getOldSessions: "getOldSessions",
+  searchEvents: "searchEvents",
 } as const;
 
 // ─────────────────────────────────────────────────────────
@@ -333,6 +334,16 @@ export class SessionDB extends SQLiteBase {
     p(S.deleteMeta, `DELETE FROM session_meta WHERE session_id = ?`);
     p(S.deleteResume, `DELETE FROM session_resume WHERE session_id = ?`);
 
+    // ── Search ──
+    p(S.searchEvents,
+      `SELECT id, session_id, category, type, data, created_at
+       FROM session_events
+       WHERE project_dir = ?
+         AND (data LIKE '%' || ? || '%' ESCAPE '\\' OR category LIKE '%' || ? || '%' ESCAPE '\\')
+         AND (? IS NULL OR category = ?)
+       ORDER BY id ASC
+       LIMIT ?`);
+
     // ── Cleanup ──
     p(S.getOldSessions,
       `SELECT session_id FROM session_meta WHERE started_at < datetime('now', ? || ' days')`);
@@ -454,6 +465,51 @@ export class SessionDB extends SQLiteBase {
   getLatestAttributedProjectDir(sessionId: string): string | null {
     const row = this.stmt(S.getLatestAttributedProject).get(sessionId) as { project_dir: string } | undefined;
     return row?.project_dir || null;
+  }
+
+  /**
+   * Search events by text query scoped to a project directory.
+   *
+   * Performs a case-insensitive LIKE search across the `data` and `category`
+   * columns. An optional `source` parameter filters by exact category match.
+   * Returns results ordered by monotonic id (chronological).
+   *
+   * Best-effort: returns empty array on any error.
+   */
+  searchEvents(
+    query: string,
+    limit: number,
+    projectDir: string,
+    source?: string,
+  ): Array<{
+    id: number;
+    session_id: string;
+    category: string;
+    type: string;
+    data: string;
+    created_at: string;
+  }> {
+    try {
+      const escapedQuery = query.replace(/[%_]/g, (char) => "\\" + char);
+      const sourceParam = source ?? null;
+      return this.stmt(S.searchEvents).all(
+        projectDir,
+        escapedQuery,
+        escapedQuery,
+        sourceParam,
+        sourceParam,
+        limit,
+      ) as Array<{
+        id: number;
+        session_id: string;
+        category: string;
+        type: string;
+        data: string;
+        created_at: string;
+      }>;
+    } catch {
+      return [];
+    }
   }
 
   // ═══════════════════════════════════════════

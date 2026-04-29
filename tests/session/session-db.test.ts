@@ -931,3 +931,297 @@ describe("defaultDBPath — process-scoped temp path", () => {
     expect(p.startsWith(tmpdir())).toBe(true);
   });
 });
+
+// ════════════════════════════════════════════
+// searchEvents (consolidated from tests/session/search-events.test.ts)
+// ════════════════════════════════════════════
+
+describe("searchEvents", () => {
+  test("scopes by project_dir", () => {
+    const db = createTestDB();
+
+    // Use different sessions to avoid deduplication (same data, different project_dir)
+    db.insertEvent("sess-a", makeEvent({ data: "shared-keyword.ts", category: "file" }), "PostToolUse", {
+      projectDir: "/project-a",
+      source: "event_path",
+      confidence: 0.9,
+    });
+    db.insertEvent("sess-b", makeEvent({ data: "shared-keyword.ts", category: "file" }), "PostToolUse", {
+      projectDir: "/project-b",
+      source: "event_path",
+      confidence: 0.9,
+    });
+
+    const resultsA = db.searchEvents("shared-keyword", 100, "/project-a");
+    const resultsB = db.searchEvents("shared-keyword", 100, "/project-b");
+
+    assert.equal(resultsA.length, 1);
+    assert.equal(resultsB.length, 1);
+    // Cross-project must never leak
+    const resultsC = db.searchEvents("shared-keyword", 100, "/project-c");
+    assert.equal(resultsC.length, 0);
+  });
+
+  test("escapes LIKE wildcards", () => {
+    const db = createTestDB();
+    const sid = "sess-search-escape";
+    const projectDir = "/project-escape";
+
+    // Insert event with % and _ in data
+    db.insertEvent(sid, makeEvent({ data: "100% complete_task", category: "status" }), "PostToolUse", {
+      projectDir,
+      source: "test",
+      confidence: 1,
+    });
+    // Insert event that would match unescaped % (any char)
+    db.insertEvent(sid, makeEvent({ data: "100X completeYtask", category: "status" }), "PostToolUse", {
+      projectDir,
+      source: "test",
+      confidence: 1,
+    });
+
+    // Search for literal "100%" — should only match the first event
+    const results = db.searchEvents("100%", 100, projectDir);
+    assert.equal(results.length, 1);
+    assert.ok(results[0].data.includes("100%"));
+
+    // Search for literal "_task" — should only match the first event
+    const results2 = db.searchEvents("_task", 100, projectDir);
+    assert.equal(results2.length, 1);
+    assert.ok(results2[0].data.includes("_task"));
+  });
+
+  test("filters by source category", () => {
+    const db = createTestDB();
+    const sid = "sess-search-source";
+    const projectDir = "/project-source";
+
+    db.insertEvent(sid, makeEvent({ data: "deploy started", category: "deploy" }), "PostToolUse", {
+      projectDir,
+      source: "test",
+      confidence: 1,
+    });
+    db.insertEvent(sid, makeEvent({ data: "deploy log entry", category: "log" }), "PostToolUse", {
+      projectDir,
+      source: "test",
+      confidence: 1,
+    });
+
+    // Without source filter — both match "deploy"
+    const allResults = db.searchEvents("deploy", 100, projectDir);
+    assert.equal(allResults.length, 2);
+
+    // With source filter — only category="deploy" matches
+    const filtered = db.searchEvents("deploy", 100, projectDir, "deploy");
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].category, "deploy");
+
+    // With source filter for "log" — only category="log" matches
+    const logResults = db.searchEvents("deploy", 100, projectDir, "log");
+    assert.equal(logResults.length, 1);
+    assert.equal(logResults[0].category, "log");
+  });
+
+  test("returns results in chronological order", () => {
+    const db = createTestDB();
+    const sid = "sess-search-order";
+    const projectDir = "/project-order";
+
+    // Insert events in sequence
+    for (let i = 0; i < 5; i++) {
+      db.insertEvent(sid, makeEvent({ data: `event-${i}-keyword`, category: "test" }), "PostToolUse", {
+        projectDir,
+        source: "test",
+        confidence: 1,
+      });
+    }
+
+    const results = db.searchEvents("keyword", 100, projectDir);
+    assert.equal(results.length, 5);
+
+    // Verify monotonic id ordering (chronological)
+    for (let i = 1; i < results.length; i++) {
+      assert.ok(
+        results[i].id > results[i - 1].id,
+        `Expected id ${results[i].id} > ${results[i - 1].id} (chronological order)`,
+      );
+    }
+
+    // Verify data order matches insertion order
+    assert.equal(results[0].data, "event-0-keyword");
+    assert.equal(results[4].data, "event-4-keyword");
+  });
+
+  test("returns empty on error", () => {
+    const db = createTestDB();
+
+    // Close the DB to force an error on the next query
+    db.close();
+
+    const results = db.searchEvents("anything", 100, "/any-project");
+    assert.deepEqual(results, []);
+  });
+});
+
+// ════════════════════════════════════════════
+// Hook-level category writers (consolidated from tests/hooks/hook-categories.test.ts)
+// ════════════════════════════════════════════
+
+describe("compaction category", () => {
+  test("compaction_summary event has correct category, type, and priority", () => {
+    const db = createTestDB();
+    const sid = `compaction-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    // Simulate what precompact.mjs should write
+    db.insertEvent(sid, {
+      type: "compaction_summary",
+      category: "compaction",
+      data: "Session compacted. 42 events, 7 files touched.",
+      priority: 1,
+      data_hash: "",
+    }, "PreCompact");
+
+    const events = db.getEvents(sid);
+    const compactionEvents = events.filter(e => e.category === "compaction");
+    expect(compactionEvents).toHaveLength(1);
+    expect(compactionEvents[0].type).toBe("compaction_summary");
+    expect(compactionEvents[0].category).toBe("compaction");
+    expect(compactionEvents[0].priority).toBe(1);
+    expect(compactionEvents[0].source_hook).toBe("PreCompact");
+    expect(compactionEvents[0].data).toContain("Session compacted");
+    expect(compactionEvents[0].data).toContain("42 events");
+    expect(compactionEvents[0].data).toContain("7 files touched");
+  });
+
+  test("compaction event is deduplicated on repeat insert", () => {
+    const db = createTestDB();
+    const sid = `compaction-dedup-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    const event = {
+      type: "compaction_summary",
+      category: "compaction",
+      data: "Session compacted. 10 events, 3 files touched.",
+      priority: 1,
+      data_hash: "",
+    };
+
+    db.insertEvent(sid, event, "PreCompact");
+    db.insertEvent(sid, event, "PreCompact");
+
+    const events = db.getEvents(sid).filter(e => e.category === "compaction");
+    // Dedup should prevent duplicate within DEDUP_WINDOW
+    expect(events).toHaveLength(1);
+  });
+});
+
+describe("rejected-approach category", () => {
+  test("rejected event has correct category, type, and priority", () => {
+    const db = createTestDB();
+    const sid = `rejected-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    db.insertEvent(sid, {
+      type: "rejected",
+      category: "rejected-approach",
+      data: "WebFetch: context-mode: WebFetch blocked. Use ctx_fetch_and_index instead.",
+      priority: 2,
+      data_hash: "",
+    }, "PreToolUse");
+
+    const events = db.getEvents(sid);
+    const rejectedEvents = events.filter(e => e.category === "rejected-approach");
+    expect(rejectedEvents).toHaveLength(1);
+    expect(rejectedEvents[0].type).toBe("rejected");
+    expect(rejectedEvents[0].category).toBe("rejected-approach");
+    expect(rejectedEvents[0].priority).toBe(2);
+    expect(rejectedEvents[0].source_hook).toBe("PreToolUse");
+    expect(rejectedEvents[0].data).toContain("WebFetch");
+  });
+
+  test("rejected event captures tool name and reason", () => {
+    const db = createTestDB();
+    const sid = `rejected-detail-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    const toolName = "Bash";
+    const reason = "Blocked by security policy: matches deny pattern Bash(sudo *)";
+
+    db.insertEvent(sid, {
+      type: "rejected",
+      category: "rejected-approach",
+      data: `${toolName}: ${reason}`,
+      priority: 2,
+      data_hash: "",
+    }, "PreToolUse");
+
+    const events = db.getEvents(sid).filter(e => e.category === "rejected-approach");
+    expect(events[0].data).toContain("Bash");
+    expect(events[0].data).toContain("deny pattern");
+  });
+
+  test("modify actions also create rejected events", () => {
+    const db = createTestDB();
+    const sid = `rejected-modify-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    db.insertEvent(sid, {
+      type: "rejected",
+      category: "rejected-approach",
+      data: "Bash(curl): curl/wget blocked. Use ctx_execute instead.",
+      priority: 2,
+      data_hash: "",
+    }, "PreToolUse");
+
+    const events = db.getEvents(sid).filter(e => e.category === "rejected-approach");
+    expect(events).toHaveLength(1);
+    expect(events[0].data).toContain("curl");
+  });
+});
+
+describe("session-resume category", () => {
+  test("resume_completed event has correct category, type, and priority", () => {
+    const db = createTestDB();
+    const sid = `resume-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    db.insertEvent(sid, {
+      type: "resume_completed",
+      category: "session-resume",
+      data: "Session resumed from compact. Prior events: 25.",
+      priority: 1,
+      data_hash: "",
+    }, "SessionStart");
+
+    const events = db.getEvents(sid);
+    const resumeEvents = events.filter(e => e.category === "session-resume");
+    expect(resumeEvents).toHaveLength(1);
+    expect(resumeEvents[0].type).toBe("resume_completed");
+    expect(resumeEvents[0].category).toBe("session-resume");
+    expect(resumeEvents[0].priority).toBe(1);
+    expect(resumeEvents[0].source_hook).toBe("SessionStart");
+    expect(resumeEvents[0].data).toContain("Session resumed");
+    expect(resumeEvents[0].data).toContain("compact");
+    expect(resumeEvents[0].data).toContain("25");
+  });
+
+  test("resume event from 'resume' source captures correct source", () => {
+    const db = createTestDB();
+    const sid = `resume-continue-${randomUUID()}`;
+    db.ensureSession(sid, "/test/project");
+
+    db.insertEvent(sid, {
+      type: "resume_completed",
+      category: "session-resume",
+      data: "Session resumed from resume. Prior events: 10.",
+      priority: 1,
+      data_hash: "",
+    }, "SessionStart");
+
+    const events = db.getEvents(sid).filter(e => e.category === "session-resume");
+    expect(events).toHaveLength(1);
+    expect(events[0].data).toContain("resume");
+    expect(events[0].data).toContain("10");
+  });
+});

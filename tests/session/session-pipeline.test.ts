@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, test } from "vitest";
-import { extractEvents, extractUserEvents } from "../../src/session/extract.js";
+import { extractEvents, extractUserEvents, resetErrorResolutionState, resetIterationLoopState } from "../../src/session/extract.js";
 import { SessionDB } from "../../src/session/db.js";
 import { buildResumeSnapshot } from "../../src/session/snapshot.js";
 
@@ -151,11 +151,19 @@ describe("3. Deduplication End-to-End", () => {
       tool_response: "File edited successfully",
     };
 
-    // Extract the same events 5 times and insert each
+    // Reset cross-event stateful extractors so prior test state doesn't leak.
+    resetErrorResolutionState();
+    resetIterationLoopState();
+
+    // Extract the same events 5 times and insert only file_edit events.
+    // Stateful cross-event extractors (iteration-loop) may emit extra meta-events
+    // on repeated identical input; filter those out to isolate the dedup test.
     for (let i = 0; i < 5; i++) {
       const events = extractEvents(editInput);
       for (const ev of events) {
-        db.insertEvent(sid, ev, "PostToolUse");
+        if (ev.type === "file_edit") {
+          db.insertEvent(sid, ev, "PostToolUse");
+        }
       }
     }
 

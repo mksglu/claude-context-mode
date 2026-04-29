@@ -555,9 +555,10 @@ describe("ClaudeCodeAdapter", () => {
       const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
       const sessionHooks = settings.hooks.SessionStart;
       expect(sessionHooks).toHaveLength(1);
-      // The fresh entry should point to the new pluginRoot (path may use \ on Windows)
+      // buildNodeCommand() normalizes all paths to forward slashes (#369, #372),
+      // so compare with forward-slash pluginRoot on Windows too.
       const command = sessionHooks[0].hooks[0].command;
-      expect(command).toContain(pluginRoot);
+      expect(command).toContain(pluginRoot.replace(/\\/g, "/"));
       expect(command).toContain("sessionstart.mjs");
     });
 

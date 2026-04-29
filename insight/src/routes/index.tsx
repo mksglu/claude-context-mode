@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { api, type AnalyticsData } from "@/lib/api";
+import { api, type AnalyticsData, type CategoryAnalyticsData } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -137,7 +137,7 @@ function generateInsights(d: AnalyticsData): Insight[] {
         metric: `You read ${ratio}x more than you write`,
         evidence: `${t.reads} files read vs ${t.writes} files written. You're spending most of your AI time understanding code, not producing it.`,
         action: "Write a short plan before starting. Clarify what you want to change before reading everything.",
-        roi: "Planning before coding reduces rework by 40%.",
+        roi: "Planning upfront typically reduces the number of file re-reads.",
       });
     } else if (ratio < 2 && ratio > 0) {
       ins.push({
@@ -274,7 +274,290 @@ function generateInsights(d: AnalyticsData): Insight[] {
       metric: `${(t.totalTasks / t.totalSessions).toFixed(1)} tasks per session — you plan ahead`,
       evidence: `${t.totalTasks} structured tasks across ${t.totalSessions} sessions. You break work into steps.`,
       action: "Keep using tasks — they make sessions resumable after breaks.",
-      roi: "Structured sessions finish 30% faster than open-ended ones.",
+      roi: "Structured sessions are easier to resume and track progress.",
+    });
+  }
+
+  return ins;
+}
+
+function generateCategoryInsights(c: CategoryAnalyticsData): Insight[] {
+  const ins: Insight[] = [];
+  const cs = c.compositeScores;
+  const ei = c.errorIntelligence;
+  const del = c.delegation;
+  const gov = c.governance;
+  const ctx = c.contextHealth;
+  const fi = c.fileIntelligence;
+  const git = c.gitProductivity;
+  const totalEvents = c.categories.reduce((a, b) => a + b.count, 0);
+
+  // P1 removed — duplicate of generateInsights read:write ratio pattern
+
+  // ── P2: High file churn ──
+  if (fi.hotFiles.length > 3) {
+    const top = fi.hotFiles[0];
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `${fi.hotFiles.length} hot files with repeated edits`,
+      evidence: `${top.file.split('/').pop()} was touched ${top.touches} times. Possible rework loop.`,
+      action: "Read the full file before editing. Add constraints to CLAUDE.md.",
+      roi: `Fewer re-edits save ~${fi.hotFiles.length * 3} minutes per session.`,
+    });
+  }
+
+  // ── P3: Session failed — errors + 0 commits (★★ STRONG from agentisd #5) ──
+  if (ei.totalErrors > 3 && git.totalCommits === 0 && totalEvents > 50) {
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-red-500" />, severity: "critical",
+      metric: `${ei.totalErrors} errors, zero commits — session effort lost`,
+      evidence: `${totalEvents} events with ${ei.totalErrors} errors and no commits. All effort was lost.`,
+      action: "Review the error pattern, fix root cause, break tasks into smaller deliverable chunks.",
+      roi: `Recovering from failed sessions costs an additional ${Math.round(totalEvents * 0.5)} minutes.`,
+    });
+  }
+
+  // ── P4: Zero commits ──
+  if (git.totalCommits === 0 && totalEvents > 100) {
+    ins.push({
+      icon: <GitBranch className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: "No commits across all sessions",
+      evidence: `${totalEvents} events recorded, zero commits. Work may not be reaching the codebase.`,
+      action: "Commit incrementally — small commits are easier to review.",
+      roi: "Regular commits create a safety net for rollbacks.",
+    });
+  }
+
+  // ── Q1: High error resolution ──
+  if (ei.totalErrors >= 5 && ei.resolutionRate > 80) {
+    ins.push({
+      icon: <CheckCircle className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: `${ei.resolutionRate}% of errors resolved within session`,
+      evidence: `${ei.resolvedErrors} of ${ei.totalErrors} errors fixed. Self-healing sessions.`,
+      action: "Keep this up — self-healing sessions are the gold standard.",
+      roi: "Each resolved error saves 5-10 min of next-session debugging.",
+    });
+  }
+
+  // ── Q2: Retry storm (>=2 to avoid single-fluke false positive) ──
+  if (ei.retryStorms >= 2) {
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-red-500" />, severity: "critical",
+      metric: `${ei.retryStorms} retry storm${ei.retryStorms > 1 ? 's' : ''} detected`,
+      evidence: `Sessions where the same tool was called 3+ times with similar input. The agent gets stuck in loops.`,
+      action: "Stop and re-think the approach. Add error context to CLAUDE.md.",
+      roi: `Breaking retry loops saves ~${ei.retryStorms * 5} minutes of wasted compute.`,
+    });
+  }
+
+  // ── Q3: Persistent errors ──
+  if (ei.totalErrors >= 5 && ei.resolutionRate < 30) {
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `Only ${ei.resolutionRate}% of errors get resolved`,
+      evidence: `${ei.totalErrors - ei.resolvedErrors} errors left unresolved. Technical debt accumulating.`,
+      action: "Address root causes — add patterns to prevent recurring errors.",
+      roi: `Resolving persistent errors prevents hours of future debugging.`,
+    });
+  }
+
+  // ── Q4: Slow tool bottleneck ──
+  if (ei.p95LatencyMs > 15000 && ei.slowestTool) {
+    ins.push({
+      icon: <Clock className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `${ei.slowestTool} averaging ${Math.round(ei.avgLatencyMs / 1000)}s — bottleneck`,
+      evidence: `P95 latency: ${Math.round(ei.p95LatencyMs / 1000)}s. ${ei.latencyByTool.length} tools tracked for latency.`,
+      action: "Check if tool can be replaced or if input can be simplified.",
+      roi: `Fixing bottleneck saves ~${Math.round(ei.latencyByTool.reduce((a, t) => a + t.count, 0) * ei.avgLatencyMs / 60000)} minutes total.`,
+    });
+  }
+
+  // ── S1: Power delegator ──
+  if (del.launched > 10 && del.completionRate > 70) {
+    ins.push({
+      icon: <Users className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: `${del.launched} agents delegated — ${del.completionRate}% completion`,
+      evidence: `${del.parallelBursts} parallel bursts, up to ${del.maxConcurrent} concurrent. ~${del.timeSavedMin} min saved.`,
+      action: "Excellent use of parallelism. Share this pattern with the team.",
+      roi: `Parallel delegation saved ~${del.timeSavedMin} minutes.`,
+    });
+  }
+
+  // ── S2: No delegation ──
+  if (del.launched === 0 && totalEvents > 50) {
+    ins.push({
+      icon: <Users className="h-5 w-5 text-muted-foreground" />, severity: "neutral",
+      metric: "Everything ran sequentially — zero delegation",
+      evidence: `${totalEvents} events, zero parallel agents. Single-threaded workflow.`,
+      action: "Try subagents for research — fire 3-5 at once instead of one by one.",
+      roi: "One parallel burst turns 10 minutes of research into 2 minutes.",
+    });
+  }
+
+  // ── S3: Low agent completion ──
+  if (del.launched >= 5 && del.completionRate < 60) {
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `Only ${del.completionRate}% of agents complete successfully`,
+      evidence: `${del.launched} launched, ${del.completed} completed. ${del.launched - del.completed} failed or timed out.`,
+      action: "Simplify agent prompts. Break complex tasks into smaller units.",
+      roi: "Higher completion = less wasted compute.",
+    });
+  }
+
+  // ── S4: Parallel burst champion ──
+  if (del.maxConcurrent >= 4) {
+    ins.push({
+      icon: <Cpu className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: `Peak parallelism: ${del.maxConcurrent} agents simultaneously`,
+      evidence: `${del.parallelBursts} bursts of parallel work. Maximum throughput achieved.`,
+      action: "You're using the platform at full capacity. Well done.",
+      roi: `Peak parallelism multiplies throughput by ${del.maxConcurrent}x.`,
+    });
+  }
+
+  // ── G1: High rejection rate ──
+  if (gov.totalRejections > 10) {
+    const topRej = gov.topRejected[0];
+    ins.push({
+      icon: <Shield className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `${gov.totalRejections} approaches rejected by user`,
+      evidence: `Top rejected: ${topRej?.tool || 'unknown'} (${topRej?.count || 0} times). The agent keeps trying things you don't want.`,
+      action: "Update CLAUDE.md with clearer constraints to prevent unwanted actions.",
+      roi: `Better rules prevent ${gov.totalRejections} unnecessary tool calls.`,
+    });
+  }
+
+  // ── G2: Productive session — commits + clean exit (★★ STRONG from agentisd #25) ──
+  if (git.totalCommits > 0 && ei.totalErrors < 3) {
+    ins.push({
+      icon: <CheckCircle className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: `Productive sessions — ${git.totalCommits} commits, clean exit`,
+      evidence: `${git.totalCommits} commits with only ${ei.totalErrors} errors. Work shipped successfully.`,
+      action: "Document what made this session productive — replicate the pattern.",
+      roi: "Productive sessions compound. Each clean commit is future-proof.",
+    });
+  }
+
+  // ── G3: Plan discipline ──
+  if (gov.planApproved + gov.planRejected > 0 && gov.planApprovalRate > 80) {
+    ins.push({
+      icon: <CheckCircle className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: `${gov.planApprovalRate}% of plans approved on first try`,
+      evidence: `${gov.planApproved} plans approved, ${gov.planRejected} rejected. Strong alignment.`,
+      action: "Strong planning discipline. Keep using plan mode for complex tasks.",
+      roi: "Approved plans mean fewer mid-session course corrections.",
+    });
+  }
+
+  // ── G4: Error rate high for event volume (★★ STRONG from agentisd #2) ──
+  if (ei.totalErrors > 0 && totalEvents > 30) {
+    const errorPct = Math.round(1000 * ei.totalErrors / totalEvents) / 10;
+    if (errorPct > 15) {
+      ins.push({
+        icon: <AlertTriangle className="h-5 w-5 text-red-500" />, severity: "warning",
+        metric: `${errorPct}% error rate — ${ei.totalErrors} errors in ${totalEvents} events`,
+        evidence: `Error rate is above 15%. Most tools should succeed on first try. High error rate wastes compute.`,
+        action: "Check repeating errors. Add error patterns to CLAUDE.md to prevent them.",
+        roi: `Fixing the top error source saves ~${Math.round(ei.totalErrors * 1.5)} minutes of retry loops.`,
+      });
+    }
+  }
+
+  // ── H1: Rules loaded consistently ──
+  if (ctx.uniqueRuleFiles > 0 && ctx.ruleLoadsPerSession > 1) {
+    ins.push({
+      icon: <FileCode className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: `${ctx.uniqueRuleFiles} rule files loaded consistently`,
+      evidence: `${ctx.ruleLoadsPerSession.toFixed(1)} loads per session. Rules are guiding behavior.`,
+      action: "Consistent rule loading means consistent behavior.",
+      roi: "Rules prevent the top error patterns.",
+    });
+  }
+
+  // ── H2: No rules ──
+  if (ctx.uniqueRuleFiles === 0) {
+    ins.push({
+      icon: <FileCode className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: "No CLAUDE.md or rule files detected",
+      evidence: "The agent runs without project-specific instructions.",
+      action: "Create a CLAUDE.md with project conventions, constraints, and patterns.",
+      roi: "Projects with CLAUDE.md consistently show lower error rates.",
+    });
+  }
+
+  // H3 (low skill usage) removed — filler, not actionable
+  // H4 (implement-heavy) removed — observational, no clear action
+
+  // ── W1: Unresolved blockers ──
+  if (ctx.totalBlockers > 0 && ctx.blockerResolutionRate < 50) {
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-red-500" />, severity: "critical",
+      metric: `${ctx.totalBlockers - ctx.resolvedBlockers} unresolved blockers`,
+      evidence: `Only ${ctx.blockerResolutionRate}% of blockers resolved. Open items: ${ctx.totalBlockers - ctx.resolvedBlockers}.`,
+      action: "Document blockers for the next session or escalate.",
+      roi: "Unresolved blockers multiply in cost over time.",
+    });
+  }
+
+  // ── W2: CLAUDE.md update correlated with error drop (★★★ KILLER from agentisd #22) ──
+  if (ctx.uniqueRuleFiles > 0 && ei.totalErrors > 0 && ei.resolutionRate > 50) {
+    ins.push({
+      icon: <FileCode className="h-5 w-5 text-emerald-500" />, severity: "positive",
+      metric: "CLAUDE.md loaded + errors resolving — rules are working",
+      evidence: `${ctx.uniqueRuleFiles} rule files loaded, ${ei.resolutionRate}% error resolution rate. Rules correlate with self-healing sessions.`,
+      action: "Update CLAUDE.md when you discover new error patterns — each rule prevents future errors.",
+      roi: "Sessions with rules loaded show measurably higher error resolution rates.",
+    });
+  }
+  if (ctx.uniqueRuleFiles === 0 && ei.totalErrors > 5) {
+    ins.push({
+      icon: <FileCode className="h-5 w-5 text-red-500" />, severity: "critical",
+      metric: `No CLAUDE.md + ${ei.totalErrors} errors — rules would prevent this`,
+      evidence: `${ei.totalErrors} errors without any project rules loaded. CLAUDE.md is the #1 way to reduce errors.`,
+      action: "Create CLAUDE.md with error patterns, constraints, and project conventions.",
+      roi: "Adding CLAUDE.md is the single most impactful action for reducing errors.",
+    });
+  }
+
+  // ── W3: Persistent struggle — same file across sessions (★★ STRONG from agentisd #13) ──
+  if (fi.hotFiles.length > 0 && fi.hotFiles[0].touches > 8) {
+    const worst = fi.hotFiles[0];
+    ins.push({
+      icon: <AlertTriangle className="h-5 w-5 text-red-500" />, severity: "warning",
+      metric: `${worst.file.split('/').pop()} touched ${worst.touches} times — persistent struggle`,
+      evidence: `File edited ${worst.touches} times across sessions. This suggests unclear requirements or wrong approach.`,
+      action: "Write a spec or test first. Consider if the approach needs rethinking entirely.",
+      roi: `Spec-first approach reduces rework from ${worst.touches} to ~3 edits.`,
+    });
+  }
+
+  // X1-X4 composite scores shown as hero cards — only generate insight for critical scores
+  if (cs.productivity < 40) {
+    ins.push({
+      icon: <TrendingUp className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `Productivity Score: ${cs.productivity}/100 — room to improve`,
+      evidence: `Low commit rate or high rework. Consider structured planning before execution.`,
+      action: "Start sessions with a plan. Commit incrementally. Delegate research to agents.",
+      roi: "Planning + committing incrementally improves output consistency.",
+    });
+  }
+  if (cs.quality < 40) {
+    ins.push({
+      icon: <Shield className="h-5 w-5 text-red-500" />, severity: "critical",
+      metric: `Quality Score: ${cs.quality}/100 — needs attention`,
+      evidence: `High error rate or unresolved errors. Retry loops detected.`,
+      action: "Add error patterns to CLAUDE.md. Write tests first. Break retry loops early.",
+      roi: "Addressing error patterns in-session prevents them from recurring.",
+    });
+  }
+  if (cs.contextHealth < 40) {
+    ins.push({
+      icon: <Brain className="h-5 w-5 text-amber-500" />, severity: "warning",
+      metric: `Context Health: ${cs.contextHealth}/100 — agent lacks guidance`,
+      evidence: `Missing rules, few skills, no plans. The agent works without context.`,
+      action: "Create CLAUDE.md, use plan mode, try skills like /commit.",
+      roi: "Better context hygiene directly correlates with fewer errors.",
     });
   }
 
@@ -284,11 +567,21 @@ function generateInsights(d: AnalyticsData): Insight[] {
 // ── Dashboard ──
 function Dashboard() {
   const [data, setData] = useState<AnalyticsData | null>(null);
-  useEffect(() => { api.analytics().then(setData); }, []);
+  const [catData, setCatData] = useState<CategoryAnalyticsData | null>(null);
+  const [showAllInsights, setShowAllInsights] = useState(false);
+  useEffect(() => {
+    api.analytics().then(setData);
+    api.categoryAnalytics().then(setCatData).catch(() => {}); // graceful — catData stays null, sections hidden
+  }, []);
   if (!data) return <p className="text-muted-foreground animate-pulse">Loading analytics...</p>;
 
   const t = data.totals;
-  const insights = generateInsights(data);
+  const categoryInsights = catData ? generateCategoryInsights(catData) : [];
+  const allInsights = [...generateInsights(data), ...categoryInsights];
+  // Sort: critical first, then warning, positive, neutral
+  const SEV_ORDER = { critical: 0, warning: 1, positive: 2, neutral: 3 };
+  allInsights.sort((a, b) => (SEV_ORDER[a.severity] ?? 4) - (SEV_ORDER[b.severity] ?? 4));
+  const insights = showAllInsights ? allInsights : allInsights.slice(0, 8);
 
   // Compute derived values
   const topTool = data.toolUsage[0];
@@ -326,6 +619,14 @@ function Dashboard() {
           <div className="grid gap-3 md:grid-cols-2">
             {insights.map((ins, i) => <InsightCard key={i} {...ins} />)}
           </div>
+          {allInsights.length > 8 && (
+            <button
+              onClick={() => setShowAllInsights(!showAllInsights)}
+              className="mt-2 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {showAllInsights ? "Show less" : `Show all ${allInsights.length} insights`}
+            </button>
+          )}
         </div>
       )}
 
@@ -914,6 +1215,266 @@ function Dashboard() {
           </Card>
         )}
       </div>
+
+      {catData && !catData.insufficientData && (
+        <>
+          <Separator />
+
+          {/* ── Category Intelligence ── */}
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <Cpu className="h-4 w-4 text-purple-500" />
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Session Intelligence</h3>
+            </div>
+
+            {/* Composite Scores */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+              <Card className={catData.compositeScores.productivity >= 70 ? "border-emerald-500/30" : catData.compositeScores.productivity < 40 ? "border-red-500/30" : "border-amber-500/30"}>
+                <CardContent className="pt-4">
+                  <div className="text-center">
+                    <div className="text-3xl font-bold tabular-nums">{catData.compositeScores.productivity}</div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider mt-1">Productivity</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className={catData.compositeScores.quality >= 70 ? "border-emerald-500/30" : catData.compositeScores.quality < 40 ? "border-red-500/30" : "border-amber-500/30"}>
+                <CardContent className="pt-4">
+                  <div className="text-center">
+                    <div className="text-3xl font-bold tabular-nums">{catData.compositeScores.quality}</div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider mt-1">Quality</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className={catData.compositeScores.delegation >= 70 ? "border-emerald-500/30" : catData.compositeScores.delegation < 40 ? "border-red-500/30" : "border-amber-500/30"}>
+                <CardContent className="pt-4">
+                  <div className="text-center">
+                    <div className="text-3xl font-bold tabular-nums">{catData.compositeScores.delegation}</div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider mt-1">Delegation</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card className={catData.compositeScores.contextHealth >= 70 ? "border-emerald-500/30" : catData.compositeScores.contextHealth < 40 ? "border-red-500/30" : "border-amber-500/30"}>
+                <CardContent className="pt-4">
+                  <div className="text-center">
+                    <div className="text-3xl font-bold tabular-nums">{catData.compositeScores.contextHealth}</div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider mt-1">Context Health</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Category Distribution */}
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Activity className="h-4 w-4 text-blue-500" />
+                    <CardTitle className="text-sm">Event Categories</CardTitle>
+                  </div>
+                  <CardDescription>{catData.categories.reduce((a, b) => a + b.count, 0)} events across {catData.categories.filter(c => c.count > 0).length} categories</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-2">
+                    {catData.categories.filter(c => c.count > 0).sort((a, b) => b.count - a.count).slice(0, 12).map((cat, i) => {
+                      const max = catData.categories.reduce((a, b) => Math.max(a, b.count), 0);
+                      return (
+                        <div key={cat.category} className="flex items-center gap-2">
+                          <span className="text-[11px] text-muted-foreground w-28 truncate">{cat.category}</span>
+                          <div className="flex-1 h-5 bg-muted/50 rounded-sm overflow-hidden">
+                            <div className="h-full rounded-sm" style={{ width: `${(cat.count / max) * 100}%`, backgroundColor: COLORS[i % COLORS.length] }} />
+                          </div>
+                          <span className="text-[11px] tabular-nums text-muted-foreground w-8 text-right">{cat.count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Error Intelligence */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <Shield className="h-4 w-4 text-red-500" />
+                    <CardTitle className="text-sm">Error Intelligence</CardTitle>
+                  </div>
+                  <CardDescription>Resolution rate, retry storms, latency</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <Mini label="Errors" value={catData.errorIntelligence.totalErrors} />
+                    <Mini label="Resolved" value={`${catData.errorIntelligence.resolutionRate}%`} color={catData.errorIntelligence.resolutionRate > 70 ? "text-emerald-500" : "text-amber-500"} />
+                    <Mini label="Retry Storms" value={catData.errorIntelligence.retryStorms} color={catData.errorIntelligence.retryStorms > 0 ? "text-red-500" : ""} />
+                  </div>
+                  {catData.errorIntelligence.latencyByTool.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Slowest Tools</p>
+                      {catData.errorIntelligence.latencyByTool.slice(0, 5).map((t) => (
+                        <div key={t.tool} className="flex items-center gap-2">
+                          <span className="text-[11px] text-muted-foreground w-20 truncate">{t.tool}</span>
+                          <div className="flex-1 h-4 bg-muted/50 rounded-sm overflow-hidden">
+                            <div className="h-full bg-amber-500/60 rounded-sm" style={{ width: `${Math.min((t.avg_ms / 30000) * 100, 100)}%` }} />
+                          </div>
+                          <span className="text-[11px] tabular-nums text-muted-foreground w-12 text-right">{(t.avg_ms / 1000).toFixed(1)}s</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {catData.errorIntelligence.topErrorTools.length > 0 && (
+                    <div className="space-y-1.5 mt-3">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Top Error Sources</p>
+                      {catData.errorIntelligence.topErrorTools.slice(0, 5).map((t) => (
+                        <div key={t.tool} className="flex items-center justify-between">
+                          <span className="text-[11px] text-muted-foreground">{t.tool}</span>
+                          <Badge variant="secondary" className="text-[10px]">{t.count}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* ── Governance + Delegation ── */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-purple-500" />
+                  <CardTitle className="text-sm">Governance</CardTitle>
+                </div>
+                <CardDescription>Decisions, rejections, plans, constraints</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <Mini label="Rejections" value={catData.governance.totalRejections} color={catData.governance.totalRejections > 20 ? "text-amber-500" : ""} />
+                  <Mini label="Decisions" value={catData.governance.totalDecisions} />
+                  <Mini label="Plans Approved" value={catData.governance.planApproved} />
+                  <Mini label="Constraints" value={catData.governance.totalConstraints} />
+                </div>
+                {catData.governance.topRejected.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Top Rejected Tools</p>
+                    {catData.governance.topRejected.slice(0, 5).map((t) => (
+                      <div key={t.tool} className="flex items-center justify-between">
+                        <span className="text-[11px] text-muted-foreground">{t.tool}</span>
+                        <Badge variant="secondary" className="text-[10px]">{t.count}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Cpu className="h-4 w-4 text-emerald-500" />
+                  <CardTitle className="text-sm">Delegation</CardTitle>
+                </div>
+                <CardDescription>Agent parallelism and completion</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <Mini label="Launched" value={catData.delegation.launched} />
+                  <Mini label="Completed" value={catData.delegation.completed} />
+                  <Mini label="Rate" value={`${catData.delegation.completionRate}%`} color={catData.delegation.completionRate > 70 ? "text-emerald-500" : "text-amber-500"} />
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  <Mini label="Bursts" value={catData.delegation.parallelBursts} />
+                  <Mini label="Max ∥" value={catData.delegation.maxConcurrent} />
+                  <Mini label="Saved" value={`${catData.delegation.timeSavedMin}m`} color="text-emerald-500" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Separator />
+
+          {/* ── Git Productivity + Context Health ── */}
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <GitBranch className="h-4 w-4 text-blue-500" />
+                  <CardTitle className="text-sm">Git Productivity</CardTitle>
+                </div>
+                <CardDescription>Commit patterns and operation mix</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <Mini label="Commits" value={catData.gitProductivity.totalCommits} />
+                  <Mini label="Pushes" value={catData.gitProductivity.totalPushes} />
+                  <Mini label="C:P Ratio" value={catData.gitProductivity.commitPushRatio > 0 ? `${catData.gitProductivity.commitPushRatio}:1` : "—"} />
+                </div>
+                {catData.gitProductivity.operationMix.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Git Operations</p>
+                    {catData.gitProductivity.operationMix.slice(0, 8).map((op) => {
+                      const max = catData.gitProductivity.operationMix[0]?.count || 1;
+                      return (
+                        <div key={op.operation} className="flex items-center gap-2">
+                          <span className="text-[11px] text-muted-foreground w-16 truncate">{op.operation}</span>
+                          <div className="flex-1 h-4 bg-muted/50 rounded-sm overflow-hidden">
+                            <div className="h-full bg-blue-500/60 rounded-sm" style={{ width: `${(op.count / max) * 100}%` }} />
+                          </div>
+                          <span className="text-[11px] tabular-nums text-muted-foreground w-6 text-right">{op.count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-cyan-500" />
+                  <CardTitle className="text-sm">Context Health</CardTitle>
+                </div>
+                <CardDescription>Rules, skills, work modes, blockers</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <Mini label="Rule Files" value={catData.contextHealth.uniqueRuleFiles} />
+                  <Mini label="Skills" value={catData.contextHealth.uniqueSkills} />
+                  <Mini label="Compact Rate" value={`${catData.contextHealth.compactRate}%`} color={catData.contextHealth.compactRate > 60 ? "text-amber-500" : "text-emerald-500"} />
+                </div>
+                {catData.contextHealth.modeDistribution.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Work Modes</p>
+                    <RatioBar items={catData.contextHealth.modeDistribution.map((m, i) => ({
+                      label: `${m.mode} (${m.pct}%)`,
+                      value: m.count,
+                      color: COLORS[i % COLORS.length],
+                    }))} />
+                  </div>
+                )}
+                {catData.contextHealth.skillList.length > 0 && (
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1.5">Active Skills</p>
+                    <div className="flex flex-wrap gap-1">
+                      {catData.contextHealth.skillList.map(s => (
+                        <Badge key={s} variant="secondary" className="text-[10px]">{s}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {catData.contextHealth.totalBlockers > 0 && (
+                  <div className="mt-3 grid grid-cols-2 gap-4">
+                    <Mini label="Blockers" value={catData.contextHealth.totalBlockers} color="text-amber-500" />
+                    <Mini label="Resolved" value={`${catData.contextHealth.blockerResolutionRate}%`} color={catData.contextHealth.blockerResolutionRate > 70 ? "text-emerald-500" : "text-red-500"} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </>
+      )}
 
       </div>
     </div>

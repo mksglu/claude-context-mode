@@ -1,3 +1,5 @@
+import { buildNodeCommand } from "../types.js";
+
 /**
  * adapters/gemini-cli/hooks — Gemini CLI hook definitions and matchers.
  *
@@ -83,7 +85,7 @@ export function isContextModeHook(
 export function buildHookCommand(hookType: HookType, pluginRoot?: string): string {
   const scriptName = HOOK_SCRIPTS[hookType];
   if (pluginRoot && scriptName) {
-    return `node "${pluginRoot}/hooks/${scriptName}"`;
+    return buildNodeCommand(`${pluginRoot}/hooks/${scriptName}`);
   }
   return `context-mode hook gemini-cli ${hookType.toLowerCase()}`;
 }

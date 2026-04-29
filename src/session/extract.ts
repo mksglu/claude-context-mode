@@ -404,8 +404,37 @@ function extractSkill(input: HookInput): SessionEvent[] {
     type: "skill",
     category: "skill",
     data: safeString(skillName),
-    priority: 3,
+    priority: 2,
   }];
+}
+
+/**
+ * Category 16: constraint
+ * Constraints discovered through error events — tool failures reveal
+ * platform/environment limitations worth remembering.
+ */
+function extractConstraint(input: HookInput): SessionEvent[] {
+  // Only fire on error events — constraints are discovered through failures
+  if (!input.tool_response?.includes("Error") && !input.tool_output?.isError) return [];
+
+  const response = String(input.tool_response || "");
+  const patterns = [/not supported/i, /cannot/i, /does not support/i, /FAIL/i, /refused/i, /permission denied/i, /incompatible/i];
+
+  for (const pattern of patterns) {
+    const match = response.match(pattern);
+    if (match) {
+      // Extract context around the match
+      const idx = response.toLowerCase().indexOf(match[0].toLowerCase());
+      const context = response.slice(Math.max(0, idx - 50), Math.min(response.length, idx + 200)).trim();
+      return [{
+        type: "constraint_discovered",
+        category: "constraint",
+        data: safeString(context),
+        priority: 2,
+      }];
+    }
+  }
+  return [];
 }
 
 /**
@@ -486,6 +515,73 @@ function extractDecision(input: HookInput): SessionEvent[] {
     category: "decision",
     data: safeString(summary),
     priority: 2,
+  }];
+}
+
+/**
+ * Category 22: agent-finding
+ * When the Agent tool completes (subagent returns), capture a structured
+ * summary of its findings (first 500 chars of tool_response).
+ */
+function extractAgentFinding(input: HookInput): SessionEvent[] {
+  if (input.tool_name !== "Agent") return [];
+  if (!input.tool_response || input.tool_response.length === 0) return [];
+
+  const summary = input.tool_response.length > 500
+    ? input.tool_response.slice(0, 500)
+    : input.tool_response;
+
+  return [{
+    type: "agent_finding",
+    category: "agent-finding",
+    data: safeString(summary),
+    priority: 2,
+  }];
+}
+
+/**
+ * Category 24: external-ref
+ * Scan tool_input and tool_response for external URLs, GitHub issues, and PRs.
+ * Deduplicates found refs and skips internal URLs (localhost, 127.0.0.1).
+ */
+function extractExternalRef(input: HookInput): SessionEvent[] {
+  const haystack = [
+    safeStringAny(input.tool_input),
+    safeString(input.tool_response),
+  ].join(" ");
+
+  if (haystack.length === 0) return [];
+
+  const refs = new Set<string>();
+
+  // URLs — skip localhost / 127.0.0.1
+  const urlMatches = haystack.match(/https?:\/\/[^\s)]+/g);
+  if (urlMatches) {
+    for (let url of urlMatches) {
+      // Strip trailing punctuation that gets captured from JSON/prose
+      url = url.replace(/["'})\],;.]+$/, "");
+      if (!/localhost|127\.0\.0\.1/i.test(url)) {
+        refs.add(url);
+      }
+    }
+  }
+
+  // Full GitHub issue/PR URLs are already captured above.
+  // Shorthand GitHub issue refs: #123 (only bare, not inside a URL)
+  const issueMatches = haystack.match(/(?<!\w)#(\d+)/g);
+  if (issueMatches) {
+    for (const m of issueMatches) {
+      refs.add(m);
+    }
+  }
+
+  if (refs.size === 0) return [];
+
+  return [{
+    type: "external_ref",
+    category: "external-ref",
+    data: safeString(Array.from(refs).join(", ")),
+    priority: 3,
   }];
 }
 
@@ -581,6 +677,59 @@ function extractIntent(message: string): SessionEvent[] {
 }
 
 /**
+ * Category 25: blocked-on
+ * Detect when work is blocked on something, or when a blocker is resolved.
+ */
+
+const BLOCKER_PATTERNS: RegExp[] = [
+  /\bblocked on\b/i,
+  /\bwaiting for\b/i,
+  /\bneed\s+\S+\s+before\b/i,
+  /\bcan'?t proceed until\b/i,
+  /\bdepends on\b/i,
+  /\bblocked\b/i,
+  // Turkish patterns
+  /\bbekliyor\b/i,
+  /\bbekliyorum\b/i,
+];
+
+const BLOCKER_RESOLVED_PATTERNS: RegExp[] = [
+  /\bunblocked\b/i,
+  /\bresolved\b/i,
+  /\bgot the\s+\S+/i,
+  /\bis ready now\b/i,
+  /\bcan proceed\b/i,
+];
+
+function extractBlocker(message: string): SessionEvent[] {
+  const events: SessionEvent[] = [];
+
+  // Check resolution first — if both match, resolution takes priority
+  const isResolved = BLOCKER_RESOLVED_PATTERNS.some(p => p.test(message));
+  if (isResolved) {
+    events.push({
+      type: "blocker_resolved",
+      category: "blocked-on",
+      data: safeString(message),
+      priority: 2,
+    });
+    return events;
+  }
+
+  const isBlocked = BLOCKER_PATTERNS.some(p => p.test(message));
+  if (isBlocked) {
+    events.push({
+      type: "blocker",
+      category: "blocked-on",
+      data: safeString(message),
+      priority: 2,
+    });
+  }
+
+  return events;
+}
+
+/**
  * Category 12: data
  * Large user-pasted data references (message > 1KB).
  */
@@ -593,6 +742,118 @@ function extractData(message: string): SessionEvent[] {
     data: safeString(message),
     priority: 4,
   }];
+}
+
+// ── Cross-event stateful extractors ───────────────────────────────────────
+
+/**
+ * Category 23: error-resolution
+ * Detects when an error is followed by a successful fix (cross-event state).
+ */
+
+let lastError: { tool: string; error: string; callsSince: number } | null = null;
+
+function extractErrorResolution(input: HookInput): SessionEvent[] {
+  const { tool_name, tool_response, tool_output } = input;
+  const response = String(tool_response ?? "");
+  const isErrorFlag = tool_output?.isError === true;
+  const isBashError =
+    tool_name === "Bash" &&
+    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
+
+  // If this call is an error, store it and return
+  if (isBashError || isErrorFlag) {
+    lastError = { tool: tool_name, error: response.slice(0, 200), callsSince: 0 };
+    return [];
+  }
+
+  // No pending error → nothing to resolve
+  if (!lastError) return [];
+
+  // Increment staleness counter
+  lastError.callsSince++;
+
+  // Timeout: clear after 10 calls without resolution
+  if (lastError.callsSince > 10) {
+    lastError = null;
+    return [];
+  }
+
+  // Check if this is a resolution: same tool, or Edit/Write after a Read error
+  const sameTool = tool_name === lastError.tool;
+  const editAfterReadError =
+    lastError.tool === "Read" && (tool_name === "Edit" || tool_name === "Write");
+
+  if (sameTool || editAfterReadError) {
+    const event: SessionEvent = {
+      type: "error_resolved",
+      category: "error-resolution",
+      data: safeString(`Error in ${lastError.tool}: ${lastError.error} → Fixed`),
+      priority: 2,
+    };
+    lastError = null;
+    return [event];
+  }
+
+  return [];
+}
+
+/** Reset error-resolution state (for testing). */
+export function resetErrorResolutionState(): void {
+  lastError = null;
+}
+
+/**
+ * Category 26: iteration-loop
+ * Detects when the same tool is called repeatedly with similar input (stuck loop).
+ */
+
+const callHistory: Array<{ tool: string; inputHash: string }> = [];
+
+function simpleHash(str: string): string {
+  return `${str.length}:${str.slice(0, 20)}`;
+}
+
+function extractIterationLoop(input: HookInput): SessionEvent[] {
+  const { tool_name, tool_input } = input;
+  const inputHash = simpleHash(JSON.stringify(tool_input).slice(0, 200));
+
+  callHistory.push({ tool: tool_name, inputHash });
+
+  // Keep history bounded
+  if (callHistory.length > 50) {
+    callHistory.splice(0, callHistory.length - 50);
+  }
+
+  // Check last N entries for repeated pattern (minimum 3)
+  if (callHistory.length < 3) return [];
+
+  let count = 0;
+  for (let i = callHistory.length - 1; i >= 0; i--) {
+    if (callHistory[i].tool === tool_name && callHistory[i].inputHash === inputHash) {
+      count++;
+    } else {
+      break;
+    }
+  }
+
+  if (count >= 3) {
+    // Reset the matching tail to avoid duplicate emissions
+    callHistory.splice(callHistory.length - count);
+    return [{
+      type: "retry_detected",
+      category: "iteration-loop",
+      data: safeString(`${tool_name} called ${count} times with similar input`),
+      priority: 2,
+    }];
+  }
+
+  return [];
+}
+
+/** Reset iteration-loop state (for testing). */
+export function resetIterationLoopState(): void {
+  callHistory.length = 0;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -623,7 +884,14 @@ export function extractEvents(input: HookInput): SessionEvent[] {
     events.push(...extractSubagent(input));
     events.push(...extractMcp(input));
     events.push(...extractDecision(input));
+    events.push(...extractConstraint(input));
     events.push(...extractWorktree(input));
+    events.push(...extractAgentFinding(input));
+    events.push(...extractExternalRef(input));
+
+    // Cross-event stateful extractors
+    events.push(...extractErrorResolution(input));
+    events.push(...extractIterationLoop(input));
 
     return events;
   } catch {
@@ -645,6 +913,7 @@ export function extractUserEvents(message: string): SessionEvent[] {
     events.push(...extractUserDecision(message));
     events.push(...extractRole(message));
     events.push(...extractIntent(message));
+    events.push(...extractBlocker(message));
     events.push(...extractData(message));
 
     return events;

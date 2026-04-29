@@ -152,8 +152,10 @@ try{
       h.hooks?.some((hh) => hh.command?.includes("context-mode-cache-heal")),
     );
     if (!alreadyRegistered) {
+      const _nodePath = process.execPath.replace(/\\/g, "/");
+      const _healPath = healHookPath.replace(/\\/g, "/");
       sessionStart.push({
-        hooks: [{ type: "command", command: `node ${healHookPath}` }],
+        hooks: [{ type: "command", command: `"${_nodePath}" "${_healPath}"` }],
       });
       hooks.SessionStart = sessionStart;
       settings.hooks = hooks;

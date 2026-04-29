@@ -32,6 +32,7 @@ type SearchRow = {
   title: string;
   content: string;
   content_type: string;
+  timestamp: string | null;
   label: string;
   rank: number;
   highlighted: string;
@@ -449,6 +450,10 @@ export class ContentStore {
         content,
         source_id UNINDEXED,
         content_type UNINDEXED,
+        source_category UNINDEXED,
+        session_id UNINDEXED,
+        event_id UNINDEXED,
+        timestamp UNINDEXED,
         tokenize='porter unicode61'
       );
 
@@ -457,6 +462,10 @@ export class ContentStore {
         content,
         source_id UNINDEXED,
         content_type UNINDEXED,
+        source_category UNINDEXED,
+        session_id UNINDEXED,
+        event_id UNINDEXED,
+        timestamp UNINDEXED,
         tokenize='trigram'
       );
 
@@ -466,6 +475,49 @@ export class ContentStore {
 
       CREATE INDEX IF NOT EXISTS idx_sources_label ON sources(label);
     `);
+
+    // FTS5 schema migration: old schema (4 cols) → new schema (8 cols).
+    // FTS5 virtual tables do not support ALTER TABLE ADD COLUMN, so we must
+    // DROP + re-CREATE. Detection: check for sentinel column `source_category`
+    // via pragma_table_xinfo. Three states:
+    //   1. No table          → CREATE above handled it (fresh DB)
+    //   2. Old schema (4 cols) → DROP + CREATE new
+    //   3. New schema (8 cols) → do nothing
+    try {
+      const cols = this.#db.prepare(
+        "SELECT name FROM pragma_table_xinfo('chunks')"
+      ).all() as Array<{ name: string }>;
+      const colNames = new Set(cols.map(c => c.name));
+      if (cols.length > 0 && !colNames.has("source_category")) {
+        // Old schema detected — drop both FTS5 tables and re-create with new columns
+        this.#db.exec("DROP TABLE IF EXISTS chunks");
+        this.#db.exec("DROP TABLE IF EXISTS chunks_trigram");
+        this.#db.exec(`
+          CREATE VIRTUAL TABLE chunks USING fts5(
+            title,
+            content,
+            source_id UNINDEXED,
+            content_type UNINDEXED,
+            source_category UNINDEXED,
+            session_id UNINDEXED,
+            event_id UNINDEXED,
+            timestamp UNINDEXED,
+            tokenize='porter unicode61'
+          );
+          CREATE VIRTUAL TABLE chunks_trigram USING fts5(
+            title,
+            content,
+            source_id UNINDEXED,
+            content_type UNINDEXED,
+            source_category UNINDEXED,
+            session_id UNINDEXED,
+            event_id UNINDEXED,
+            timestamp UNINDEXED,
+            tokenize='trigram'
+          );
+        `);
+      }
+    } catch { /* pragma_table_xinfo may fail if table doesn't exist yet — safe to ignore */ }
 
     // Stale detection columns — safe for existing DBs (ALTER is O(1) in SQLite)
     try { this.#db.exec("ALTER TABLE sources ADD COLUMN file_path TEXT"); } catch { /* already exists */ }
@@ -481,10 +533,10 @@ export class ContentStore {
       "INSERT INTO sources (label, chunk_count, code_chunk_count, file_path, content_hash) VALUES (?, ?, ?, ?, ?)",
     );
     this.#stmtInsertChunk = this.#db.prepare(
-      "INSERT INTO chunks (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
+      "INSERT INTO chunks (title, content, source_id, content_type, source_category, session_id, event_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
     this.#stmtInsertChunkTrigram = this.#db.prepare(
-      "INSERT INTO chunks_trigram (title, content, source_id, content_type) VALUES (?, ?, ?, ?)",
+      "INSERT INTO chunks_trigram (title, content, source_id, content_type, source_category, session_id, event_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
     this.#stmtInsertVocab = this.#db.prepare(
       "INSERT OR IGNORE INTO vocabulary (word) VALUES (?)",
@@ -508,6 +560,7 @@ export class ContentStore {
         chunks.title,
         chunks.content,
         chunks.content_type,
+        chunks.timestamp,
         sources.label,
         bm25(chunks, 5.0, 1.0) AS rank,
         highlight(chunks, 1, char(2), char(3)) AS highlighted
@@ -522,6 +575,7 @@ export class ContentStore {
         chunks.title,
         chunks.content,
         chunks.content_type,
+        chunks.timestamp,
         sources.label,
         bm25(chunks, 5.0, 1.0) AS rank,
         highlight(chunks, 1, char(2), char(3)) AS highlighted
@@ -536,6 +590,7 @@ export class ContentStore {
         chunks.title,
         chunks.content,
         chunks.content_type,
+        chunks.timestamp,
         sources.label,
         bm25(chunks, 5.0, 1.0) AS rank,
         highlight(chunks, 1, char(2), char(3)) AS highlighted
@@ -550,6 +605,7 @@ export class ContentStore {
         chunks_trigram.title,
         chunks_trigram.content,
         chunks_trigram.content_type,
+        chunks_trigram.timestamp,
         sources.label,
         bm25(chunks_trigram, 5.0, 1.0) AS rank,
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
@@ -564,6 +620,7 @@ export class ContentStore {
         chunks_trigram.title,
         chunks_trigram.content,
         chunks_trigram.content_type,
+        chunks_trigram.timestamp,
         sources.label,
         bm25(chunks_trigram, 5.0, 1.0) AS rank,
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
@@ -578,6 +635,7 @@ export class ContentStore {
         chunks_trigram.title,
         chunks_trigram.content,
         chunks_trigram.content_type,
+        chunks_trigram.timestamp,
         sources.label,
         bm25(chunks_trigram, 5.0, 1.0) AS rank,
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
@@ -594,6 +652,7 @@ export class ContentStore {
         chunks.title,
         chunks.content,
         chunks.content_type,
+        chunks.timestamp,
         sources.label,
         bm25(chunks, 5.0, 1.0) AS rank,
         highlight(chunks, 1, char(2), char(3)) AS highlighted
@@ -608,6 +667,7 @@ export class ContentStore {
         chunks.title,
         chunks.content,
         chunks.content_type,
+        chunks.timestamp,
         sources.label,
         bm25(chunks, 5.0, 1.0) AS rank,
         highlight(chunks, 1, char(2), char(3)) AS highlighted
@@ -622,6 +682,7 @@ export class ContentStore {
         chunks.title,
         chunks.content,
         chunks.content_type,
+        chunks.timestamp,
         sources.label,
         bm25(chunks, 5.0, 1.0) AS rank,
         highlight(chunks, 1, char(2), char(3)) AS highlighted
@@ -636,6 +697,7 @@ export class ContentStore {
         chunks_trigram.title,
         chunks_trigram.content,
         chunks_trigram.content_type,
+        chunks_trigram.timestamp,
         sources.label,
         bm25(chunks_trigram, 5.0, 1.0) AS rank,
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
@@ -650,6 +712,7 @@ export class ContentStore {
         chunks_trigram.title,
         chunks_trigram.content,
         chunks_trigram.content_type,
+        chunks_trigram.timestamp,
         sources.label,
         bm25(chunks_trigram, 5.0, 1.0) AS rank,
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
@@ -664,6 +727,7 @@ export class ContentStore {
         chunks_trigram.title,
         chunks_trigram.content,
         chunks_trigram.content_type,
+        chunks_trigram.timestamp,
         sources.label,
         bm25(chunks_trigram, 5.0, 1.0) AS rank,
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
@@ -835,10 +899,11 @@ export class ContentStore {
       const info = this.#stmtInsertSource.run(label, chunks.length, codeChunks, filePath ?? null, contentHash ?? null);
       const sourceId = Number(info.lastInsertRowid);
 
+      const now = new Date().toISOString();
       for (const chunk of chunks) {
         const ct = chunk.hasCode ? "code" : "prose";
-        this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct);
-        this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct);
+        this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct, null, null, null, now);
+        this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct, null, null, null, now);
       }
 
       return sourceId;
@@ -874,6 +939,7 @@ export class ContentStore {
       rank: r.rank,
       contentType: r.content_type as "code" | "prose",
       highlighted: r.highlighted,
+      timestamp: r.timestamp ?? undefined,
     }));
   }
 

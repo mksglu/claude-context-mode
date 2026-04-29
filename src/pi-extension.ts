@@ -284,7 +284,7 @@ export default function piExtension(pi: any): void {
       db.markResumeConsumed(_sessionId);
 
       // Build memory context from recent high-priority events
-      const allEvents = db.getEvents(_sessionId, { minPriority: 2, limit: 50 });
+      const allEvents = db.getEvents(_sessionId, { minPriority: 3, limit: 50 });
       let memoryContext = "";
       if (allEvents.length > 0) {
         const memoryLines: string[] = ["<active_memory>"];
