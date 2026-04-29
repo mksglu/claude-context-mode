@@ -108,22 +108,17 @@ describe("formatDecision", () => {
         expect(result).toBeNull();
       });
 
-      it("still formats deny normally (only ask is bypassed)", () => {
-        const result = claudeCodeFormat(denyDecision) as Record<string, unknown>;
-        expect(result).not.toBeNull();
-        const output = result.hookSpecificOutput as Record<string, unknown>;
-        expect(output.permissionDecision).toBe("deny");
-        expect(output.reason).toBe(denyDecision.reason);
+      it("returns null for deny (passthrough — headless agents have no UI to reconsider)", () => {
+        const result = claudeCodeFormat(denyDecision);
+        expect(result).toBeNull();
       });
 
-      it("still formats modify normally", () => {
-        const result = claudeCodeFormat(modifyDecision) as Record<string, unknown>;
-        expect(result).not.toBeNull();
-        const output = result.hookSpecificOutput as Record<string, unknown>;
-        expect(output.updatedInput).toEqual(modifyDecision.updatedInput);
+      it("returns null for modify (passthrough — modify rewrites silently break headless tool calls)", () => {
+        const result = claudeCodeFormat(modifyDecision);
+        expect(result).toBeNull();
       });
 
-      it("still formats context normally", () => {
+      it("still formats context normally (informational, doesn't block the tool)", () => {
         const result = claudeCodeFormat(contextDecision) as Record<string, unknown>;
         expect(result).not.toBeNull();
         const output = result.hookSpecificOutput as Record<string, unknown>;
