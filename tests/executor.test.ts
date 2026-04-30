@@ -76,6 +76,42 @@ describe("Runtime Detection", () => {
       assert.ok(r.stdout.includes("chinese path ok"), `Got: ${r.stdout}`);
       try { rmSync(chineseDir, { recursive: true, force: true }); } catch {}
     });
+
+    test("SHELL env var overrides auto-detected shell", async () => {
+      const { detectRuntimes } = await import("../src/runtime.js");
+      const { existsSync } = await import("node:fs");
+      const originalShell = process.env.SHELL;
+      // Use the currently-detected shell as the override (guaranteed to exist)
+      const realShell = runtimes.shell;
+      process.env.SHELL = realShell;
+      try {
+        const rt = detectRuntimes();
+        assert.equal(rt.shell, realShell, `Expected SHELL override, got: ${rt.shell}`);
+      } finally {
+        if (originalShell !== undefined) {
+          process.env.SHELL = originalShell;
+        } else {
+          delete process.env.SHELL;
+        }
+      }
+    });
+
+    test("SHELL env var ignored when path does not exist", async () => {
+      const { detectRuntimes } = await import("../src/runtime.js");
+      const originalShell = process.env.SHELL;
+      const fakeShell = isWin ? "C:\\fake\\bash.exe" : "/fake/shell";
+      process.env.SHELL = fakeShell;
+      try {
+        const rt = detectRuntimes();
+        assert.notEqual(rt.shell, fakeShell, `Should fallback when SHELL path does not exist, got: ${rt.shell}`);
+      } finally {
+        if (originalShell !== undefined) {
+          process.env.SHELL = originalShell;
+        } else {
+          delete process.env.SHELL;
+        }
+      }
+    });
   }
 
   test("detects TypeScript runtime", async () => {
@@ -1537,9 +1573,23 @@ describe("Windows Shell Support", () => {
   });
 
   test("buildCommand returns shell command array", async () => {
-    const cmd = buildCommand(runtimes, "shell", "/tmp/script.sh");
-    assert.ok(Array.isArray(cmd) && cmd.length === 2, `Expected [shell, path], got: ${cmd}`);
-    assert.equal(cmd[1], "/tmp/script.sh");
+    const isWin = process.platform === "win32";
+    const cmd = buildCommand(runtimes, "shell", "/tmp/script");
+    const shellName = runtimes.shell.toLowerCase();
+    const isBashLike = shellName.includes("bash") || shellName.includes("/sh");
+    const isPowerShell = shellName.includes("powershell") || shellName.includes("pwsh");
+    if (isWin && isBashLike) {
+      assert.ok(Array.isArray(cmd) && cmd.length === 3, `Expected [shell, "-c", source], got: ${cmd}`);
+      assert.equal(cmd[1], "-c");
+      assert.ok(cmd[2].includes("source"), `Expected source command, got: ${cmd[2]}`);
+    } else if (isWin && isPowerShell) {
+      assert.ok(Array.isArray(cmd) && cmd.length === 3, `Expected [shell, "-File", path], got: ${cmd}`);
+      assert.equal(cmd[1], "-File");
+      assert.equal(cmd[2], "/tmp/script");
+    } else {
+      assert.ok(Array.isArray(cmd) && cmd.length === 2, `Expected [shell, path], got: ${cmd}`);
+      assert.equal(cmd[1], "/tmp/script");
+    }
   });
 });
 

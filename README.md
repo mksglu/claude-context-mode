@@ -1082,6 +1082,18 @@ Without hooks, one unrouted `curl` or Playwright snapshot can dump 56 KB into co
 
 See [`docs/platform-support.md`](docs/platform-support.md) for the full capability comparison.
 
+### Windows Shell Execution
+
+On Windows, `ctx_execute(language: "shell", ...)` uses Git Bash (if available) with three safety measures:
+
+1. **No `.sh` extension** — temp scripts are written without an extension to prevent Windows file associations from opening a visible Git Bash window on top of your workspace.
+2. **`bash -c "source 'path'"`** — scripts are sourced via `-c` instead of passed as a direct argument. This avoids MSYS2 path-mangling issues and file-association side effects.
+3. **`windowsHide: true`** — the spawned process runs with a hidden console window, preventing any popup from appearing.
+
+If Git Bash is not installed, context-mode falls back to `cmd.exe` or PowerShell.
+
+**Override the shell:** Set the `SHELL` environment variable (e.g., in your MCP server config) to any executable path. If the file exists, context-mode uses it instead of auto-detecting. This works on all operating systems.
+
 ## Utility Commands
 
 **Inside any AI session** — just type the command. The LLM calls the MCP tool automatically:

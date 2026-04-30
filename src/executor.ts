@@ -168,9 +168,22 @@ export class PolyglotExecutor {
       code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
-    const fp = join(tmpDir, `script.${extMap[language]}`);
+    // On Windows, choose shell-specific extension to prevent file association popups
+    // while still allowing the shell to execute the script
+    let ext = extMap[language];
+    if (language === "shell" && isWin) {
+      const shellName = this.#runtimes.shell.toLowerCase();
+      if (shellName.includes("powershell") || shellName.includes("pwsh")) {
+        ext = "ps1";
+      } else if (shellName.includes("cmd")) {
+        ext = "cmd";
+      } else {
+        ext = ""; // bash/sh: no extension avoids file association
+      }
+    }
+    const fp = ext ? join(tmpDir, `script.${ext}`) : join(tmpDir, "script");
     if (language === "shell") {
-      writeFileSync(fp, code, { encoding: "utf-8", mode: 0o700 });
+      writeFileSync(fp, code, { encoding: "utf-8", mode: isWin ? undefined : 0o700 });
     } else {
       writeFileSync(fp, code, "utf-8");
     }
@@ -240,6 +253,8 @@ export class PolyglotExecutor {
         shell: needsShell,
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
+        // On Windows, hide the console window to prevent .sh file association popups
+        windowsHide: isWin,
       });
 
       let timedOut = false;

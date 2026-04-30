@@ -128,6 +128,10 @@ export function detectRuntimes(): RuntimeMap {
   const hasBun = bunExists();
   const bun = hasBun ? bunCommand() : null;
 
+  // Respect user-override via SHELL env var if the executable exists
+  const userShell = process.env.SHELL;
+  const shellOverride = userShell && existsSync(userShell) ? userShell : null;
+
   return {
     javascript: bun ?? process.execPath,
     typescript: bun
@@ -142,9 +146,9 @@ export function detectRuntimes(): RuntimeMap {
       : commandExists("python")
         ? "python"
         : null,
-    shell: isWindows
+    shell: shellOverride ?? (isWindows
       ? (resolveWindowsBash() ?? (commandExists("sh") ? "sh" : commandExists("powershell") ? "powershell" : "cmd.exe"))
-      : commandExists("bash") ? "bash" : "sh",
+      : commandExists("bash") ? "bash" : "sh"),
     ruby: commandExists("ruby") ? "ruby" : null,
     go: commandExists("go") ? "go" : null,
     rust: commandExists("rustc") ? "rustc" : null,
@@ -273,6 +277,20 @@ export function buildCommand(
       return [runtimes.python, filePath];
 
     case "shell":
+      if (isWindows) {
+        const shellName = runtimes.shell.toLowerCase();
+        // For bash/sh on Windows, use `bash -c "source 'filePath'"` to avoid:
+        // 1. .sh file association popups
+        // 2. MSYS2 path mangling when passing script as direct argument
+        if (shellName.includes("bash") || shellName.includes("/sh")) {
+          return [runtimes.shell, "-c", `source "${filePath}"`];
+        }
+        // For PowerShell, use -File with .ps1 extension
+        if (shellName.includes("powershell") || shellName.includes("pwsh")) {
+          return [runtimes.shell, "-File", filePath];
+        }
+        // For cmd.exe, pass directly with .cmd extension
+      }
       return [runtimes.shell, filePath];
 
     case "ruby":
