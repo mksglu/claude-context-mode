@@ -18,7 +18,7 @@ import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { describe, test, expect, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
 
 import { classifyNonZeroExit } from "../../src/exit-classify.js";
 import { PolyglotExecutor } from "../../src/executor.js";
@@ -747,6 +747,165 @@ print(f"count: {data['count']}")
     assert.equal(r.exitCode, 0, `Expected exit 0: ${r.stderr}`);
     assert.ok(r.stdout.includes("hello from project dir"));
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ctx_index: projectRoot path resolution (#365)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Mirrors the executeFile relative-path resolution tests (line ~598). Confirms
+// that ctx_index resolves a relative `path` argument against the detected
+// project directory (CLAUDE_PROJECT_DIR / *_PROJECT_DIR / CONTEXT_MODE_PROJECT_DIR
+// → cwd fallback) instead of the MCP server process cwd. End-to-end via
+// JSON-RPC against a freshly spawned server with an injected project dir.
+
+describe("ctx_index: projectRoot path resolution (#365)", () => {
+  const ctxProjectDir = mkdtempSync(join(tmpdir(), "ctx-index-projroot-"));
+  const ctxFileName = "ctx-index-projroot-target.md";
+  const uniqueMarker = `ctx-index-marker-${process.pid}-${Date.now()}`;
+
+  beforeAll(() => {
+    writeFileSync(
+      join(ctxProjectDir, ctxFileName),
+      `# ctx_index relative path test\n\nUnique marker: ${uniqueMarker}\n`,
+      "utf-8",
+    );
+  });
+
+  afterAll(() => {
+    rmSync(ctxProjectDir, { recursive: true, force: true });
+  });
+
+  function spawnServerWithProjectDir(projectDirEnv: string): ChildProcess {
+    return spawn("node", [mcpEntry], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+        CLAUDE_PROJECT_DIR: projectDirEnv,
+      },
+    });
+  }
+
+  // MCP server processes JSON-RPC requests concurrently — we have to wait for
+  // each response before sending the next one in tests that depend on order
+  // (e.g. index then search). The shared `collectRpcResponses` helper kills
+  // the proc once all expected ids arrive, so we use it serially per-call.
+  async function awaitRpc(
+    proc: ChildProcess,
+    id: number,
+    request: Record<string, unknown>,
+    timeoutMs = 15_000,
+  ): Promise<DoctorJsonRpcResponse | undefined> {
+    return new Promise((resolve) => {
+      let buffer = "";
+      const onData = (d: Buffer) => {
+        buffer += d.toString();
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const parsed = JSON.parse(line) as DoctorJsonRpcResponse;
+            if (parsed.id === id) {
+              proc.stdout!.off("data", onData);
+              clearTimeout(timer);
+              resolve(parsed);
+              return;
+            }
+          } catch { /* ignore */ }
+        }
+      };
+      const timer = setTimeout(() => {
+        proc.stdout!.off("data", onData);
+        resolve(undefined);
+      }, timeoutMs);
+      proc.stdout!.on("data", onData);
+      sendRpc(proc, request);
+    });
+  }
+
+  test("relative path resolves against CLAUDE_PROJECT_DIR, not server cwd", async () => {
+    const proc = spawnServerWithProjectDir(ctxProjectDir);
+    try {
+      await awaitRpc(proc, 1, {
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-pr365", version: "1.0" } },
+      });
+      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      const indexResp = await awaitRpc(proc, 100, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: ctxFileName } },
+      });
+
+      expect(indexResp?.error).toBeUndefined();
+      const indexText = indexResp?.result?.content?.[0]?.text ?? "";
+      expect(indexText).toMatch(/Indexed \d+ section/);
+
+      // Only send search AFTER index has completed — MCP server processes
+      // requests concurrently, so a piggybacked search would race the index.
+      const searchResp = await awaitRpc(proc, 101, {
+        jsonrpc: "2.0", id: 101, method: "tools/call",
+        params: { name: "ctx_search", arguments: { queries: [uniqueMarker] } },
+      });
+
+      expect(searchResp?.error).toBeUndefined();
+      const searchText = searchResp?.result?.content?.[0]?.text ?? "";
+      expect(searchText).toContain(uniqueMarker);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
+
+  test("absolute path bypasses project-dir resolution", async () => {
+    const absFile = join(ctxProjectDir, ctxFileName);
+    const proc = spawnServerWithProjectDir("/non-existent-dir-on-purpose");
+    try {
+      await awaitRpc(proc, 1, {
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-pr365-abs", version: "1.0" } },
+      });
+      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      const indexResp = await awaitRpc(proc, 100, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: absFile } },
+      });
+
+      expect(indexResp?.error).toBeUndefined();
+      const indexText = indexResp?.result?.content?.[0]?.text ?? "";
+      expect(indexText).toMatch(/Indexed \d+ section/);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
+
+  test("relative path label preserves user input (not resolved absolute)", async () => {
+    const proc = spawnServerWithProjectDir(ctxProjectDir);
+    try {
+      await awaitRpc(proc, 1, {
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-pr365-label", version: "1.0" } },
+      });
+      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      const indexResp = await awaitRpc(proc, 100, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: ctxFileName } },
+      });
+
+      expect(indexResp?.error).toBeUndefined();
+      const indexText = indexResp?.result?.content?.[0]?.text ?? "";
+      // Label must reflect the relative path the user typed, not the resolved absolute path.
+      // Keeps `ctx_search(source: "<relative-path>")` working as the user expects.
+      expect(indexText).toContain(`from: ${ctxFileName}`);
+      expect(indexText).not.toContain(ctxProjectDir);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 30_000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
