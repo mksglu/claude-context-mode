@@ -316,6 +316,23 @@ describe("routePreToolUse with platform parameter", () => {
     expect(result!.additionalContext).not.toContain("mcp__");
   });
 
+  it("OpenClaw lowercase native tools route through canonical aliases", () => {
+    const exec = routePreToolUse("exec", { command: "ls" }, "/tmp", "openclaw");
+    expect(exec).not.toBeNull();
+    expect(exec!.action).toBe("context");
+    expect(exec!.additionalContext).toContain("ctx_batch_execute");
+
+    const read = routePreToolUse("read", { file_path: "/tmp/a.ts" }, "/tmp", "openclaw");
+    expect(read).not.toBeNull();
+    expect(read!.action).toBe("context");
+    expect(read!.additionalContext).toContain("ctx_execute_file");
+
+    const search = routePreToolUse("search", { pattern: "TODO" }, "/tmp", "openclaw");
+    expect(search).not.toBeNull();
+    expect(search!.action).toBe("context");
+    expect(search!.additionalContext).toContain("ctx_execute");
+  });
+
   it("build tool redirect uses platform tool names when platform=gemini-cli", () => {
     const result = routePreToolUse("Bash", { command: "./gradlew build" }, "/tmp", "gemini-cli");
     expect(result).not.toBeNull();

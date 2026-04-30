@@ -153,6 +153,11 @@ const TOOL_ALIASES = {
   "container.exec": "Bash",
   "local_shell": "Bash",
   "grep_files": "Grep",
+  // OpenClaw native tools
+  "exec": "Bash",
+  "read": "Read",
+  "grep": "Grep",
+  "search": "Grep",
   // Cursor
   "mcp_web_fetch": "WebFetch",
   "mcp_fetch_tool": "WebFetch",
