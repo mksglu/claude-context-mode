@@ -28,4 +28,5 @@ export const CLIENT_NAME_TO_PLATFORM: Record<string, PlatformId> = {
   "zed": "zed",
   "qwen-code": "qwen-code",
   "qwen-cli-mcp-client": "qwen-code",
+  "browseros": "browseros",
 };
