@@ -209,6 +209,14 @@ export interface HookAdapter {
   /** Path to the platform's settings file (e.g., ~/.claude/settings.json). */
   getSettingsPath(): string;
 
+  /**
+   * Instruction/memory file names to scan for auto-memory search.
+   * Each platform declares its own set (e.g., Claude: ["CLAUDE.md"],
+   * Qwen: ["QWEN.md"], Codex: ["AGENTS.md", "AGENTS.override.md"]).
+   * Used by searchAutoMemory() and sessionstart.mjs.
+   */
+  getInstructionFiles(): string[];
+
   /** Directory where session data is stored. */
   getSessionDir(): string;
 

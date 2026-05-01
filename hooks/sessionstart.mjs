@@ -21,7 +21,7 @@ import { buildAutoInjection } from "./auto-injection.mjs";
 
 const toolNamer = createToolNamer("claude-code");
 const ROUTING_BLOCK = createRoutingBlock(toolNamer);
-import { readStdin, parseStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath, resolveConfigDir } from "./session-helpers.mjs";
+import { readStdin, parseStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath, resolveConfigDir, detectPlatform } from "./session-helpers.mjs";
 import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLatestSessionEvents } from "./session-directive.mjs";
 import { createSessionLoaders } from "./session-loaders.mjs";
 import { join, dirname } from "node:path";
@@ -31,6 +31,9 @@ import { readFileSync, unlinkSync, readdirSync, rmSync, statSync } from "node:fs
 // Resolve absolute path for imports (fileURLToPath for Windows compat)
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
+
+// Auto-detect platform for correct env vars and config paths
+const platformOpts = detectPlatform();
 
 let additionalContext = ROUTING_BLOCK;
 
@@ -42,7 +45,7 @@ try {
   if (source === "compact") {
     // Session was compacted — write events to file for auto-indexing, inject directive only
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath();
+    const dbPath = getSessionDBPath(platformOpts);
     const db = new SessionDB({ dbPath });
     const sessionId = getSessionId(input);
     const resume = db.getResume(sessionId);
@@ -79,7 +82,7 @@ try {
     try { unlinkSync(getCleanupFlagPath()); } catch { /* no flag */ }
 
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath();
+    const dbPath = getSessionDBPath(platformOpts);
     const db = new SessionDB({ dbPath });
 
     const events = getLatestSessionEvents(db);
@@ -90,9 +93,9 @@ try {
 
     db.close();
   } else if (source === "startup") {
-    // Fresh session (no --continue) — clean slate, capture CLAUDE.md rules.
+    // Fresh session (no --continue) — clean slate, capture instruction files.
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath();
+    const dbPath = getSessionDBPath(platformOpts);
     const db = new SessionDB({ dbPath });
     try { unlinkSync(getSessionEventsPath()); } catch { /* no stale file */ }
 
@@ -102,18 +105,21 @@ try {
     db.cleanupOldSessions(7);
     db.db.exec(`DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`);
 
-    // Proactively capture CLAUDE.md files — Claude Code loads them as system
+    // Proactively capture instruction files — the host IDE loads them as system
     // context at startup, invisible to PostToolUse hooks. We read them from
     // disk so they survive compact/resume via the session events pipeline.
     const sessionId = getSessionId(input);
-    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const projectDir = process.env[platformOpts.projectDirEnv] || process.cwd();
     db.ensureSession(sessionId, projectDir);
-    const claudeMdPaths = [
-      join(resolveConfigDir(), "CLAUDE.md"),
-      join(projectDir, "CLAUDE.md"),
-      join(projectDir, ".claude", "CLAUDE.md"),
+    const memoryFileNames = platformOpts.configDir === ".qwen"
+      ? ["QWEN.md"]
+      : ["CLAUDE.md"];
+    const memoryMdPaths = [
+      join(resolveConfigDir(platformOpts), memoryFileNames[0]),
+      join(projectDir, memoryFileNames[0]),
+      join(projectDir, platformOpts.configDir, memoryFileNames[0]),
     ];
-    for (const p of claudeMdPaths) {
+    for (const p of memoryMdPaths) {
       try {
         const content = readFileSync(p, "utf-8");
         if (content.trim()) {
@@ -128,7 +134,10 @@ try {
     // Age-gated lazy cleanup of old plugin cache version dirs (#181).
     // Only delete dirs older than 1 hour to avoid breaking active sessions.
     try {
-      const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT;
+      const pluginRootEnv = platformOpts.configDir === ".qwen"
+        ? "QWEN_PLUGIN_ROOT"
+        : "CLAUDE_PLUGIN_ROOT";
+      const pluginRoot = process.env[pluginRootEnv];
       if (pluginRoot) {
         const cacheParentMatch = pluginRoot.match(/^(.*[\\/]plugins[\\/]cache[\\/][^\\/]+[\\/][^\\/]+[\\/])/);
         if (cacheParentMatch) {

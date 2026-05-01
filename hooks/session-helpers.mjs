@@ -51,6 +51,14 @@ const CLAUDE_OPTS = {
   sessionIdEnv: "CLAUDE_SESSION_ID",
 };
 
+/** Qwen Code platform options. */
+export const QWEN_OPTS = {
+  configDir: ".qwen",
+  configDirEnv: undefined,        // Qwen Code has no config dir env var
+  projectDirEnv: "QWEN_PROJECT_DIR",
+  sessionIdEnv: "QWEN_SESSION_ID",
+};
+
 /** Gemini CLI platform options. */
 export const GEMINI_OPTS = {
   configDir: ".gemini",
@@ -98,6 +106,41 @@ export const JETBRAINS_OPTS = {
   projectDirEnv: "IDEA_INITIAL_DIRECTORY",
   sessionIdEnv: undefined,
 };
+
+/**
+ * Auto-detect the running platform from environment variables.
+ * Checks platform-specific env vars in priority order.
+ * Supports CONTEXT_MODE_PLATFORM override for explicit pinning.
+ * Falls back to CLAUDE_OPTS when no platform is detected.
+ *
+ * @returns {object} Platform options { configDir, configDirEnv, projectDirEnv, sessionIdEnv }
+ */
+export function detectPlatform() {
+  // Explicit override takes highest priority
+  const override = process.env.CONTEXT_MODE_PLATFORM;
+  if (override) {
+    const map = {
+      "claude-code": CLAUDE_OPTS,
+      "qwen-code": QWEN_OPTS,
+      "gemini-cli": GEMINI_OPTS,
+      "vscode-copilot": VSCODE_OPTS,
+      "cursor": CURSOR_OPTS,
+      "codex": CODEX_OPTS,
+      "kiro": KIRO_OPTS,
+      "jetbrains-copilot": JETBRAINS_OPTS,
+    };
+    if (map[override]) return map[override];
+  }
+  // Env var detection (most specific signal first)
+  if (process.env.QWEN_PROJECT_DIR || process.env.QWEN_SESSION_ID) return QWEN_OPTS;
+  if (process.env.GEMINI_PROJECT_DIR) return GEMINI_OPTS;
+  if (process.env.VSCODE_CWD) return VSCODE_OPTS;
+  if (process.env.CURSOR_CWD) return CURSOR_OPTS;
+  if (process.env.CODEX_HOME) return CODEX_OPTS;
+  if (process.env.IDEA_INITIAL_DIRECTORY) return JETBRAINS_OPTS;
+  // Kiro has no unique env var — detected via tool_name prefix in hook stdin
+  return CLAUDE_OPTS;
+}
 
 /**
  * Resolve the platform config directory, respecting env var overrides.

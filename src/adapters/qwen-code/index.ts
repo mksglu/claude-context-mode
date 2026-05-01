@@ -60,6 +60,10 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
     return resolve(homedir(), ".qwen", "settings.json");
   }
 
+  getInstructionFiles(): string[] {
+    return ["QWEN.md"];
+  }
+
   generateHookConfig(pluginRoot: string): HookRegistration {
     // Qwen Code passes native tool names in hook stdin (verified from
     // packages/core/src/tools/tool-names.ts). Claude-style names (Bash, Read)

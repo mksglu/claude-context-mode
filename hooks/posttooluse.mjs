@@ -10,7 +10,7 @@ import "./ensure-deps.mjs";
  * Must be fast (<20ms). No network, no LLM, just SQLite writes.
  */
 
-import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir } from "./session-helpers.mjs";
+import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, detectPlatform } from "./session-helpers.mjs";
 import { createSessionLoaders, attributeAndInsertEvents } from "./session-loaders.mjs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,20 +18,21 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 // Resolve absolute path for imports — relative dynamic imports can fail
-// when Claude Code invokes hooks from a different working directory.
+// when the host IDE invokes hooks from a different working directory.
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
+const platformOpts = detectPlatform();
 
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
-  const projectDir = getInputProjectDir(input);
+  const projectDir = getInputProjectDir(input, platformOpts);
 
   const { extractEvents } = await loadExtract();
   const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
-  const dbPath = getSessionDBPath();
+  const dbPath = getSessionDBPath(platformOpts);
   const db = new SessionDB({ dbPath });
   const sessionId = getSessionId(input);
 

@@ -59,5 +59,13 @@ export abstract class BaseAdapter {
     }
   }
 
+  /**
+   * Default instruction files: CLAUDE.md (Claude Code convention).
+   * Override in platform-specific adapters (e.g., Qwen: ["QWEN.md"]).
+   */
+  getInstructionFiles(): string[] {
+    return ["CLAUDE.md"];
+  }
+
   abstract getSettingsPath(): string;
 }
