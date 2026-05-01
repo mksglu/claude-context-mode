@@ -1,3 +1,5 @@
+import { buildNodeCommand } from "../types.js";
+
 /**
  * adapters/claude-code/hooks — Claude Code hook definitions and matchers.
  *
@@ -137,26 +139,31 @@ export function isContextModeHook(
 
 /**
  * Build the hook command string for a given hook type.
- * Uses absolute node path to avoid PATH issues (homebrew, nvm, volta, etc.).
+ * Uses process.execPath + forward slashes to avoid PATH issues and MSYS
+ * path mangling on Windows (#369, #372).
  * Falls back to CLI dispatcher if pluginRoot is not provided.
  */
 export function buildHookCommand(hookType: HookType, pluginRoot?: string): string {
   if (pluginRoot) {
     const scriptName = HOOK_SCRIPTS[hookType];
-    return `node "${pluginRoot}/hooks/${scriptName}"`;
+    return buildNodeCommand(`${pluginRoot}/hooks/${scriptName}`);
   }
   return `context-mode hook claude-code ${hookType.toLowerCase()}`;
 }
 
 /**
  * Extract the hook script file path from a command string.
- * Returns the path if the command uses the `node "/path/to/hook.mjs"` format,
+ * Returns the path if the command uses the `node "/path/to/hook.mjs"` format
+ * or the new `"/path/to/node" "/path/to/hook.mjs"` format (#369, #372),
  * or null if it uses the CLI dispatcher format (which is path-independent).
  *
  * Handles both quoted and unquoted paths, and both forward/back slashes.
  */
 export function extractHookScriptPath(command: string): string | null {
-  // Match: node "/path/to/hooks/scriptname.mjs" or node /path/to/hooks/scriptname.mjs
+  // New format: "nodePath" "scriptPath.mjs" (from buildNodeCommand)
+  const newFmt = command.match(/"[^"]+"\s+"([^"]+\.mjs)"/);
+  if (newFmt) return newFmt[1];
+  // Legacy format: node "/path/to/hooks/scriptname.mjs" or node /path/to/hooks/scriptname.mjs
   const match = command.match(/node\s+"?([^"]+\.mjs)"?/);
   return match?.[1] ?? null;
 }

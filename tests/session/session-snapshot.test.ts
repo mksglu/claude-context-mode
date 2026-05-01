@@ -548,3 +548,44 @@ describe("Subagent Rendering", () => {
     assert.ok(xml.includes("VS Code"), "should include VS Code agent result");
   });
 });
+
+// ════════════════════════════════════════════
+// ROLE EVENTS -> <roles>
+// ════════════════════════════════════════════
+
+describe("Role Events in Snapshot", () => {
+  test("Role events survive snapshot building", () => {
+    const events: StoredEvent[] = [
+      makeEvent({ type: "role", category: "role", data: "Act as a senior staff engineer", priority: 3 }),
+    ];
+    const xml = buildResumeSnapshot(events);
+    assert.ok(xml.includes("<roles"), "should include <roles");
+    assert.ok(xml.includes("senior staff engineer"), "should include role data");
+    assert.ok(xml.includes("</roles>"), "should close roles");
+  });
+
+  test("Role events are deduplicated in snapshot", () => {
+    const events: StoredEvent[] = [
+      makeEvent({ type: "role", category: "role", data: "Act as a senior staff engineer", priority: 3 }),
+      makeEvent({ type: "role", category: "role", data: "Act as a senior staff engineer", priority: 3 }),
+    ];
+    const xml = buildResumeSnapshot(events);
+    assert.ok(xml.includes('count="1"'), "should deduplicate identical roles");
+  });
+
+  test("Multiple distinct roles are preserved", () => {
+    const events: StoredEvent[] = [
+      makeEvent({ type: "role", category: "role", data: "Act as a senior staff engineer", priority: 3 }),
+      makeEvent({ type: "role", category: "role", data: "You are a principal architect", priority: 3 }),
+    ];
+    const xml = buildResumeSnapshot(events);
+    assert.ok(xml.includes("senior staff engineer"), "should include first role");
+    assert.ok(xml.includes("principal architect"), "should include second role");
+    assert.ok(xml.includes('count="2"'), "should count 2 distinct roles");
+  });
+
+  test("Role events with no role data omit roles section", () => {
+    const xml = buildResumeSnapshot([]);
+    assert.ok(!xml.includes("<roles"), "should not include roles with no events");
+  });
+});

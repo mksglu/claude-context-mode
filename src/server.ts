@@ -27,8 +27,9 @@ import {
 } from "./runtime.js";
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
-import { getWorktreeSuffix } from "./session/db.js";
-import type { HookAdapter } from "./adapters/types.js";
+import { getWorktreeSuffix, SessionDB } from "./session/db.js";
+import { searchAllSources } from "./search/unified.js";
+import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
@@ -1228,6 +1229,7 @@ server.registerTool(
       "Pass ALL search questions as queries array in ONE call. " +
       "File-backed sources are auto-refreshed when the source file changes.\n\n" +
       "TIPS: 2-4 specific terms per query. Use 'source' to scope results.\n\n" +
+      "SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.\n\n" +
       "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
     inputSchema: z.object({
       queries: z.preprocess(coerceJsonArray, z
@@ -1247,15 +1249,24 @@ server.registerTool(
         .enum(["code", "prose"])
         .optional()
         .describe("Filter results by content type: 'code' or 'prose'."),
+      sort: z
+        .enum(["relevance", "timeline"])
+        .optional()
+        .default("relevance")
+        .describe(
+          "Sort mode. 'relevance' (default): BM25 ranked, current session only. " +
+          "'timeline': chronological across current session, prior sessions, and auto-memory."
+        ),
     }),
   },
   async (params) => {
     try {
       const store = getStore();
+      const sort = (params as Record<string, unknown>).sort as string || "relevance";
 
       // Guard: redirect when the index is empty — ctx_search is a follow-up
-      // tool that requires prior indexing. Guide the model to the right tool.
-      if (store.getStats().chunks === 0) {
+      // tool that requires prior indexing. Skip for timeline mode (SessionDB/auto-memory may have data).
+      if (sort !== "timeline" && store.getStats().chunks === 0) {
         return trackResponse("ctx_search", {
           content: [{
             type: "text" as const,
@@ -1320,13 +1331,43 @@ server.registerTool(
       let totalSize = 0;
       const sections: string[] = [];
 
+      // Open SessionDB once before the loop (Blocker 4: avoid open/close per query)
+      let timelineDB: InstanceType<typeof SessionDB> | null = null;
+      if (sort === "timeline") {
+        try {
+          const sessionsDir = getSessionDir();
+          const dbFile = join(sessionsDir, `${hashProjectDir()}.db`);
+          if (existsSync(dbFile)) {
+            timelineDB = new SessionDB({ dbPath: dbFile });
+          }
+        } catch { /* SessionDB unavailable — search ContentStore + auto-memory only */ }
+      }
+
+      const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+
+      try {
       for (const q of queryList) {
         if (totalSize > MAX_TOTAL) {
           sections.push(`## ${q}\n(output cap reached)\n`);
           continue;
         }
 
-        const results = store.searchWithFallback(q, effectiveLimit, source, contentType);
+        let results;
+        if (sort === "timeline") {
+          results = searchAllSources({
+            query: q,
+            limit: effectiveLimit,
+            store,
+            sort,
+            source,
+            contentType,
+            sessionDB: timelineDB,
+            projectDir: getProjectDir(),
+            configDir,
+          });
+        } else {
+          results = store.searchWithFallback(q, effectiveLimit, source, contentType);
+        }
 
         if (results.length === 0) {
           sections.push(`## ${q}\nNo results found.`);
@@ -1335,7 +1376,9 @@ server.registerTool(
 
         const formatted = results
           .map((r, i) => {
-            const header = `--- [${r.source}] ---`;
+            const origin = (r as any).origin || "current-session";
+            const ts = (r as any).timestamp ? (r as any).timestamp.slice(0, 16).replace("T", " ") : "";
+            const header = `--- [${origin}${ts ? " | " + ts : ""} | ${r.source}] ---`;
             const heading = `### ${r.title}`;
             const snippet = extractSnippet(r.content, q, 1500, r.highlighted);
             return `${header}\n${heading}\n\n${snippet}`;
@@ -1344,6 +1387,9 @@ server.registerTool(
 
         sections.push(`## ${q}\n\n${formatted}`);
         totalSize += formatted.length;
+      }
+      } finally {
+        try { timelineDB?.close(); } catch {}
       }
 
       let output = sections.join("\n\n---\n\n");
@@ -2000,9 +2046,9 @@ server.registerTool(
     let cmd: string;
 
     if (existsSync(bundlePath)) {
-      cmd = `node "${bundlePath}" upgrade`;
+      cmd = `${buildNodeCommand(bundlePath)} upgrade`;
     } else if (existsSync(fallbackPath)) {
-      cmd = `node "${fallbackPath}" upgrade`;
+      cmd = `${buildNodeCommand(fallbackPath)} upgrade`;
     } else {
       // Inline fallback: neither CLI file exists (e.g. marketplace installs).
       // Generate a self-contained node -e script that performs the upgrade.
@@ -2050,7 +2096,7 @@ server.registerTool(
       const tmpScript = resolve(pluginRoot, ".ctx-upgrade-inline.mjs");
       const { writeFileSync: writeTmp } = await import("node:fs");
       writeTmp(tmpScript, scriptLines);
-      cmd = `node "${tmpScript}"`;
+      cmd = buildNodeCommand(tmpScript);
     }
 
     const text = [

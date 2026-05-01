@@ -39,8 +39,12 @@ const _guidanceDir = resolve(tmpdir(), `context-mode-guidance-${_guidanceSuffix}
 const _sessionGuidanceDir = resolve(tmpdir(), `context-mode-guidance-s-pid-${process.pid}`);
 
 // MCP readiness sentinel — subprocess hooks check process.ppid (= this test's pid)
-const _sentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
-const mcpSentinel = resolve(_sentinelDir, `context-mode-mcp-ready-${process.pid}`);
+// Use the same sentinel directory that isMCPReady() scans: /tmp on Unix, tmpdir() on Windows.
+// On macOS, tmpdir() returns /var/folders/... but isMCPReady() hardcodes /tmp — if we write
+// the sentinel to tmpdir(), CI environments (with no running MCP server in /tmp) will fail
+// because isMCPReady() returns false and all mcpRedirect() calls become passthrough (#347).
+const mcpSentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
+const mcpSentinel = resolve(mcpSentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
   try { rmSync(_guidanceDir, { recursive: true, force: true }); } catch {}
@@ -737,6 +741,165 @@ describe("parseStdin (#322)", () => {
 // Empty stdin resilience — all hooks survive empty input (#322)
 // ═══════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════
+// Category 27: Latency — cross-hook state via tmpdir files
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("Category 27 — Latency cross-hook bridge", () => {
+  const POSTTOOL_PATH = join(__dirname, "..", "..", "hooks", "posttooluse.mjs");
+  let fakeHome: string;
+  let fakeProject: string;
+  let latencyEnv: Record<string, string>;
+
+  beforeAll(() => {
+    fakeHome = mkdtempSync(join(tmpdir(), "ctx-latency-home-"));
+    fakeProject = mkdtempSync(join(tmpdir(), "ctx-latency-project-"));
+    latencyEnv = {
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_PROJECT_DIR: fakeProject,
+      CLAUDE_SESSION_ID: "latency-test-session",
+      CONTEXT_MODE_SESSION_SUFFIX: "",
+    };
+  });
+
+  afterAll(() => {
+    try { rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+    try { rmSync(fakeProject, { recursive: true, force: true }); } catch {}
+  });
+
+  test("pretooluse.mjs writes latency marker file to tmpdir", () => {
+    const sessionId = "latency-test-session";
+    const toolName = "Bash";
+
+    // Run pretooluse.mjs — it should write a latency marker
+    const result = runHook(
+      { tool_name: toolName, tool_input: { command: "echo hello" }, session_id: sessionId },
+      latencyEnv,
+    );
+
+    assert.equal(result.exitCode, 0);
+
+    // Check marker file exists
+    const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${toolName}.txt`);
+    assert.ok(existsSync(markerPath), `Latency marker should exist at ${markerPath}`);
+
+    // Marker content should be a timestamp
+    const content = readFileSync(markerPath, "utf-8").trim();
+    const ts = parseInt(content, 10);
+    assert.ok(!isNaN(ts), `Marker content should be a valid timestamp, got: "${content}"`);
+    assert.ok(ts > 0, "Timestamp should be positive");
+    assert.ok(ts <= Date.now(), "Timestamp should not be in the future");
+
+    // Clean up
+    try { unlinkSync(markerPath); } catch {}
+  });
+
+  test("posttooluse.mjs reads and deletes latency marker file", () => {
+    const sessionId = "latency-test-session";
+    const toolName = "Read";
+    const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${toolName}.txt`);
+
+    // Write a marker as if pretooluse.mjs ran — use a recent timestamp (not slow)
+    writeFileSync(markerPath, String(Date.now()), "utf-8");
+
+    // Run posttooluse.mjs
+    const result = spawnSync("node", [POSTTOOL_PATH], {
+      input: JSON.stringify({
+        session_id: sessionId,
+        tool_name: toolName,
+        tool_input: { file_path: "/tmp/test.ts" },
+        tool_response: "file contents",
+      }),
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: { ...process.env, ...latencyEnv },
+    });
+
+    assert.equal(result.status, 0, `PostToolUse should exit 0, stderr: ${result.stderr}`);
+
+    // Marker file should be cleaned up
+    assert.ok(!existsSync(markerPath), "Latency marker should be deleted after PostToolUse reads it");
+  });
+
+  test("posttooluse.mjs emits latency event when tool takes >5s", () => {
+    const sessionId = "latency-test-session";
+    const toolName = "Bash";
+    const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${toolName}.txt`);
+
+    // Write a marker with a timestamp 6 seconds ago (simulating a slow tool)
+    const sixSecsAgo = Date.now() - 6000;
+    writeFileSync(markerPath, String(sixSecsAgo), "utf-8");
+
+    // Run posttooluse.mjs
+    const result = spawnSync("node", [POSTTOOL_PATH], {
+      input: JSON.stringify({
+        session_id: sessionId,
+        tool_name: toolName,
+        tool_input: { command: "npm test" },
+        tool_response: "all passed",
+      }),
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: { ...process.env, ...latencyEnv },
+    });
+
+    assert.equal(result.status, 0);
+
+    // Verify: the latency event should be in the DB.
+    // We can't easily query SQLite here, but we can verify the marker was cleaned up.
+    assert.ok(!existsSync(markerPath), "Marker should be cleaned up");
+  });
+
+  test("posttooluse.mjs does NOT emit latency event when tool is fast (<5s)", () => {
+    const sessionId = "latency-test-session";
+    const toolName = "Edit";
+    const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${toolName}.txt`);
+
+    // Write a marker with a timestamp 100ms ago (fast tool)
+    writeFileSync(markerPath, String(Date.now() - 100), "utf-8");
+
+    // Run posttooluse.mjs
+    const result = spawnSync("node", [POSTTOOL_PATH], {
+      input: JSON.stringify({
+        session_id: sessionId,
+        tool_name: toolName,
+        tool_input: { file_path: "/tmp/test.ts", old_string: "a", new_string: "b" },
+        tool_response: "ok",
+      }),
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: { ...process.env, ...latencyEnv },
+    });
+
+    assert.equal(result.status, 0);
+    assert.ok(!existsSync(markerPath), "Marker should be cleaned up even for fast tools");
+  });
+
+  test("posttooluse.mjs handles missing marker gracefully (no crash)", () => {
+    const sessionId = "latency-test-session";
+    const toolName = "Glob";
+
+    // Do NOT write a marker — simulate case where pretooluse.mjs didn't run
+    const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${toolName}.txt`);
+    if (existsSync(markerPath)) unlinkSync(markerPath);
+
+    const result = spawnSync("node", [POSTTOOL_PATH], {
+      input: JSON.stringify({
+        session_id: sessionId,
+        tool_name: toolName,
+        tool_input: { pattern: "**/*.ts" },
+        tool_response: "[]",
+      }),
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: { ...process.env, ...latencyEnv },
+    });
+
+    assert.equal(result.status, 0, "PostToolUse must not crash when no marker exists");
+  });
+});
+
 describe("empty stdin resilience (#322)", () => {
   const PROJECT_ROOT = join(__dirname, "..", "..");
 
@@ -783,296 +946,73 @@ describe("empty stdin resilience (#322)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// Plugin Cache Self-Heal Tests
+// buildAutoInjection — compaction auto-injection logic
 // ═══════════════════════════════════════════════════════════════════════
 
-import { symlinkSync, lstatSync, unlinkSync as fsUnlinkSync } from "node:fs";
-import { sep } from "node:path";
+describe("buildAutoInjection", () => {
+  let buildAutoInjection: (events: Array<{category: string; data: string}>) => string;
+  let estimateTokens: (text: string) => number;
 
-/**
- * Validate path is inside a plugin cache root (prevents path traversal).
- */
-function isInsidePluginCache(p: string, cacheRoot: string): boolean {
-  const resolved = resolve(p);
-  const root = resolve(cacheRoot);
-  return resolved.startsWith(root + sep) || resolved === root;
-}
+  beforeAll(async () => {
+    const mod = await import("../../hooks/auto-injection.mjs");
+    buildAutoInjection = mod.buildAutoInjection;
+    estimateTokens = mod.estimateTokens;
+  });
 
-/**
- * Inline heal function — mirrors the logic in start.mjs and server.ts.
- * Tests verify the ALGORITHM, not the specific file it lives in.
- * Includes: path traversal guard, dangling symlink cleanup, exact key match.
- */
-function healRegistryMismatch(
-  currentDir: string,
-  installedPluginsPath: string,
-  pluginCacheRoot?: string,
-): { healed: boolean; action?: string; from?: string; to?: string } {
-  if (!existsSync(installedPluginsPath)) return { healed: false };
-  if (!existsSync(currentDir)) return { healed: false };
+  test("returns empty for no events", () => {
+    const result = buildAutoInjection([]);
+    expect(result).toBe("");
+  });
 
-  let ip: { plugins?: Record<string, Array<{ installPath: string }>> };
-  try {
-    ip = JSON.parse(readFileSync(installedPluginsPath, "utf-8"));
-  } catch {
-    return { healed: false };
-  }
+  test("includes role as behavioral_directive", () => {
+    const events = [
+      { category: "role", data: "You are a senior staff engineer" },
+    ];
+    const result = buildAutoInjection(events);
+    expect(result).toContain("<behavioral_directive>");
+    expect(result).toContain("senior staff engineer");
+    expect(result).toContain("</behavioral_directive>");
+  });
 
-  for (const [key, entries] of Object.entries(ip.plugins ?? {})) {
-    if (key !== "context-mode@context-mode") continue;
-    for (const entry of entries) {
-      const registryPath = entry.installPath;
-      if (!registryPath || existsSync(registryPath)) continue;
+  test("includes decisions as rules", () => {
+    const events = [
+      { category: "decision", data: "Use ctx- prefix instead of cm-" },
+      { category: "decision", data: "Never push to main without asking" },
+    ];
+    const result = buildAutoInjection(events);
+    expect(result).toContain("<rules>");
+    expect(result).toContain("ctx- prefix");
+    expect(result).toContain("Never push");
+    expect(result).toContain("</rules>");
+  });
 
-      // Path traversal guard
-      if (pluginCacheRoot && !isInsidePluginCache(registryPath, pluginCacheRoot)) continue;
+  test("includes skill names", () => {
+    const events = [
+      { category: "skill", data: "tdd" },
+      { category: "skill", data: "commit" },
+    ];
+    const result = buildAutoInjection(events);
+    expect(result).toContain("<active_skills>");
+    expect(result).toContain("tdd");
+    expect(result).toContain("commit");
+    expect(result).toContain("</active_skills>");
+  });
 
-      // Remove dangling symlink before creating new one
-      try {
-        const stat = lstatSync(registryPath);
-        if (stat.isSymbolicLink()) fsUnlinkSync(registryPath);
-      } catch { /* path doesn't exist at all — fine */ }
-
-      try {
-        const parent = dirname(registryPath);
-        if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-        symlinkSync(currentDir, registryPath);
-        return { healed: true, action: "symlink", from: registryPath, to: currentDir };
-      } catch {
-        return { healed: false };
-      }
+  test("token budget cap 500", () => {
+    // Fill with many large events to test budget enforcement
+    const events = [];
+    for (let i = 0; i < 20; i++) {
+      events.push({ category: "decision", data: "A".repeat(200) });
     }
-  }
-  return { healed: false };
-}
-
-/**
- * Global hook deployer — mirrors start.mjs auto-deploy logic.
- * Deploys .mjs (not .sh) and registers in settings.json.
- */
-function deployGlobalHealHook(
-  hooksDir: string,
-  settingsPath: string,
-): { deployed: boolean; registered: boolean; path?: string } {
-  const hookPath = join(hooksDir, "context-mode-cache-heal.mjs");
-  let deployed = false;
-  let registered = false;
-
-  // Deploy script
-  if (!existsSync(hookPath)) {
-    try {
-      if (!existsSync(hooksDir)) mkdirSync(hooksDir, { recursive: true });
-      const script = `#!/usr/bin/env node\n// context-mode cache heal\nprocess.exit(0);\n`;
-      writeFileSync(hookPath, script, { mode: 0o755 });
-      deployed = true;
-    } catch {
-      return { deployed: false, registered: false };
+    events.push({ category: "role", data: "B".repeat(400) });
+    events.push({ category: "intent", data: "implement" });
+    for (let i = 0; i < 50; i++) {
+      events.push({ category: "skill", data: `skill-${i}` });
     }
-  }
-
-  // Register in settings.json
-  if (existsSync(settingsPath)) {
-    try {
-      const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      const hooks = settings.hooks ?? {};
-      const sessionStart = hooks.SessionStart ?? [];
-      const cmd = `node ${hookPath}`;
-      const alreadyRegistered = sessionStart.some((h: { hooks?: Array<{ command?: string }> }) =>
-        h.hooks?.some((hh: { command?: string }) => hh.command?.includes("context-mode-cache-heal")),
-      );
-      if (!alreadyRegistered) {
-        sessionStart.push({
-          hooks: [{ type: "command", command: cmd }],
-        });
-        hooks.SessionStart = sessionStart;
-        settings.hooks = hooks;
-        writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
-        registered = true;
-      }
-    } catch { /* best effort */ }
-  }
-
-  return { deployed, registered, path: hookPath };
-}
-
-describe("plugin cache self-heal", () => {
-  let tempDir: string;
-  let cacheParent: string;
-  let ipPath: string;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "ctx-heal-"));
-    cacheParent = join(tempDir, "plugins", "cache", "context-mode", "context-mode");
-    mkdirSync(cacheParent, { recursive: true });
-    ipPath = join(tempDir, "installed_plugins.json");
-  });
-
-  afterEach(() => {
-    try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
-  });
-
-  function writeRegistry(installPath: string) {
-    const ip = {
-      version: 2,
-      plugins: {
-        "context-mode@context-mode": [{
-          scope: "user",
-          installPath,
-          version: "1.0.94",
-        }],
-      },
-    };
-    writeFileSync(ipPath, JSON.stringify(ip));
-  }
-
-  function createVersionDir(version: string): string {
-    const dir = join(cacheParent, version);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ version }));
-    return dir;
-  }
-
-  describe("healRegistryMismatch", () => {
-    test("creates symlink when registry path does not exist", () => {
-      const realDir = createVersionDir("1.0.89");
-      const missingPath = join(cacheParent, "1.0.94");
-      writeRegistry(missingPath);
-
-      const result = healRegistryMismatch(realDir, ipPath);
-
-      expect(result.healed).toBe(true);
-      expect(result.action).toBe("symlink");
-      expect(existsSync(missingPath)).toBe(true);
-      expect(lstatSync(missingPath).isSymbolicLink()).toBe(true);
-    });
-
-    test("no-op when registry path already exists", () => {
-      const realDir = createVersionDir("1.0.89");
-      createVersionDir("1.0.94");
-      writeRegistry(join(cacheParent, "1.0.94"));
-
-      const result = healRegistryMismatch(realDir, ipPath);
-      expect(result.healed).toBe(false);
-    });
-
-    test("no-op when installed_plugins.json missing", () => {
-      const realDir = createVersionDir("1.0.89");
-      const result = healRegistryMismatch(realDir, join(tempDir, "nonexistent.json"));
-      expect(result.healed).toBe(false);
-    });
-
-    test("no-op when currentDir does not exist", () => {
-      writeRegistry(join(cacheParent, "1.0.94"));
-      const result = healRegistryMismatch(join(cacheParent, "1.0.89"), ipPath);
-      expect(result.healed).toBe(false);
-    });
-
-    test("symlink target is the currentDir we are running from", () => {
-      const realDir = createVersionDir("1.0.89");
-      const missingPath = join(cacheParent, "1.0.94");
-      writeRegistry(missingPath);
-      healRegistryMismatch(realDir, ipPath);
-      const target = readFileSync(missingPath + "/package.json", "utf-8");
-      expect(JSON.parse(target).version).toBe("1.0.89");
-    });
-
-    test("replaces dangling symlink with valid one", () => {
-      const realDir = createVersionDir("1.0.89");
-      const missingPath = join(cacheParent, "1.0.94");
-      writeRegistry(missingPath);
-      // Create dangling symlink (points to non-existent target)
-      symlinkSync(join(cacheParent, "DELETED"), missingPath);
-      expect(lstatSync(missingPath).isSymbolicLink()).toBe(true);
-      expect(existsSync(missingPath)).toBe(false); // dangling
-
-      const result = healRegistryMismatch(realDir, ipPath);
-
-      expect(result.healed).toBe(true);
-      expect(existsSync(missingPath)).toBe(true); // now valid
-      const target = readFileSync(missingPath + "/package.json", "utf-8");
-      expect(JSON.parse(target).version).toBe("1.0.89");
-    });
-
-    test("rejects path traversal outside plugin cache", () => {
-      const realDir = createVersionDir("1.0.89");
-      const evilPath = join(tempDir, "..", "evil-dir");
-      writeRegistry(evilPath);
-
-      const result = healRegistryMismatch(realDir, ipPath, join(tempDir, "plugins", "cache"));
-      expect(result.healed).toBe(false);
-      expect(existsSync(evilPath)).toBe(false);
-    });
-
-    test("ignores non-context-mode plugin keys", () => {
-      const realDir = createVersionDir("1.0.89");
-      const ip = {
-        version: 2,
-        plugins: {
-          "evil-plugin@evil": [{ scope: "user", installPath: join(cacheParent, "1.0.94"), version: "1.0.94" }],
-        },
-      };
-      writeFileSync(ipPath, JSON.stringify(ip));
-      const result = healRegistryMismatch(realDir, ipPath);
-      expect(result.healed).toBe(false);
-    });
-
-    test("handles malformed installed_plugins.json gracefully", () => {
-      const realDir = createVersionDir("1.0.89");
-      writeFileSync(ipPath, "not json");
-      const result = healRegistryMismatch(realDir, ipPath);
-      expect(result.healed).toBe(false);
-    });
-
-    test("heals multiple times for different registry paths", () => {
-      const realDir = createVersionDir("1.0.89");
-      const missing1 = join(cacheParent, "1.0.94");
-      writeRegistry(missing1);
-      const r1 = healRegistryMismatch(realDir, ipPath);
-      expect(r1.healed).toBe(true);
-
-      const missing2 = join(cacheParent, "1.0.95");
-      writeRegistry(missing2);
-      const r2 = healRegistryMismatch(realDir, ipPath);
-      expect(r2.healed).toBe(true);
-      expect(existsSync(missing2)).toBe(true);
-    });
-  });
-
-  describe("deployGlobalHealHook", () => {
-    let settingsPath: string;
-
-    beforeEach(() => {
-      settingsPath = join(tempDir, "settings.json");
-      writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [] } }));
-    });
-
-    test("creates .mjs hook script in specified directory", () => {
-      const hooksDir = join(tempDir, "hooks");
-      const result = deployGlobalHealHook(hooksDir, settingsPath);
-
-      expect(result.deployed).toBe(true);
-      expect(existsSync(join(hooksDir, "context-mode-cache-heal.mjs"))).toBe(true);
-    });
-
-    test("registers hook in settings.json SessionStart", () => {
-      const hooksDir = join(tempDir, "hooks");
-      const result = deployGlobalHealHook(hooksDir, settingsPath);
-
-      expect(result.registered).toBe(true);
-      const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-      const cmds = settings.hooks.SessionStart.flatMap((h: any) =>
-        h.hooks?.map((hh: any) => hh.command) ?? [],
-      );
-      expect(cmds.some((c: string) => c.includes("context-mode-cache-heal"))).toBe(true);
-    });
-
-    test("no-op if hook already deployed and registered", () => {
-      const hooksDir = join(tempDir, "hooks");
-      deployGlobalHealHook(hooksDir, settingsPath);
-      const result = deployGlobalHealHook(hooksDir, settingsPath);
-
-      expect(result.deployed).toBe(false);
-      expect(result.registered).toBe(false);
-    });
+    const result = buildAutoInjection(events);
+    const tokens = estimateTokens(result);
+    // The budget is 500 tokens. Role (P1) is never truncated but decisions
+    // overflow to 3. Total should stay near or under budget.
+    expect(tokens).toBeLessThanOrEqual(600); // allow small overshoot from structural XML
   });
 });

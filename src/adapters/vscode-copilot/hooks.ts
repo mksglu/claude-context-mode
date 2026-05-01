@@ -1,3 +1,5 @@
+import { buildNodeCommand } from "../types.js";
+
 /**
  * adapters/vscode-copilot/hooks — VS Code Copilot hook definitions and matchers.
  *
@@ -93,7 +95,7 @@ export function buildHookCommand(hookType: HookType, pluginRoot?: string): strin
     throw new Error(`No script defined for hook type: ${hookType}`);
   }
   if (pluginRoot) {
-    return `node "${pluginRoot}/hooks/${scriptName}"`;
+    return buildNodeCommand(`${pluginRoot}/hooks/${scriptName}`);
   }
   return `context-mode hook vscode-copilot ${hookType.toLowerCase()}`;
 }

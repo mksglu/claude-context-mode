@@ -52,6 +52,24 @@ const SESSION_DIR = process.env.INSIGHT_SESSION_DIR || join(homedir(), ".claude"
 const CONTENT_DIR = process.env.INSIGHT_CONTENT_DIR || join(homedir(), ".claude", "context-mode", "content");
 const DIST_DIR = join(__dirname, "dist");
 
+// ── Response cache (5min TTL) ────────────────────────────
+// Prevents double DB open when dashboard loads /analytics + /category-analytics
+const _cache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+function cached(key, fn) {
+  const entry = _cache.get(key);
+  if (entry && Date.now() - entry.ts < CACHE_TTL_MS) return entry.data;
+  try {
+    const data = fn();
+    _cache.set(key, { data, ts: Date.now() });
+    return data;
+  } catch (e) {
+    // Cache the error for 30s to avoid repeated expensive failures
+    _cache.set(key, { data: { error: String(e) }, ts: Date.now() - CACHE_TTL_MS + 30000 });
+    return { error: "analytics computation failed" };
+  }
+}
+
 // ── SQLite helpers ───────────────────────────────────────
 
 function openDB(path) {
@@ -735,11 +753,371 @@ function apiAnalytics() {
   };
 }
 
+// ── Category Analytics ──────────────────────────────────
+
+function apiCategoryAnalytics() {
+  // 1. Category distribution
+  const rawCategoryCounts = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT category, type, COUNT(*) as count FROM session_events GROUP BY category, type ORDER BY count DESC`)
+  );
+  // Add composite key for merge
+  const catTypeRows = mergeByKey(
+    rawCategoryCounts.map(r => ({ ...r, _cat_type: `${r.category}::${r.type}` })),
+    "_cat_type",
+    (a, b) => ({ _cat_type: a._cat_type, category: a.category, type: a.type, count: a.count + b.count })
+  );
+
+  const CATEGORY_MAP = {
+    file: ["file_read", "file_write", "file_edit", "file_glob", "file_search"],
+    git: ["git"],
+    error: ["error_tool"],
+    subagent: ["subagent_launched", "subagent_completed"],
+    "rejected-approach": ["rejected"],
+    latency: ["tool_latency"],
+    decision: ["decision", "decision_question"],
+    skill: ["skill"],
+    rule: ["rule", "rule_content"],
+    plan: ["plan_enter", "plan_exit", "plan_approved", "plan_rejected", "plan_file_write"],
+    intent: ["intent"],
+    "blocked-on": ["blocker", "blocker_resolved"],
+    constraint: ["constraint_discovered"],
+    "user-prompt": ["user_prompt"],
+    "error-resolution": ["error_resolved"],
+    "iteration-loop": ["retry_detected"],
+    env: ["env", "worktree"],
+    task: ["task_create", "task_update"],
+    mcp: ["mcp"],
+    "agent-finding": ["agent_finding"],
+    "external-ref": ["external_ref"],
+    role: ["role"],
+    cwd: ["cwd"],
+    data: ["data"],
+  };
+
+  const typeCountMap = new Map();
+  for (const row of catTypeRows) {
+    typeCountMap.set(`${row.category}::${row.type}`, row.count);
+  }
+
+  const categories = Object.entries(CATEGORY_MAP).map(([cat, types]) => {
+    const typesObj = {};
+    let total = 0;
+    for (const t of types) {
+      const c = typeCountMap.get(`${cat}::${t}`) || 0;
+      typesObj[t] = c;
+      total += c;
+    }
+    return { category: cat, count: total, types: typesObj };
+  });
+
+  // 2. Error intelligence
+  const errorResolution = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT
+      SUM(CASE WHEN category = 'error' THEN 1 ELSE 0 END) as total_errors,
+      SUM(CASE WHEN category = 'error-resolution' THEN 1 ELSE 0 END) as resolved_errors
+      FROM session_events`)
+  );
+  const totalErrors = errorResolution.reduce((s, r) => s + (r.total_errors || 0), 0);
+  const resolvedErrors = errorResolution.reduce((s, r) => s + (r.resolved_errors || 0), 0);
+  const resolutionRate = totalErrors > 0 ? Math.round(1000 * resolvedErrors / totalErrors) / 10 : 0;
+
+  const retryStorms = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT session_id, COUNT(*) as retries FROM session_events WHERE category = 'iteration-loop' GROUP BY session_id HAVING COUNT(*) > 3`)
+  );
+
+  const latencyData = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT data FROM session_events WHERE category = 'latency'`)
+  );
+  const latencies = [];
+  const latencyByToolMap = new Map();
+  for (const row of latencyData) {
+    if (!row.data) continue;
+    const match = String(row.data).match(/^(.+?):\s*(\d+)\s*(?:ms)?$/);
+    if (!match) continue;
+    const tool = match[1].trim();
+    const ms = parseInt(match[2], 10);
+    if (isNaN(ms)) continue;
+    latencies.push(ms);
+    if (!latencyByToolMap.has(tool)) latencyByToolMap.set(tool, { sum: 0, count: 0, max: 0 });
+    const entry = latencyByToolMap.get(tool);
+    entry.sum += ms;
+    entry.count += 1;
+    entry.max = Math.max(entry.max, ms);
+  }
+  latencies.sort((a, b) => a - b);
+  const avgLatencyMs = latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0;
+  const p95LatencyMs = latencies.length > 0 ? latencies[Math.floor(latencies.length * 0.95)] : 0;
+
+  const latencyByTool = [...latencyByToolMap.entries()]
+    .map(([tool, e]) => ({ tool, avg_ms: Math.round(e.sum / e.count), count: e.count, max_ms: e.max }))
+    .sort((a, b) => b.avg_ms - a.avg_ms);
+
+  let slowestTool = latencyByTool.length > 0 ? latencyByTool[0].tool : null;
+
+  const topErrorTools = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT
+      CASE
+        WHEN data LIKE '%Bash%' THEN 'Bash'
+        WHEN data LIKE '%Read%' THEN 'Read'
+        WHEN data LIKE '%Edit%' THEN 'Edit'
+        WHEN data LIKE '%Write%' THEN 'Write'
+        WHEN data LIKE '%Agent%' THEN 'Agent'
+        ELSE substr(data, 1, 30)
+      END as tool,
+      COUNT(*) as count
+      FROM session_events WHERE category = 'error'
+      GROUP BY tool ORDER BY count DESC LIMIT 5`)
+  );
+  const mergedTopErrorTools = mergeByKey(topErrorTools, "tool", (a, b) => ({ tool: a.tool, count: a.count + b.count }))
+    .sort((a, b) => b.count - a.count).slice(0, 5);
+
+  const errorIntelligence = {
+    totalErrors,
+    resolvedErrors,
+    resolutionRate,
+    retryStorms: retryStorms.length,
+    avgLatencyMs,
+    p95LatencyMs,
+    p95SampleCount: latencies.length,
+    slowestTool,
+    topErrorTools: mergedTopErrorTools,
+    latencyByTool,
+  };
+
+  // 3. Delegation metrics
+  const subagentCat = categories.find(c => c.category === "subagent");
+  const launched = subagentCat ? (subagentCat.types.subagent_launched || 0) : 0;
+  let completed = subagentCat ? (subagentCat.types.subagent_completed || 0) : 0;
+  if (completed > launched && launched > 0) completed = launched; // cap anomaly
+  const completionRate = launched > 0 ? Math.round(1000 * completed / launched) / 10 : 0;
+
+  // Parallel bursts: sessions with >1 subagent_launched in same session
+  const parallelBurstData = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT session_id, COUNT(*) as cnt FROM session_events WHERE type = 'subagent_launched' GROUP BY session_id HAVING cnt > 1`)
+  );
+  const parallelBursts = parallelBurstData.length;
+  const maxConcurrent = parallelBurstData.reduce((m, r) => Math.max(m, r.cnt || 0), 0);
+  // Rough estimate: each completed subagent saves ~2 min
+  const timeSavedMin = Math.round(completed * 2);
+
+  const delegation = { launched, completed, completionRate, parallelBursts, maxConcurrent, timeSavedMin };
+
+  // 4. Governance
+  const rejectedData = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT data FROM session_events WHERE category = 'rejected-approach'`)
+  );
+  const rejectedToolMap = new Map();
+  for (const row of rejectedData) {
+    if (!row.data) continue;
+    const tool = String(row.data).split(":")[0].trim() || "unknown";
+    rejectedToolMap.set(tool, (rejectedToolMap.get(tool) || 0) + 1);
+  }
+  const topRejected = [...rejectedToolMap.entries()]
+    .map(([tool, count]) => ({ tool, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const planCat = categories.find(c => c.category === "plan");
+  const planApproved = planCat ? (planCat.types.plan_approved || 0) : 0;
+  const planRejected = planCat ? (planCat.types.plan_rejected || 0) : 0;
+  const totalPlans = planApproved + planRejected;
+  const planApprovalRate = totalPlans > 0 ? Math.round(1000 * planApproved / totalPlans) / 10 : 0;
+
+  const rejectedCat = categories.find(c => c.category === "rejected-approach");
+  const decisionCat = categories.find(c => c.category === "decision");
+  const constraintCat = categories.find(c => c.category === "constraint");
+
+  const governance = {
+    totalRejections: rejectedCat ? rejectedCat.count : 0,
+    totalDecisions: decisionCat ? decisionCat.count : 0,
+    totalConstraints: constraintCat ? constraintCat.count : 0,
+    planApproved,
+    planRejected,
+    planApprovalRate,
+    topRejected,
+  };
+
+  // 5. Git productivity
+  const gitOps = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT data as operation, COUNT(*) as count FROM session_events WHERE category = 'git' AND data IS NOT NULL AND data != '' GROUP BY data ORDER BY count DESC`)
+  );
+  const mergedGitOps = mergeByKey(gitOps, "operation", (a, b) => ({ operation: a.operation, count: a.count + b.count }))
+    .sort((a, b) => b.count - a.count);
+  const totalCommits = mergedGitOps.find(o => o.operation === "commit")?.count || 0;
+  const totalPushes = mergedGitOps.find(o => o.operation === "push")?.count || 0;
+  const totalGitOps = mergedGitOps.reduce((s, o) => s + o.count, 0);
+
+  const gitProductivity = {
+    totalCommits,
+    totalPushes,
+    commitPushRatio: totalPushes > 0 ? Math.round(100 * totalCommits / totalPushes) / 100 : totalCommits,
+    totalOperations: totalGitOps,
+    operationMix: mergedGitOps,
+  };
+
+  // 6. Context health
+  const uniqueSkills = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT DISTINCT data as skill FROM session_events WHERE category = 'skill' AND data != ''`)
+  );
+  const skillSet = [...new Set(uniqueSkills.map(r => r.skill).filter(Boolean))];
+
+  const modeDistribution = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT data as mode, COUNT(*) as count FROM session_events WHERE category = 'intent' AND data != '' GROUP BY data ORDER BY count DESC`)
+  );
+  const mergedModes = mergeByKey(modeDistribution, "mode", (a, b) => ({ mode: a.mode, count: a.count + b.count }))
+    .sort((a, b) => b.count - a.count);
+  const totalModeEvents = mergedModes.reduce((s, m) => s + m.count, 0);
+  const modesWithPct = mergedModes.map(m => ({ ...m, pct: totalModeEvents > 0 ? Math.round(1000 * m.count / totalModeEvents) / 10 : 0 }));
+
+  const blockerData = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT type, COUNT(*) as count FROM session_events WHERE category = 'blocked-on' GROUP BY type`)
+  );
+  const mergedBlockers = mergeByKey(blockerData, "type", (a, b) => ({ type: a.type, count: a.count + b.count }));
+  const totalBlockers = mergedBlockers.find(b => b.type === "blocker")?.count || 0;
+  const resolvedBlockers = mergedBlockers.find(b => b.type === "blocker_resolved")?.count || 0;
+
+  const ruleCat = categories.find(c => c.category === "rule");
+  const ruleCount = ruleCat ? ruleCat.count : 0;
+
+  // Unique rule files: count distinct data values for rule category
+  const uniqueRuleFiles = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT DISTINCT data FROM session_events WHERE category = 'rule' AND type = 'rule' AND data IS NOT NULL AND data != ''`)
+  );
+  const uniqueRuleCount = new Set(uniqueRuleFiles.map(r => r.data)).size;
+
+  // Sessions + compacts in one query (avoids extra DB open cycle)
+  const sessionAgg = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT COUNT(*) as cnt, COALESCE(SUM(compact_count), 0) as compacts FROM session_meta`)
+  );
+  const totalSessions = sessionAgg.reduce((s, r) => s + (r.cnt || 0), 0);
+  const totalCompacts = sessionAgg.reduce((s, r) => s + (r.compacts || 0), 0);
+  const compactRate = totalSessions > 0 ? Math.round(100 * totalCompacts / totalSessions) : 0;
+
+  const contextHealth = {
+    uniqueRuleFiles: uniqueRuleCount,
+    ruleLoadsPerSession: totalSessions > 0 ? Math.round(100 * ruleCount / totalSessions) / 100 : 0,
+    uniqueSkills: skillSet.length,
+    skillList: skillSet,
+    modeDistribution: modesWithPct,
+    compactRate,
+    totalBlockers,
+    resolvedBlockers,
+    blockerResolutionRate: totalBlockers > 0 ? Math.round(1000 * resolvedBlockers / totalBlockers) / 10 : 0,
+  };
+
+  // 7. File activity intelligence
+  const fileStats = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT
+      SUM(CASE WHEN type = 'file_read' THEN 1 ELSE 0 END) as reads,
+      SUM(CASE WHEN type IN ('file_write','file_edit') THEN 1 ELSE 0 END) as writes,
+      SUM(CASE WHEN type IN ('file_glob','file_search') THEN 1 ELSE 0 END) as exploration,
+      COUNT(*) as total
+      FROM session_events WHERE category = 'file'`)
+  );
+  const reads = fileStats.reduce((s, r) => s + (r.reads || 0), 0);
+  const writes = fileStats.reduce((s, r) => s + (r.writes || 0), 0);
+  const exploration = fileStats.reduce((s, r) => s + (r.exploration || 0), 0);
+  const totalFileEvents = fileStats.reduce((s, r) => s + (r.total || 0), 0);
+
+  const hotFiles = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT data as file, COUNT(*) as touches
+      FROM session_events
+      WHERE category = 'file' AND type IN ('file_read','file_edit','file_write') AND data != ''
+      GROUP BY data HAVING COUNT(*) > 3
+      ORDER BY touches DESC LIMIT 10`)
+  );
+  const mergedHotFiles = mergeByKey(hotFiles, "file", (a, b) => ({ file: a.file, touches: a.touches + b.touches }))
+    .filter(f => f.touches > 3)
+    .sort((a, b) => b.touches - a.touches)
+    .slice(0, 10);
+
+  // Unique edited + read files in one query for churn rate
+  const fileChurnData = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT
+      COUNT(DISTINCT CASE WHEN type IN ('file_write','file_edit') THEN data END) as edited,
+      COUNT(DISTINCT CASE WHEN type = 'file_read' THEN data END) as read_files
+      FROM session_events WHERE category = 'file' AND data != ''`)
+  );
+  const uniqueEditedCount = fileChurnData.reduce((s, r) => s + (r.edited || 0), 0);
+  const uniqueReadCount = fileChurnData.reduce((s, r) => s + (r.read_files || 0), 0);
+
+  const fileIntelligence = {
+    readWriteRatio: writes > 0 ? Math.round(100 * reads / writes) / 100 : reads,
+    explorationDepth: totalFileEvents > 0 ? Math.round(1000 * exploration / totalFileEvents) / 10 : 0,
+    hotFiles: mergedHotFiles,
+    fileChurnRate: uniqueReadCount > 0 ? Math.round(100 * uniqueEditedCount / uniqueReadCount) / 100 : 0,
+  };
+
+  // 8. Composite scores (0-100)
+  const totalEvents = categories.reduce((s, c) => s + c.count, 0);
+
+  // Productivity
+  const commitSessions = queryAllSessionDBs(db =>
+    safeAll(db, `SELECT COUNT(DISTINCT session_id) as cnt FROM session_events WHERE category = 'git' AND data = 'commit'`)
+  );
+  const sessionsWithCommits = commitSessions.reduce((s, r) => s + (r.cnt || 0), 0);
+  const commitRate = totalSessions > 0 ? (sessionsWithCommits / totalSessions) * 100 : 0;
+  // delegationRate: ratio of sessions with subagents (not events — avoids tiny % problem)
+  const delegationRate = totalSessions > 0 ? Math.min(100, (launched / totalSessions) * 100) : 0;
+  // fileChurnRate: unique edited / unique read (not count/events — fixes dimensional mismatch)
+  const fileChurnForScore = uniqueReadCount > 0 ? Math.min(100, (uniqueEditedCount / uniqueReadCount) * 100) : 0;
+  const productivityScore = Math.min(100, Math.round(
+    (commitRate * 0.3) + (delegationRate * 0.2) + ((100 - fileChurnForScore) * 0.2) + (resolutionRate * 0.3)
+  ));
+
+  // Quality — zero errors = perfect quality (100), not penalized
+  const retryRate = totalSessions > 0 ? (retryStorms.length / totalSessions) * 100 : 0;
+  const errorRate = totalEvents > 0 ? (totalErrors / totalEvents) * 100 : 0;
+  const effectiveResolution = totalErrors === 0 ? 100 : resolutionRate; // no errors = perfect
+  const qualityScore = Math.min(100, Math.round(
+    (effectiveResolution * 0.4) + ((100 - retryRate) * 0.3) + ((100 - errorRate) * 0.3)
+  ));
+
+  // Delegation
+  const agentFindingCat = categories.find(c => c.category === "agent-finding");
+  const findingCount = agentFindingCat ? agentFindingCat.count : 0;
+  const hasBursts = parallelBursts > 0 ? 100 : 0;
+  const delegationScore = Math.min(100, Math.round(
+    (completionRate * 0.5) + (hasBursts * 0.3) + (Math.min(findingCount / 5, 1) * 20)
+  ));
+
+  // Context Health
+  const ruleFreshness = uniqueRuleCount > 0 ? 100 : 0;
+  const skillDiversity = Math.min(skillSet.length * 20, 100);
+  const planApprovalForScore = (planApproved + planRejected) > 0 ? planApprovalRate : 50;
+  const modeBalance = mergedModes.length > 1 ? 100 : 50;
+  const contextHealthScore = Math.min(100, Math.round(
+    (ruleFreshness * 0.3) + (skillDiversity * 0.2) + (planApprovalForScore * 0.25) + (modeBalance * 0.25)
+  ));
+
+  const compositeScores = {
+    productivity: productivityScore,
+    quality: qualityScore,
+    delegation: delegationScore,
+    contextHealth: contextHealthScore,
+  };
+
+  const insufficientData = totalEvents < 50 || totalSessions < 3;
+
+  return {
+    categories,
+    errorIntelligence,
+    delegation,
+    governance,
+    gitProductivity,
+    contextHealth,
+    fileIntelligence,
+    compositeScores,
+    insufficientData,
+  };
+}
+
 // ── Router ───────────────────────────────────────────────
 
 function route(method, pathname, params) {
   if (pathname === "/api/overview") return apiOverview();
-  if (pathname === "/api/analytics") return apiAnalytics();
+  if (pathname === "/api/analytics") return cached("analytics", apiAnalytics);
+  if (pathname === "/api/category-analytics") return cached("category-analytics", apiCategoryAnalytics);
   if (pathname === "/api/content") return apiContentDBs();
   if (pathname === "/api/sessions") return apiSessionDBs();
 

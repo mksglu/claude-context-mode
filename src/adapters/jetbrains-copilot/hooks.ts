@@ -1,3 +1,5 @@
+import { buildNodeCommand } from "../types.js";
+
 /**
  * adapters/jetbrains-copilot/hooks — JetBrains Copilot hook definitions and matchers.
  *
@@ -93,7 +95,7 @@ export function buildHookCommand(hookType: HookType, pluginRoot?: string): strin
     throw new Error(`No script defined for hook type: ${hookType}`);
   }
   if (pluginRoot) {
-    return `node "${pluginRoot}/hooks/jetbrains-copilot/${scriptName}"`;
+    return buildNodeCommand(`${pluginRoot}/hooks/jetbrains-copilot/${scriptName}`);
   }
   return `context-mode hook jetbrains-copilot ${hookType.toLowerCase()}`;
 }

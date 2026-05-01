@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "context-mode-ops": {
+      "source": "mksglu/context-mode",
+      "sourceType": "github",
+      "computedHash": "0d7c32d35adf4669b11acf6bc66d69ad419a0b7848f61a7472474019e1606447"
+    }
+  }
+}

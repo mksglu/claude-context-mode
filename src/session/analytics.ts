@@ -330,7 +330,7 @@ export class AnalyticsEngine {
         let display = row.data;
         if (row.category === "file") {
           display = row.data.split("/").pop() || row.data;
-        } else if (row.category === "prompt") {
+        } else if (row.category === "prompt" || row.category === "user-prompt") {
           display = display.length > 50 ? display.slice(0, 47) + "..." : display;
         }
         if (display.length > 40) display = display.slice(0, 37) + "...";

@@ -23,20 +23,21 @@ import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
 
-import type {
-  HookAdapter,
-  HookParadigm,
-  PlatformCapabilities,
-  DiagnosticResult,
-  PreToolUseEvent,
-  PostToolUseEvent,
-  PreCompactEvent,
-  SessionStartEvent,
-  PreToolUseResponse,
-  PostToolUseResponse,
-  PreCompactResponse,
-  SessionStartResponse,
-  HookRegistration,
+import {
+  buildNodeCommand,
+  type HookAdapter,
+  type HookParadigm,
+  type PlatformCapabilities,
+  type DiagnosticResult,
+  type PreToolUseEvent,
+  type PostToolUseEvent,
+  type PreCompactEvent,
+  type SessionStartEvent,
+  type PreToolUseResponse,
+  type PostToolUseResponse,
+  type PreCompactResponse,
+  type SessionStartResponse,
+  type HookRegistration,
 } from "../types.js";
 
 // ─────────────────────────────────────────────────────────
@@ -214,7 +215,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/pretooluse.mjs`,
+              command: buildNodeCommand(`${pluginRoot}/hooks/pretooluse.mjs`),
             },
           ],
         },
@@ -225,7 +226,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/posttooluse.mjs`,
+              command: buildNodeCommand(`${pluginRoot}/hooks/posttooluse.mjs`),
             },
           ],
         },
@@ -236,7 +237,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/sessionstart.mjs`,
+              command: buildNodeCommand(`${pluginRoot}/hooks/sessionstart.mjs`),
             },
           ],
         },
@@ -247,7 +248,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/codex/userpromptsubmit.mjs`,
+              command: buildNodeCommand(`${pluginRoot}/hooks/codex/userpromptsubmit.mjs`),
             },
           ],
         },
@@ -258,7 +259,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/codex/stop.mjs`,
+              command: buildNodeCommand(`${pluginRoot}/hooks/codex/stop.mjs`),
             },
           ],
         },

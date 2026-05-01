@@ -91,7 +91,7 @@ All checks should show `[x]`. The doctor validates runtimes, hooks, FTS5, and pl
 | `/context-mode:ctx-doctor` | Diagnostics — runtimes, hooks, FTS5, plugin registration, versions. |
 | `/context-mode:ctx-upgrade` | Pull latest, rebuild, migrate cache, fix hooks. |
 | `/context-mode:ctx-purge` | Permanently delete all indexed content from the knowledge base. |
-| `/context-mode:ctx-insight` | Personal analytics dashboard — 15+ metrics on tool usage, session activity, error rate, parallel work patterns, and mastery curve. Opens a local web UI. |
+| `/context-mode:ctx-insight` | Personal analytics dashboard — 90 metrics, 37 insight patterns, 4 composite scores (productivity, quality, delegation, context health) across 23 event categories. Opens a local web UI. |
 
 > **Note:** Slash commands are a Claude Code plugin feature. On other platforms, type `ctx stats`, `ctx doctor`, `ctx upgrade`, or `ctx insight` in the chat — the model calls the MCP tool automatically. See [Utility Commands](#utility-commands).
 
@@ -930,18 +930,27 @@ Every tool call passes through hooks that extract structured events:
 |---|---|---|---|
 | **Files** | read, edit, write, glob, grep | Critical (P1) | PostToolUse |
 | **Tasks** | create, update, complete | Critical (P1) | PostToolUse |
+| **Plans** | enter, exit, approved, rejected, file write | Critical (P1) | PostToolUse |
 | **Rules** | CLAUDE.md / GEMINI.md / AGENTS.md paths + content | Critical (P1) | SessionStart |
+| **User Prompts** | Every user message (for last-prompt restore) | Critical (P1) | UserPromptSubmit |
 | **Decisions** | User corrections, preferences ("use X instead", "don't do Y") | High (P2) | UserPromptSubmit |
 | **Git** | checkout, commit, merge, rebase, stash, push, pull, diff, status | High (P2) | PostToolUse |
 | **Errors** | Tool failures, non-zero exit codes | High (P2) | PostToolUse |
-| **Environment** | cwd changes, venv, nvm, conda, package installs | High (P2) | PostToolUse |
+| **Error Resolution** | Error → fix pairs detected across sequential tool calls | High (P2) | PostToolUse |
+| **Constraints** | Discovered limitations ("not supported", "permission denied") | High (P2) | PostToolUse |
+| **Blockers** | "blocked on", "waiting for", "depends on" — tracked until resolved | High (P2) | UserPromptSubmit |
+| **Rejected Approaches** | Tool calls denied by user (PreToolUse → PostToolUse marker) | High (P2) | PreToolUse |
+| **Environment** | cwd changes, venv, nvm, conda, worktree, package installs | High (P2) | PostToolUse |
+| **Agent Findings** | Completed subagent results (first 500 chars) | High (P2) | PostToolUse |
+| **Iteration Loops** | Same tool called 3+ times with similar input (retry detection) | High (P2) | PostToolUse |
+| **Latency** | Tool calls exceeding 5s (tool name + duration in ms) | Normal (P3) | PreToolUse |
 | **MCP Tools** | All `mcp__*` tool calls with usage counts | Normal (P3) | PostToolUse |
-| **Subagents** | Agent tool invocations | Normal (P3) | PostToolUse |
+| **Subagents** | Agent tool launches and completions | Normal (P3) | PostToolUse |
 | **Skills** | Slash command invocations | Normal (P3) | PostToolUse |
+| **External Refs** | URLs, GitHub issue references (#123), deduped | Normal (P3) | PostToolUse |
 | **Role** | Persona / behavioral directives ("act as senior engineer") | Normal (P3) | UserPromptSubmit |
-| **Intent** | Session mode classification (investigate, implement, debug) | Low (P4) | UserPromptSubmit |
+| **Intent** | Session mode classification (investigate, implement, review) | Low (P4) | UserPromptSubmit |
 | **Data** | Large user-pasted data references (>1 KB) | Low (P4) | UserPromptSubmit |
-| **User Prompts** | Every user message (for last-prompt restore) | Critical (P1) | UserPromptSubmit |
 
 </details>
 
@@ -968,15 +977,20 @@ After compaction, the model receives a **Session Guide** — a structured narrat
 
 - **Last Request** — user's last prompt, so the model continues without asking "what were we doing?"
 - **Tasks** — checkbox format with completion status (`[x]` completed, `[ ]` pending)
+- **Plans** — plan mode entries, exits, approvals, and rejections
 - **Key Decisions** — user corrections and preferences ("use X instead", "don't do Y")
 - **Files Modified** — all files touched during the session
-- **Unresolved Errors** — errors that haven't been fixed
+- **Unresolved Errors** — errors that haven't been fixed, plus error→fix resolution pairs
+- **Constraints** — discovered limitations and boundaries
+- **Blockers** — open and resolved blockers ("blocked on X", "waiting for Y")
 - **Git** — operations performed (checkout, commit, push, status)
 - **Project Rules** — CLAUDE.md / GEMINI.md / AGENTS.md paths
 - **MCP Tools Used** — tool names with call counts
-- **Subagent Tasks** — delegated work summaries
+- **Subagent Tasks** — delegated work summaries + agent findings
 - **Skills Used** — slash commands invoked
-- **Environment** — working directory, env variables
+- **Rejected Approaches** — tool calls the user denied
+- **External References** — URLs and GitHub issue references
+- **Environment** — working directory, env variables, worktrees
 - **Data References** — large data pasted during the session
 - **Session Intent** — mode classification (implement, investigate, review, discuss)
 - **User Role** — behavioral directives set during the session

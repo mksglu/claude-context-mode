@@ -274,6 +274,28 @@ export interface DiagnosticResult {
 // Platform detection
 // ─────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────
+// Cross-platform command helpers (#369, #372)
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Build a cross-platform `node <script>` command string.
+ *
+ * Fixes two Windows bugs:
+ *   #369 — Bare `node` fails on Windows Git Bash (MSYS) because PATH
+ *          resolution is unreliable. Uses `process.execPath` instead.
+ *   #372 — MSYS rewrites absolute paths on non-C: drives (e.g.
+ *          `C:\Users\...` → `D:\c\Users\...`). Forward slashes +
+ *          double-quoting prevents the translation.
+ *
+ * Safe on macOS/Linux — quoting and forward slashes are no-ops there.
+ */
+export function buildNodeCommand(scriptPath: string): string {
+  const nodePath = process.execPath.replace(/\\/g, "/");
+  const safePath = scriptPath.replace(/\\/g, "/");
+  return `"${nodePath}" "${safePath}"`;
+}
+
 /** Supported platform identifiers. */
 export type PlatformId =
   | "claude-code"

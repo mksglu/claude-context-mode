@@ -39,7 +39,7 @@ try {
 
     const promptEvent = {
       type: "user_prompt",
-      category: "prompt",
+      category: "user-prompt",
       data: prompt,
       priority: 1,
     };

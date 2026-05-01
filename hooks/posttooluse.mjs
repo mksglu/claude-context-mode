@@ -12,8 +12,10 @@ import "./ensure-deps.mjs";
 
 import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir } from "./session-helpers.mjs";
 import { createSessionLoaders, attributeAndInsertEvents } from "./session-loaders.mjs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 // Resolve absolute path for imports — relative dynamic imports can fail
 // when Claude Code invokes hooks from a different working directory.
@@ -47,6 +49,53 @@ try {
   });
 
   attributeAndInsertEvents(db, sessionId, events, input, projectDir, "PostToolUse", resolveProjectAttributions);
+
+  // ─── Category 18: Rejected-approach — read PreToolUse marker ───
+  try {
+    const rejectedPath = resolve(tmpdir(), `context-mode-rejected-${sessionId}.txt`);
+    let rejectedData;
+    try {
+      rejectedData = readFileSync(rejectedPath, "utf-8").trim();
+      unlinkSync(rejectedPath);
+    } catch { /* no marker */ }
+    if (rejectedData) {
+      const colonIdx = rejectedData.indexOf(":");
+      const rejTool = colonIdx > 0 ? rejectedData.slice(0, colonIdx) : rejectedData;
+      const rejReason = colonIdx > 0 ? rejectedData.slice(colonIdx + 1) : "denied";
+      db.insertEvent(sessionId, {
+        type: "rejected",
+        category: "rejected-approach",
+        data: `${rejTool}: ${rejReason}`,
+        priority: 2,
+      }, "PreToolUse");
+    }
+  } catch { /* best-effort */ }
+
+  // ─── Category 27: Latency — read cross-hook marker and emit event if slow ───
+  try {
+    const toolName = input.tool_name ?? "";
+    if (toolName) {
+      const markerPath = resolve(tmpdir(), `context-mode-latency-${sessionId}-${toolName}.txt`);
+      let startTime;
+      try {
+        startTime = parseInt(readFileSync(markerPath, "utf-8").trim(), 10);
+        unlinkSync(markerPath);
+      } catch {
+        // No marker — pretooluse didn't write one or already consumed
+      }
+      if (startTime && !isNaN(startTime)) {
+        const duration = Date.now() - startTime;
+        if (duration > 5000) {
+          db.insertEvent(sessionId, {
+            type: "tool_latency",
+            category: "latency",
+            data: `${toolName}: ${duration}ms`,
+            priority: 3,
+          }, "PostToolUse");
+        }
+      }
+    }
+  } catch { /* latency tracking is best-effort */ }
 
   db.close();
 } catch {

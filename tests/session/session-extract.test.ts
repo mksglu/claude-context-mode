@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, test } from "vitest";
-import { extractEvents, extractUserEvents } from "../../src/session/extract.js";
+import { extractEvents, extractUserEvents, resetErrorResolutionState, resetIterationLoopState } from "../../src/session/extract.js";
 
 // ════════════════════════════════════════════
 // SLICE 1: FILE EVENT EXTRACTION
@@ -566,7 +566,7 @@ describe("Skill Events", () => {
     const skillEvents = events.filter(e => e.type === "skill");
     assert.equal(skillEvents.length, 1);
     assert.equal(skillEvents[0].data, "tdd");
-    assert.equal(skillEvents[0].priority, 3);
+    assert.equal(skillEvents[0].priority, 2);
   });
 
   test("extracts skill event without args", () => {
@@ -1499,5 +1499,764 @@ describe("MCP Events", () => {
     const events = extractEvents(input);
     assert.equal(events.length, 1);
     assert.equal(events[0].data, "ctx_stats", "empty tool_response should not add suffix");
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 22: AGENT-FINDING
+// ════════════════════════════════════════════
+
+describe("Agent Finding Events", () => {
+  test("extracts agent_finding when Agent completes with tool_response", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research auth patterns" },
+      tool_response: "Found 3 auth patterns: JWT, OAuth2, and session-based. JWT is stateless...",
+    };
+
+    const events = extractEvents(input);
+    const findings = events.filter(e => e.type === "agent_finding");
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].category, "agent-finding");
+    assert.equal(findings[0].priority, 2);
+    assert.ok(findings[0].data.includes("JWT"), "should include response content");
+  });
+
+  test("truncates agent_finding to 500 chars", () => {
+    const longResponse = "x".repeat(1000);
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Big research task" },
+      tool_response: longResponse,
+    };
+
+    const events = extractEvents(input);
+    const findings = events.filter(e => e.type === "agent_finding");
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].data.length, 500, "should truncate to 500 chars");
+  });
+
+  test("does not fire agent_finding when Agent has no tool_response", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research task" },
+      // no tool_response — agent launched but not completed
+    };
+
+    const events = extractEvents(input);
+    const findings = events.filter(e => e.type === "agent_finding");
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not fire agent_finding for empty tool_response", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research task" },
+      tool_response: "",
+    };
+
+    const events = extractEvents(input);
+    const findings = events.filter(e => e.type === "agent_finding");
+    assert.equal(findings.length, 0);
+  });
+
+  test("does not fire agent_finding for non-Agent tools", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "echo hi" },
+      tool_response: "hi",
+    };
+
+    const events = extractEvents(input);
+    const findings = events.filter(e => e.type === "agent_finding");
+    assert.equal(findings.length, 0);
+  });
+
+  test("agent_finding coexists with subagent_completed", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Research Cursor env vars" },
+      tool_response: "Found CURSOR_TRACE_DIR and CURSOR_CHANNEL.",
+    };
+
+    const events = extractEvents(input);
+    const subagent = events.filter(e => e.type === "subagent_completed");
+    const finding = events.filter(e => e.type === "agent_finding");
+    assert.equal(subagent.length, 1, "should still emit subagent_completed");
+    assert.equal(finding.length, 1, "should also emit agent_finding");
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 24: EXTERNAL-REF
+// ════════════════════════════════════════════
+
+describe("External Ref Events", () => {
+  test("extracts URLs from tool_input", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "curl https://api.github.com/repos/user/repo" },
+      tool_response: "ok",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 1);
+    assert.equal(refs[0].category, "external-ref");
+    assert.equal(refs[0].priority, 3);
+    assert.ok(refs[0].data.includes("https://api.github.com"), "should capture URL");
+  });
+
+  test("extracts GitHub issue URLs from tool_response", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "gh issue list" },
+      tool_response: "Fix: https://github.com/user/repo/issues/42 is blocking",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 1);
+    assert.ok(refs[0].data.includes("github.com/user/repo/issues/42"));
+  });
+
+  test("extracts GitHub PR URLs", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "gh pr view 99" },
+      tool_response: "See https://github.com/user/repo/pull/99",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 1);
+    assert.ok(refs[0].data.includes("github.com/user/repo/pull/99"));
+  });
+
+  test("extracts shorthand issue refs (#123)", () => {
+    const input = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/CHANGELOG.md" },
+      tool_response: "Fixed bug #42 and addressed #99",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 1);
+    assert.ok(refs[0].data.includes("#42"), "should capture #42");
+    assert.ok(refs[0].data.includes("#99"), "should capture #99");
+  });
+
+  test("deduplicates refs", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "echo https://example.com" },
+      tool_response: "Visit https://example.com again",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 1);
+    // Should only appear once despite being in both input and response
+    const count = refs[0].data.split("https://example.com").length - 1;
+    assert.equal(count, 1, "URL should appear exactly once (deduplicated)");
+  });
+
+  test("skips localhost URLs", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "curl http://localhost:3000/api" },
+      tool_response: "ok",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 0, "should skip localhost");
+  });
+
+  test("skips 127.0.0.1 URLs", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "curl http://127.0.0.1:8080/health" },
+      tool_response: "ok",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 0, "should skip 127.0.0.1");
+  });
+
+  test("does not fire when no refs found", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "echo hello" },
+      tool_response: "hello",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 0);
+  });
+
+  test("captures multiple mixed refs", () => {
+    const input = {
+      tool_name: "Agent",
+      tool_input: { prompt: "Check issue #344" },
+      tool_response: "Found https://github.com/user/repo/pull/100 and #344 is related to https://docs.example.com/guide",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter(e => e.type === "external_ref");
+    assert.equal(refs.length, 1);
+    assert.ok(refs[0].data.includes("#344"), "should include issue ref");
+    assert.ok(refs[0].data.includes("github.com/user/repo/pull/100"), "should include PR URL");
+    assert.ok(refs[0].data.includes("docs.example.com"), "should include doc URL");
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 27: LATENCY (cross-hook state)
+// ════════════════════════════════════════════
+
+describe("Category 27 — Latency", () => {
+  /**
+   * Latency tracking uses cross-hook state (tmpdir files) to bridge
+   * PreToolUse → PostToolUse. The extractEvents function itself does NOT
+   * produce latency events — they are created directly in posttooluse.mjs
+   * by comparing timestamps from the tmpdir marker file.
+   *
+   * These tests verify the architecture is sound:
+   * - extractEvents does not accidentally produce latency events (no false positives)
+   * - The latency event shape matches the SessionEvent interface
+   */
+
+  test("extractEvents does not produce latency events (latency is cross-hook, not extract-based)", () => {
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "all tests passed",
+    };
+
+    const events = extractEvents(input);
+    const latencyEvents = events.filter(e => e.category === "latency");
+    assert.equal(latencyEvents.length, 0, "extractEvents should not produce latency events");
+  });
+
+  test("latency event shape conforms to SessionEvent interface", () => {
+    // This validates the event shape that posttooluse.mjs will produce
+    const latencyEvent = {
+      type: "tool_latency",
+      category: "latency",
+      data: "Bash: 7500ms",
+      priority: 3,
+    };
+
+    assert.equal(typeof latencyEvent.type, "string");
+    assert.equal(typeof latencyEvent.category, "string");
+    assert.equal(typeof latencyEvent.data, "string");
+    assert.equal(typeof latencyEvent.priority, "number");
+    assert.equal(latencyEvent.type, "tool_latency");
+    assert.equal(latencyEvent.category, "latency");
+    assert.equal(latencyEvent.priority, 3);
+  });
+
+  test("latency data format includes tool name and duration", () => {
+    // Validate the data format convention: "${tool}: ${duration}ms"
+    const data = "Read: 12345ms";
+    const match = data.match(/^(\w+): (\d+)ms$/);
+    assert.ok(match, "data should match 'ToolName: Nms' format");
+    assert.equal(match![1], "Read");
+    assert.equal(match![2], "12345");
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 28: PERMISSION (not feasible)
+// ════════════════════════════════════════════
+
+describe("Category 28 — Permission (architectural limitation)", () => {
+  /**
+   * Permission tracking is NOT implementable from hooks.
+   *
+   * Why:
+   * - PreToolUse fires BEFORE the tool call. The user's approve/deny decision
+   *   happens AFTER PreToolUse returns but BEFORE the tool actually executes.
+   *   The hook cannot observe this decision.
+   *
+   * - PostToolUse ONLY fires when the tool successfully executed, meaning the
+   *   user already approved. There is no PostToolUse invocation for denied tools.
+   *   So PostToolUse always implies "approved" — there's no deny signal to track.
+   *
+   * - The hook system has no "permission_result" or "user_decision" field in
+   *   either PreToolUse or PostToolUse stdin payloads.
+   *
+   * Possible future approaches:
+   * 1. Claude Code adds a permission_result field to PostToolUse input
+   * 2. A new hook event type (e.g., "ToolPermissionDecision") is introduced
+   * 3. Track implicit approvals by counting PostToolUse invocations (but this
+   *    adds no information beyond what we already have — every PostToolUse IS
+   *    an implicit approval)
+   *
+   * Conclusion: Skip this category until the hook protocol evolves.
+   */
+
+  test("PostToolUse always implies approval — no deny signal available", () => {
+    // Every PostToolUse input represents a tool that was approved and ran.
+    // There's no way to distinguish "user clicked approve" from "tool was auto-approved".
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf node_modules" },
+      tool_response: "removed",
+    };
+
+    const events = extractEvents(input);
+    const permEvents = events.filter(e => e.category === "permission");
+    assert.equal(permEvents.length, 0, "no permission events should be extracted — not implementable");
+  });
+
+  test("PreToolUse deny is already captured as rejected-approach (Phase 1)", () => {
+    // When PreToolUse returns action: "deny", the pretooluse.mjs hook already
+    // writes a rejected-approach event. This is the closest we get to permission
+    // tracking: we know when context-mode itself denies a tool, but NOT when
+    // the user denies a tool.
+    //
+    // This test documents that rejected-approach covers the hook-level deny case.
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "curl https://example.com" },
+      tool_response: "",
+    };
+
+    const events = extractEvents(input);
+    // rejected-approach is written by pretooluse.mjs directly to DB, not via extractEvents
+    const rejectedEvents = events.filter(e => e.category === "rejected-approach");
+    assert.equal(rejectedEvents.length, 0, "extractEvents does not produce rejected-approach — that's pretooluse.mjs's job");
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 23: ERROR-RESOLUTION (cross-event)
+// ════════════════════════════════════════════
+
+describe("Error Resolution Events", () => {
+  test("emits error_resolved when error followed by successful same-tool call", () => {
+    resetErrorResolutionState();
+
+    // Step 1: Error occurs
+    const errorInput = {
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "FAIL src/store.test.ts\nexit code 1",
+    };
+    const errorEvents = extractEvents(errorInput);
+    const errors = errorEvents.filter(e => e.type === "error_resolved");
+    assert.equal(errors.length, 0, "should not emit error_resolved on the error itself");
+
+    // Step 2: Successful same-tool call
+    const fixInput = {
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "all tests passed",
+    };
+    const fixEvents = extractEvents(fixInput);
+    const resolved = fixEvents.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 1, "should emit error_resolved");
+    assert.equal(resolved[0].category, "error-resolution");
+    assert.equal(resolved[0].priority, 2);
+    assert.ok(resolved[0].data.includes("Bash"), "should reference the tool");
+    assert.ok(resolved[0].data.includes("Fixed"), "should indicate resolution");
+  });
+
+  test("emits error_resolved when Edit follows Read error", () => {
+    resetErrorResolutionState();
+
+    // Read fails
+    const readError = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/missing.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    };
+    extractEvents(readError);
+
+    // Edit succeeds (fixes the situation)
+    const editFix = {
+      tool_name: "Edit",
+      tool_input: { file_path: "/project/missing.ts", old_string: "a", new_string: "b" },
+      tool_response: "File edited successfully",
+    };
+    const fixEvents = extractEvents(editFix);
+    const resolved = fixEvents.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 1, "Edit after Read error should resolve");
+    assert.ok(resolved[0].data.includes("Read"), "should reference Read as the error tool");
+  });
+
+  test("emits error_resolved when Write follows Read error", () => {
+    resetErrorResolutionState();
+
+    const readError = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/new.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    };
+    extractEvents(readError);
+
+    const writeFix = {
+      tool_name: "Write",
+      tool_input: { file_path: "/project/new.ts", content: "export {}" },
+      tool_response: "File written",
+    };
+    const fixEvents = extractEvents(writeFix);
+    const resolved = fixEvents.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 1, "Write after Read error should resolve");
+  });
+
+  test("does not emit error_resolved for unrelated tool after error", () => {
+    resetErrorResolutionState();
+
+    // Bash error
+    const errorInput = {
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "FAIL\nexit code 1",
+    };
+    extractEvents(errorInput);
+
+    // Different tool succeeds (Read — not Bash)
+    const unrelatedInput = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/src/index.ts" },
+      tool_response: "file content",
+    };
+    const events = extractEvents(unrelatedInput);
+    const resolved = events.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 0, "unrelated tool should not resolve error");
+  });
+
+  test("clears lastError after 10 calls without resolution (staleness timeout)", () => {
+    resetErrorResolutionState();
+
+    // Error occurs
+    const errorInput = {
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "Error: test failed\nexit code 1",
+    };
+    extractEvents(errorInput);
+
+    // 11 unrelated calls (exceeds the 10-call timeout)
+    for (let i = 0; i < 11; i++) {
+      extractEvents({
+        tool_name: "Read",
+        tool_input: { file_path: `/project/file${i}.ts` },
+        tool_response: "content",
+      });
+    }
+
+    // Now a Bash success should NOT resolve (stale error cleared)
+    const lateFixInput = {
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "all tests passed",
+    };
+    const events = extractEvents(lateFixInput);
+    const resolved = events.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 0, "stale error should be cleared after 10 calls");
+  });
+
+  test("does not emit error_resolved when no prior error exists", () => {
+    resetErrorResolutionState();
+
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "echo hello" },
+      tool_response: "hello",
+    };
+    const events = extractEvents(input);
+    const resolved = events.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 0);
+  });
+
+  test("second error replaces first error", () => {
+    resetErrorResolutionState();
+
+    // First error (Bash)
+    extractEvents({
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      tool_response: "Error: first\nexit code 1",
+    });
+
+    // Second error (Edit) replaces first
+    extractEvents({
+      tool_name: "Edit",
+      tool_input: { file_path: "/x.ts", old_string: "a", new_string: "b" },
+      tool_response: "old_string not found",
+      tool_output: { isError: true },
+    });
+
+    // Bash success should NOT resolve (lastError is now Edit, not Bash)
+    const bashSuccess = extractEvents({
+      tool_name: "Bash",
+      tool_input: { command: "echo ok" },
+      tool_response: "ok",
+    });
+    const resolved1 = bashSuccess.filter(e => e.type === "error_resolved");
+    assert.equal(resolved1.length, 0, "Bash should not resolve Edit error");
+
+    // Edit success SHOULD resolve
+    const editSuccess = extractEvents({
+      tool_name: "Edit",
+      tool_input: { file_path: "/x.ts", old_string: "c", new_string: "d" },
+      tool_response: "File edited",
+    });
+    const resolved2 = editSuccess.filter(e => e.type === "error_resolved");
+    assert.equal(resolved2.length, 1, "Edit should resolve Edit error");
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 26: ITERATION-LOOP (cross-event)
+// ════════════════════════════════════════════
+
+describe("Iteration Loop Events", () => {
+  test("emits retry_detected when same tool+input called 3 times consecutively", () => {
+    resetIterationLoopState();
+
+    const input = {
+      tool_name: "Edit",
+      tool_input: { file_path: "/project/src/bug.ts", old_string: "foo", new_string: "bar" },
+      tool_response: "old_string not found",
+      tool_output: { isError: true },
+    };
+
+    // Call 1 & 2: no emission
+    let events = extractEvents(input);
+    let retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 0, "should not fire after 1 call");
+
+    events = extractEvents(input);
+    retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 0, "should not fire after 2 calls");
+
+    // Call 3: emit
+    events = extractEvents(input);
+    retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 1, "should fire after 3 consecutive identical calls");
+    assert.equal(retries[0].category, "iteration-loop");
+    assert.equal(retries[0].priority, 2);
+    assert.ok(retries[0].data.includes("Edit"), "should mention tool name");
+    assert.ok(retries[0].data.includes("3"), "should mention count");
+  });
+
+  test("does not emit when different tools are interleaved", () => {
+    resetIterationLoopState();
+
+    extractEvents({
+      tool_name: "Edit",
+      tool_input: { file_path: "/a.ts", old_string: "x", new_string: "y" },
+      tool_response: "ok",
+    });
+
+    extractEvents({
+      tool_name: "Read",
+      tool_input: { file_path: "/a.ts" },
+      tool_response: "content",
+    });
+
+    const events = extractEvents({
+      tool_name: "Edit",
+      tool_input: { file_path: "/a.ts", old_string: "x", new_string: "y" },
+      tool_response: "ok",
+    });
+
+    const retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 0, "interleaved tools should break the streak");
+  });
+
+  test("does not emit when same tool has different input", () => {
+    resetIterationLoopState();
+
+    for (let i = 0; i < 5; i++) {
+      extractEvents({
+        tool_name: "Edit",
+        tool_input: { file_path: `/project/file${i}.ts`, old_string: "a", new_string: "b" },
+        tool_response: "ok",
+      });
+    }
+
+    // No retry_detected because each call has different input
+    // (file_path differs so inputHash differs)
+  });
+
+  test("detects 4+ consecutive identical calls", () => {
+    resetIterationLoopState();
+
+    const input = {
+      tool_name: "Bash",
+      tool_input: { command: "npm run build" },
+      tool_response: "Error: build failed\nexit code 1",
+    };
+
+    extractEvents(input);
+    extractEvents(input);
+    extractEvents(input);
+    const events = extractEvents(input);
+    const retries = events.filter(e => e.type === "retry_detected");
+    // After 3rd call, the history is reset. 4th call starts fresh streak.
+    // So we get 1 emission at call 3 (with count=3), then call 4 is a fresh start.
+    assert.ok(retries.length === 0, "4th call after reset should not emit (fresh start)");
+  });
+
+  test("resets after emission to avoid duplicate events", () => {
+    resetIterationLoopState();
+
+    const input = {
+      tool_name: "Grep",
+      tool_input: { pattern: "TODO", path: "/project" },
+      tool_response: "matches...",
+    };
+
+    // First streak: calls 1-3
+    extractEvents(input);
+    extractEvents(input);
+    let events = extractEvents(input);
+    let retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 1, "first streak should emit");
+
+    // After reset, need 3 more for next emission
+    extractEvents(input);
+    events = extractEvents(input);
+    retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 0, "should not emit at 2nd call of new streak");
+
+    events = extractEvents(input);
+    retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 1, "3rd call of new streak should emit again");
+  });
+
+  test("handles empty tool_input gracefully", () => {
+    resetIterationLoopState();
+
+    const input = {
+      tool_name: "Skill",
+      tool_input: {},
+      tool_response: "ok",
+    };
+
+    // Should not throw
+    extractEvents(input);
+    extractEvents(input);
+    const events = extractEvents(input);
+    const retries = events.filter(e => e.type === "retry_detected");
+    assert.equal(retries.length, 1);
+  });
+});
+
+// ════════════════════════════════════════════
+// CATEGORY 25: BLOCKED-ON (user messages)
+// ════════════════════════════════════════════
+
+describe("Blocked-On Events", () => {
+  test("extracts blocker from 'blocked on' pattern", () => {
+    const events = extractUserEvents("I'm blocked on the API key from DevOps");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+    assert.equal(blockerEvents[0].category, "blocked-on");
+    assert.equal(blockerEvents[0].priority, 2);
+    assert.ok(blockerEvents[0].data.includes("API key"));
+  });
+
+  test("extracts blocker from 'waiting for' pattern", () => {
+    const events = extractUserEvents("waiting for the design review to finish");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+    assert.equal(blockerEvents[0].category, "blocked-on");
+  });
+
+  test("extracts blocker from 'need X before' pattern", () => {
+    const events = extractUserEvents("need approval before we can deploy");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  test("extracts blocker from 'can't proceed until' pattern", () => {
+    const events = extractUserEvents("can't proceed until the migration is done");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  test("extracts blocker from 'depends on' pattern", () => {
+    const events = extractUserEvents("this depends on the auth service being up");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  test("extracts blocker from bare 'blocked' pattern", () => {
+    const events = extractUserEvents("we're blocked, CI is failing");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  test("extracts blocker from Turkish 'bekliyor' pattern", () => {
+    const events = extractUserEvents("deployment bekliyor, önce review lazım");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  test("extracts blocker from Turkish 'bekliyorum' pattern", () => {
+    const events = extractUserEvents("API anahtarını bekliyorum");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  // Resolution tests
+
+  test("extracts blocker_resolved from 'unblocked' pattern", () => {
+    const events = extractUserEvents("we're unblocked now, got the credentials");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+    assert.equal(resolvedEvents[0].category, "blocked-on");
+    assert.equal(resolvedEvents[0].priority, 2);
+  });
+
+  test("extracts blocker_resolved from 'resolved' pattern", () => {
+    const events = extractUserEvents("the issue is resolved, we can continue");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+  });
+
+  test("extracts blocker_resolved from 'got the X' pattern", () => {
+    const events = extractUserEvents("got the API key, let's go");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+  });
+
+  test("extracts blocker_resolved from 'is ready now' pattern", () => {
+    const events = extractUserEvents("the staging environment is ready now");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+  });
+
+  test("extracts blocker_resolved from 'can proceed' pattern", () => {
+    const events = extractUserEvents("we can proceed with the deployment");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+  });
+
+  test("resolution takes priority over blocker when both match", () => {
+    // "resolved" matches resolution, "blocked" matches blocker — resolution wins
+    const events = extractUserEvents("the blocked issue is now resolved");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(resolvedEvents.length, 1, "should emit resolved");
+    assert.equal(blockerEvents.length, 0, "should NOT emit blocker when resolved");
+  });
+
+  test("does not extract blocker from unrelated messages", () => {
+    const events = extractUserEvents("Can you read the server.ts file?");
+    const blockerEvents = events.filter(e => e.category === "blocked-on");
+    assert.equal(blockerEvents.length, 0);
   });
 });

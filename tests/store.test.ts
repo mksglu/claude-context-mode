@@ -41,6 +41,140 @@ describe("Schema & Lifecycle", () => {
     // second close should not throw
     assert.doesNotThrow(() => store.close());
   });
+
+  test("Fresh DB creates new FTS5 schema with 8 columns", () => {
+    const dbPath = join(
+      tmpdir(),
+      `context-mode-test-fresh-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+    const store = new ContentStore(dbPath);
+
+    // Verify the schema by opening the raw DB and checking columns
+    const Database = loadDatabase();
+    const db = new Database(dbPath, { readonly: true });
+    const cols = db.prepare("SELECT name FROM pragma_table_xinfo('chunks')").all() as Array<{ name: string }>;
+    const colNames = cols.map(c => c.name);
+
+    // FTS5 tables should have 8 user columns + 2 hidden (table-name, rank) = 10 total
+    // pragma_table_xinfo includes hidden FTS5 internal columns
+    expect(colNames).toContain("title");
+    expect(colNames).toContain("content");
+    expect(colNames).toContain("source_id");
+    expect(colNames).toContain("content_type");
+    expect(colNames).toContain("source_category");
+    expect(colNames).toContain("session_id");
+    expect(colNames).toContain("event_id");
+    expect(colNames).toContain("timestamp");
+    // 8 user-defined + 2 hidden FTS5 internal (chunks, rank)
+    expect(colNames.length).toBe(10);
+
+    // Same check for trigram table
+    const trigramCols = db.prepare("SELECT name FROM pragma_table_xinfo('chunks_trigram')").all() as Array<{ name: string }>;
+    const trigramColNames = trigramCols.map(c => c.name);
+    expect(trigramColNames).toContain("source_category");
+    expect(trigramColNames).toContain("session_id");
+    expect(trigramColNames).toContain("event_id");
+    expect(trigramColNames).toContain("timestamp");
+    expect(trigramColNames.length).toBe(10);
+
+    db.close();
+    store.close();
+
+    // Cleanup
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("Old schema detected and migrated to new schema", () => {
+    const dbPath = join(
+      tmpdir(),
+      `context-mode-test-migrate-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+
+    // Step 1: Create a DB with the OLD schema (4-column FTS5)
+    const Database = loadDatabase();
+    const rawDb = new Database(dbPath);
+    applyWALPragmas(rawDb);
+    rawDb.exec(`
+      CREATE TABLE IF NOT EXISTS sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL DEFAULT 0,
+        code_chunk_count INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        file_path TEXT,
+        content_hash TEXT
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
+        title,
+        content,
+        source_id UNINDEXED,
+        content_type UNINDEXED,
+        tokenize='porter unicode61'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
+        title,
+        content,
+        source_id UNINDEXED,
+        content_type UNINDEXED,
+        tokenize='trigram'
+      );
+      CREATE TABLE IF NOT EXISTS vocabulary (
+        word TEXT PRIMARY KEY
+      );
+      CREATE INDEX IF NOT EXISTS idx_sources_label ON sources(label);
+    `);
+
+    // Insert a row into old schema to confirm data is present
+    rawDb.exec("INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES ('old-source', 1, 0)");
+    rawDb.exec("INSERT INTO chunks (title, content, source_id, content_type) VALUES ('old title', 'old content', 1, 'prose')");
+    rawDb.exec("INSERT INTO chunks_trigram (title, content, source_id, content_type) VALUES ('old title', 'old content', 1, 'prose')");
+
+    // Verify old schema has only 4 user columns (+ 2 hidden FTS5 = 6 total)
+    const oldCols = rawDb.prepare("SELECT name FROM pragma_table_xinfo('chunks')").all() as Array<{ name: string }>;
+    expect(oldCols.length).toBe(6);
+    expect(oldCols.map(c => c.name)).not.toContain("source_category");
+
+    rawDb.close();
+
+    // Step 2: Open with ContentStore — migration should trigger
+    const store = new ContentStore(dbPath);
+
+    // Step 3: Verify migration happened — new columns exist
+    const checkDb = new Database(dbPath, { readonly: true });
+    const newCols = checkDb.prepare("SELECT name FROM pragma_table_xinfo('chunks')").all() as Array<{ name: string }>;
+    const newColNames = newCols.map(c => c.name);
+    expect(newColNames).toContain("source_category");
+    expect(newColNames).toContain("session_id");
+    expect(newColNames).toContain("event_id");
+    expect(newColNames).toContain("timestamp");
+    expect(newColNames.length).toBe(10);
+
+    const newTrigramCols = checkDb.prepare("SELECT name FROM pragma_table_xinfo('chunks_trigram')").all() as Array<{ name: string }>;
+    expect(newTrigramCols.map(c => c.name)).toContain("source_category");
+    expect(newTrigramCols.length).toBe(10);
+
+    // Old chunk data is gone (DROP + re-CREATE clears data)
+    const chunkCount = checkDb.prepare("SELECT COUNT(*) as cnt FROM chunks").get() as { cnt: number };
+    expect(chunkCount.cnt).toBe(0);
+
+    // Sources table still intact (not dropped)
+    const sourceCount = checkDb.prepare("SELECT COUNT(*) as cnt FROM sources").get() as { cnt: number };
+    expect(sourceCount.cnt).toBe(1);
+
+    // Store still functional — can index new content
+    const result = store.index({ content: "# Test\n\nNew content after migration.", source: "post-migration" });
+    expect(result.totalChunks).toBeGreaterThan(0);
+
+    checkDb.close();
+    store.close();
+
+    // Cleanup
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
 });
 
 describe("Basic Indexing", () => {

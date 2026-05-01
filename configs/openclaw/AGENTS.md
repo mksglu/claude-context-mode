@@ -33,8 +33,9 @@ Use `context-mode__ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection
 
+0. **MEMORY**: `context-mode__ctx_search(sort: "timeline")` — after resume, check prior context before asking user.
 1. **GATHER**: `context-mode__ctx_batch_execute(commands, queries)` — runs all commands, auto-indexes, returns search. ONE call replaces 30+. Each command: `{label: "header", command: "..."}`.
-2. **FOLLOW-UP**: `context-mode__ctx_search(queries: ["q1", "q2", ...])` — all questions as array, ONE call.
+2. **FOLLOW-UP**: `context-mode__ctx_search(queries: ["q1", "q2", ...])` — all questions as array, ONE call (default relevance mode).
 3. **PROCESSING**: `context-mode__ctx_execute(language, code)` | `context-mode__ctx_execute_file(path, language, code)` — sandbox, only stdout enters context.
 4. **WEB**: `context-mode__ctx_fetch_and_index(url, source)` then `context-mode__ctx_search(queries)` — raw HTML never enters context.
 5. **INDEX**: `context-mode__ctx_index(content, source)` — store in FTS5 for later search.
@@ -45,7 +46,26 @@ Terse like caveman. Technical substance exact. Only fluff die.
 Drop: articles, filler (just/really/basically), pleasantries, hedging. Fragments OK. Short synonyms. Code unchanged.
 Pattern: [thing] [action] [reason]. [next step]. Auto-expand for: security warnings, irreversible actions, user confusion.
 Write artifacts to FILES — never inline. Return: file path + 1-line description.
-Descriptive source labels for `ctx_search(source: "label")`.
+Descriptive source labels for `context-mode__ctx_search(source: "label")`.
+
+## Session Continuity
+
+Skills, roles, and decisions persist for the entire session. Do not abandon them as the conversation grows.
+
+## Memory
+
+Session history is persistent and searchable. On resume, search BEFORE asking the user:
+
+| Need | Command |
+|------|---------|
+| What were we working on? | `context-mode__ctx_search(queries: ["summary"], source: "compaction", sort: "timeline")` |
+| What was the first request? | `context-mode__ctx_search(queries: ["prompt"], source: "user-prompt", sort: "timeline")` |
+| What did we decide? | `context-mode__ctx_search(queries: ["decision"], source: "decision", sort: "timeline")` |
+| What NOT to repeat? | `context-mode__ctx_search(queries: ["rejected"], source: "rejected-approach")` |
+| What constraints exist? | `context-mode__ctx_search(queries: ["constraint"], source: "constraint")` |
+
+DO NOT ask "what were we working on?" — SEARCH FIRST.
+If search returns 0 results, proceed as a fresh session.
 
 ## ctx commands
 

@@ -45,7 +45,7 @@ try {
     // 1. Always save the raw prompt
     const promptEvent = {
       type: "user_prompt",
-      category: "prompt",
+      category: "user-prompt",
       data: prompt,
       priority: 1,
     };

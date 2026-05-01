@@ -34,8 +34,9 @@ Use `ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection
 
+0. **MEMORY**: `ctx_search(sort: "timeline")` — after resume, check prior context before asking user.
 1. **GATHER**: `ctx_batch_execute(commands, queries)` — runs all commands, auto-indexes, returns search. ONE call replaces 30+. Each command: `{label: "header", command: "..."}`.
-2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — all questions as array, ONE call.
+2. **FOLLOW-UP**: `ctx_search(queries: ["q1", "q2", ...])` — all questions as array, ONE call (default relevance mode).
 3. **PROCESSING**: `ctx_execute(language, code)` | `ctx_execute_file(path, language, code)` — sandbox, only stdout enters context.
 4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — raw HTML never enters context.
 5. **INDEX**: `ctx_index(content, source)` — store in FTS5 for later search.
@@ -47,6 +48,22 @@ Drop: articles, filler (just/really/basically), pleasantries, hedging. Fragments
 Pattern: [thing] [action] [reason]. [next step]. Auto-expand for: security warnings, irreversible actions, user confusion.
 Write artifacts to FILES — never inline. Return: file path + 1-line description.
 Descriptive source labels for `search(source: "label")`.
+
+## Session Continuity
+
+Skills, roles, and decisions persist for the entire session. Do not abandon them as the conversation grows.
+
+## Memory
+
+Session history is persistent and searchable. On resume, search BEFORE asking the user:
+
+| Need | Command |
+|------|---------|
+| What did we decide? | `ctx_search(queries: ["decision"], source: "decision", sort: "timeline")` |
+| What constraints exist? | `ctx_search(queries: ["constraint"], source: "constraint")` |
+
+DO NOT ask "what were we working on?" — SEARCH FIRST.
+If search returns 0 results, proceed as a fresh session.
 
 ## ctx commands
 
