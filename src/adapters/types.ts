@@ -312,6 +312,7 @@ export type PlatformId =
   | "pi"
   | "zed"
   | "qwen-code"
+  | "browseros"
   | "unknown";
 
 /** Detection signal used to identify which platform is running. */

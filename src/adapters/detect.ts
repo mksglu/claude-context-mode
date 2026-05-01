@@ -41,6 +41,7 @@ export const PLATFORM_ENV_VARS = [
   ["vscode-copilot", ["VSCODE_PID", "VSCODE_CWD"]],
   ["jetbrains-copilot", ["IDEA_INITIAL_DIRECTORY", "IDEA_HOME", "JETBRAINS_CLIENT_ID"]],
   ["qwen-code", ["QWEN_PROJECT_DIR", "QWEN_SESSION_ID"]],
+  ["browseros", ["BROWSEROS_CLIENT_ID"]],
 ] as const satisfies ReadonlyArray<readonly [PlatformId, readonly string[]]>;
 
 /**
@@ -75,7 +76,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
+      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code", "browseros",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -198,6 +199,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
     };
   }
 
+  if (existsSync(resolve(home, ".config", "opencode", "mcp"))) {
+    return {
+      platform: "browseros",
+      confidence: "medium",
+      reason: "~/.config/opencode/mcp/ directory exists",
+    };
+  }
+
   // ── Low confidence: fallback ───────────────────────────
 
   return {
@@ -274,6 +283,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "qwen-code": {
       const { QwenCodeAdapter } = await import("./qwen-code/index.js");
       return new QwenCodeAdapter();
+    }
+
+    case "browseros": {
+      const { BrowserOSAdapter } = await import("./browseros/index.js");
+      return new BrowserOSAdapter();
     }
 
     default: {
