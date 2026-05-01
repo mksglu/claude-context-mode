@@ -107,13 +107,24 @@ describe("Lifecycle Guard", () => {
     assert.equal(shutdownCalled, false);
   });
 
-  test("cleanup does NOT remove stdin listeners (stdin is not used)", async () => {
-    // Capture listeners before guard starts
-    const stdinListenersBefore = process.stdin.listenerCount("close")
-      + process.stdin.listenerCount("end")
-      + process.stdin.listenerCount("data")
-      + process.stdin.listenerCount("error")
-      + process.stdin.listenerCount("readable");
+  test("touches only the 'end' stdin listener and restores it on cleanup (#236, #388)", async () => {
+    // The guard is permitted exactly one stdin assist — an 'end' listener
+    // used as a faster trigger for the same isParentAlive check the periodic
+    // timer runs (see lifecycle.ts). It must NOT touch 'close', 'data',
+    // 'error', or 'readable', and it must remove its own 'end' listener on
+    // cleanup. This test pins both halves of that contract.
+    const sample = (event: "close" | "end" | "data" | "error" | "readable") =>
+      process.stdin.listenerCount(event);
+
+    // Snapshot non-'end' listeners — these must be invariant across the
+    // guard lifecycle. Skipping 'end' on TTY since the guard skips itself.
+    const before = {
+      close: sample("close"),
+      data: sample("data"),
+      error: sample("error"),
+      readable: sample("readable"),
+      end: sample("end"),
+    };
 
     const cleanup = startLifecycleGuard({
       checkIntervalMs: 50,
@@ -121,28 +132,38 @@ describe("Lifecycle Guard", () => {
       isParentAlive: () => true,
     });
 
-    // Capture listeners after guard starts
-    const stdinListenersAfterStart = process.stdin.listenerCount("close")
-      + process.stdin.listenerCount("end")
-      + process.stdin.listenerCount("data")
-      + process.stdin.listenerCount("error")
-      + process.stdin.listenerCount("readable");
+    const afterStart = {
+      close: sample("close"),
+      data: sample("data"),
+      error: sample("error"),
+      readable: sample("readable"),
+      end: sample("end"),
+    };
 
     cleanup();
 
-    // Capture listeners after cleanup
-    const stdinListenersAfterCleanup = process.stdin.listenerCount("close")
-      + process.stdin.listenerCount("end")
-      + process.stdin.listenerCount("data")
-      + process.stdin.listenerCount("error")
-      + process.stdin.listenerCount("readable");
+    const afterCleanup = {
+      close: sample("close"),
+      data: sample("data"),
+      error: sample("error"),
+      readable: sample("readable"),
+      end: sample("end"),
+    };
 
-    // Guard should not have added any stdin listeners
-    assert.equal(stdinListenersAfterStart, stdinListenersBefore,
-      "startLifecycleGuard must not add stdin listeners");
-    // Cleanup should not have removed any stdin listeners
-    assert.equal(stdinListenersAfterCleanup, stdinListenersBefore,
-      "cleanup must not remove stdin listeners");
+    // Non-'end' listeners must be untouched at every phase (#236 contract).
+    for (const ev of ["close", "data", "error", "readable"] as const) {
+      assert.equal(afterStart[ev], before[ev],
+        `startLifecycleGuard must not add a stdin '${ev}' listener`);
+      assert.equal(afterCleanup[ev], before[ev],
+        `cleanup must not touch the stdin '${ev}' listener`);
+    }
+
+    // 'end' listener: +1 only when stdin is not a TTY; restored on cleanup.
+    const expectedEndDelta = process.stdin.isTTY ? 0 : 1;
+    assert.equal(afterStart.end - before.end, expectedEndDelta,
+      "startLifecycleGuard adds exactly one stdin 'end' listener (or none on TTY)");
+    assert.equal(afterCleanup.end, before.end,
+      "cleanup must remove the 'end' listener it added");
   });
 
   test("startLifecycleGuard does NOT call process.stdin.resume()", async () => {
@@ -166,6 +187,44 @@ describe("Lifecycle Guard", () => {
       // Restore original resume to avoid polluting other tests
       process.stdin.resume = originalResume;
     }
+  });
+
+  test("stdin 'end' triggers immediate isParentAlive re-check; shuts down only if dead (#388)", async () => {
+    // Skip on TTY — the guard intentionally does not register the 'end'
+    // listener when stdin is a TTY (e.g. OpenCode ts-plugin), so this
+    // assertion would not apply to that environment.
+    if (process.stdin.isTTY) return;
+
+    let shutdownCalled = false;
+    let parentAlive = true;
+    let aliveCallCount = 0;
+
+    const cleanup = startLifecycleGuard({
+      // Long interval so we know the next assertion can only be driven by
+      // the 'end' listener, not the periodic timer.
+      checkIntervalMs: 60_000,
+      onShutdown: () => { shutdownCalled = true; },
+      isParentAlive: () => { aliveCallCount++; return parentAlive; },
+    });
+
+    // Phase 1: parent alive — emitting 'end' must run the check but NOT
+    // shut down. This is the #236 contract: stdin close alone is not a
+    // shutdown signal.
+    const callsBeforeAliveEnd = aliveCallCount;
+    process.stdin.emit("end");
+    assert.ok(aliveCallCount > callsBeforeAliveEnd,
+      "'end' must run isParentAlive() — that's the whole point of the assist");
+    assert.equal(shutdownCalled, false,
+      "'end' with a live parent must not shut down (regression of #236)");
+
+    // Phase 2: parent now dead — the next 'end' must collapse the
+    // detection window from 30 s to ~0 ms.
+    parentAlive = false;
+    process.stdin.emit("end");
+    assert.equal(shutdownCalled, true,
+      "'end' with a dead parent must shut down without waiting for the poll tick");
+
+    cleanup();
   });
 
   test("detects ppid=0 as dead parent (Windows behavior)", async () => {

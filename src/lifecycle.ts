@@ -4,8 +4,12 @@
  * Detects parent process death (ppid polling) and OS signals to prevent
  * orphaned MCP server processes consuming 100% CPU (issue #103).
  *
- * Stdin close is NOT used as a shutdown signal — the MCP stdio transport
- * owns stdin and transient pipe events cause spurious -32000 errors (#236).
+ * Stdin close is NOT used as a *standalone* shutdown signal — the MCP stdio
+ * transport owns stdin and transient pipe events cause spurious -32000
+ * errors (#236). We do, however, treat stdin EOF as a hint to re-run the
+ * parent-liveness probe immediately (instead of waiting up to 30 s for the
+ * next poll tick), which closes the multi-day CPU-spin window seen in
+ * #311/#388 without reintroducing the false-positive shutdowns of #236.
  *
  * Cross-platform: macOS, Linux, Windows.
  */
@@ -112,9 +116,32 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
   if (process.platform !== "win32") signals.push("SIGHUP");
   for (const sig of signals) process.on(sig, shutdown);
 
+  // P0: Stdin-EOF assist (#311/#388). The vendored MCP SDK's
+  // StdioServerTransport only registers 'data' / 'error' listeners — not
+  // 'end' — so when the parent (e.g. Claude Code) dies abruptly without
+  // sending SIGTERM, the server keeps reading from a half-closed pipe and
+  // CPU-spins until the 30 s ppid poll catches up. Observed in #388 with
+  // single processes accumulating ~80 h of CPU time before SIGKILL.
+  //
+  // We deliberately DO NOT call shutdown() unconditionally on 'end' — that
+  // is exactly the false-positive behavior #236 tore out. Instead we run
+  // the same isParentAlive() check the periodic timer uses, just earlier.
+  // If the parent is alive, this is a no-op and the existing #236
+  // regression test still passes; if the parent is gone, we collapse the
+  // 30 s detection window to ~0.
+  //
+  // Skipped on TTY (OpenCode ts-plugin) where stdin is not the MCP channel.
+  const onStdinEnd = () => {
+    if (!check()) shutdown();
+  };
+  if (!process.stdin.isTTY) {
+    process.stdin.on("end", onStdinEnd);
+  }
+
   return () => {
     stopped = true;
     clearInterval(timer);
     for (const sig of signals) process.removeListener(sig, shutdown);
+    process.stdin.removeListener("end", onStdinEnd);
   };
 }
