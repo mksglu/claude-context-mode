@@ -71,6 +71,7 @@
     ".mcp.json",
     "openclaw.plugin.json",
     "start.mjs",
+    "scripts/ctx-debug.sh",
     "scripts/postinstall.mjs",
     "README.md",
     "LICENSE"
