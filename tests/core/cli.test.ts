@@ -718,6 +718,9 @@ describe("Cross-OS compatibility", () => {
   });
 
   it("published package includes the documented debug script", () => {
+    for (const doc of ["README.md", "CONTRIBUTING.md"]) {
+      expect(readFileSync(resolve(ROOT, doc), "utf-8")).toContain("scripts/ctx-debug.sh");
+    }
     expect(existsSync(resolve(ROOT, "scripts", "ctx-debug.sh"))).toBe(true);
     expect(pkg.files).toContain("scripts/ctx-debug.sh");
   });
