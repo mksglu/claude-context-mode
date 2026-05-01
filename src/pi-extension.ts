@@ -21,6 +21,7 @@ import { extractEvents, extractUserEvents } from "./session/extract.js";
 import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
+import { initI18n, t } from "./pi-i18n.js";
 
 // ── Pi Tool Name Mapping ─────────────────────────────────
 // Pi uses lowercase; shared extractors expect PascalCase (Claude Code convention).
@@ -94,11 +95,11 @@ function buildStatsText(db: SessionDB, sessionId: string): string {
     const events = db.getEvents(sessionId);
     const stats = db.getSessionStats(sessionId);
     const lines: string[] = [
-      "## context-mode stats (Pi)",
+      t("stats.title", "## context-mode stats (Pi)"),
       "",
-      `- Session: \`${sessionId.slice(0, 8)}...\``,
-      `- Events captured: ${events.length}`,
-      `- Compactions: ${stats?.compact_count ?? 0}`,
+      t("stats.session", `- Session: \`${sessionId.slice(0, 8)}...\``, { session: `${sessionId.slice(0, 8)}...` }),
+      t("stats.events", `- Events captured: ${events.length}`, { count: events.length }),
+      t("stats.compactions", `- Compactions: ${stats?.compact_count ?? 0}`, { count: stats?.compact_count ?? 0 }),
     ];
 
     // Event breakdown by category
@@ -108,7 +109,7 @@ function buildStatsText(db: SessionDB, sessionId: string): string {
       byCategory[key] = (byCategory[key] ?? 0) + 1;
     }
     if (Object.keys(byCategory).length > 0) {
-      lines.push("- Event breakdown:");
+      lines.push(t("stats.breakdown", "- Event breakdown:"));
       for (const [category, count] of Object.entries(byCategory)) {
         lines.push(`  - ${category}: ${count}`);
       }
@@ -118,12 +119,12 @@ function buildStatsText(db: SessionDB, sessionId: string): string {
     if (stats?.started_at) {
       const startedMs = new Date(stats.started_at).getTime();
       const ageMinutes = Math.round((Date.now() - startedMs) / 60_000);
-      lines.push(`- Session age: ${ageMinutes}m`);
+      lines.push(t("stats.age", `- Session age: ${ageMinutes}m`, { minutes: ageMinutes }));
     }
 
     return lines.join("\n");
   } catch {
-    return "context-mode stats unavailable (session DB error)";
+    return t("stats.unavailable", "context-mode stats unavailable (session DB error)");
   }
 }
 
@@ -149,6 +150,7 @@ function handleCommandText(
 
 /** Pi extension default export. Called once by Pi runtime with the extension API. */
 export default function piExtension(pi: any): void {
+  initI18n(pi);
   const buildDir = dirname(fileURLToPath(import.meta.url));
   const pluginRoot = resolve(buildDir, "..");
   const projectDir = process.env.PI_PROJECT_DIR || process.cwd();
@@ -185,9 +187,10 @@ export default function piExtension(pi: any): void {
       if (isBlocked) {
         return {
           block: true,
-          reason:
-            "Use context-mode MCP tools (execute, fetch_and_index) instead of inline HTTP clients. " +
-            "Raw curl/wget/fetch output floods the context window.",
+          reason: t(
+            "block.inlineHttp",
+            "Use context-mode MCP tools (execute, fetch_and_index) instead of inline HTTP clients. Raw curl/wget/fetch output floods the context window.",
+          ),
         };
       }
     } catch {
@@ -360,12 +363,12 @@ export default function piExtension(pi: any): void {
   // ── 8. Slash commands ──────────────────────────────────
 
   pi.registerCommand("ctx-stats", {
-    description: "Show context-mode session statistics",
+    description: t("cmd.stats.description", "Show context-mode session statistics"),
     handler: async (argsOrCtx: unknown, maybeCtx: unknown) => {
       const ctx = resolveCommandContext(argsOrCtx, maybeCtx);
       const text =
         !_db || !_sessionId
-          ? "context-mode: no active session"
+          ? t("stats.noSession", "context-mode: no active session")
           : buildStatsText(_db, _sessionId);
 
       return handleCommandText(text, ctx);
@@ -373,33 +376,36 @@ export default function piExtension(pi: any): void {
   });
 
   pi.registerCommand("ctx-doctor", {
-    description: "Run context-mode diagnostics",
+    description: t("cmd.doctor.description", "Run context-mode diagnostics"),
     handler: async (argsOrCtx: unknown, maybeCtx: unknown) => {
       const ctx = resolveCommandContext(argsOrCtx, maybeCtx);
       const dbPath = getDBPath();
       const dbExists = existsSync(dbPath);
       const lines: string[] = [
-        "## ctx-doctor (Pi)",
+        t("doctor.title", "## ctx-doctor (Pi)"),
         "",
-        `- DB path: \`${dbPath}\``,
-        `- DB exists: ${dbExists}`,
-        `- Session ID: \`${_sessionId ? _sessionId.slice(0, 8) + "..." : "none"}\``,
-        `- Plugin root: \`${pluginRoot}\``,
-        `- Project dir: \`${projectDir}\``,
+        t("doctor.dbPath", `- DB path: \`${dbPath}\``, { path: dbPath }),
+        t("doctor.dbExists", `- DB exists: ${dbExists}`, { exists: dbExists }),
+        t("doctor.sessionId", `- Session ID: \`${_sessionId ? _sessionId.slice(0, 8) + "..." : "none"}\``, { session: _sessionId ? _sessionId.slice(0, 8) + "..." : t("state.none", "none") }),
+        t("doctor.pluginRoot", `- Plugin root: \`${pluginRoot}\``, { path: pluginRoot }),
+        t("doctor.projectDir", `- Project dir: \`${projectDir}\``, { path: projectDir }),
       ];
 
       if (_db && _sessionId) {
         try {
           const stats = _db.getSessionStats(_sessionId);
           const eventCount = _db.getEventCount(_sessionId);
-          lines.push(`- Events: ${eventCount}`);
-          lines.push(`- Compactions: ${stats?.compact_count ?? 0}`);
+          lines.push(t("doctor.events", `- Events: ${eventCount}`, { count: eventCount }));
+          lines.push(t("doctor.compactions", `- Compactions: ${stats?.compact_count ?? 0}`, { count: stats?.compact_count ?? 0 }));
           const resume = _db.getResume(_sessionId);
-          lines.push(
-            `- Resume snapshot: ${resume ? (resume.consumed ? "consumed" : "available") : "none"}`,
-          );
+          const state = resume
+            ? resume.consumed
+              ? t("state.consumed", "consumed")
+              : t("state.available", "available")
+            : t("state.none", "none");
+          lines.push(t("doctor.resume", `- Resume snapshot: ${state}`, { state }));
         } catch {
-          lines.push("- DB query error");
+          lines.push(t("doctor.dbQueryError", "- DB query error"));
         }
       }
 
