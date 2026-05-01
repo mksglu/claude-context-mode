@@ -5,7 +5,7 @@
  *
  * BrowserOS hook specifics:
  *   - NO hook support (MCP-only, same as Antigravity/Zed)
- *   - Config: ~/.config/opencode/mcp/<server-name>/mcp_config.json (JSON format)
+ *   - Config: ~/.config/opencode/mcp/contextplus/mcp_config.json (JSON format)
  *   - MCP: full support via mcpServers in mcp_config.json
  *   - All capabilities are false — MCP is the only integration path
  *   - Session dir: ~/.config/opencode/context-mode/sessions/
@@ -49,7 +49,7 @@ import type {
 
 export class BrowserOSAdapter extends BaseAdapter implements HookAdapter {
   constructor() {
-    super([".config", "opencode", "context-mode"]);
+    super([".config", "opencode"]);
   }
 
   readonly name = "BrowserOS";
@@ -106,8 +106,6 @@ export class BrowserOSAdapter extends BaseAdapter implements HookAdapter {
   // ── Configuration ──────────────────────────────────────
 
   getSettingsPath(): string {
-    // BrowserOS MCP config: ~/.config/opencode/mcp/<server-name>/mcp_config.json
-    // We use contextplus subdir since that's what the user created for context-mode
     return resolve(homedir(), ".config", "opencode", "mcp", "contextplus", "mcp_config.json");
   }
 

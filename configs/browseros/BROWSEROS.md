@@ -1,15 +1,19 @@
-# context-mode for BrowserOS
+# context-mode — MANDATORY routing rules
 
-Use context-mode MCP tools (execute, execute_file, batch_execute, fetch_and_index, search) instead of run_command/view_file for data-heavy operations.
+## Rules
+
+- For data-heavy operations, use context-mode MCP tools instead of `run_command`/`view_file`.
+- Prefer the BrowserOS context-mode toolchain for execution, batch execution, indexing, search, and fetch-and-index workflows.
+- Use these tools when working with large codebases, indexed content, or workflows that benefit from search and retrieval.
 
 ## Available Tools
 
 | Tool | Description |
 |------|-------------|
-| `ctx_execute` | Sandbox kod çalıştırma |
-| `ctx_batch_execute` | Toplu komut çalıştırma |
-| `ctx_index` | İçerik indeksleme |
-| `ctx_search` | FTS5 arama |
-| `ctx_doctor` | Sağlık kontrolü |
-| `ctx_stats` | İstatistikler |
-| `ctx_fetch_and_index` | Web fetch + indeksleme |
+| `ctx_execute` | Sandbox code execution |
+| `ctx_batch_execute` | Batch command execution |
+| `ctx_index` | Content indexing |
+| `ctx_search` | FTS5 search |
+| `ctx_doctor` | Health check |
+| `ctx_stats` | Statistics |
+| `ctx_fetch_and_index` | Web fetch + indexing |

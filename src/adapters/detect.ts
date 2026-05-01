@@ -183,6 +183,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
     };
   }
 
+  if (existsSync(resolve(home, ".config", "opencode", "mcp"))) {
+    return {
+      platform: "browseros",
+      confidence: "medium",
+      reason: "~/.config/opencode/mcp/ directory exists",
+    };
+  }
+
   if (existsSync(resolve(home, ".config", "opencode"))) {
     return {
       platform: "opencode",
@@ -196,14 +204,6 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
       platform: "zed",
       confidence: "medium",
       reason: "~/.config/zed/ directory exists",
-    };
-  }
-
-  if (existsSync(resolve(home, ".config", "opencode", "mcp"))) {
-    return {
-      platform: "browseros",
-      confidence: "medium",
-      reason: "~/.config/opencode/mcp/ directory exists",
     };
   }
 
