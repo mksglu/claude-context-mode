@@ -717,6 +717,11 @@ describe("Cross-OS compatibility", () => {
     expect(pkg.files).toContain("scripts/postinstall.mjs");
   });
 
+  it("published package includes the documented debug script", () => {
+    expect(existsSync(resolve(ROOT, "scripts", "ctx-debug.sh"))).toBe(true);
+    expect(pkg.files).toContain("scripts/ctx-debug.sh");
+  });
+
   it("install:openclaw gracefully handles missing bash on Windows", () => {
     // Direct 'bash' invocation fails on Windows without Git Bash
     expect(pkg.scripts["install:openclaw"]).not.toMatch(/^bash /);
