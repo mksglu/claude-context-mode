@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 
 // Dynamic import for .mjs modules
 let claudeCodeFormat: (decision: unknown) => unknown;
@@ -89,6 +89,41 @@ describe("formatDecision", () => {
     it("returns null for null decision", () => {
       const result = claudeCodeFormat(null);
       expect(result).toBeNull();
+    });
+
+    // ─── Headless mode (--print, no TTY) — passthrough on ask ───
+    describe("when CLAUDE_CODE_HEADLESS=1 (headless --print mode)", () => {
+      let saved: string | undefined;
+      beforeEach(() => {
+        saved = process.env.CLAUDE_CODE_HEADLESS;
+        process.env.CLAUDE_CODE_HEADLESS = "1";
+      });
+      afterEach(() => {
+        if (saved === undefined) delete process.env.CLAUDE_CODE_HEADLESS;
+        else process.env.CLAUDE_CODE_HEADLESS = saved;
+      });
+
+      it("returns null for ask (passthrough — no TTY to surface prompt, prevents --print hang)", () => {
+        const result = claudeCodeFormat(askDecision);
+        expect(result).toBeNull();
+      });
+
+      it("returns null for deny (passthrough — headless agents have no UI to reconsider)", () => {
+        const result = claudeCodeFormat(denyDecision);
+        expect(result).toBeNull();
+      });
+
+      it("returns null for modify (passthrough — modify rewrites silently break headless tool calls)", () => {
+        const result = claudeCodeFormat(modifyDecision);
+        expect(result).toBeNull();
+      });
+
+      it("still formats context normally (informational, doesn't block the tool)", () => {
+        const result = claudeCodeFormat(contextDecision) as Record<string, unknown>;
+        expect(result).not.toBeNull();
+        const output = result.hookSpecificOutput as Record<string, unknown>;
+        expect(output.additionalContext).toBe(contextDecision.additionalContext);
+      });
     });
   });
 
