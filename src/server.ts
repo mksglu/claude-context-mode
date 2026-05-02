@@ -31,7 +31,7 @@ import { getWorktreeSuffix, SessionDB } from "./session/db.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { loadDatabase } from "./db-base.js";
-import { AnalyticsEngine, formatReport } from "./session/analytics.js";
+import { AnalyticsEngine, formatReport, getLifetimeStats } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -345,7 +345,42 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   sessionStats.calls[toolName] = (sessionStats.calls[toolName] || 0) + 1;
   sessionStats.bytesReturned[toolName] =
     (sessionStats.bytesReturned[toolName] || 0) + bytes;
+
+  // Persist to SessionDB so counters survive process restart, --continue, upgrade.
+  // Best-effort: never throws, never blocks.
+  persistToolCallCounter(toolName, bytes);
+
   return response;
+}
+
+/**
+ * Increment the per-session, per-tool counter in SessionDB so ctx_stats
+ * keeps showing the right numbers after the server restarts mid-session
+ * (e.g. on `npm update -g context-mode` or `claude --continue`).
+ *
+ * The session_id used is whatever session_meta currently holds as the
+ * most recent session — populated by the SessionStart hook.
+ */
+function persistToolCallCounter(toolName: string, bytes: number): void {
+  try {
+    const dbHash = hashProjectDir();
+    const worktreeSuffix = getWorktreeSuffix();
+    const sessionDbPath = join(
+      getSessionDir(),
+      `${dbHash}${worktreeSuffix}.db`,
+    );
+    if (!existsSync(sessionDbPath)) return;
+    const sdb = new SessionDB({ dbPath: sessionDbPath });
+    try {
+      const sid = sdb.getLatestSessionId();
+      if (!sid) return;
+      sdb.incrementToolCall(sid, toolName, bytes);
+    } finally {
+      sdb.close();
+    }
+  } catch {
+    // best-effort: counter must never throw
+  }
 }
 
 function trackIndexed(bytes: number): void {
@@ -1882,6 +1917,12 @@ server.registerTool(
   async () => {
     // ONE call, ONE source — AnalyticsEngine.queryAll()
     let text: string;
+    // Lifetime stats (across all SessionDBs + auto-memory) — best-effort.
+    let lifetime;
+    try {
+      lifetime = getLifetimeStats({ sessionsDir: getSessionDir() });
+    } catch { /* ignore — formatReport tolerates undefined */ }
+
     try {
       const dbHash = hashProjectDir();
       const worktreeSuffix = getWorktreeSuffix();
@@ -1896,7 +1937,7 @@ server.registerTool(
         try {
           const engine = new AnalyticsEngine(sdb);
           const report = engine.queryAll(sessionStats);
-          text = formatReport(report, VERSION, _latestVersion);
+          text = formatReport(report, VERSION, _latestVersion, { lifetime });
         } finally {
           sdb.close();
         }
@@ -1904,13 +1945,13 @@ server.registerTool(
         // No session DB — build a minimal report from runtime stats only
         const engine = new AnalyticsEngine(createMinimalDb());
         const report = engine.queryAll(sessionStats);
-        text = formatReport(report, VERSION, _latestVersion);
+        text = formatReport(report, VERSION, _latestVersion, { lifetime });
       }
     } catch {
       // Session DB not available or incompatible — build minimal report from runtime stats
       const engine = new AnalyticsEngine(createMinimalDb());
       const report = engine.queryAll(sessionStats);
-      text = formatReport(report, VERSION, _latestVersion);
+      text = formatReport(report, VERSION, _latestVersion, { lifetime });
     }
 
     return trackResponse("ctx_stats", {

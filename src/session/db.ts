@@ -95,6 +95,13 @@ export interface ResumeRow {
   consumed: number;
 }
 
+/** Aggregated tool-call stats for a single session. */
+export interface ToolCallStats {
+  totalCalls: number;
+  totalBytesReturned: number;
+  byTool: Record<string, { calls: number; bytesReturned: number }>;
+}
+
 // ─────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────
@@ -131,6 +138,9 @@ const S = {
   deleteResume: "deleteResume",
   getOldSessions: "getOldSessions",
   searchEvents: "searchEvents",
+  incrementToolCall: "incrementToolCall",
+  getToolCallTotals: "getToolCallTotals",
+  getToolCallByTool: "getToolCallByTool",
 } as const;
 
 // ─────────────────────────────────────────────────────────
@@ -211,6 +221,17 @@ export class SessionDB extends SQLiteBase {
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         consumed INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        session_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        calls INTEGER NOT NULL DEFAULT 0,
+        bytes_returned INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, tool)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
     `);
 
     // Migration: add per-event attribution columns for existing DBs.
@@ -348,6 +369,23 @@ export class SessionDB extends SQLiteBase {
     p(S.getOldSessions,
       `SELECT session_id FROM session_meta WHERE started_at < datetime('now', ? || ' days')`);
 
+    // ── Tool calls (persistent counter) ──
+    p(S.incrementToolCall,
+      `INSERT INTO tool_calls (session_id, tool, calls, bytes_returned)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT(session_id, tool) DO UPDATE SET
+         calls = calls + 1,
+         bytes_returned = bytes_returned + excluded.bytes_returned,
+         updated_at = datetime('now')`);
+
+    p(S.getToolCallTotals,
+      `SELECT COALESCE(SUM(calls), 0) AS calls,
+              COALESCE(SUM(bytes_returned), 0) AS bytes_returned
+       FROM tool_calls WHERE session_id = ?`);
+
+    p(S.getToolCallByTool,
+      `SELECT tool, calls, bytes_returned
+       FROM tool_calls WHERE session_id = ? ORDER BY calls DESC`);
   }
 
   // ═══════════════════════════════════════════
@@ -563,6 +601,73 @@ export class SessionDB extends SQLiteBase {
    */
   markResumeConsumed(sessionId: string): void {
     this.stmt(S.markResumeConsumed).run(sessionId);
+  }
+
+  /**
+   * Return the most recent session_id from session_meta, or null if none.
+   * Used by the runtime to attach persistent counters to the right session
+   * after a process restart.
+   */
+  getLatestSessionId(): string | null {
+    try {
+      const row = this.db.prepare(
+        "SELECT session_id FROM session_meta ORDER BY started_at DESC LIMIT 1",
+      ).get() as { session_id?: string } | undefined;
+      return row?.session_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  // Tool call counters (Bug #1 + #2 — survive restart, --continue, upgrade)
+  // ═══════════════════════════════════════════
+
+  /**
+   * Increment the persistent tool-call counter for `tool` in `sessionId`.
+   * Adds `bytesReturned` to the cumulative total. Idempotent across
+   * SessionDB instances — counters survive process restart.
+   */
+  incrementToolCall(sessionId: string, tool: string, bytesReturned: number = 0): void {
+    const safeBytes = Number.isFinite(bytesReturned) && bytesReturned > 0 ? Math.round(bytesReturned) : 0;
+    try {
+      this.stmt(S.incrementToolCall).run(sessionId, tool, safeBytes);
+    } catch {
+      // best-effort: counter must never throw and break the parent call
+    }
+  }
+
+  /**
+   * Get aggregated tool-call stats for `sessionId`. Returns zero-stats
+   * when the session has no recorded calls.
+   */
+  getToolCallStats(sessionId: string): ToolCallStats {
+    try {
+      const totals = this.stmt(S.getToolCallTotals).get(sessionId) as
+        | { calls: number; bytes_returned: number }
+        | undefined;
+      const rows = this.stmt(S.getToolCallByTool).all(sessionId) as Array<{
+        tool: string;
+        calls: number;
+        bytes_returned: number;
+      }>;
+
+      const byTool: ToolCallStats["byTool"] = {};
+      for (const row of rows) {
+        byTool[row.tool] = {
+          calls: row.calls,
+          bytesReturned: row.bytes_returned,
+        };
+      }
+
+      return {
+        totalCalls: totals?.calls ?? 0,
+        totalBytesReturned: totals?.bytes_returned ?? 0,
+        byTool,
+      };
+    } catch {
+      return { totalCalls: 0, totalBytesReturned: 0, byTool: {} };
+    }
   }
 
   // ═══════════════════════════════════════════
