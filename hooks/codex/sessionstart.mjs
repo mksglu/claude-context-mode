@@ -14,7 +14,6 @@ import {
   writeSessionEventsFile,
   buildSessionDirective,
   getSessionEvents,
-  getLatestSessionEvents,
 } from "../session-directive.mjs";
 import {
   readStdin,
@@ -57,9 +56,13 @@ try {
       try { unlinkSync(getCleanupFlagPath(OPTS)); } catch { /* no flag */ }
     }
 
-    const events = source === "compact"
-      ? getSessionEvents(db, getSessionId(input, OPTS))
-      : getLatestSessionEvents(db);
+    // Filter events to the session being resumed/compacted. Falling back to
+    // getLatestSessionEvents(db) for resume leaks events from any other
+    // session whose session_meta.started_at is more recent — observed
+    // cross-session bleed when a different session started after this one
+    // and before the resume.
+    const sessionId = getSessionId(input, OPTS);
+    const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS));
       additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
