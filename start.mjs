@@ -101,7 +101,18 @@ if (cacheMatch) {
 // even when the plugin cache is completely broken. It creates symlinks for any
 // missing plugin cache directories on every session start.
 // Pure Node.js — no bash dependency. Works on Windows, macOS (SIP), Linux.
+//
+// Brew node upgrade resilience:
+//   - On Unix we register the hook command as the bare script path. The script
+//     itself carries `#!/usr/bin/env node`, so `env` resolves node from PATH at
+//     runtime. This survives Brew/asdf/nvm upgrades that move node binaries.
+//   - On Windows there is no shebang; we fall back to "<execPath>" "<scriptPath>".
+//   - On every boot we self-heal stale "/opt/homebrew/Cellar/node/<ver>/..." paths
+//     left behind by older versions of this code.
 try {
+  const { buildHookCommand, selfHealCacheHealHook, ensureShebangAndExecBit } =
+    await import("./hooks/cache-heal-utils.mjs");
+
   const globalHooksDir = resolve(homedir(), ".claude", "hooks");
   const healHookPath = resolve(globalHooksDir, "context-mode-cache-heal.mjs");
   // Clean up old bash version if it exists
@@ -142,6 +153,13 @@ try{
 `;
     writeFileSync(healHookPath, healScript, { mode: 0o755 });
   }
+
+  // Always re-assert shebang + chmod +x on Unix so the bare-script hook
+  // command is spawnable even if the file was created without exec bit.
+  if (process.platform !== "win32") {
+    try { ensureShebangAndExecBit(healHookPath); } catch { /* best effort */ }
+  }
+
   // Register the hook in ~/.claude/settings.json (Claude Code doesn't auto-discover hook files)
   const settingsPath = resolve(homedir(), ".claude", "settings.json");
   if (existsSync(settingsPath)) {
@@ -152,15 +170,33 @@ try{
       h.hooks?.some((hh) => hh.command?.includes("context-mode-cache-heal")),
     );
     if (!alreadyRegistered) {
-      const _nodePath = process.execPath.replace(/\\/g, "/");
-      const _healPath = healHookPath.replace(/\\/g, "/");
       sessionStart.push({
-        hooks: [{ type: "command", command: `"${_nodePath}" "${_healPath}"` }],
+        hooks: [
+          {
+            type: "command",
+            command: buildHookCommand({
+              scriptPath: healHookPath,
+              platform: process.platform,
+              nodePath: process.execPath,
+            }),
+          },
+        ],
       });
       hooks.SessionStart = sessionStart;
       settings.hooks = hooks;
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
     }
+
+    // Self-heal: rewrite an existing cache-heal hook command if it points at
+    // a node binary that no longer exists (Brew node upgrade scenario).
+    try {
+      selfHealCacheHealHook({
+        settingsPath,
+        scriptPath: healHookPath,
+        platform: process.platform,
+        nodePath: process.execPath,
+      });
+    } catch { /* best effort */ }
   }
 } catch { /* best effort */ }
 
