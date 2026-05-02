@@ -74,8 +74,14 @@ export function attributeAndInsertEvents(db, sessionId, events, input, projectDi
     workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
     lastKnownProjectDir,
   });
-  for (let i = 0; i < events.length; i++) {
-    db.insertEvent(sessionId, events[i], hookName, attributions[i]);
+  // Prefer bulk path (single transaction = single WAL commit). Falls back
+  // to per-event insert for older SessionDB instances that lack bulkInsertEvents.
+  if (typeof db.bulkInsertEvents === "function") {
+    db.bulkInsertEvents(sessionId, events, hookName, attributions);
+  } else {
+    for (let i = 0; i < events.length; i++) {
+      db.insertEvent(sessionId, events[i], hookName, attributions[i]);
+    }
   }
   return attributions;
 }

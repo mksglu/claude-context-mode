@@ -370,8 +370,10 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
     (sessionStats.bytesReturned[toolName] || 0) + bytes;
 
   // Persist to SessionDB so counters survive process restart, --continue, upgrade.
-  // Best-effort: never throws, never blocks.
-  persistToolCallCounter(toolName, bytes);
+  // Best-effort: never throws, never blocks. Deferred via setImmediate so the
+  // SQLite open/select/update/close (~1-5ms even after worktree-suffix cache)
+  // does not extend the response path on any of macOS / Linux / Windows.
+  setImmediate(() => persistToolCallCounter(toolName, bytes));
 
   return response;
 }

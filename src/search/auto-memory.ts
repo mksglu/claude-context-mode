@@ -113,9 +113,13 @@ export function searchAutoMemory(
     if (results.length >= limit) break;
 
     try {
-      // Skip files larger than 1MB to avoid memory issues
+      // Single stat for both size guard and timestamp — saves one syscall
+      // per candidate file. Cross-platform: statSync semantics identical
+      // on macOS / Linux / Windows; size+mtime read in the same inode probe.
+      let stat;
       try {
-        if (statSync(candidate.path).size > 1_000_000) continue;
+        stat = statSync(candidate.path);
+        if (stat.size > 1_000_000) continue;
       } catch { continue; }
       const content = readFileSync(candidate.path, "utf-8");
       const contentLower = content.toLowerCase();
@@ -154,7 +158,7 @@ export function searchAutoMemory(
             content: snippet,
             source: candidate.label,
             origin: "auto-memory",
-            timestamp: statSync(candidate.path).mtime.toISOString(),
+            timestamp: stat.mtime.toISOString(),
           });
           break; // one result per file per query batch
         }

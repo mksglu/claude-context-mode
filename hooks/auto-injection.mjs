@@ -28,19 +28,47 @@ export function estimateTokens(text) {
  * @returns {string} XML block or empty string
  */
 export function buildAutoInjection(events) {
+  // Single O(N) pass instead of 4× O(N) Array.filter() loops. UserPromptSubmit
+  // fires this on every prompt; with N up to 100 events the prior implementation
+  // walked the array 4 times per prompt — wasteful on macOS, painful on Windows
+  // where V8 cold paths cost more.
+  let role;
+  const decisionsAll = [];
+  const skillsSeen = new Set();
+  const skillsOrdered = [];
+  let intent;
+  for (const e of events) {
+    switch (e.category) {
+      case "role":
+        role = e;
+        break;
+      case "decision":
+        decisionsAll.push(e);
+        break;
+      case "skill":
+        if (!skillsSeen.has(e.data)) {
+          skillsSeen.add(e.data);
+          skillsOrdered.push(e.data);
+        }
+        break;
+      case "intent":
+        intent = e;
+        break;
+    }
+  }
+
   const parts = [];
   let budget = 500; // hard cap in tokens
 
   // P1: Role (always first, never truncated from output)
-  const roleEvent = events.filter(e => e.category === "role").pop(); // latest
-  if (roleEvent) {
-    const text = `<behavioral_directive>\n${roleEvent.data.slice(0, 400)}\n</behavioral_directive>`;
+  if (role) {
+    const text = `<behavioral_directive>\n${role.data.slice(0, 400)}\n</behavioral_directive>`;
     parts.push(text);
     budget -= estimateTokens(text);
   }
 
   // P2: Decisions (latest 5)
-  const decisions = events.filter(e => e.category === "decision").slice(-5);
+  const decisions = decisionsAll.slice(-5);
   if (decisions.length > 0) {
     const lines = decisions.map(d => `- ${d.data.slice(0, 100)}`).join("\n");
     const text = `<rules>\nFollow these decisions:\n${lines}\n</rules>`;
@@ -58,17 +86,15 @@ export function buildAutoInjection(events) {
   }
 
   // P3: Skills (unique names, latest 10)
-  const skills = [...new Set(events.filter(e => e.category === "skill").map(e => e.data))];
-  if (skills.length > 0 && budget > 50) {
-    const text = `<active_skills>\nRe-invoke if relevant: ${skills.slice(-10).join(", ")}\nTo reload: call the Skill tool with the skill name.\n</active_skills>`;
+  if (skillsOrdered.length > 0 && budget > 50) {
+    const text = `<active_skills>\nRe-invoke if relevant: ${skillsOrdered.slice(-10).join(", ")}\nTo reload: call the Skill tool with the skill name.\n</active_skills>`;
     parts.push(text);
     budget -= estimateTokens(text);
   }
 
   // P4: Intent (latest)
-  const intentEvent = events.filter(e => e.category === "intent").pop();
-  if (intentEvent && budget > 20) {
-    parts.push(`<session_mode>${intentEvent.data}</session_mode>`);
+  if (intent && budget > 20) {
+    parts.push(`<session_mode>${intent.data}</session_mode>`);
   }
 
   if (parts.length === 0) return "";
