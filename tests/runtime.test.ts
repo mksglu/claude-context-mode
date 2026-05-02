@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RuntimeMap } from "../src/runtime.js";
 
 describe("runtime version reporting", () => {
@@ -57,5 +60,174 @@ describe("runtime version reporting", () => {
     );
     expect(summary).toContain("Go:         go (go version go1.26.2 darwin/arm64)");
     expect(summary).not.toContain("Go:         go (unknown)");
+  });
+});
+
+describe("SHELL env var override", () => {
+  let tmpDir: string;
+  let fakeShell: string;
+  const originalShell = process.env.SHELL;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ctx-shell-"));
+    fakeShell = join(tmpDir, "fake-bash");
+    writeFileSync(fakeShell, "#!/bin/sh\necho fake\n", { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    if (originalShell === undefined) delete process.env.SHELL;
+    else process.env.SHELL = originalShell;
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    vi.resetModules();
+  });
+
+  test("SHELL env var overrides shell when path exists", async () => {
+    process.env.SHELL = fakeShell;
+    const { detectRuntimes } = await import("../src/runtime.js");
+    const r = detectRuntimes();
+    expect(r.shell).toBe(fakeShell);
+  });
+
+  test("SHELL env var ignored when path does not exist", async () => {
+    process.env.SHELL = join(tmpDir, "does-not-exist-shell");
+    const { detectRuntimes } = await import("../src/runtime.js");
+    const r = detectRuntimes();
+    expect(r.shell).not.toBe(process.env.SHELL);
+    expect(r.shell.length).toBeGreaterThan(0);
+  });
+
+  test("no SHELL env var falls through to platform-specific detection", async () => {
+    delete process.env.SHELL;
+    const { detectRuntimes } = await import("../src/runtime.js");
+    const r = detectRuntimes();
+    // Should resolve to a non-empty shell from platform detection
+    expect(r.shell.length).toBeGreaterThan(0);
+    // On Unix, expect bash or sh; on Windows, expect bash.exe / sh / powershell / cmd
+    if (process.platform === "win32") {
+      const lower = r.shell.toLowerCase();
+      expect(
+        lower.includes("bash") ||
+          lower.includes("sh") ||
+          lower.includes("powershell") ||
+          lower.includes("cmd"),
+      ).toBe(true);
+    } else {
+      expect(["bash", "sh"]).toContain(r.shell);
+    }
+  });
+});
+
+describe("buildCommand shell variants", () => {
+  function makeRuntimes(shell: string): RuntimeMap {
+    return {
+      javascript: "node",
+      typescript: null,
+      python: null,
+      shell,
+      ruby: null,
+      go: null,
+      rust: null,
+      php: null,
+      perl: null,
+      r: null,
+      elixir: null,
+    };
+  }
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.unstubAllGlobals();
+    vi.doUnmock("node:process");
+  });
+
+  async function importWithPlatform(platform: NodeJS.Platform) {
+    vi.resetModules();
+    Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    return await import("../src/runtime.js");
+  }
+
+  test("Windows bash gets bash -c source pattern", async () => {
+    const original = process.platform;
+    try {
+      const { buildCommand } = await importWithPlatform("win32");
+      const cmd = buildCommand(
+        makeRuntimes("C:\\Program Files\\Git\\usr\\bin\\bash.exe"),
+        "shell",
+        "D:\\tmp\\script",
+      );
+      expect(cmd[0]).toBe("C:\\Program Files\\Git\\usr\\bin\\bash.exe");
+      expect(cmd[1]).toBe("-c");
+      expect(cmd[2]).toBe("source 'D:\\tmp\\script'");
+    } finally {
+      Object.defineProperty(process, "platform", { value: original, configurable: true });
+      vi.resetModules();
+    }
+  });
+
+  test("Windows powershell gets -File pattern", async () => {
+    const original = process.platform;
+    try {
+      const { buildCommand } = await importWithPlatform("win32");
+      const cmd = buildCommand(
+        makeRuntimes("powershell"),
+        "shell",
+        "C:\\tmp\\script.ps1",
+      );
+      expect(cmd[0]).toBe("powershell");
+      expect(cmd[1]).toBe("-File");
+      expect(cmd[2]).toBe("C:\\tmp\\script.ps1");
+    } finally {
+      Object.defineProperty(process, "platform", { value: original, configurable: true });
+      vi.resetModules();
+    }
+  });
+
+  test("Windows cmd gets direct file pattern", async () => {
+    const original = process.platform;
+    try {
+      const { buildCommand } = await importWithPlatform("win32");
+      const cmd = buildCommand(
+        makeRuntimes("cmd.exe"),
+        "shell",
+        "C:\\tmp\\script.cmd",
+      );
+      expect(cmd[0]).toBe("cmd.exe");
+      expect(cmd[1]).toBe("C:\\tmp\\script.cmd");
+      expect(cmd.length).toBe(2);
+    } finally {
+      Object.defineProperty(process, "platform", { value: original, configurable: true });
+      vi.resetModules();
+    }
+  });
+
+  test("Unix bash gets direct file path (unchanged)", async () => {
+    const original = process.platform;
+    try {
+      const { buildCommand } = await importWithPlatform("linux");
+      const cmd = buildCommand(makeRuntimes("bash"), "shell", "/tmp/script");
+      expect(cmd[0]).toBe("bash");
+      expect(cmd[1]).toBe("/tmp/script");
+      expect(cmd.length).toBe(2);
+    } finally {
+      Object.defineProperty(process, "platform", { value: original, configurable: true });
+      vi.resetModules();
+    }
+  });
+
+  test("buildCommand on Windows escapes single-quotes in path safely", async () => {
+    const original = process.platform;
+    try {
+      const { buildCommand } = await importWithPlatform("win32");
+      const cmd = buildCommand(
+        makeRuntimes("C:\\bash.exe"),
+        "shell",
+        "D:\\path\\with'quote\\script",
+      );
+      // Single quote escaped via '\'' technique → source 'D:\path\with'\''quote\script'
+      expect(cmd[2]).toBe("source 'D:\\path\\with'\\''quote\\script'");
+    } finally {
+      Object.defineProperty(process, "platform", { value: original, configurable: true });
+      vi.resetModules();
+    }
   });
 });

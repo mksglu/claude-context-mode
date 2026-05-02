@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { PolyglotExecutor } from "../src/executor.js";
+import { PolyglotExecutor, buildScriptFilename, buildSpawnOptions } from "../src/executor.js";
 import {
   detectRuntimes,
   buildCommand,
@@ -1540,6 +1540,40 @@ describe("Windows Shell Support", () => {
     const cmd = buildCommand(runtimes, "shell", "/tmp/script.sh");
     assert.ok(Array.isArray(cmd) && cmd.length === 2, `Expected [shell, path], got: ${cmd}`);
     assert.equal(cmd[1], "/tmp/script.sh");
+  });
+
+  // --- Issue #384: hide Windows console + drop .sh extension for shell ---
+
+  test("buildSpawnOptions: windowsHide=true on Windows", async () => {
+    assert.equal(buildSpawnOptions("win32").windowsHide, true);
+  });
+
+  test("buildSpawnOptions: windowsHide=false on macOS/Linux", async () => {
+    assert.equal(buildSpawnOptions("darwin").windowsHide, false);
+    assert.equal(buildSpawnOptions("linux").windowsHide, false);
+  });
+
+  test("buildScriptFilename: shell on Windows has NO extension (avoid .sh file association)", async () => {
+    assert.equal(buildScriptFilename("shell", "win32"), "script");
+  });
+
+  test("buildScriptFilename: shell on Unix keeps .sh extension", async () => {
+    assert.equal(buildScriptFilename("shell", "darwin"), "script.sh");
+    assert.equal(buildScriptFilename("shell", "linux"), "script.sh");
+  });
+
+  test("buildScriptFilename: non-shell languages keep their extension on Windows", async () => {
+    assert.equal(buildScriptFilename("python", "win32"), "script.py");
+    assert.equal(buildScriptFilename("javascript", "win32"), "script.js");
+    assert.equal(buildScriptFilename("typescript", "win32"), "script.ts");
+    assert.equal(buildScriptFilename("ruby", "win32"), "script.rb");
+    assert.equal(buildScriptFilename("go", "win32"), "script.go");
+    assert.equal(buildScriptFilename("rust", "win32"), "script.rs");
+  });
+
+  test("buildScriptFilename: non-shell languages keep their extension on Unix", async () => {
+    assert.equal(buildScriptFilename("python", "linux"), "script.py");
+    assert.equal(buildScriptFilename("javascript", "darwin"), "script.js");
   });
 });
 

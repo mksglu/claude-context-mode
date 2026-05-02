@@ -128,6 +128,13 @@ export function detectRuntimes(): RuntimeMap {
   const hasBun = bunExists();
   const bun = hasBun ? bunCommand() : null;
 
+  // Honor SHELL env var when it points at a real binary. Lets users with
+  // non-standard setups (WSL, custom bash, msys2) pin context-mode to
+  // their preferred shell instead of relying on auto-detection.
+  const userShell = process.env.SHELL;
+  const shellOverride = userShell && existsSync(userShell) ? userShell : null;
+  const isWin = process.platform === "win32";
+
   return {
     javascript: bun ?? process.execPath,
     typescript: bun
@@ -142,9 +149,9 @@ export function detectRuntimes(): RuntimeMap {
       : commandExists("python")
         ? "python"
         : null,
-    shell: isWindows
+    shell: shellOverride ?? (isWin
       ? (resolveWindowsBash() ?? (commandExists("sh") ? "sh" : commandExists("powershell") ? "powershell" : "cmd.exe"))
-      : commandExists("bash") ? "bash" : "sh",
+      : commandExists("bash") ? "bash" : "sh"),
     ruby: commandExists("ruby") ? "ruby" : null,
     go: commandExists("go") ? "go" : null,
     rust: commandExists("rustc") ? "rustc" : null,
@@ -272,8 +279,28 @@ export function buildCommand(
       }
       return [runtimes.python, filePath];
 
-    case "shell":
+    case "shell": {
+      // Re-evaluate platform per call so detection-time and command-build-time
+      // can be tested independently (and to allow tests to stub process.platform).
+      const winNow = process.platform === "win32";
+      if (winNow) {
+        const shellName = runtimes.shell.toLowerCase();
+        if (shellName.includes("bash") || shellName.endsWith("/sh") || shellName.endsWith("\\sh.exe")) {
+          // bash -c "source 'path'" — avoids MSYS2 path mangling on non-C:
+          // drives. When bash.exe receives a script as a direct argument,
+          // MSYS rewrites D:\tmp\script → D:\c\tmp\script and execution
+          // breaks. The -c flag prevents MSYS from touching the file arg.
+          // Single-quote escape: ' → '\''
+          const escaped = filePath.replace(/'/g, "'\\''");
+          return [runtimes.shell, "-c", `source '${escaped}'`];
+        }
+        if (shellName.includes("powershell") || shellName.includes("pwsh")) {
+          return [runtimes.shell, "-File", filePath];
+        }
+        // cmd.exe and others: direct file (cmd reads .cmd association safely).
+      }
       return [runtimes.shell, filePath];
+    }
 
     case "ruby":
       if (!runtimes.ruby) {

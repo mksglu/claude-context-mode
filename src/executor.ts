@@ -14,6 +14,40 @@ import type { ExecResult } from "./types.js";
 const isWin = process.platform === "win32";
 
 /**
+ * Pure helper: extension map for temp script files per language.
+ * On Windows, shell scripts get NO extension to avoid Windows file-association
+ * for `.sh` (which spawns a visible Git Bash window over the user's IDE).
+ */
+const SCRIPT_EXT: Record<Language, string> = {
+  javascript: "js",
+  typescript: "ts",
+  python: "py",
+  shell: "sh",
+  ruby: "rb",
+  go: "go",
+  rust: "rs",
+  php: "php",
+  perl: "pl",
+  r: "R",
+  elixir: "exs",
+};
+
+/** Pure helper — exported for unit testing. Returns "script" or "script.<ext>". */
+export function buildScriptFilename(language: Language, platform: NodeJS.Platform): string {
+  if (platform === "win32" && language === "shell") return "script";
+  return `script.${SCRIPT_EXT[language]}`;
+}
+
+/**
+ * Pure helper — exported for unit testing. Adds `windowsHide: true` on Windows
+ * to prevent the spawned shell from creating a visible console window that
+ * intercepts stdout (issue #384).
+ */
+export function buildSpawnOptions(platform: NodeJS.Platform): { windowsHide: boolean } {
+  return { windowsHide: platform === "win32" };
+}
+
+/**
  * Resolve the real OS temp directory, bypassing any TMPDIR env override.
  * os.tmpdir() reads TMPDIR from the environment, which some shells/tools
  * set to the project root — causing temp files to pollute the working tree.
@@ -138,20 +172,6 @@ export class PolyglotExecutor {
   }
 
   #writeScript(tmpDir: string, code: string, language: Language): string {
-    const extMap: Record<Language, string> = {
-      javascript: "js",
-      typescript: "ts",
-      python: "py",
-      shell: "sh",
-      ruby: "rb",
-      go: "go",
-      rust: "rs",
-      php: "php",
-      perl: "pl",
-      r: "R",
-      elixir: "exs",
-    };
-
     // Go needs a main package wrapper if not present
     if (language === "go" && !code.includes("package ")) {
       code = `package main\n\nimport "fmt"\n\nfunc main() {\n${code}\n}\n`;
@@ -168,7 +188,7 @@ export class PolyglotExecutor {
       code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
-    const fp = join(tmpDir, `script.${extMap[language]}`);
+    const fp = join(tmpDir, buildScriptFilename(language, process.platform));
     if (language === "shell") {
       writeFileSync(fp, code, { encoding: "utf-8", mode: 0o700 });
     } else {
@@ -240,6 +260,11 @@ export class PolyglotExecutor {
         shell: needsShell,
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
+        // Hide the spawned-process console window on Windows. Without this,
+        // child_process.spawn creates a visible window that intercepts stdout,
+        // leaving the MCP response empty and popping a Git Bash terminal over
+        // the user's IDE. Issue #384.
+        ...buildSpawnOptions(process.platform),
       });
 
       let timedOut = false;
