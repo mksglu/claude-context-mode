@@ -121,6 +121,10 @@ if (args[0] === "doctor") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
   insight(args[1] ? Number(args[1]) : 4747);
+} else if (args[0] === "statusline") {
+  // Status line implementation lives in bin/statusline.mjs to keep it
+  // dependency-free and fast. Forward stdin and exit with its result.
+  statuslineForward();
 } else {
   // Default: start MCP server
   import("./server.js");
@@ -897,3 +901,21 @@ async function upgrade() {
     );
   }
 }
+
+/* -------------------------------------------------------
+ * statusline — forward to bin/statusline.mjs
+ * ------------------------------------------------------- */
+
+function statuslineForward(): void {
+  const scriptPath = resolve(getPluginRoot(), "bin", "statusline.mjs");
+  if (!existsSync(scriptPath)) {
+    process.stderr.write(`statusline script missing: ${scriptPath}\n`);
+    process.exit(1);
+  }
+  // Re-exec via dynamic import so stdin/stdout are inherited cleanly.
+  import(pathToFileURL(scriptPath).href).catch((err) => {
+    process.stderr.write(`statusline failed: ${err?.message ?? err}\n`);
+    process.exit(1);
+  });
+}
+

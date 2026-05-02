@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
 import { execSync, type ChildProcess } from "node:child_process";
 import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -347,11 +347,115 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   sessionStats.calls[toolName] = (sessionStats.calls[toolName] || 0) + 1;
   sessionStats.bytesReturned[toolName] =
     (sessionStats.bytesReturned[toolName] || 0) + bytes;
+
+  // Persist a sidecar JSON snapshot for the statusline — read at ~3-5 Hz by
+  // bin/statusline.mjs (and any external dashboard) so they don't have to
+  // open the SQLite database. Throttled inside persistStats() (500ms) so
+  // it's safe to call on every response. The b392c2f concurrency refactor
+  // dropped the SessionDB tool-call counter (`persistToolCallCounter`); we
+  // keep persistStats here because the statusline depends on it.
+  persistStats();
   return response;
 }
 
 function trackIndexed(bytes: number): void {
   sessionStats.bytesIndexed += bytes;
+  persistStats();
+}
+
+// ─────────────────────────────────────────────────────────
+// Stats persistence — written after every tool call so
+// external readers (status line scripts, dashboards, hooks)
+// can see real-time savings without spawning an MCP client.
+// ─────────────────────────────────────────────────────────
+
+const STATS_PERSIST_THROTTLE_MS = 500;
+const OPUS_INPUT_PRICE_PER_TOKEN = 15 / 1_000_000;
+let _lastStatsPersist = 0;
+
+/**
+ * Resolve the per-session stats file path.
+ *
+ * The session id mirrors the Claude Code adapter contract
+ * (`pid-<parent pid>`), so a status line script can derive
+ * the same id from `$PPID` without coupling to MCP.
+ */
+function getStatsFilePath(): string {
+  const sessionId = process.env.CLAUDE_SESSION_ID || `pid-${process.ppid}`;
+  return join(getSessionDir(), `stats-${sessionId}.json`);
+}
+
+function persistStats(): void {
+  const now = Date.now();
+  if (now - _lastStatsPersist < STATS_PERSIST_THROTTLE_MS) return;
+  _lastStatsPersist = now;
+
+  try {
+    const totalReturned = Object.values(sessionStats.bytesReturned).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    const totalCalls = Object.values(sessionStats.calls).reduce(
+      (a, b) => a + b,
+      0,
+    );
+    const keptOut =
+      sessionStats.bytesIndexed +
+      sessionStats.bytesSandboxed +
+      sessionStats.cacheBytesSaved;
+    const totalProcessed = keptOut + totalReturned;
+    const reductionPct =
+      totalProcessed > 0
+        ? Math.round((1 - totalReturned / totalProcessed) * 100)
+        : 0;
+    const tokensSaved = Math.round(keptOut / 4);
+
+    // Lifetime $ across sessions intentionally omitted from this payload.
+    // The b392c2f concurrency refactor removed analytics.getLifetimeStats(),
+    // so there is no longer a single source of truth for cumulative event
+    // totals. Statusline conditionally renders the lifetime block only when
+    // dollars_saved_lifetime > 0; absence degrades gracefully to a session-
+    // only render. Re-add when an analytics aggregator returns to next.
+
+    const payload = {
+      version: VERSION,
+      updated_at: now,
+      session_start: sessionStats.sessionStart,
+      uptime_ms: now - sessionStats.sessionStart,
+      total_calls: totalCalls,
+      bytes_returned: totalReturned,
+      bytes_indexed: sessionStats.bytesIndexed,
+      bytes_sandboxed: sessionStats.bytesSandboxed,
+      cache_hits: sessionStats.cacheHits,
+      cache_bytes_saved: sessionStats.cacheBytesSaved,
+      kept_out: keptOut,
+      total_processed: totalProcessed,
+      reduction_pct: reductionPct,
+      tokens_saved: tokensSaved,
+      // statusline-facing $ value — pre-computed at Opus input rate so the
+      // statusline doesn't have to know pricing. Lets us evolve pricing in
+      // one place without touching consumers.
+      dollars_saved_session: +(tokensSaved * OPUS_INPUT_PRICE_PER_TOKEN).toFixed(2),
+      by_tool: Object.fromEntries(
+        Object.keys({ ...sessionStats.calls, ...sessionStats.bytesReturned }).map(
+          (t) => [
+            t,
+            {
+              calls: sessionStats.calls[t] || 0,
+              bytes: sessionStats.bytesReturned[t] || 0,
+            },
+          ],
+        ),
+      ),
+    };
+
+    const filePath = getStatsFilePath();
+    const tmpPath = `${filePath}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(payload));
+    renameSync(tmpPath, filePath);
+  } catch {
+    // best-effort — never break tool calls because of stats persistence
+  }
 }
 
 // ==============================================================================
@@ -2486,6 +2590,12 @@ server.registerTool(
     sessionStats.cacheBytesSaved = 0;
     sessionStats.sessionStart = Date.now();
     deleted.push("session stats");
+
+    // Also drop the persisted stats file so external readers see a fresh state
+    try {
+      const statsFile = getStatsFilePath();
+      if (existsSync(statsFile)) unlinkSync(statsFile);
+    } catch { /* best effort */ }
 
     return trackResponse("ctx_purge", {
       content: [{
