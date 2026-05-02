@@ -848,45 +848,16 @@ npm install -g context-mode
 
 | Tool | What it does | Context saved |
 |---|---|---|
-| `ctx_batch_execute` | Run multiple commands + search multiple queries in ONE call. | 986 KB → 62 KB |
+| `ctx_batch_execute` | Run multiple commands + search multiple queries in ONE call. Opt-in `concurrency: 1-8` for I/O-bound batches. | 986 KB → 62 KB |
 | `ctx_execute` | Run code in 11 languages. Only stdout enters context. | 56 KB → 299 B |
 | `ctx_execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
 | `ctx_index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
-| `ctx_fetch_and_index` | Fetch URL, chunk and index. 24h TTL cache — repeat calls skip network. `force: true` to bypass. | 60 KB → 40 B |
+| `ctx_fetch_and_index` | Fetch URL, chunk and index. 24h TTL cache — repeat calls skip network. `force: true` to bypass. Pass `requests: [{url, source}, ...]` + `concurrency: 1-8` for parallel multi-URL. | 60 KB → 40 B |
 | `ctx_stats` | Show context savings, call counts, and session statistics. | — |
 | `ctx_doctor` | Diagnose installation: runtimes, hooks, FTS5, versions. | — |
 | `ctx_upgrade` | Upgrade to latest version from GitHub, rebuild, reconfigure hooks. | — |
 | `ctx_purge` | Permanently deletes all indexed content from the knowledge base. | — |
-
-### Parallel I/O — opt-in concurrency
-
-Two batch tools accept `concurrency: N` (1–8, default 1) to fan out independent I/O operations:
-
-```js
-// Multi-URL research — fetches in parallel, FTS5 writes serial
-ctx_fetch_and_index({
-  requests: [
-    { url: "https://react.dev/...", source: "react" },
-    { url: "https://vue.org/...",  source: "vue" },
-    // ...
-  ],
-  concurrency: 5,
-})
-
-// Multi-API batch — gh, curl, dig, docker inspect
-ctx_batch_execute({
-  commands: [
-    { label: "issue-1", command: "gh issue view 1" },
-    { label: "issue-2", command: "gh issue view 2" },
-    // ...
-  ],
-  queries: ["..."],
-  concurrency: 4,
-})
-```
-
-**Use 4–8** for I/O-bound work (network, gh, curl). **Keep at 1** for CPU-bound (npm test, build, lint) or commands sharing state (ports, lock files, same-repo writes). Effective concurrency caps at `os.cpus().length` automatically. Indexing always serial regardless — only the fetches race.
 
 ## How the Sandbox Works
 
