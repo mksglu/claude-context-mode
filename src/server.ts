@@ -429,7 +429,10 @@ function trackIndexed(bytes: number): void {
 // ─────────────────────────────────────────────────────────
 
 const STATS_PERSIST_THROTTLE_MS = 500;
+const LIFETIME_REFRESH_MS = 30_000;
+const OPUS_INPUT_PRICE_PER_TOKEN = 15 / 1_000_000;
 let _lastStatsPersist = 0;
+let _lifetimeCache: { tokens: number; computedAt: number } | undefined;
 
 /**
  * Resolve the per-session stats file path.
@@ -468,6 +471,22 @@ function persistStats(): void {
         : 0;
     const tokensSaved = Math.round(keptOut / 4);
 
+    // Lifetime savings — cached separately because getLifetimeStats() scans
+    // disk (per-project SessionDBs + auto-memory dirs) and is too expensive
+    // for the 500ms persist throttle. Refresh every 30s; statusline doesn't
+    // need second-by-second lifetime accuracy.
+    let lifetimeTokens = _lifetimeCache?.tokens ?? 0;
+    if (!_lifetimeCache || now - _lifetimeCache.computedAt > LIFETIME_REFRESH_MS) {
+      try {
+        const life = getLifetimeStats({ sessionsDir: getSessionDir() });
+        // ~1KB per event ÷ 4 bytes/token = 256 tokens/event (matches analytics.ts).
+        lifetimeTokens = (life?.totalEvents ?? 0) * 256;
+        _lifetimeCache = { tokens: lifetimeTokens, computedAt: now };
+      } catch {
+        // best-effort — keep stale cache or 0
+      }
+    }
+
     const payload = {
       version: VERSION,
       updated_at: now,
@@ -483,6 +502,12 @@ function persistStats(): void {
       total_processed: totalProcessed,
       reduction_pct: reductionPct,
       tokens_saved: tokensSaved,
+      // statusline-facing $ values — pre-computed at Opus input rate so the
+      // statusline doesn't have to know pricing. Also lets us evolve pricing
+      // in one place without touching consumers.
+      dollars_saved_session: +(tokensSaved * OPUS_INPUT_PRICE_PER_TOKEN).toFixed(2),
+      tokens_saved_lifetime: lifetimeTokens,
+      dollars_saved_lifetime: +(lifetimeTokens * OPUS_INPUT_PRICE_PER_TOKEN).toFixed(2),
       by_tool: Object.fromEntries(
         Object.keys({ ...sessionStats.calls, ...sessionStats.bytesReturned }).map(
           (t) => [

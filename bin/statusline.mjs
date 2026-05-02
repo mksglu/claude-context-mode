@@ -2,31 +2,46 @@
 /**
  * context-mode status line — Claude Code statusLine integration.
  *
- * Reads JSON session data from stdin (provided by Claude Code), looks up the
- * persisted stats file written by the MCP server, and prints a single-line
- * status string showing live token savings.
+ * Reads the persisted stats file written by the MCP server and prints a
+ * single-line, value-first status string designed for enterprise dev
+ * surfaces (Loom demos, Slack screen shares, over-the-shoulder closes).
  *
- * Wire it up in ~/.claude/settings.json:
+ * Discipline (Datadog / Stripe / Vercel pattern):
+ *   - "context-mode" full brand label, never abbreviated
+ *   - ONE chromatic accent (status dot ●), everything else monochrome
+ *   - Bold for KPI numbers ($, %), dim for context
+ *   - No counts (calls / tokens / events) — only $ and % pass the
+ *     value-per-pixel test
+ *
+ * Wire it up in ~/.claude/settings.json (path-free — uses the bundled CLI
+ * forwarder so users don't have to know the absolute install path):
  *   {
  *     "statusLine": {
  *       "type": "command",
- *       "command": "node /absolute/path/to/context-mode/bin/statusline.mjs"
+ *       "command": "context-mode statusline"
  *     }
  *   }
+ *
+ * Or, if you prefer to skip the CLI shim, point directly at this file:
+ *     "command": "node /absolute/path/to/context-mode/bin/statusline.mjs"
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+// ── ANSI palette (single chromatic accent on the status dot) ────────────
 const NO_COLOR = process.env.NO_COLOR || !process.stdout.isTTY;
-const c = (code, text) => (NO_COLOR ? text : `[${code}m${text}[0m`);
-const dim = (t) => c("2", t);
-const green = (t) => c("32", t);
-const yellow = (t) => c("33", t);
-const cyan = (t) => c("36", t);
-const red = (t) => c("31", t);
+const ansi = (code, text) => (NO_COLOR ? text : `\x1b[${code}m${text}\x1b[0m`);
+const brand = (t) => ansi("1;36", t);   // bold cyan — brand presence
+const bold = (t) => ansi("1", t);        // bold default fg — KPI numbers
+const dim = (t) => ansi("2", t);         // dim default fg — context
+const green = (t) => ansi("32", t);      // healthy dot
+const yellow = (t) => ansi("33", t);     // degraded dot
+const red = (t) => ansi("31", t);        // stale dot
+const SEP = dim("·");
 
+// ── Stats file lookup ────────────────────────────────────────────────────
 function readStdinJson() {
   try {
     const raw = readFileSync(0, "utf-8");
@@ -49,10 +64,8 @@ function resolveSessionDir() {
  *
  * Claude Code spawns the status line through a shell, so process.ppid is
  * the intermediate shell, not Claude Code itself. We follow `PPid:` in
- * /proc/<pid>/status until we find a `claude` process.
- *
- * Falls back to process.ppid when /proc isn't available (non-Linux) or
- * when no claude ancestor is found.
+ * /proc/<pid>/status until we find a `claude` process. Falls back to
+ * process.ppid when /proc isn't available (non-Linux).
  */
 function findClaudePid() {
   if (process.platform !== "linux") return process.ppid;
@@ -77,12 +90,6 @@ function resolveSessionId() {
   return `pid-${findClaudePid()}`;
 }
 
-/**
- * Locate a stats file. First try the exact session id, then fall back to
- * the most recently modified `stats-*.json` in the session dir — that
- * covers the common case of one active session per machine without
- * requiring extra coordination.
- */
 function findStatsFile(sessionDir, sessionId) {
   const direct = join(sessionDir, `stats-${sessionId}.json`);
   if (existsSync(direct)) return direct;
@@ -120,16 +127,12 @@ function loadStats(path) {
   }
 }
 
-function fmtBytes(b) {
-  if (!b || b < 1024) return `${Math.round(b || 0)} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function fmtNumber(n) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+// ── Formatters ───────────────────────────────────────────────────────────
+function fmtUsd(n) {
+  const safe = Number.isFinite(n) && n >= 0 ? n : 0;
+  if (safe >= 100) return `$${safe.toFixed(0)}`;
+  if (safe >= 10) return `$${safe.toFixed(2)}`;
+  return `$${safe.toFixed(2)}`;
 }
 
 function fmtUptime(ms) {
@@ -142,57 +145,86 @@ function fmtUptime(ms) {
   return remMin > 0 ? `${hr}h${remMin}m` : `${hr}h`;
 }
 
-function ratioColor(pct) {
-  if (pct >= 70) return green;
-  if (pct >= 30) return yellow;
-  if (pct > 0) return cyan;
-  return dim;
+// ── Status dot — the ONE accent ──────────────────────────────────────────
+function statusDot(pct, isStale) {
+  if (isStale) return red("●");
+  if (pct >= 50) return green("●");
+  if (pct >= 1) return yellow("●");
+  return green("●");
 }
 
+// ── Main render ──────────────────────────────────────────────────────────
 function main() {
   readStdinJson(); // drain stdin even if unused, keeps Claude Code happy
   const sessionDir = resolveSessionDir();
   const sessionId = resolveSessionId();
   const statsFile = findStatsFile(sessionDir, sessionId);
 
+  // BRAND-NEW — no stats file. Use only the substantiated README headline
+  // claim ("saves ~98% of context window"). No fabricated $/dev/month or
+  // social-proof numbers we cannot back with data.
   if (!statsFile) {
-    process.stdout.write(dim("[CTX] idle"));
+    process.stdout.write(
+      `${brand("context-mode")}  ${green("●")}  ${dim("saves ~98% of context window")}`,
+    );
     return;
   }
 
   const stats = loadStats(statsFile);
   if (!stats) {
-    process.stdout.write(dim("[CTX] no data"));
+    process.stdout.write(
+      `${brand("context-mode")}  ${green("●")}  ${dim("saves ~98% of context window")}`,
+    );
     return;
   }
 
-  const calls = stats.total_calls || 0;
-  const pct = stats.reduction_pct || 0;
-  const tokensSaved = stats.tokens_saved || 0;
-  const keptOut = stats.kept_out || 0;
-  const uptime = fmtUptime(stats.uptime_ms || 0);
-  const colorize = ratioColor(pct);
-
-  // Stale sentinel: stats file older than 30 min — likely a stopped MCP.
+  // STALE — stats file >30min old, MCP likely stopped
   const ageMs = Date.now() - (stats.updated_at || 0);
   const stale = ageMs > 30 * 60 * 1000;
-  const tag = stale ? red("[CTX]") : cyan("[CTX]");
-
-  if (calls === 0) {
-    process.stdout.write(`${tag} ${dim("0 calls")} ${dim("·")} ${dim(uptime)}`);
+  if (stale) {
+    process.stdout.write(
+      `${brand("context-mode")}  ${red("●")}  ${dim("stale — restart to resume saving")}`,
+    );
     return;
   }
 
+  const sessionUsd = stats.dollars_saved_session ?? 0;
+  const lifetimeUsd = stats.dollars_saved_lifetime ?? 0;
+  const pct = stats.reduction_pct ?? 0;
+  const uptime = fmtUptime(stats.uptime_ms ?? 0);
+  const dot = statusDot(pct, false);
+
+  // FRESH — no session $ yet, lead with persistence value
+  if (sessionUsd === 0) {
+    if (lifetimeUsd > 0) {
+      // Lifetime $ exists — persistence as primary value, brand-poem echo
+      process.stdout.write(
+        `${brand("context-mode")}  ${dot}  ${bold(fmtUsd(lifetimeUsd))} ${dim("saved across sessions")}  ${SEP}  ${dim("preserved across compact, restart & upgrade")}`,
+      );
+    } else {
+      // First-ever session, no lifetime data yet — substantiated headline only
+      process.stdout.write(
+        `${brand("context-mode")}  ${dot}  ${dim("ready — saves ~98% of context window")}`,
+      );
+    }
+    return;
+  }
+
+  // ACTIVE / DEGRADED — full triad: session $ · lifetime $ · % efficient · uptime
+  // Status dot color encodes degraded vs healthy via pct.
   const parts = [
-    tag,
-    `${fmtNumber(calls)} calls`,
-    colorize(`${pct}% saved`),
-    `${fmtNumber(tokensSaved)} tok`,
-    fmtBytes(keptOut),
+    `${brand("context-mode")}`,
+    dot,
+    `${bold(fmtUsd(sessionUsd))} ${dim("saved this session")}`,
+    `${bold(fmtUsd(lifetimeUsd))} ${dim("saved across sessions")}`,
+    `${bold(`${pct}%`)} ${dim("efficient")}`,
     dim(uptime),
   ];
 
-  process.stdout.write(parts.join(dim(" · ")));
+  // Layout: brand + dot fused, then SEP between value blocks
+  const head = `${parts[0]}  ${parts[1]}  `;
+  const tail = parts.slice(2).join(`  ${SEP}  `);
+  process.stdout.write(head + tail);
 }
 
 main();

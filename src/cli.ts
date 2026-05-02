@@ -121,14 +121,10 @@ if (args[0] === "doctor") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
   insight(args[1] ? Number(args[1]) : 4747);
-} else if (args[0] === "stats") {
-  stats(args.slice(1)).then((code) => process.exit(code));
 } else if (args[0] === "statusline") {
   // Status line implementation lives in bin/statusline.mjs to keep it
   // dependency-free and fast. Forward stdin and exit with its result.
   statuslineForward();
-} else if (args[0] === "statusline-install") {
-  statuslineInstall(args.slice(1)).then((code) => process.exit(code));
 } else {
   // Default: start MCP server
   import("./server.js");
@@ -907,77 +903,6 @@ async function upgrade() {
 }
 
 /* -------------------------------------------------------
- * stats — print the latest persisted runtime stats
- *
- *   context-mode stats                    → human-readable
- *   context-mode stats --json             → machine-readable
- *   context-mode stats --session pid-123  → specific session
- * ------------------------------------------------------- */
-
-async function stats(argv: string[]): Promise<number> {
-  let sessionOverride: string | null = null;
-  let asJson = false;
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--json") asJson = true;
-    else if (arg === "--session") sessionOverride = argv[++i] ?? null;
-    else if (arg.startsWith("--session=")) sessionOverride = arg.slice("--session=".length);
-  }
-
-  const detection = detectPlatform();
-  const adapter = await getAdapter(detection.platform);
-  const sessionDir = adapter.getSessionDir();
-  const sessionId =
-    sessionOverride
-    || process.env.CLAUDE_SESSION_ID
-    || `pid-${process.ppid}`;
-  const statsFile = resolve(sessionDir, `stats-${sessionId}.json`);
-
-  if (!existsSync(statsFile)) {
-    if (asJson) {
-      process.stdout.write(JSON.stringify({ error: "no stats file", path: statsFile }));
-    } else {
-      console.error(`No stats found for session ${sessionId}.`);
-      console.error(`Looked in: ${statsFile}`);
-      console.error(`Hint: run a context-mode tool first or pass --session <id>.`);
-    }
-    return 1;
-  }
-
-  let payload: Record<string, unknown>;
-  try {
-    payload = JSON.parse(readFileSync(statsFile, "utf-8"));
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (asJson) process.stdout.write(JSON.stringify({ error: msg, path: statsFile }));
-    else console.error(`Failed to parse ${statsFile}: ${msg}`);
-    return 1;
-  }
-
-  if (asJson) {
-    process.stdout.write(JSON.stringify(payload));
-    return 0;
-  }
-
-  const calls = Number(payload.total_calls) || 0;
-  const pct = Number(payload.reduction_pct) || 0;
-  const tokensSaved = Number(payload.tokens_saved) || 0;
-  const keptOut = Number(payload.kept_out) || 0;
-  const returned = Number(payload.bytes_returned) || 0;
-  const uptimeMs = Number(payload.uptime_ms) || 0;
-  const uptimeMin = (uptimeMs / 60000).toFixed(1);
-
-  console.log(`session:        ${sessionId}`);
-  console.log(`uptime:         ${uptimeMin} min`);
-  console.log(`tool calls:     ${calls}`);
-  console.log(`returned bytes: ${returned}`);
-  console.log(`kept out:       ${keptOut} (≈ ${tokensSaved} tokens)`);
-  console.log(`savings:        ${pct}%`);
-  console.log(`stats file:     ${statsFile}`);
-  return 0;
-}
-
-/* -------------------------------------------------------
  * statusline — forward to bin/statusline.mjs
  * ------------------------------------------------------- */
 
@@ -994,88 +919,3 @@ function statuslineForward(): void {
   });
 }
 
-/* -------------------------------------------------------
- * statusline-install — safely add the status line to settings.json
- *
- *   context-mode statusline-install              → write changes
- *   context-mode statusline-install --dry-run    → preview only
- *   context-mode statusline-install --force      → overwrite existing statusLine
- * ------------------------------------------------------- */
-
-async function statuslineInstall(argv: string[]): Promise<number> {
-  const dryRun = argv.includes("--dry-run");
-  const force = argv.includes("--force");
-
-  const detection = detectPlatform();
-  const adapter = await getAdapter(detection.platform);
-  const settingsPath = adapter.getSettingsPath();
-  const scriptPath = resolve(getPluginRoot(), "bin", "statusline.mjs");
-
-  if (!existsSync(scriptPath)) {
-    console.error(`Status line script missing: ${scriptPath}`);
-    return 1;
-  }
-
-  let settings: Record<string, unknown> = {};
-  if (existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Failed to parse ${settingsPath}: ${msg}`);
-      console.error(`Refusing to overwrite a malformed settings file.`);
-      return 1;
-    }
-  }
-
-  const desired = {
-    type: "command",
-    command: `node ${scriptPath}`,
-  };
-
-  const existing = settings.statusLine as Record<string, unknown> | undefined;
-  if (existing && !force) {
-    if (
-      existing.type === desired.type &&
-      typeof existing.command === "string" &&
-      (existing.command as string).includes("statusline.mjs")
-    ) {
-      console.log(`Status line already points at context-mode (${settingsPath}).`);
-      return 0;
-    }
-    console.error(`A different statusLine is already configured in ${settingsPath}.`);
-    console.error(`Existing command: ${String(existing.command)}`);
-    console.error(`Pass --force to overwrite, or merge it manually.`);
-    return 1;
-  }
-
-  const next = { ...settings, statusLine: desired };
-  const serialized = JSON.stringify(next, null, 2) + "\n";
-
-  if (dryRun) {
-    console.log(`# would write ${settingsPath}`);
-    console.log(serialized);
-    return 0;
-  }
-
-  // Backup existing file before overwriting
-  if (existsSync(settingsPath)) {
-    const backupPath = `${settingsPath}.${Date.now()}.bak`;
-    try {
-      writeFileSync(backupPath, readFileSync(settingsPath, "utf-8"));
-      console.log(`Backed up existing settings → ${backupPath}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Backup failed: ${msg}`);
-      return 1;
-    }
-  } else {
-    mkdirSync(dirname(settingsPath), { recursive: true });
-  }
-
-  writeFileSync(settingsPath, serialized);
-  console.log(`Wrote statusLine to ${settingsPath}`);
-  console.log(`Command: ${desired.command}`);
-  console.log(`Restart Claude Code (or open a new session) to see the live bar.`);
-  return 0;
-}

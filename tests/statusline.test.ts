@@ -74,15 +74,22 @@ describe("statusline.mjs", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("prints idle when no stats file exists", () => {
+  // BRAND-NEW state: no stats file. Falls back to substantiated README
+  // headline ("~98% of context window") — no fabricated $/dev/month copy.
+  test("brand-new state: no stats file shows substantiated headline", () => {
     const out = runStatusline({
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-doesnotexist",
     });
-    assert.equal(out, "[CTX] idle");
+    assert.match(out, /context-mode/);
+    assert.match(out, /saves ~98% of context window/);
+    assert.doesNotMatch(out, /\$\d+\/dev\/month/, "no fabricated $/dev/month claim");
   });
 
-  test("renders kept_out, savings ratio, and uptime when stats are fresh", () => {
+  // ACTIVE state: full triad (session $ · lifetime $ · % efficient · uptime).
+  // Counts (calls / tokens / bytes) intentionally absent — they don't pass
+  // the value-per-pixel test on a single-line statusline.
+  test("active state: renders session $, lifetime $, % efficient, uptime", () => {
     writeStats(dir, "pid-100", {
       version: "test",
       updated_at: Date.now(),
@@ -98,6 +105,9 @@ describe("statusline.mjs", () => {
       total_processed: 4196,
       reduction_pct: 98,
       tokens_saved: 1024,
+      dollars_saved_session: 0.42,
+      tokens_saved_lifetime: 820000,
+      dollars_saved_lifetime: 12.30,
       by_tool: {},
     });
 
@@ -106,11 +116,12 @@ describe("statusline.mjs", () => {
       CLAUDE_SESSION_ID: "pid-100",
     });
 
-    assert.match(out, /\[CTX\]/);
-    assert.match(out, /3 calls/);
-    assert.match(out, /98% saved/);
-    assert.match(out, /1\.0K tok|1024 tok/);
-    assert.match(out, /4\.0 KB|4 KB/);
+    assert.match(out, /context-mode/);
+    assert.match(out, /\$0\.42/, "session $ visible");
+    assert.match(out, /saved this session/);
+    assert.match(out, /\$12\.30/, "lifetime $ visible");
+    assert.match(out, /saved across sessions/, "echoes brand 'across' poetry");
+    assert.match(out, /98% efficient/);
     assert.match(out, /1m\b/);
   });
 
@@ -126,10 +137,13 @@ describe("statusline.mjs", () => {
       bytes_sandboxed: 0,
       cache_hits: 0,
       cache_bytes_saved: 0,
-      kept_out: 0,
-      total_processed: 0,
-      reduction_pct: 0,
-      tokens_saved: 0,
+      kept_out: 8000,
+      total_processed: 8000,
+      reduction_pct: 100,
+      tokens_saved: 2000,
+      dollars_saved_session: 0.03,
+      tokens_saved_lifetime: 100000,
+      dollars_saved_lifetime: 1.50,
       by_tool: {},
     });
 
@@ -138,10 +152,14 @@ describe("statusline.mjs", () => {
       CLAUDE_SESSION_ID: "pid-not-on-disk",
     });
 
-    assert.match(out, /\[CTX\]/);
-    assert.match(out, /99 calls/);
+    assert.match(out, /context-mode/);
+    // Falls back to recent file → renders active triad from its data
+    assert.match(out, /\$0\.03/);
+    assert.match(out, /\$1\.50/);
   });
 
+  // BRAND-NEW (no recent file fallback): >30min stats are rejected, falling
+  // back to the substantiated headline rather than rendering stale data.
   test("ignores fallback files older than 30 minutes", () => {
     writeStats(dir, "pid-ancient", {
       version: "old",
@@ -170,10 +188,46 @@ describe("statusline.mjs", () => {
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-not-on-disk",
     });
-    assert.equal(out, "[CTX] idle");
+    assert.match(out, /context-mode/);
+    assert.match(out, /saves ~98% of context window/);
   });
 
-  test("treats missing reduction_pct as zero", () => {
+  // FRESH state: stats exist but no session $ yet. Lifetime $ leads with
+  // brand-poem echo; no lifetime → headline fallback.
+  test("fresh state with no session $: leads with lifetime $ + persistence echo", () => {
+    writeStats(dir, "pid-fresh-lifetime", {
+      version: "test",
+      updated_at: Date.now(),
+      session_start: Date.now(),
+      uptime_ms: 0,
+      total_calls: 0,
+      bytes_returned: 0,
+      bytes_indexed: 0,
+      bytes_sandboxed: 0,
+      cache_hits: 0,
+      cache_bytes_saved: 0,
+      kept_out: 0,
+      total_processed: 0,
+      reduction_pct: 0,
+      tokens_saved: 0,
+      dollars_saved_session: 0,
+      tokens_saved_lifetime: 820000,
+      dollars_saved_lifetime: 12.30,
+      by_tool: {},
+    });
+
+    const out = runStatusline({
+      CONTEXT_MODE_SESSION_DIR: dir,
+      CLAUDE_SESSION_ID: "pid-fresh-lifetime",
+    });
+    assert.match(out, /context-mode/);
+    assert.match(out, /\$12\.30/);
+    assert.match(out, /saved across sessions/);
+    assert.match(out, /preserved across compact, restart & upgrade/, "brand poem echo");
+    assert.doesNotMatch(out, /NaN/);
+  });
+
+  test("fresh state with no lifetime: substantiated 'ready' headline", () => {
     writeStats(dir, "pid-empty", {
       version: "test",
       updated_at: Date.now(),
@@ -189,6 +243,8 @@ describe("statusline.mjs", () => {
       total_processed: 0,
       reduction_pct: 0,
       tokens_saved: 0,
+      dollars_saved_session: 0,
+      dollars_saved_lifetime: 0,
       by_tool: {},
     });
 
@@ -196,83 +252,25 @@ describe("statusline.mjs", () => {
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-empty",
     });
-    assert.match(out, /0 calls/);
+    assert.match(out, /context-mode/);
+    assert.match(out, /ready/);
+    assert.match(out, /~98% of context window/);
     assert.doesNotMatch(out, /NaN/);
   });
 
-  test("survives a corrupt stats file by printing 'no data'", () => {
+  // Corrupt stats file — degrades to substantiated headline rather than
+  // exposing a parse error to the buyer's screen.
+  test("corrupt stats file degrades to substantiated headline", () => {
     writeFileSync(join(dir, "stats-pid-bad.json"), "{not valid json");
     const out = runStatusline({
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-bad",
     });
-    assert.match(out, /no data/);
+    assert.match(out, /context-mode/);
+    assert.match(out, /saves ~98% of context window/);
   });
 });
 
-describe("cli stats subcommand", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "ctx-stats-cli-"));
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("--json prints the persisted payload verbatim", () => {
-    const payload = {
-      version: "test",
-      updated_at: 1,
-      session_start: 0,
-      uptime_ms: 1,
-      total_calls: 7,
-      bytes_returned: 10,
-      bytes_indexed: 0,
-      bytes_sandboxed: 1000,
-      cache_hits: 0,
-      cache_bytes_saved: 0,
-      kept_out: 1000,
-      total_processed: 1010,
-      reduction_pct: 99,
-      tokens_saved: 250,
-      by_tool: { ctx_execute: { calls: 7, bytes: 10 } },
-    };
-    writeFileSync(join(dir, "stats-pid-json.json"), JSON.stringify(payload));
-
-    // Stub the adapter session dir by writing into the user's real session
-    // dir is too invasive — instead we point the CLI at a dummy session id
-    // whose file lives in the temp dir, then symlink the temp dir into the
-    // real sessions path. To keep this test hermetic, we rely on the CLI
-    // accepting a --session arg AND reading from the adapter's session
-    // dir; we therefore re-export the temp file into the real session dir
-    // under a unique name so a stray test never collides with real stats.
-    const realDir = resolve(
-      process.env.HOME || "",
-      ".claude",
-      "context-mode",
-      "sessions",
-    );
-    const sentinel = `pid-test-${process.pid}-${Date.now()}`;
-    const realFile = join(realDir, `stats-${sentinel}.json`);
-    writeFileSync(realFile, JSON.stringify(payload));
-    try {
-      const result = runCli(["stats", "--session", sentinel, "--json"], {});
-      assert.equal(result.status, 0, `stderr: ${result.stderr}`);
-      const parsed = JSON.parse(result.stdout);
-      assert.equal(parsed.total_calls, 7);
-      assert.equal(parsed.reduction_pct, 99);
-    } finally {
-      try {
-        require("node:fs").unlinkSync(realFile);
-      } catch { /* ignore */ }
-    }
-  });
-
-  test("returns a non-zero exit when stats are missing", () => {
-    const result = runCli(["stats", "--session", "pid-zzz-missing-99"], {});
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /No stats found/);
-  });
-});
+// `cli stats` subcommand intentionally removed — the statusline reads the
+// persisted JSON file directly; the CLI subcommand was redundant surface
+// area that didn't serve the statusline's purpose.
