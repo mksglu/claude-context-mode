@@ -2272,15 +2272,23 @@ server.registerTool(
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
       port: z.coerce.number().optional().describe("Port to serve on (default: 4747)"),
+      sessionDir: z.string().optional().describe("Override INSIGHT_SESSION_DIR: directory containing context-mode session .db files"),
+      contentDir: z.string().optional().describe("Override INSIGHT_CONTENT_DIR: directory containing context-mode content/index .db files"),
+      insightSessionDir: z.string().optional().describe("Alias for sessionDir / INSIGHT_SESSION_DIR"),
+      insightContentDir: z.string().optional().describe("Alias for contentDir / INSIGHT_CONTENT_DIR"),
     }),
   },
-  async ({ port: userPort }) => {
+  async ({ port: userPort, sessionDir, contentDir: inputContentDir, insightSessionDir, insightContentDir }) => {
     const port = userPort || 4747;
+    const userSessionDir = sessionDir || insightSessionDir;
+    const userContentDir = inputContentDir || insightContentDir;
     // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to plugin root
     const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
     const insightSource = resolve(pluginRoot, "insight");
-    // Use adapter-aware path: derive from sessions dir (works across all 12 adapters)
-    const sessDir = getSessionDir();
+    // Use adapter-aware path by default, with explicit overrides for hosts whose
+    // MCP adapter/session DB lives outside the detected default path.
+    const sessDir = userSessionDir ? resolve(userSessionDir) : getSessionDir();
+    const contentDir = userContentDir ? resolve(userContentDir) : join(dirname(sessDir), "content");
     const cacheDir = join(dirname(sessDir), "insight-cache");
 
     // Verify source exists
@@ -2359,9 +2367,10 @@ server.registerTool(
         // Port is free, proceed with spawn
       }
 
-      if (portOccupied && sourceUpdated) {
-        // Source was updated but stale server is running on port — kill it so fresh code runs
-        steps.push("Killing stale dashboard server (source updated)...");
+      if (portOccupied && (sourceUpdated || userSessionDir || userContentDir)) {
+        // Source or data-dir configuration changed while a server is already running —
+        // kill it so fresh code/env runs.
+        steps.push(sourceUpdated ? "Killing stale dashboard server (source updated)..." : "Killing existing dashboard server (data dir override)...");
         try {
           if (process.platform === "win32") {
             execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port}') do taskkill /F /PID %a`, { stdio: "pipe" });
@@ -2401,8 +2410,8 @@ server.registerTool(
         env: {
           ...process.env,
           PORT: String(port),
-          INSIGHT_SESSION_DIR: getSessionDir(),
-          INSIGHT_CONTENT_DIR: join(dirname(getSessionDir()), "content"),
+          INSIGHT_SESSION_DIR: sessDir,
+          INSIGHT_CONTENT_DIR: contentDir,
           INSIGHT_PARENT_PID: String(process.pid),
         },
         detached: true,
@@ -2446,6 +2455,8 @@ server.registerTool(
         else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
       } catch { /* browser open is best-effort */ }
 
+      if (userSessionDir) steps.push(`Session dir: ${sessDir}`);
+      if (userContentDir) steps.push(`Content dir: ${contentDir}`);
       steps.push(`Dashboard running at ${url}`);
 
       return trackResponse("ctx_insight", {

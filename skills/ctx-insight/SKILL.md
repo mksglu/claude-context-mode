@@ -15,7 +15,7 @@ Open the personal analytics dashboard in the browser.
 
 ## Instructions
 
-1. Call the `ctx_insight` MCP tool (no parameters needed, or pass `port: 4747` to customize).
+1. Call the `ctx_insight` MCP tool (no parameters needed, or pass `port: 4747` to customize). Optional data-dir overrides: `sessionDir`/`insightSessionDir` for `INSIGHT_SESSION_DIR`, and `contentDir`/`insightContentDir` for `INSIGHT_CONTENT_DIR`.
 2. The tool will:
    - Copy source files to cache (first run only)
    - Install dependencies (first run only, ~30s)
