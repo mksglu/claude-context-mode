@@ -19,6 +19,14 @@ describe("fetch proxy support", () => {
     expect(proxyUrl).toBe("http://127.0.0.1:7890");
   });
 
+  test("falls back to HTTP_PROXY for HTTPS URLs when HTTPS_PROXY is absent", () => {
+    const proxyUrl = getProxyUrlForRequest("https://swr.vercel.app/docs/api", {
+      HTTP_PROXY: "http://127.0.0.1:8080",
+    });
+
+    expect(proxyUrl).toBe("http://127.0.0.1:8080");
+  });
+
   test("selects HTTP proxy for HTTP URLs", () => {
     const proxyUrl = getProxyUrlForRequest("http://example.com/docs", {
       HTTP_PROXY: "http://127.0.0.1:8080",
@@ -42,6 +50,12 @@ describe("fetch proxy support", () => {
     })).toThrow("SOCKS proxies are not supported — only HTTP/HTTPS");
   });
 
+  test("rejects malformed proxy URLs with the env var name", () => {
+    expect(() => getProxyUrlForRequest("https://example.com/docs", {
+      HTTPS_PROXY: "corp-proxy.local:8080",
+    })).toThrow("Invalid proxy URL in HTTPS_PROXY: corp-proxy.local:8080");
+  });
+
   test("uses lowercase proxy env vars when uppercase vars are absent", () => {
     const proxyUrl = getProxyUrlForRequest("https://example.com/docs", {
       https_proxy: "http://127.0.0.1:7890",
@@ -63,6 +77,16 @@ describe("fetch proxy support", () => {
     expect(getProxyUrlForRequest("https://100.128.12.8", { ...env, NO_PROXY: "100.64.0.0/10" })).toBe("http://127.0.0.1:7890");
   });
 
+  test("respects wildcard NO_PROXY port constraints", () => {
+    const env = {
+      HTTPS_PROXY: "http://127.0.0.1:7890",
+      NO_PROXY: "*:8443",
+    };
+
+    expect(getProxyUrlForRequest("https://example.com:8443/docs", env)).toBeUndefined();
+    expect(getProxyUrlForRequest("https://example.com/docs", env)).toBe("http://127.0.0.1:7890");
+  });
+
   test("generated runtime code supports Bun proxy option and Node undici dispatcher", () => {
     const code = buildFetchProxyRuntimeCode("/tmp/undici/index.js");
 
@@ -76,6 +100,23 @@ describe("fetch proxy support", () => {
 
   nodeTest("generated runtime code uses a Node dispatcher when a proxy env var is set", () => {
     const output = runRuntimeProbe("node");
+    const calls = parseProbeCalls(output);
+
+    expect(calls).toEqual([{
+      targetUrl: "https://example.com/docs",
+      hasDispatcher: true,
+      dispatcherProxy: "http://127.0.0.1:7890",
+    }]);
+  });
+
+  nodeTest("generated runtime code honors wildcard NO_PROXY port constraints", () => {
+    const output = runRuntimeProbe("node", {
+      env: {
+        HTTPS_PROXY: "http://127.0.0.1:7890",
+        NO_PROXY: "*:8443",
+      },
+      targetUrl: "https://example.com/docs",
+    });
     const calls = parseProbeCalls(output);
 
     expect(calls).toEqual([{
@@ -104,16 +145,27 @@ interface ProbeCall {
   dispatcherProxy?: string;
 }
 
+interface RuntimeProbeOptions {
+  env?: Record<string, string>;
+  targetUrl?: string;
+}
+
 function isCommandAvailable(command: string) {
   const result = spawnSync(command, ["--version"], { encoding: "utf8" });
   return result.status === 0;
 }
 
-function runRuntimeProbe(runtime: "node" | "bun") {
+function runRuntimeProbe(runtime: "node" | "bun", options: RuntimeProbeOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ctx-fetch-proxy-test-"));
   try {
     const undiciPath = join(dir, "fake-undici.cjs");
     const scriptPath = join(dir, "probe.cjs");
+    const targetUrl = options.targetUrl ?? "https://example.com/docs";
+    const proxyEnv = {
+      HTTPS_PROXY: "http://127.0.0.1:7890",
+      NO_PROXY: "",
+      ...options.env,
+    };
 
     writeFileSync(undiciPath, `
 class ProxyAgent {
@@ -135,11 +187,12 @@ globalThis.fetch = async (targetUrl, options) => {
   });
   return { ok: true };
 };
-process.env.HTTPS_PROXY = "http://127.0.0.1:7890";
-process.env.NO_PROXY = "";
+const proxyEnvKeys = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"];
+for (const key of proxyEnvKeys) delete process.env[key];
+Object.assign(process.env, ${JSON.stringify(proxyEnv)});
 ${buildFetchProxyRuntimeCode(undiciPath)}
 (async () => {
-  await fetchWithProxy("https://example.com/docs");
+  await fetchWithProxy(${JSON.stringify(targetUrl)});
   console.log(JSON.stringify(calls));
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : String(error));
