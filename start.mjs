@@ -164,6 +164,24 @@ try{
   }
 } catch { /* best effort */ }
 
+// ── Self-heal Layer 5: Windows hooks.json + plugin.json normalization (#378) ──
+// Static committed files use ${CLAUDE_PLUGIN_ROOT} placeholder + bare `node`.
+// On Windows + Claude Code this hits cjs/loader:1479 because:
+//   1. bare `node` may not resolve via PATH (Git Bash, see #369)
+//   2. ${CLAUDE_PLUGIN_ROOT} can hit MSYS path mangling (#372)
+//   3. backslash paths corrupt under shell quoting
+// Rewrites placeholders to absolute paths using process.execPath (Datadog
+// model). Idempotent — only writes when needed. Survives upgrades because
+// it runs at every MCP boot.
+try {
+  const { normalizeHooksOnStartup } = await import("./hooks/normalize-hooks.mjs");
+  normalizeHooksOnStartup({
+    pluginRoot: __dirname,
+    nodePath: process.execPath,
+    platform: process.platform,
+  });
+} catch { /* best effort — never block server startup */ }
+
 // Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs)
 // ensure-deps handles better-sqlite3 install + ABI cache/rebuild automatically (#148, #203)
 import "./hooks/ensure-deps.mjs";

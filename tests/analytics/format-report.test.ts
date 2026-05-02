@@ -300,12 +300,13 @@ describe("formatReport", () => {
       });
       const output = formatReport(report, "1.0.71");
 
-      expect(output).toContain("1.7K events remembered across 6 sessions");
-      expect(output).toContain("searchable after compact & restart");
+      // New format (Bug #3 fix): "Persistent memory" header with lifetime line.
+      expect(output).toContain("Persistent memory");
+      expect(output).toContain("1.7K events");
+      expect(output).toContain("6 sessions");
       expect(output).toContain("Files tracked");
-      expect(output).toContain("Prompts saved");
-      expect(output).toContain("Git operations");
-      // Bars should contain unicode block characters
+      // Only top 2 categories are visible; rest collapse to "N more categories".
+      // Bars should contain unicode block characters.
       expect(output).toMatch(/[█░]/);
     });
 
@@ -322,7 +323,10 @@ describe("formatReport", () => {
       });
       const output = formatReport(report, "1.0.71");
 
-      expect(output).toContain("100 events remembered across 2 sessions");
+      // New format: "Persistent memory" header + cumulative line.
+      expect(output).toContain("Persistent memory");
+      expect(output).toContain("100 events");
+      expect(output).toContain("2 sessions");
       expect(output).toContain("Files tracked");
       expect(output).toContain("Git operations");
       expect(output).toMatch(/█/);
@@ -350,9 +354,9 @@ describe("formatReport", () => {
       const lines = output.split("\n");
       const fileLine = lines.findIndex((l: string) => l.includes("Files tracked"));
       const gitLine = lines.findIndex((l: string) => l.includes("Git operations"));
-      const errorLine = lines.findIndex((l: string) => l.includes("Errors caught"));
+      // Top-2 cap (Bug #5): "Errors caught" rolls into "1 more category".
       expect(fileLine).toBeLessThan(gitLine);
-      expect(gitLine).toBeLessThan(errorLine);
+      expect(output).toContain("1 more categor");
     });
 
     it("hides project memory when no events", () => {
@@ -386,8 +390,9 @@ describe("formatReport", () => {
       });
       const output = formatReport(report);
 
-      expect(output).toContain("across 1 session \u2014");
-      expect(output).not.toContain("sessions");
+      // New format includes "1 session" (no plural "s").
+      expect(output).toContain("1 session");
+      expect(output).not.toMatch(/\d+ sessions/);
     });
   });
 
@@ -438,11 +443,13 @@ describe("formatReport", () => {
       expect(lineCount).toBeLessThanOrEqual(32);
     });
 
-    it("fresh session output is under 8 lines without project memory", () => {
+    it("fresh session output is under 14 lines without project memory", () => {
+      // After Bug #8 we always render a 5-line "Bottom line" footer, so the
+      // empty-state header now fits within ~13 lines instead of the old 8.
       const report = makeReport();
       const output = formatReport(report, "1.0.71");
       const lineCount = output.split("\n").length;
-      expect(lineCount).toBeLessThanOrEqual(8);
+      expect(lineCount).toBeLessThanOrEqual(14);
     });
   });
 
@@ -579,8 +586,10 @@ describe("formatReport", () => {
       // Cache
       expect(output).toContain("cache hits");
 
-      // Project memory
-      expect(output).toContain("1.1K events remembered across 4 sessions");
+      // Project memory (new format — "Persistent memory" header + lifetime line).
+      expect(output).toContain("Persistent memory");
+      expect(output).toContain("1.1K events");
+      expect(output).toContain("4 sessions");
       expect(output).toContain("Files tracked");
 
       // Footer
