@@ -69,9 +69,13 @@ server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts
 server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
 server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
 
+// Pass `getProjectDir` (env cascade) lazily so the executor stays in sync
+// with the same resolver used by ctx_index / resolveProjectPath. Capturing
+// a snapshot at construction would diverge when only CONTEXT_MODE_PROJECT_DIR
+// (or another non-CLAUDE_PROJECT_DIR var) is set — see PR #365.
 const executor = new PolyglotExecutor({
   runtimes,
-  projectRoot: process.env.CLAUDE_PROJECT_DIR,
+  projectRoot: () => getProjectDir(),
 });
 
 // ─────────────────────────────────────────────────────────
