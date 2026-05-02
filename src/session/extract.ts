@@ -510,6 +510,67 @@ function extractMcp(input: HookInput): SessionEvent[] {
 }
 
 /**
+ * Category 27: mcp_tool_call
+ * Records the raw MCP call shape (tool_name + tool_input) so analytics
+ * can compute usage patterns like batch concurrency.
+ *
+ * Distinct from `extractMcp` (category "mcp"), which captures the textual
+ * call+response for FTS5 search. This emits a structured JSON payload
+ * keyed by tool_name + params, capped to ~2KB to keep SQLite rows small.
+ *
+ * Priority 4 (informational) — should not crowd out high-signal events
+ * during FIFO eviction.
+ */
+const MCP_PARAMS_BUDGET_BYTES = 2048;
+
+/**
+ * UTF-8-aware string truncation. Returns the longest prefix of `s` whose
+ * UTF-8 byte length is <= `maxBytes`, never landing mid-multibyte-codepoint.
+ *
+ * Naive `s.slice(0, N)` operates on UTF-16 code units, so a 2KB cap could
+ * either over-shoot (multi-byte codepoints occupy fewer code units than
+ * bytes — e.g. a chunk of CJK / emoji-heavy JSON would silently exceed
+ * the byte budget) or land mid surrogate pair (corrupt JSON downstream).
+ */
+function truncateToBytes(s: string, maxBytes: number): { value: string; truncated: boolean } {
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return { value: s, truncated: false };
+  const buf = Buffer.from(s, "utf8");
+  // Walk back from maxBytes until the byte starts a fresh codepoint:
+  //   0xxxxxxx → ASCII (start)
+  //   11xxxxxx → start of multi-byte
+  //   10xxxxxx → continuation; keep walking
+  let cut = maxBytes;
+  while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut--;
+  return { value: buf.subarray(0, cut).toString("utf8"), truncated: true };
+}
+
+function extractMcpToolCall(input: HookInput): SessionEvent[] {
+  const { tool_name, tool_input } = input;
+  if (!tool_name.startsWith("mcp__")) return [];
+
+  // Serialize params, then truncate the *string* (not the object) so the
+  // shape stays diagnosable even when the payload is huge.
+  let paramsStr: string;
+  try {
+    paramsStr = JSON.stringify(tool_input ?? {});
+  } catch {
+    paramsStr = "{}";
+  }
+  const { value: cappedStr, truncated } = truncateToBytes(paramsStr, MCP_PARAMS_BUDGET_BYTES);
+
+  const payload = truncated
+    ? `{"tool_name":${JSON.stringify(tool_name)},"params_raw":${JSON.stringify(cappedStr)},"truncated":true}`
+    : `{"tool_name":${JSON.stringify(tool_name)},"params":${cappedStr}}`;
+
+  return [{
+    type: "mcp_tool_call",
+    category: "mcp_tool_call",
+    data: safeString(payload),
+    priority: 4,
+  }];
+}
+
+/**
  * Category 6 (tool-based): decision
  * AskUserQuestion tool — tracks questions posed to user and their answers.
  */
@@ -899,6 +960,7 @@ export function extractEvents(input: HookInput): SessionEvent[] {
     events.push(...extractSkill(input));
     events.push(...extractSubagent(input));
     events.push(...extractMcp(input));
+    events.push(...extractMcpToolCall(input));
     events.push(...extractDecision(input));
     events.push(...extractConstraint(input));
     events.push(...extractWorktree(input));

@@ -254,4 +254,67 @@ describe("Analytics Metrics", () => {
       expect(report.continuity.compact_count).toBe(0);
     });
   });
+
+  // ─── MCP tool usage ────────────────────────────────────
+
+  describe("getMcpToolUsage", () => {
+    it("returns median+max concurrency for batch tools", () => {
+      // Insert mcp_tool_call rows with varied concurrency values for the same
+      // tool and one row for a tool without a concurrency param.
+      const concurrencies = [4, 8, 6, 8]; // median = (6+8)/2 = 7, max = 8
+      for (const c of concurrencies) {
+        insertEvent(db, {
+          session_id: SESSION_ID,
+          type: "mcp_tool_call",
+          category: "mcp_tool_call",
+          priority: 4,
+          data: JSON.stringify({
+            tool_name: "mcp__context-mode__ctx_batch_execute",
+            params: { commands: [], concurrency: c },
+          }),
+        });
+      }
+      // Tool without a concurrency param — should report nulls
+      insertEvent(db, {
+        session_id: SESSION_ID,
+        type: "mcp_tool_call",
+        category: "mcp_tool_call",
+        priority: 4,
+        data: JSON.stringify({
+          tool_name: "mcp__context-mode__ctx_search",
+          params: { queries: ["foo"] },
+        }),
+      });
+      // Truncated row — must be counted as a call but skipped for concurrency
+      insertEvent(db, {
+        session_id: SESSION_ID,
+        type: "mcp_tool_call",
+        category: "mcp_tool_call",
+        priority: 4,
+        data: JSON.stringify({
+          tool_name: "mcp__context-mode__ctx_batch_execute",
+          params_raw: '{"commands":[{"label":"x"',
+          truncated: true,
+        }),
+      });
+
+      const usage = engine.getMcpToolUsage();
+
+      const batch = usage.find((u) => u.tool_name === "mcp__context-mode__ctx_batch_execute");
+      expect(batch).toBeDefined();
+      expect(batch!.calls).toBe(5); // 4 normal + 1 truncated
+      expect(batch!.median_concurrency).toBe(7);
+      expect(batch!.max_concurrency).toBe(8);
+
+      const search = usage.find((u) => u.tool_name === "mcp__context-mode__ctx_search");
+      expect(search).toBeDefined();
+      expect(search!.calls).toBe(1);
+      expect(search!.median_concurrency).toBeNull();
+      expect(search!.max_concurrency).toBeNull();
+    });
+
+    it("returns empty array when no mcp_tool_call events exist", () => {
+      expect(engine.getMcpToolUsage()).toEqual([]);
+    });
+  });
 });

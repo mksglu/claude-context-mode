@@ -40,6 +40,9 @@ Use `ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 4. **WEB**: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)` — raw HTML never enters context.
 5. **INDEX**: `ctx_index(content, source)` — store in FTS5 for later search.
 
+### Parallel I/O batches
+Pass `concurrency: 4-8` to `ctx_batch_execute` and `ctx_fetch_and_index` for network/API batches. Keep `concurrency: 1` for CPU-bound work (test, build, lint). GitHub gh: cap at 4.
+
 ## Output
 
 Terse like caveman. Technical substance exact. Only fluff die.

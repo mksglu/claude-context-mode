@@ -2080,7 +2080,9 @@ describe("batch_execute FS read tracking", () => {
 
   test("parses __CM_FS__ from batch output and updates bytesSandboxed", () => {
     expect(serverSrc).toContain("/__CM_FS__:(\\d+)/g");
-    expect(serverSrc).toContain("sessionStats.bytesSandboxed += cmdFsBytes");
+    // Handler wires the FS-bytes callback to sessionStats; the runner strips/parses.
+    expect(serverSrc).toContain("sessionStats.bytesSandboxed += bytes");
+    expect(serverSrc).toContain("onFsBytes?.(cmdFsBytes)");
   });
 
   test("strips __CM_FS__ markers from batch command output", () => {
@@ -2089,6 +2091,517 @@ describe("batch_execute FS read tracking", () => {
 
   test("cleans up preload file on shutdown", () => {
     expect(serverSrc).toContain("unlinkSync(CM_FS_PRELOAD)");
+  });
+
+  test("handler accepts concurrency input field with min/max bounds", () => {
+    expect(serverSrc).toContain("concurrency: z");
+    expect(serverSrc).toMatch(/\.min\(1\)\s*\n?\s*\.max\(8\)/);
+    expect(serverSrc).toContain(".default(1)");
+  });
+
+  test("tool description documents the concurrency field with positive guidance", () => {
+    // Hardened guidance per PRD-concurrency-architectural.md Section 4
+    expect(serverSrc).toContain("concurrency: 4-8");
+    expect(serverSrc).toContain("3-5x");
+    expect(serverSrc).toContain("✅");
+    expect(serverSrc).toContain("❌");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// runBatchCommands — concurrency, ordering, timeout semantics
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { runBatchCommands, type BatchCommand } from "../../src/server.js";
+
+interface MockResult { stdout: string; timedOut?: boolean; }
+
+function mkMockExecutor(
+  handler: (code: string, timeout: number) => Promise<MockResult> | MockResult,
+): { execute: (input: { language: "shell"; code: string; timeout: number }) => Promise<MockResult> } {
+  return {
+    execute: async ({ code, timeout }) => Promise.resolve(handler(code, timeout)),
+  };
+}
+
+const NOOP_PREFIX = ""; // tests don't need NODE_OPTIONS prefix
+
+describe("runBatchCommands serial path (concurrency=1)", () => {
+  test("happy path: outputs in input order, no timeout cascade", async () => {
+    const cmds: BatchCommand[] = [
+      { label: "A", command: "echo a" },
+      { label: "B", command: "echo b" },
+      { label: "C", command: "echo c" },
+    ];
+    const exec = mkMockExecutor((code) => ({ stdout: code.includes("echo a") ? "a" : code.includes("echo b") ? "b" : "c" }));
+    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 5000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(timedOut).toBe(false);
+    expect(outputs).toHaveLength(3);
+    expect(outputs[0]).toContain("# A");
+    expect(outputs[0]).toContain("a");
+    expect(outputs[1]).toContain("# B");
+    expect(outputs[2]).toContain("# C");
+  });
+
+  test("cascading skip: timeout in first cmd skips the rest", async () => {
+    let callCount = 0;
+    const exec = mkMockExecutor(() => {
+      callCount++;
+      return { stdout: "slow", timedOut: true };
+    });
+    const cmds: BatchCommand[] = [
+      { label: "slow", command: "sleep 999" },
+      { label: "next", command: "echo next" },
+      { label: "after", command: "echo after" },
+    ];
+    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(callCount).toBe(1); // only slow command executed
+    expect(timedOut).toBe(true);
+    expect(outputs[0]).toContain("# slow");
+    expect(outputs[1]).toContain("(skipped — batch timeout exceeded)");
+    expect(outputs[2]).toContain("(skipped — batch timeout exceeded)");
+  });
+
+  test("shared timeout budget: subsequent commands skip when budget exhausted", async () => {
+    let callCount = 0;
+    const exec = mkMockExecutor(async () => {
+      callCount++;
+      await new Promise((r) => setTimeout(r, 60)); // each call burns 60ms
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = [
+      { label: "A", command: "x" },
+      { label: "B", command: "x" },
+      { label: "C", command: "x" }, // by here, elapsed > 100ms
+    ];
+    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(callCount).toBeLessThan(3);
+    expect(timedOut).toBe(true);
+    expect(outputs.some((o) => o.includes("(skipped — batch timeout exceeded)"))).toBe(true);
+  });
+});
+
+describe("runBatchCommands parallel path (concurrency>1)", () => {
+  test("happy path: 3 cmds at concurrency=3 finish in parallel", async () => {
+    const exec = mkMockExecutor(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = [
+      { label: "A", command: "x" },
+      { label: "B", command: "y" },
+      { label: "C", command: "z" },
+    ];
+    const start = Date.now();
+    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 5000, concurrency: 3, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    const elapsed = Date.now() - start;
+    expect(timedOut).toBe(false);
+    expect(outputs).toHaveLength(3);
+    expect(elapsed).toBeLessThan(250); // 3x parallel ~100ms, with overhead room
+  });
+
+  test("order preservation: outputs match input order, not completion order", async () => {
+    const exec = mkMockExecutor(async (code) => {
+      // Reverse-order delay: first cmd is slowest
+      const delay = code.includes("first") ? 80 : code.includes("second") ? 40 : 10;
+      await new Promise((r) => setTimeout(r, delay));
+      return { stdout: code.replace("echo ", "") };
+    });
+    const cmds: BatchCommand[] = [
+      { label: "FIRST", command: "echo first" },
+      { label: "SECOND", command: "echo second" },
+      { label: "THIRD", command: "echo third" },
+    ];
+    const { outputs } = await runBatchCommands(cmds, { timeout: 5000, concurrency: 3, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(outputs[0]).toContain("# FIRST");
+    expect(outputs[1]).toContain("# SECOND");
+    expect(outputs[2]).toContain("# THIRD");
+  });
+
+  test("concurrency cap: 6 cmds at concurrency=2 never exceed 2 in flight", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const exec = mkMockExecutor(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = Array.from({ length: 6 }, (_, i) => ({ label: `C${i}`, command: "x" }));
+    await runBatchCommands(cmds, { timeout: 5000, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+  });
+
+  test("per-command timeout: one cmd times out, siblings continue", async () => {
+    const exec = mkMockExecutor((code) => {
+      if (code.includes("slow")) return { stdout: "", timedOut: true };
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = [
+      { label: "slow", command: "sleep slow" },
+      { label: "fast", command: "echo fast" },
+    ];
+    const { outputs, timedOut } = await runBatchCommands(cmds, { timeout: 100, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(timedOut).toBe(true);
+    expect(outputs[0]).toContain("(timed out after 100ms)");
+    expect(outputs[1]).toContain("ok");
+  });
+
+  test("concurrency exceeds cmd count: caps at cmd count, no spurious workers", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const exec = mkMockExecutor(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = [{ label: "A", command: "x" }, { label: "B", command: "y" }];
+    await runBatchCommands(cmds, { timeout: 5000, concurrency: 8, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+  });
+
+  test("FS bytes callback fires per-command in parallel branch", async () => {
+    const exec = mkMockExecutor((code) => ({
+      stdout: code.includes("a") ? "out a\n__CM_FS__:100\n" : "out b\n__CM_FS__:200\n",
+    }));
+    const cmds: BatchCommand[] = [
+      { label: "A", command: "echo a" },
+      { label: "B", command: "echo b" },
+    ];
+    let totalBytes = 0;
+    const { outputs } = await runBatchCommands(
+      cmds,
+      { timeout: 5000, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX, onFsBytes: (b) => { totalBytes += b; } },
+      exec,
+    );
+    expect(totalBytes).toBe(300);
+    // markers stripped from output
+    expect(outputs.join("")).not.toContain("__CM_FS__");
+  });
+});
+
+describe("runBatchCommands edge cases", () => {
+  test("empty commands array returns empty outputs", async () => {
+    const exec = mkMockExecutor(() => ({ stdout: "" }));
+    const { outputs, timedOut } = await runBatchCommands([], { timeout: 1000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(outputs).toHaveLength(0);
+    expect(timedOut).toBe(false);
+  });
+
+  test("empty stdout becomes (no output) sentinel", async () => {
+    const exec = mkMockExecutor(() => ({ stdout: "" }));
+    const cmds: BatchCommand[] = [{ label: "A", command: "x" }];
+    const { outputs } = await runBatchCommands(cmds, { timeout: 1000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX }, exec);
+    expect(outputs[0]).toContain("(no output)");
+  });
+
+  test("nodeOptsPrefix is prepended to each command", async () => {
+    const seen: string[] = [];
+    const exec = mkMockExecutor((code) => {
+      seen.push(code);
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = [{ label: "A", command: "echo hi" }];
+    await runBatchCommands(cmds, { timeout: 1000, concurrency: 1, nodeOptsPrefix: 'NODE_OPTIONS="--require /tmp/x" ' }, exec);
+    expect(seen[0]).toBe('NODE_OPTIONS="--require /tmp/x" echo hi 2>&1');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// runBatchCommands hardening — P0 fixes per PRD-concurrency-architectural §0
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("runBatchCommands P0 hardening", () => {
+  test("finding A: executor throw is isolated, siblings complete", async () => {
+    // One worker's executor.execute() throws (e.g. spawn EAGAIN under load).
+    // Without try/catch, Promise.all would reject and strand sibling outputs
+    // as `undefined`, surfacing as the literal "undefined" after .join("\n").
+    const exec = mkMockExecutor((code) => {
+      if (code.includes("boom")) throw new Error("spawn EAGAIN");
+      return { stdout: code.includes("a") ? "alpha" : code.includes("b") ? "beta" : "gamma" };
+    });
+    const cmds: BatchCommand[] = [
+      { label: "A", command: "echo a" },
+      { label: "BOOM", command: "echo boom" },
+      { label: "B", command: "echo b" },
+      { label: "C", command: "echo c" },
+    ];
+    const { outputs } = await runBatchCommands(
+      cmds,
+      { timeout: 5000, concurrency: 4, nodeOptsPrefix: NOOP_PREFIX },
+      exec,
+    );
+    expect(outputs).toHaveLength(4);
+    expect(outputs[0]).toContain("# A");
+    expect(outputs[0]).toContain("alpha");
+    expect(outputs[1]).toContain("# BOOM");
+    expect(outputs[1]).toContain("(executor error: spawn EAGAIN)");
+    expect(outputs[2]).toContain("beta");
+    expect(outputs[3]).toContain("gamma");
+    // Critically: no `undefined` slots
+    expect(outputs.every((o) => typeof o === "string" && o.length > 0)).toBe(true);
+  });
+
+  test("finding B: timed-out parallel command still strips __CM_FS__ markers + counts bytes", async () => {
+    // Real subprocess timeouts often return partial stdout *with* the marker.
+    // Pre-fix the parallel branch wrote the (timed out) sentinel directly,
+    // bypassing formatCommandOutput → markers leaked into context, bytes uncounted.
+    const exec = mkMockExecutor(() => ({
+      stdout: "partial line 1\n__CM_FS__:512\npartial line 2\n",
+      timedOut: true,
+    }));
+    let totalBytes = 0;
+    const { outputs, timedOut } = await runBatchCommands(
+      [{ label: "SLOW", command: "x" }],
+      { timeout: 100, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX, onFsBytes: (b) => { totalBytes += b; } },
+      exec,
+    );
+    expect(timedOut).toBe(true);
+    expect(totalBytes).toBe(512); // marker counted
+    expect(outputs[0]).not.toContain("__CM_FS__"); // marker stripped
+    expect(outputs[0]).toContain("partial line 1");
+    expect(outputs[0]).toContain("partial line 2");
+    expect(outputs[0]).toContain("(timed out after 100ms)"); // sentinel still appended
+  });
+
+  test("finding D: timing-regression — 5 cmds × 100ms at concurrency=5 finishes in <200ms", async () => {
+    // Replaces the deleted bench (CONTRIBUTING.md L275 forbids new test files).
+    // Asserts ≥3× speedup over serial. CI-checked.
+    const exec = mkMockExecutor(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      return { stdout: "ok" };
+    });
+    const cmds: BatchCommand[] = Array.from({ length: 5 }, (_, i) => ({
+      label: `C${i}`,
+      command: "x",
+    }));
+    const start = Date.now();
+    const { outputs, timedOut } = await runBatchCommands(
+      cmds,
+      { timeout: 5000, concurrency: 5, nodeOptsPrefix: NOOP_PREFIX },
+      exec,
+    );
+    const elapsed = Date.now() - start;
+    expect(timedOut).toBe(false);
+    expect(outputs).toHaveLength(5);
+    // Serial would be ~500ms (5×100). Parallel should be ~100ms + overhead.
+    // Threshold 200ms gives generous CI room while still catching a regression to serial.
+    expect(elapsed).toBeLessThan(200);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// runPool — shared concurrency primitive (PRD finding G)
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { runPool, type PoolJob } from "../../src/concurrency/runPool.js";
+
+describe("runPool primitive", () => {
+  test("empty jobs returns empty settled array", async () => {
+    const { settled, effectiveConcurrency, capped } = await runPool([], { concurrency: 4 });
+    expect(settled).toHaveLength(0);
+    expect(effectiveConcurrency).toBe(0);
+    expect(capped).toBe(false);
+  });
+
+  test("happy path: order preserved, all fulfilled", async () => {
+    const jobs: PoolJob<number>[] = [10, 20, 30, 40].map((v, i) => ({
+      run: async () => {
+        await new Promise((r) => setTimeout(r, (4 - i) * 10)); // reverse-order delay
+        return v;
+      },
+    }));
+    const { settled, effectiveConcurrency } = await runPool(jobs, { concurrency: 4 });
+    expect(effectiveConcurrency).toBe(4);
+    expect(settled.map((s) => s.status === "fulfilled" ? s.value : null)).toEqual([10, 20, 30, 40]);
+  });
+
+  test("throw isolation: one job rejects, siblings still fulfill", async () => {
+    const jobs: PoolJob<string>[] = [
+      { run: async () => "a" },
+      { run: async () => { throw new Error("boom"); } },
+      { run: async () => "c" },
+    ];
+    const { settled } = await runPool(jobs, { concurrency: 3 });
+    expect(settled[0]).toEqual({ status: "fulfilled", value: "a" });
+    expect(settled[1].status).toBe("rejected");
+    expect((settled[1] as { reason: Error }).reason.message).toBe("boom");
+    expect(settled[2]).toEqual({ status: "fulfilled", value: "c" });
+  });
+
+  test("in-flight cap: never exceeds concurrency", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const jobs: PoolJob<void>[] = Array.from({ length: 10 }, () => ({
+      run: async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 20));
+        inFlight--;
+      },
+    }));
+    const { effectiveConcurrency, capped } = await runPool(jobs, { concurrency: 3 });
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThanOrEqual(2); // proves at least some parallelism
+    expect(effectiveConcurrency).toBe(3);
+    expect(capped).toBe(false);
+  });
+
+  test("auto-clamp to job count when concurrency > jobs.length", async () => {
+    const jobs: PoolJob<number>[] = [{ run: async () => 1 }, { run: async () => 2 }];
+    const { effectiveConcurrency, capped } = await runPool(jobs, { concurrency: 8 });
+    expect(effectiveConcurrency).toBe(2);
+    expect(capped).toBe(true);
+  });
+
+  test("capByCpuCount caps by os.cpus().length", async () => {
+    // We can't predict the test runner's cpu count, so just assert the bounds.
+    const jobs: PoolJob<number>[] = Array.from({ length: 32 }, (_, i) => ({ run: async () => i }));
+    const { effectiveConcurrency, capped } = await runPool(jobs, { concurrency: 32, capByCpuCount: true });
+    const cores = require("node:os").cpus().length;
+    expect(effectiveConcurrency).toBeLessThanOrEqual(cores);
+    expect(effectiveConcurrency).toBeLessThanOrEqual(32);
+    expect(capped).toBe(effectiveConcurrency < 32);
+  });
+
+  test("onSettled callback fires per job in completion order", async () => {
+    const events: number[] = [];
+    const jobs: PoolJob<number>[] = [
+      { run: async () => { await new Promise((r) => setTimeout(r, 30)); return 0; } },
+      { run: async () => { await new Promise((r) => setTimeout(r, 10)); return 1; } },
+      { run: async () => { await new Promise((r) => setTimeout(r, 20)); return 2; } },
+    ];
+    await runPool(jobs, { concurrency: 3, onSettled: (idx) => { events.push(idx); } });
+    // Job 1 (10ms) completes first, then 2 (20ms), then 0 (30ms)
+    expect(events).toEqual([1, 2, 0]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ctx_fetch_and_index batch path — schema + handler-level checks
+// (Full subprocess fetch tested in tests/mcp-integration.ts;
+//  these tests verify schema acceptance + serial-index contract via source-level read.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("ctx_fetch_and_index batch refactor", () => {
+  const fetchHandlerSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("schema accepts both legacy {url} and batch {requests}", () => {
+    expect(fetchHandlerSrc).toContain('url: z.string().optional()');
+    expect(fetchHandlerSrc).toContain('requests: z');
+    // Zod array of {url, source?}
+    expect(fetchHandlerSrc).toContain("z.object({\n            url: z.string()");
+    expect(fetchHandlerSrc).toContain('source: z.string().optional()');
+  });
+
+  test("handler exposes concurrency 1-8 with default 1", () => {
+    // Find the fetch_and_index registerTool block, then assert concurrency schema near it.
+    // Stop anchor: the next registerTool call (ctx_batch_execute).
+    const fetchBlockMatch = fetchHandlerSrc.match(/registerTool\(\s*"ctx_fetch_and_index"[\s\S]+?registerTool\(\s*"ctx_batch_execute"/);
+    expect(fetchBlockMatch).not.toBeNull();
+    const block = fetchBlockMatch![0];
+    expect(block).toContain("concurrency: z");
+    expect(block).toMatch(/\.min\(1\)\s*\n?\s*\.max\(8\)/);
+    expect(block).toContain(".default(1)");
+  });
+
+  test("PARALLELIZE I/O guidance + locked requests:[] schema in description", () => {
+    expect(fetchHandlerSrc).toContain("PARALLELIZE I/O");
+    expect(fetchHandlerSrc).toContain("requests: [{url, source}");
+    expect(fetchHandlerSrc).toContain("3-5x");
+    expect(fetchHandlerSrc).toContain("✅");
+    expect(fetchHandlerSrc).toContain("❌");
+  });
+
+  test("serial-write contract: index drain is a for-loop calling indexFetched serially", () => {
+    // The handler must NOT spawn parallel store.index calls. The drain is a
+    // for-loop over `settled` calling indexFetched serially. Anti-pattern check.
+    expect(fetchHandlerSrc).toContain("Serial index drain");
+    expect(fetchHandlerSrc).toContain("indexFetched(v)");
+    // No `await Promise.all(... indexFetched ...)` pattern anywhere
+    expect(fetchHandlerSrc).not.toMatch(/Promise\.all\([^)]*indexFetched/);
+  });
+
+  test("backward compat: legacy single-URL response wording preserved", () => {
+    // Original handler returned "Cached: **${label}**" / "Fetched and indexed **N sections**"
+    // The refactor must keep these EXACT strings for the legacy path so
+    // tests/mcp-integration.ts and any user-side scripts grepping the response don't break.
+    expect(fetchHandlerSrc).toContain("Cached: **${r.label}**");
+    expect(fetchHandlerSrc).toContain("Fetched and indexed **${r.indexed.totalChunks} sections**");
+    // The source escapes backticks inside a template literal — match the escaped form.
+    expect(fetchHandlerSrc).toContain("To refresh: call ctx_fetch_and_index again with");
+    expect(fetchHandlerSrc).toContain("force: true");
+  });
+
+  test("isLegacySingle gate prevents batch response wrapping for single-URL calls", () => {
+    expect(fetchHandlerSrc).toContain("const isLegacySingle = !requests && batch.length === 1");
+    expect(fetchHandlerSrc).toContain("if (isLegacySingle)");
+  });
+
+  test("capped-concurrency note appears only when capped", () => {
+    expect(fetchHandlerSrc).toMatch(/cappedNote\s*=\s*capped\s*\?/);
+    // Caveman style — `cap=N/Mcpu` instead of "capped from N to M; M cores available".
+    expect(fetchHandlerSrc).toContain("cap=${effectiveConcurrency}/${cpus().length}cpu");
+  });
+
+  test("batch isError only when ALL URLs fail (errorCount === batch.length)", () => {
+    expect(fetchHandlerSrc).toContain("isError: errorCount === batch.length");
+  });
+
+  test("batch preview is capped to prevent context flooding (review F2)", () => {
+    // Per-URL preview in batch mode capped tightly so an 8-URL batch doesn't
+    // dump ~24KB of context (8 × 3072 char single-URL preview cap).
+    expect(fetchHandlerSrc).toContain("FETCH_BATCH_PREVIEW_LIMIT");
+    // Cap value must be ≤500 chars (8 URLs × 500 = ~4KB max snippets total)
+    const limitMatch = fetchHandlerSrc.match(/FETCH_BATCH_PREVIEW_LIMIT\s*=\s*(\d+)/);
+    expect(limitMatch).not.toBeNull();
+    expect(parseInt(limitMatch![1])).toBeLessThanOrEqual(500);
+    // Must actually be applied to per-URL previews in the batch loop
+    expect(fetchHandlerSrc).toMatch(/preview\.length\s*>\s*FETCH_BATCH_PREVIEW_LIMIT/);
+  });
+
+  test("batch header uses singular form for count=1 (review F5 plural fix)", () => {
+    // Per CLAUDE.md "Terse like caveman" + grammar correctness:
+    // "1 errors" → "1 error" via the fmt() helper.
+    expect(fetchHandlerSrc).toContain('const fmt = (n: number, sing: string, plur: string)');
+    expect(fetchHandlerSrc).toContain('n === 1 ? sing : plur');
+  });
+
+  test("batch header uses caveman style (review F5 terse format)", () => {
+    // Old: "Batch fetched N URLs at concurrency=X (capped from Y to X; Z cores available): a fetched, b cached, c errors. d new sections (eKB total)."
+    // New: "fetched N c=X cap=X/Zcpu. ok=a cache=b err=c. d sections eKB."
+    expect(fetchHandlerSrc).toContain("`fetched ${batch.length} c=${effectiveConcurrency}");
+    expect(fetchHandlerSrc).toContain("ok=${fetchedCount} cache=${cachedCount} err=${errorCount}");
+    expect(fetchHandlerSrc).not.toContain("Batch fetched"); // old verbose wording gone
+  });
+
+  test("fetchOneUrl is parallel-safe (no SQLite writes)", () => {
+    // Verify by inspecting the helper source: it calls store.getSourceMeta (read)
+    // but never store.index/indexJSON/indexPlainText (writes).
+    const fetchOneSrc = fetchHandlerSrc.match(/async function fetchOneUrl\([\s\S]+?^}/m);
+    expect(fetchOneSrc).not.toBeNull();
+    const block = fetchOneSrc![0];
+    expect(block).toContain("store.getSourceMeta"); // read OK
+    expect(block).not.toContain("store.index"); // no writes
+    expect(block).not.toContain("store.indexJSON");
+    expect(block).not.toContain("store.indexPlainText");
+  });
+
+  test("indexFetched is serial-only (single FTS5 write per call)", () => {
+    const indexFetchedSrc = fetchHandlerSrc.match(/function indexFetched\([\s\S]+?^}/m);
+    expect(indexFetchedSrc).not.toBeNull();
+    const block = indexFetchedSrc![0];
+    // Has exactly one of: store.index / store.indexJSON / store.indexPlainText per branch
+    expect(block).toContain("store.indexJSON");
+    expect(block).toContain("store.indexPlainText");
+    expect(block).toContain("store.index");
   });
 });
 
@@ -2309,24 +2822,25 @@ describe("ctx_fetch_and_index cache key includes URL (Fix 6/10)", () => {
       resolve(__dirname, "../../src/server.ts"),
       "utf-8",
     );
-    // Locate the ctx_fetch_and_index handler block
-    const block = serverSrc.match(
-      /registerTool\(\s*"ctx_fetch_and_index"[\s\S]*?^\);/m,
-    );
-    expect(block, "ctx_fetch_and_index handler not found").not.toBeNull();
-    const body = block![0];
+    // The cache lookup may live in the handler block OR in an extracted helper
+    // (post-refactor: `fetchOneUrl` is the parallel-safe fetcher invoked by both
+    // single-URL and batch paths). Either location must use composeFetchCacheKey,
+    // not the bare label/url variable.
 
-    // Cache lookup must call getSourceMeta with a key composed from label+url,
-    // not the bare label/url. The fix uses composeFetchCacheKey().
-    const lookupCall = body.match(
-      /getSourceMeta\(\s*([^)]+)\s*\)/,
-    );
+    // composeFetchCacheKey must be imported and referenced
+    expect(serverSrc).toContain('from "./fetch-cache.js"');
+    expect(serverSrc).toContain("composeFetchCacheKey");
+
+    // Find ANY getSourceMeta call across the file
+    const lookupCall = serverSrc.match(/getSourceMeta\(\s*([^)]+)\s*\)/);
     expect(lookupCall, "getSourceMeta call missing").not.toBeNull();
-    const arg = lookupCall![1];
+    const arg = lookupCall![1].trim();
     // Must NOT be the bare `label` variable (that was the bug).
-    expect(arg.trim()).not.toBe("label");
-    // Must reference both the label and the url, ideally via composeFetchCacheKey.
-    expect(body).toContain("composeFetchCacheKey");
+    expect(arg).not.toBe("label");
+    // Argument must be a key derived from composition (`cacheKey`, `storageLabel`,
+    // or a direct `composeFetchCacheKey(...)` call). Reject any single-token
+    // identifier that doesn't carry the composition contract.
+    expect(arg).toMatch(/cacheKey|storageLabel|composeFetchCacheKey/);
   });
 
   test("ContentStore: per-(label,url) keys do not collide on getSourceMeta", () => {

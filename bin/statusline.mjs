@@ -210,20 +210,22 @@ function main() {
     return;
   }
 
-  // ACTIVE / DEGRADED — full triad: session $ · lifetime $ · % efficient · uptime
+  // ACTIVE / DEGRADED — session $ · [lifetime $ when present] · % efficient · uptime
   // Status dot color encodes degraded vs healthy via pct.
-  const parts = [
-    `${brand("context-mode")}`,
-    dot,
+  // Lifetime block is conditional: persistStats omits dollars_saved_lifetime
+  // when no analytics aggregator is available, so we degrade gracefully to
+  // a session-only render rather than printing "$0.00 saved across sessions".
+  const valueBlocks = [
     `${bold(fmtUsd(sessionUsd))} ${dim("saved this session")}`,
-    `${bold(fmtUsd(lifetimeUsd))} ${dim("saved across sessions")}`,
-    `${bold(`${pct}%`)} ${dim("efficient")}`,
-    dim(uptime),
   ];
+  if (lifetimeUsd > 0) {
+    valueBlocks.push(`${bold(fmtUsd(lifetimeUsd))} ${dim("saved across sessions")}`);
+  }
+  valueBlocks.push(`${bold(`${pct}%`)} ${dim("efficient")}`);
+  valueBlocks.push(dim(uptime));
 
-  // Layout: brand + dot fused, then SEP between value blocks
-  const head = `${parts[0]}  ${parts[1]}  `;
-  const tail = parts.slice(2).join(`  ${SEP}  `);
+  const head = `${brand("context-mode")}  ${dot}  `;
+  const tail = valueBlocks.join(`  ${SEP}  `);
   process.stdout.write(head + tail);
 }
 

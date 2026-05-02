@@ -40,6 +40,17 @@ Use `context-mode_ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 4. **WEB**: `context-mode_ctx_fetch_and_index(url, source)` then `context-mode_ctx_search(queries)` — raw HTML never enters context.
 5. **INDEX**: `context-mode_ctx_index(content, source)` — store in FTS5 for later search.
 
+## Parallel I/O batches
+
+For multi-URL fetches or multi-API calls, **always** include `concurrency: N` (1-8):
+
+- `context-mode_ctx_batch_execute(commands: [3+ network commands], concurrency: 5)` — gh, curl, dig, docker inspect, multi-region cloud queries
+- `context-mode_ctx_fetch_and_index(requests: [{url, source}, ...], concurrency: 5)` — multi-URL batch fetch
+
+**Use concurrency 4-8** for I/O-bound work (network calls, API queries). **Keep concurrency 1** for CPU-bound (npm test, build, lint) or commands sharing state (ports, lock files, same-repo writes).
+
+GitHub API rate-limit: cap at 4 for `gh` calls.
+
 ## Output
 
 Terse like caveman. Technical substance exact. Only fluff die.

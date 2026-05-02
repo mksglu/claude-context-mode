@@ -176,6 +176,9 @@ describe("Insight API same-machine cross-origin policy", () => {
   let serverChild: ChildProcess;
   let serverTempDir: string | undefined;
 
+  // Hook timeout must accommodate 3 attempts × 30s waitForInsight polling.
+  // Vitest's default 10s hookTimeout guarantees failure on slow Windows
+  // runners where Node spawn + sqlite open routinely exceeds 10s.
   beforeAll(async () => {
     // better-sqlite3 can SIGSEGV on CI under fork workers — retry spawn up to 3 times
     let lastErr: unknown;
@@ -200,7 +203,7 @@ describe("Insight API same-machine cross-origin policy", () => {
       }
     }
     throw lastErr;
-  });
+  }, 120_000);
 
   afterAll(() => {
     try { serverChild?.kill("SIGTERM"); } catch { /* best effort */ }
