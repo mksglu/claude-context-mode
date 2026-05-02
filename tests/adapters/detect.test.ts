@@ -100,13 +100,10 @@ describe("detectPlatform", () => {
   });
 
   // ── Kilo ────────────────────────────────────────────────
-
-  it("returns kilo when KILO is set", () => {
-    process.env.KILO = "1";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("kilo");
-    expect(signal.confidence).toBe("high");
-  });
+  // Kilo-Org/kilocode packages/opencode/src/index.ts:140 sets KILO_PID
+  // unconditionally. Bare `KILO` is NEVER set (verified via upstream source
+  // audit, May 2026). Kilo also sets OPENCODE=1 because it's an OpenCode fork
+  // — `kilo` MUST precede `opencode` in PLATFORM_ENV_VARS so KILO_PID wins.
 
   it("returns kilo when KILO_PID is set", () => {
     process.env.KILO_PID = "12345";
@@ -115,19 +112,55 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
-  // ── OpenClaw ───────────────────────────────────────────
-
-  it("returns openclaw when OPENCLAW_HOME is set", () => {
-    process.env.OPENCLAW_HOME = "/home/user/.openclaw";
+  it("kilo wins when both KILO_PID and OPENCODE are set (fork-collision)", () => {
+    process.env.KILO_PID = "12345";
+    process.env.OPENCODE = "1";
     const signal = detectPlatform();
-    expect(signal.platform).toBe("openclaw");
+    expect(signal.platform).toBe("kilo");
+  });
+
+  // ── OpenClaw ───────────────────────────────────────────
+  // Removed env-var detection: OpenClaw runtime never sets OPENCLAW_HOME or
+  // OPENCLAW_CLI (verified by local repo audit). Detection now relies on
+  // ~/.openclaw/ config-dir tier (tested in detect-config-dir.test.ts).
+
+  // ── Antigravity (Google) ───────────────────────────────
+  // google-gemini/gemini-cli packages/core/src/ide/detect-ide.ts checks
+  // ANTIGRAVITY_CLI_ALIAS as the canonical Antigravity marker.
+
+  it("detects antigravity via ANTIGRAVITY_CLI_ALIAS env var", () => {
+    process.env.ANTIGRAVITY_CLI_ALIAS = "agtg";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("antigravity");
     expect(signal.confidence).toBe("high");
   });
 
-  it("returns openclaw when OPENCLAW_CLI is set", () => {
-    process.env.OPENCLAW_CLI = "1";
+  // ── Zed ────────────────────────────────────────────────
+  // zed-industries/zed crates/terminal/src/terminal.rs sets ZED_TERM=true.
+  // google-gemini/gemini-cli detect-ide.ts checks ZED_SESSION_ID first.
+
+  it("detects zed via ZED_SESSION_ID env var", () => {
+    process.env.ZED_SESSION_ID = "01HZED-uuid";
     const signal = detectPlatform();
-    expect(signal.platform).toBe("openclaw");
+    expect(signal.platform).toBe("zed");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("detects zed via ZED_TERM env var", () => {
+    process.env.ZED_TERM = "true";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("zed");
+    expect(signal.confidence).toBe("high");
+  });
+
+  // ── Pi ─────────────────────────────────────────────────
+  // Pi runtime sets PI_PROJECT_DIR before invoking the extension —
+  // verified by src/pi-extension.ts:154 + src/server.ts:153 consumers.
+
+  it("detects pi via PI_PROJECT_DIR env var", () => {
+    process.env.PI_PROJECT_DIR = "/some/project";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("pi");
     expect(signal.confidence).toBe("high");
   });
 
@@ -273,19 +306,11 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
-  it("detects jetbrains-copilot via IDEA_HOME env var", () => {
-    process.env.IDEA_HOME = "/opt/idea";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("jetbrains-copilot");
-    expect(signal.confidence).toBe("high");
-  });
-
-  it("detects jetbrains-copilot via JETBRAINS_CLIENT_ID env var", () => {
-    process.env.JETBRAINS_CLIENT_ID = "idea-abc";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("jetbrains-copilot");
-    expect(signal.confidence).toBe("high");
-  });
+  // IDEA_HOME and JETBRAINS_CLIENT_ID were previously listed but are NOT
+  // verifiable in any JetBrains source repo — removed from PLATFORM_ENV_VARS.
+  // IDEA_INITIAL_DIRECTORY (set by JetBrains launcher) is the sole remaining
+  // env var detection signal for jetbrains-copilot. Detection of JB IDE
+  // installations also still works via ~/.config/JetBrains/ config-dir tier.
 
   // ── Qwen Code ──────────────────────────────────────────
 

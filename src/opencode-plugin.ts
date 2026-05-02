@@ -29,6 +29,7 @@ import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
 import { AdapterPlatformType, OpenCodeAdapter } from "./adapters/opencode/index.js";
+import { PLATFORM_ENV_VARS } from "./adapters/detect.js";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -77,8 +78,31 @@ interface CompactingHookOutput {
 }
 
 // ── Helpers ───────────────────────────────────────────────
+/**
+ * Detect whether the plugin is running under KiloCode or OpenCode.
+ *
+ * Reuses the canonical PLATFORM_ENV_VARS list (src/adapters/detect.ts) instead
+ * of hardcoding env var names — single source of truth, future-proof if Kilo
+ * or OpenCode add/rename env vars upstream.
+ *
+ * Order matters: KiloCode is an OpenCode fork and sets `OPENCODE=1` in
+ * addition to `KILO_PID`. PLATFORM_ENV_VARS lists `kilo` BEFORE `opencode`
+ * so KILO_PID wins the iteration.
+ *
+ * Pre-fix version was `return process.env.KILO_PID ? "kilo" : "opencode";` —
+ * surfaced by github.com/mksglu/context-mode/pull/376 (mikij). Full symmetric
+ * fix: also actively check opencode env vars instead of blind fallback.
+ */
 function getPlatform(): AdapterPlatformType {
-  return process.env.KILO_PID ? "kilo" : "opencode";
+  for (const [platform, vars] of PLATFORM_ENV_VARS) {
+    if (platform !== "kilo" && platform !== "opencode") continue;
+    if (vars.some((v) => process.env[v])) {
+      return platform as AdapterPlatformType;
+    }
+  }
+  // Plugin host should always set one of the env vars. Fallback to opencode
+  // (the wider ecosystem) when neither is set, for predictable behavior.
+  return "opencode";
 }
 
 // ── Plugin Factory ────────────────────────────────────────

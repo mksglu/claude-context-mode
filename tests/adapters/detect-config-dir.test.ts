@@ -135,15 +135,34 @@ describe("detectPlatform — env var priority chain", () => {
     expect(detectPlatform().platform).toBe("gemini-cli");
   });
 
-  it("OPENCLAW beats KILO when both envs are set", () => {
-    process.env.OPENCLAW_HOME = "/h";
-    process.env.KILO = "1";
-    expect(detectPlatform().platform).toBe("openclaw");
+  // KILO + OPENCODE: Kilo is an OpenCode fork and sets BOTH KILO_PID and
+  // OPENCODE=1. PLATFORM_ENV_VARS lists `kilo` BEFORE `opencode` so the more
+  // specific signal wins.
+  it("KILO beats OPENCODE when both envs are set (fork-collision)", () => {
+    process.env.KILO_PID = "12345";
+    process.env.OPENCODE = "1";
+    expect(detectPlatform().platform).toBe("kilo");
   });
 
-  it("CODEX beats CURSOR when both envs are set", () => {
+  // CURSOR + VSCODE: Cursor is a VSCode fork — listed before vscode-copilot.
+  it("CURSOR beats VSCODE when both envs are set (fork-collision)", () => {
+    process.env.CURSOR_TRACE_ID = "trace-abc";
+    process.env.VSCODE_PID = "99";
+    expect(detectPlatform().platform).toBe("cursor");
+  });
+
+  // ANTIGRAVITY + VSCODE: Antigravity is an Electron/VSCode fork — same pattern.
+  it("ANTIGRAVITY beats VSCODE when both envs are set (fork-collision)", () => {
+    process.env.ANTIGRAVITY_CLI_ALIAS = "agtg";
+    process.env.VSCODE_PID = "99";
+    expect(detectPlatform().platform).toBe("antigravity");
+  });
+
+  // CURSOR + CODEX: cursor listed before codex — IDE-fork signal wins over
+  // CLI tooling signal.
+  it("CURSOR beats CODEX when both envs are set", () => {
+    process.env.CURSOR_TRACE_ID = "trace-abc";
     process.env.CODEX_THREAD_ID = "t";
-    process.env.CURSOR_TRACE_ID = "tr";
-    expect(detectPlatform().platform).toBe("codex");
+    expect(detectPlatform().platform).toBe("cursor");
   });
 });
