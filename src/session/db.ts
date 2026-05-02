@@ -25,37 +25,53 @@ import { execFileSync } from "node:child_process";
  * (useful in CI environments or when git is unavailable).
  * Set to empty string to disable isolation entirely.
  */
+// Memoized per (cwd, env override) — recomputing on every tool call cost
+// ~12ms (git worktree list subprocess fork) on macOS, 50ms+ on Windows.
+// Key by cwd so a defensive `process.chdir()` invalidates rather than
+// returning stale data.
+let _wtCache: { cwd: string; envSuffix: string | undefined; suffix: string } | undefined;
+
 export function getWorktreeSuffix(): string {
   const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
+  const cwd = process.cwd();
+  if (_wtCache && _wtCache.cwd === cwd && _wtCache.envSuffix === envSuffix) {
+    return _wtCache.suffix;
+  }
+
+  let suffix = "";
   if (envSuffix !== undefined) {
-    return envSuffix ? `__${envSuffix}` : "";
-  }
+    suffix = envSuffix ? `__${envSuffix}` : "";
+  } else {
+    try {
+      const mainWorktree = execFileSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        {
+          encoding: "utf-8",
+          timeout: 2000,
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      )
+        .split(/\r?\n/)
+        .find((l) => l.startsWith("worktree "))
+        ?.replace("worktree ", "")
+        ?.trim();
 
-  try {
-    const cwd = process.cwd();
-    const mainWorktree = execFileSync(
-      "git",
-      ["worktree", "list", "--porcelain"],
-      {
-        encoding: "utf-8",
-        timeout: 2000,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-    )
-      .split(/\r?\n/)
-      .find((l) => l.startsWith("worktree "))
-      ?.replace("worktree ", "")
-      ?.trim();
-
-    if (mainWorktree && cwd !== mainWorktree) {
-      const suffix = createHash("sha256").update(cwd).digest("hex").slice(0, 8);
-      return `__${suffix}`;
+      if (mainWorktree && cwd !== mainWorktree) {
+        suffix = `__${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+      }
+    } catch {
+      // git not available or not a git repo — no suffix
     }
-  } catch {
-    // git not available or not a git repo — no suffix
   }
 
-  return "";
+  _wtCache = { cwd, envSuffix, suffix };
+  return suffix;
+}
+
+// Test-only helper: clear the memoization between cases.
+export function _resetWorktreeSuffixCacheForTests(): void {
+  _wtCache = undefined;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -460,6 +476,85 @@ export class SessionDB extends SQLiteBase {
       );
 
       // Update meta if session exists
+      this.stmt(S.updateMetaLastEvent).run(sessionId);
+    });
+
+    this.withRetry(() => transaction());
+  }
+
+  /**
+   * Bulk-insert N events in a SINGLE transaction.
+   *
+   * PostToolUse hooks emit 5–15 events per tool call. Calling insertEvent()
+   * in a loop runs N transactions = N WAL commits = N fsync candidates,
+   * which is painful on Windows NTFS where commit latency dominates.
+   * One transaction = one commit, dedup/evict checks reuse cached statements.
+   *
+   * Cross-platform: uses the same WAL-mode transaction primitive as
+   * insertEvent — behavior identical on macOS / Linux / Windows.
+   */
+  bulkInsertEvents(
+    sessionId: string,
+    events: SessionEvent[],
+    sourceHook: string = "PostToolUse",
+    attributions?: Array<Partial<ProjectAttribution> | undefined>,
+  ): void {
+    if (!events || events.length === 0) return;
+    if (events.length === 1) {
+      // Cheaper to fall through to insertEvent (its own dedicated transaction).
+      this.insertEvent(sessionId, events[0], sourceHook, attributions?.[0]);
+      return;
+    }
+
+    // Pre-compute hashes + normalized attribution outside the transaction
+    // so the SQL transaction holds only DB work (shorter lock window).
+    const prepared = events.map((event, i) => {
+      const dataHash = createHash("sha256")
+        .update(event.data)
+        .digest("hex")
+        .slice(0, 16)
+        .toUpperCase();
+      const attribution = attributions?.[i];
+      const projectDir = String(
+        attribution?.projectDir ?? event.project_dir ?? "",
+      ).trim();
+      const attributionSource = String(
+        attribution?.source ?? event.attribution_source ?? "unknown",
+      );
+      const rawConfidence = Number(
+        attribution?.confidence ?? event.attribution_confidence ?? 0,
+      );
+      const attributionConfidence = Number.isFinite(rawConfidence)
+        ? Math.max(0, Math.min(1, rawConfidence))
+        : 0;
+      return { event, dataHash, projectDir, attributionSource, attributionConfidence };
+    });
+
+    const transaction = this.db.transaction(() => {
+      let cnt = (this.stmt(S.getEventCount).get(sessionId) as { cnt: number }).cnt;
+      for (const row of prepared) {
+        const dup = this.stmt(S.checkDuplicate).get(
+          sessionId, DEDUP_WINDOW, row.event.type, row.dataHash,
+        );
+        if (dup) continue;
+        if (cnt >= MAX_EVENTS_PER_SESSION) {
+          this.stmt(S.evictLowestPriority).run(sessionId);
+        } else {
+          cnt++;
+        }
+        this.stmt(S.insertEvent).run(
+          sessionId,
+          row.event.type,
+          row.event.category,
+          row.event.priority,
+          row.event.data,
+          row.projectDir,
+          row.attributionSource,
+          row.attributionConfidence,
+          sourceHook,
+          row.dataHash,
+        );
+      }
       this.stmt(S.updateMetaLastEvent).run(sessionId);
     });
 

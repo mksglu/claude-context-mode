@@ -111,6 +111,15 @@ export class AntigravityAdapter extends BaseAdapter implements HookAdapter {
     return resolve(homedir(), ".gemini", "antigravity", "mcp_config.json");
   }
 
+  /** Antigravity nests under ~/.gemini/antigravity/. */
+  getConfigDir(): string {
+    return resolve(homedir(), ".gemini", "antigravity");
+  }
+
+  getInstructionFiles(): string[] {
+    return ["GEMINI.md"];
+  }
+
   generateHookConfig(_pluginRoot: string): HookRegistration {
     return {};
   }

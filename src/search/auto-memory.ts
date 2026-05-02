@@ -1,12 +1,13 @@
 /**
- * Auto-memory search — searches CLAUDE.md and MEMORY.md files for
- * persisted decisions, preferences, and context from prior sessions.
+ * Auto-memory search — searches CLAUDE.md / AGENTS.md / GEMINI.md / etc.
+ * and the platform's persistent memory directory for decisions,
+ * preferences, and context from prior sessions.
  *
  * Returns results in a format compatible with the unified search pipeline.
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 
 const DEBUG = process.env.DEBUG?.includes("context-mode");
@@ -20,18 +21,31 @@ export interface AutoMemoryResult {
 }
 
 /**
- * Search auto-memory files (CLAUDE.md, MEMORY.md, user identity files)
- * for content matching any of the given queries.
+ * Minimal adapter contract used by searchAutoMemory.
+ * Avoids depending on the full HookAdapter type to keep this module standalone.
+ */
+export interface AutoMemoryAdapter {
+  getConfigDir(): string;
+  getInstructionFiles(): string[];
+  getMemoryDir(): string;
+}
+
+/**
+ * Search auto-memory files for content matching any of the given queries.
  *
- * Scans:
- *   1. Project-level: <projectDir>/CLAUDE.md
- *   2. User-level: <configDir>/CLAUDE.md
- *   3. User memory: <configDir>/memory/*.md
+ * When `adapter` is provided, the per-platform conventions are used:
+ *   1. Project-level: <projectDir>/<each instructionFile>
+ *   2. User-level: <configDir>/<each instructionFile>
+ *   3. Memory dir: <memoryDir>/*.md
+ *
+ * Without an adapter (legacy callers), defaults to Claude conventions
+ * (CLAUDE.md + ~/.claude/memory) for backwards compatibility.
  *
  * @param queries  Array of search terms
  * @param limit    Max results to return
  * @param projectDir  Project directory path
- * @param configDir   Config directory (e.g. ~/.claude)
+ * @param configDir   Explicit config dir override (legacy callers)
+ * @param adapter     Platform adapter — supplies instruction files + memory dir
  * @returns Matching auto-memory results
  */
 export function searchAutoMemory(
@@ -39,30 +53,48 @@ export function searchAutoMemory(
   limit: number = 5,
   projectDir?: string,
   configDir?: string,
+  adapter?: AutoMemoryAdapter,
 ): AutoMemoryResult[] {
   const results: AutoMemoryResult[] = [];
-  const effectiveConfigDir = configDir || join(homedir(), ".claude");
+
+  // Resolve conventions — adapter wins over explicit configDir, which wins
+  // over the historical Claude defaults.
+  const instructionFiles = adapter?.getInstructionFiles() ?? ["CLAUDE.md"];
+  const adapterConfigDir = adapter?.getConfigDir();
+  const effectiveConfigDir = adapterConfigDir
+    ? resolveAgainst(projectDir, adapterConfigDir)
+    : (configDir || join(homedir(), ".claude"));
+  const adapterMemoryDir = adapter?.getMemoryDir();
+  const memoryDir = adapterMemoryDir
+    ? resolveAgainst(projectDir, adapterMemoryDir)
+    : join(effectiveConfigDir, "memory");
 
   // Collect candidate files
   const candidates: Array<{ path: string; label: string }> = [];
 
-  // 1. Project-level CLAUDE.md
+  // 1. Project-level instruction files
   if (projectDir) {
-    const projectClaude = join(projectDir, "CLAUDE.md");
-    if (existsSync(projectClaude)) {
-      candidates.push({ path: projectClaude, label: "project/CLAUDE.md" });
+    for (const fileName of instructionFiles) {
+      const p = join(projectDir, fileName);
+      if (existsSync(p)) {
+        candidates.push({ path: p, label: `project/${fileName}` });
+      }
     }
   }
 
-  // 2. User-level CLAUDE.md
-  const userClaude = join(effectiveConfigDir, "CLAUDE.md");
-  if (existsSync(userClaude)) {
-    candidates.push({ path: userClaude, label: "user/CLAUDE.md" });
+  // 2. User-level instruction files (skip when configDir resolves to the
+  //    project root — already covered by step 1, would emit dup labels).
+  if (effectiveConfigDir && effectiveConfigDir !== projectDir) {
+    for (const fileName of instructionFiles) {
+      const p = join(effectiveConfigDir, fileName);
+      if (existsSync(p)) {
+        candidates.push({ path: p, label: `user/${fileName}` });
+      }
+    }
   }
 
-  // 3. User memory directory
-  const memoryDir = join(effectiveConfigDir, "memory");
-  if (existsSync(memoryDir)) {
+  // 3. Memory directory
+  if (memoryDir && existsSync(memoryDir)) {
     try {
       const files = readdirSync(memoryDir).filter(f => f.endsWith(".md"));
       for (const file of files) {
@@ -81,9 +113,13 @@ export function searchAutoMemory(
     if (results.length >= limit) break;
 
     try {
-      // Skip files larger than 1MB to avoid memory issues
+      // Single stat for both size guard and timestamp — saves one syscall
+      // per candidate file. Cross-platform: statSync semantics identical
+      // on macOS / Linux / Windows; size+mtime read in the same inode probe.
+      let stat;
       try {
-        if (statSync(candidate.path).size > 1_000_000) continue;
+        stat = statSync(candidate.path);
+        if (stat.size > 1_000_000) continue;
       } catch { continue; }
       const content = readFileSync(candidate.path, "utf-8");
       const contentLower = content.toLowerCase();
@@ -122,7 +158,7 @@ export function searchAutoMemory(
             content: snippet,
             source: candidate.label,
             origin: "auto-memory",
-            timestamp: statSync(candidate.path).mtime.toISOString(),
+            timestamp: stat.mtime.toISOString(),
           });
           break; // one result per file per query batch
         }
@@ -133,4 +169,16 @@ export function searchAutoMemory(
   }
 
   return results.slice(0, limit);
+}
+
+/**
+ * Resolve a possibly-relative path (e.g. ".github", "memory") against a
+ * project directory. Absolute paths and empty strings are returned as-is
+ * (empty == "use projectDir directly").
+ */
+function resolveAgainst(projectDir: string | undefined, p: string): string {
+  if (!p) return projectDir ?? "";
+  if (isAbsolute(p)) return p;
+  if (!projectDir) return p;
+  return join(projectDir, p);
 }

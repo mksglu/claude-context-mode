@@ -44,6 +44,36 @@ export const PLATFORM_ENV_VARS = [
 ] as const satisfies ReadonlyArray<readonly [PlatformId, readonly string[]]>;
 
 /**
+ * Sync map from platform identifier → home-relative path segments where that
+ * platform stores its config. Mirrors the `super([...])` argument passed by
+ * each adapter — kept in sync as the single source of truth used when we need
+ * a session dir BEFORE an adapter has been instantiated (race window between
+ * MCP server start and `initialize` handshake completion).
+ *
+ * Returns `null` for "unknown" or any string outside the supported set so the
+ * caller can decide on a safe fallback.
+ */
+export function getSessionDirSegments(platform: string): string[] | null {
+  switch (platform) {
+    case "claude-code":      return [".claude"];
+    case "gemini-cli":       return [".gemini"];
+    case "antigravity":      return [".gemini"];
+    case "openclaw":         return [".openclaw"];
+    case "codex":            return [".codex"];
+    case "cursor":           return [".cursor"];
+    case "vscode-copilot":   return [".vscode"];
+    case "kiro":             return [".kiro"];
+    case "pi":               return [".pi"];
+    case "qwen-code":        return [".qwen"];
+    case "kilo":             return [".config", "kilo"];
+    case "opencode":         return [".config", "opencode"];
+    case "zed":              return [".config", "zed"];
+    case "jetbrains-copilot": return [".config", "JetBrains"];
+    default:                 return null;
+  }
+}
+
+/**
  * Detect the current platform by checking env vars and config dirs.
  *
  * @param clientInfo - Optional MCP clientInfo from initialize handshake.

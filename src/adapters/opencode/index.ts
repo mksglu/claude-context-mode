@@ -253,15 +253,27 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getSessionDir(): string {
-    let configDir: string;
-    if (process.platform === "win32") {
-      configDir = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
-    } else {
-      configDir = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-    }
-    const dir = join(configDir, this.platform, "context-mode", "sessions");
+    const dir = join(this.getConfigDir(), "context-mode", "sessions");
     mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  /**
+   * OpenCode/KiloCode honor XDG_CONFIG_HOME on POSIX and APPDATA on Windows.
+   * Falls back to ~/.config/<platform> (or %APPDATA%\<platform>).
+   */
+  getConfigDir(): string {
+    let root: string;
+    if (process.platform === "win32") {
+      root = process.env.APPDATA || join(homedir(), "AppData", "Roaming");
+    } else {
+      root = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+    }
+    return join(root, this.platform);
+  }
+
+  getInstructionFiles(): string[] {
+    return ["AGENTS.md"];
   }
 
   generateHookConfig(_pluginRoot: string): HookRegistration {

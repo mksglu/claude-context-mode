@@ -68,6 +68,38 @@ describe("GeminiCLIAdapter", () => {
       expect(event.projectDir).toBe("/claude/project");
     });
 
+    it("prefers input.cwd over env vars when both provided", () => {
+      process.env.GEMINI_PROJECT_DIR = "/env/gemini";
+      process.env.CLAUDE_PROJECT_DIR = "/env/claude";
+      const event = adapter.parsePreToolUseInput({
+        tool_name: "shell",
+        cwd: "/wire/cwd",
+      } as unknown as Record<string, unknown>);
+      expect(event.projectDir).toBe("/wire/cwd");
+    });
+
+    it("falls back to process.cwd() when wire cwd and env both missing", () => {
+      delete process.env.GEMINI_PROJECT_DIR;
+      delete process.env.CLAUDE_PROJECT_DIR;
+      const event = adapter.parsePreToolUseInput({
+        tool_name: "shell",
+      });
+      expect(event.projectDir).toBe(process.cwd());
+    });
+
+    it("post/precompact/sessionstart parsers also fall back to process.cwd()", () => {
+      delete process.env.GEMINI_PROJECT_DIR;
+      delete process.env.CLAUDE_PROJECT_DIR;
+      const post = adapter.parsePostToolUseInput({ tool_name: "shell" });
+      expect(post.projectDir).toBe(process.cwd());
+
+      const compact = adapter.parsePreCompactInput({ session_id: "s1" });
+      expect(compact.projectDir).toBe(process.cwd());
+
+      const start = adapter.parseSessionStartInput({ session_id: "s1" });
+      expect(start.projectDir).toBe(process.cwd());
+    });
+
     it("extracts sessionId from session_id field", () => {
       const event = adapter.parsePreToolUseInput({
         tool_name: "shell",

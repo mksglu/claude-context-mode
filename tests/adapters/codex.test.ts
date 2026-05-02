@@ -94,6 +94,56 @@ describe("CodexAdapter", () => {
       });
       expect(event.projectDir).toBe("/my/project");
     });
+
+    it("falls back to CODEX_PROJECT_DIR when cwd missing", () => {
+      const savedCwd = process.env.CODEX_PROJECT_DIR;
+      process.env.CODEX_PROJECT_DIR = "/env/project";
+      try {
+        const event = adapter.parsePreToolUseInput({
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          session_id: "s1",
+          hook_event_name: "PreToolUse",
+        });
+        expect(event.projectDir).toBe("/env/project");
+      } finally {
+        if (savedCwd === undefined) delete process.env.CODEX_PROJECT_DIR;
+        else process.env.CODEX_PROJECT_DIR = savedCwd;
+      }
+    });
+
+    it("falls back to process.cwd() when cwd and env both missing", () => {
+      const savedCwd = process.env.CODEX_PROJECT_DIR;
+      delete process.env.CODEX_PROJECT_DIR;
+      try {
+        const event = adapter.parsePreToolUseInput({
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+          session_id: "s1",
+          hook_event_name: "PreToolUse",
+        });
+        expect(event.projectDir).toBe(process.cwd());
+      } finally {
+        if (savedCwd !== undefined) process.env.CODEX_PROJECT_DIR = savedCwd;
+      }
+    });
+
+    it("post/precompact/sessionstart parsers also fall back to process.cwd()", () => {
+      const savedCwd = process.env.CODEX_PROJECT_DIR;
+      delete process.env.CODEX_PROJECT_DIR;
+      try {
+        const post = adapter.parsePostToolUseInput({ tool_name: "Bash" });
+        expect(post.projectDir).toBe(process.cwd());
+
+        const compact = adapter.parsePreCompactInput({ session_id: "s1" });
+        expect(compact.projectDir).toBe(process.cwd());
+
+        const start = adapter.parseSessionStartInput({ session_id: "s1" });
+        expect(start.projectDir).toBe(process.cwd());
+      } finally {
+        if (savedCwd !== undefined) process.env.CODEX_PROJECT_DIR = savedCwd;
+      }
+    });
   });
 
   // ── formatPreToolUseResponse ──────────────────────────

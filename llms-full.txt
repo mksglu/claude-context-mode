@@ -1,6 +1,6 @@
 # context-mode
 
-> An MCP (Model Context Protocol) server and Claude Code plugin that solves context window flooding. Version 0.9.22 achieves ~98% context reduction (315 KB to 5.4 KB) by keeping raw tool outputs in isolated subprocesses and indexing them into SQLite FTS5 with BM25 ranking. Large command outputs, log files, API responses, and documentation never enter the context window -- only concise summaries and search results do.
+> An MCP (Model Context Protocol) server and Claude Code plugin that solves context window flooding. Achieves ~98% context reduction (315 KB to 5.4 KB) by keeping raw tool outputs in isolated subprocesses and indexing them into SQLite FTS5 with BM25 ranking. Large command outputs, log files, API responses, and documentation never enter the context window -- only concise summaries and search results do.
 
 ## Architecture Overview
 
@@ -10,7 +10,7 @@ context-mode operates as a Claude Code plugin that intercepts data-heavy tool ca
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `src/server.ts` | ~1358 | MCP server, 6 tool definitions, session stats, intent search |
+| `src/server.ts` | ~2500 | MCP server, 11 tool definitions, session stats, intent search |
 | `src/store.ts` | ~1075 | FTS5 knowledge base, chunking strategies, search with fallback |
 | `src/executor.ts` | ~437 | Polyglot subprocess execution, output truncation, sandbox |
 | `src/security.ts` | ~557 | Deny/allow policies, shell-escape detection, pattern matching |
@@ -23,14 +23,14 @@ context-mode operates as a Claude Code plugin that intercepts data-heavy tool ca
 
 ## MCP Tools
 
-context-mode exposes 6 MCP tools. All tool names are prefixed with `mcp__plugin_context-mode_context-mode__` when called from Claude Code.
+context-mode exposes 11 MCP tools. All tool names are prefixed with `mcp__plugin_context-mode_context-mode__` when called from Claude Code.
 
-### execute
+### ctx_execute
 
 Runs code in an isolated subprocess. Only stdout enters the context window.
 
 ```
-execute({
+ctx_execute({
   language: "javascript" | "typescript" | "python" | "shell" | "ruby" |
             "go" | "rust" | "php" | "perl" | "r" | "elixir",
   code: string,
@@ -64,12 +64,12 @@ execute({
 
 For JavaScript and TypeScript, the code is wrapped in an async IIFE with a fetch interceptor that tracks response body sizes. Total network bytes are reported via a `__CM_NET__` stderr marker, parsed by the server, and added to `sessionStats.bytesSandboxed`. The marker is stripped from stderr before returning results.
 
-### execute_file
+### ctx_execute_file
 
 Reads a file into a subprocess variable and runs processing code against it. The file content never enters the LLM context.
 
 ```
-execute_file({
+ctx_execute_file({
   path: string,       // absolute or relative file path
   language: "javascript" | "typescript" | "python" | "shell" | "ruby" |
             "go" | "rust" | "php" | "perl" | "r" | "elixir",
@@ -98,12 +98,12 @@ The `FILE_CONTENT_PATH` variable (or language-appropriate equivalent) is also se
 
 **Security:** File path is checked against Read deny patterns from settings. Shell code is checked against Bash deny patterns.
 
-### index
+### ctx_index
 
 Indexes content into the FTS5 knowledge base for later search retrieval.
 
 ```
-index({
+ctx_index({
   content?: string,   // raw text to index (mutually exclusive with path)
   path?: string,      // file path to read and index (mutually exclusive with content)
   source?: string     // label for retrieval, defaults to path or "untitled"
@@ -123,12 +123,12 @@ index({
 
 **Chunking strategy:** Uses markdown chunking (`#chunkMarkdown`). Splits on H1-H4 headings, preserves code blocks as atomic units, maintains heading breadcrumb hierarchy. See the Knowledge Base section for full chunking details.
 
-### search
+### ctx_search
 
 Queries the FTS5 knowledge base using three-tier fallback search.
 
 ```
-search({
+ctx_search({
   queries: string[],   // REQUIRED: array of search terms
   limit?: number,      // results per query, default 3, max 2 in normal mode
   source?: string      // filter to specific indexed source (partial LIKE match)
@@ -147,7 +147,7 @@ search({
 |------------|----------|
 | 1-3 | Normal: max 2 results per query |
 | 4-8 | Reduced: 1 result per query, warning emitted |
-| 9+ | Blocked: returns error, demands batch_execute usage |
+| 9+ | Blocked: returns error, demands ctx_batch_execute usage |
 
 The throttle window resets every 60 seconds (`SEARCH_WINDOW_MS = 60_000`).
 
@@ -157,12 +157,12 @@ The throttle window resets every 60 seconds (`SEARCH_WINDOW_MS = 60_000`).
 
 **Distinctive terms:** After returning results, the response includes searchable terms for each source computed via IDF scoring. Words are scored by `log(totalChunks / count) + lengthBonus + identifierBonus` where identifier bonus rewards words with underscores or camelCase patterns.
 
-### fetch_and_index
+### ctx_fetch_and_index
 
 Fetches a URL in a subprocess, converts content based on Content-Type, indexes into the knowledge base, and returns a preview.
 
 ```
-fetch_and_index({
+ctx_fetch_and_index({
   url: string,         // URL to fetch
   source?: string      // label for indexed content, defaults to URL
 })
@@ -178,16 +178,16 @@ fetch_and_index({
 
 **Subprocess isolation:** The fetch is executed as JavaScript code inside a subprocess. Raw HTML never enters context. The subprocess uses Turndown with GFM plugin and domino for HTML-to-markdown conversion. The Content-Type header is communicated back via a `__CM_CT__:` prefix on the first line of stdout.
 
-**Preview:** Returns the first 3072 bytes (`PREVIEW_LIMIT`) of the converted markdown. Content beyond this is truncated with a `"...[truncated -- use search() for full content]"` message.
+**Preview:** Returns the first 3072 bytes (`PREVIEW_LIMIT`) of the converted markdown. Content beyond this is truncated with a `"...[truncated -- use ctx_search() for full content]"` message.
 
 **Timeout:** 30,000 ms for the fetch subprocess.
 
-### batch_execute
+### ctx_batch_execute
 
 Runs multiple shell commands, auto-indexes all output, and searches with multiple queries in a single call. This is the primary research tool.
 
 ```
-batch_execute({
+ctx_batch_execute({
   commands: Array<{
     label: string,     // section header for this command's output
     command: string    // shell command to execute
@@ -205,16 +205,16 @@ batch_execute({
 4. Each query is searched with three-tier fallback: scoped to the batch source label first, then global fallback if no results.
 5. Results are returned with section inventory + search results.
 
-**Output cap:** 80 KB total for search results (`MAX_OUTPUT = 80 * 1024`). Queries exceeding this cap return "(output cap reached)" messages with instructions to use `search()` for follow-up.
+**Output cap:** 80 KB total for search results (`MAX_OUTPUT = 80 * 1024`). Queries exceeding this cap return "(output cap reached)" messages with instructions to use `ctx_search()` for follow-up.
 
 **Security:** Each command in the batch is individually checked against Bash deny patterns.
 
-### stats
+### ctx_stats
 
 Returns context consumption statistics for the current session.
 
 ```
-stats({})   // no parameters
+ctx_stats({})   // no parameters
 ```
 
 **Returns:**
@@ -227,6 +227,57 @@ stats({})   // no parameters
 - Estimated token usage (`totalBytesReturned / 4`)
 - Context savings ratio (`totalProcessed / totalBytesReturned`)
 - Reduction percentage (`1 - totalBytesReturned / totalProcessed`)
+
+### ctx_doctor
+
+Diagnose context-mode installation. Runs all checks server-side and returns
+results as a markdown checklist. No CLI execution needed. Verifies runtime
+availability for all 11 languages, sandbox round-trip, FTS5 / SQLite native
+module, hook script presence, and current version.
+
+```
+ctx_doctor({})   // no parameters
+```
+
+### ctx_upgrade
+
+Upgrade context-mode to the latest version. Returns a shell command the host
+must execute via its shell tool (Bash, shell_execute, run_in_terminal, etc.)
+and display the output as a checklist. Tells the user to restart their session
+after upgrade.
+
+```
+ctx_upgrade({})   // no parameters
+```
+
+### ctx_purge
+
+Permanently deletes ALL session data for this project: FTS5 knowledge base
+(indexed content), session events DB (analytics, metadata, resume snapshots),
+and session events markdown. Resets in-memory stats. Irreversible.
+
+```
+ctx_purge({
+  confirm: boolean   // REQUIRED: must be true to proceed
+})
+```
+
+### ctx_insight
+
+Opens the context-mode Insight dashboard in the browser. Shows personal
+analytics: session activity, tool usage, error rate, parallel work patterns,
+project focus, and actionable insights. First run installs dependencies
+(~30s); subsequent runs open instantly.
+
+```
+ctx_insight({
+  port?: number,             // default: 4747
+  sessionDir?: string,       // override INSIGHT_SESSION_DIR
+  contentDir?: string,       // override INSIGHT_CONTENT_DIR
+  insightSessionDir?: string,// alias for sessionDir
+  insightContentDir?: string // alias for contentDir
+})
+```
 
 ## Knowledge Base -- SQLite FTS5 + BM25
 
@@ -291,7 +342,7 @@ bm25(chunks, 2.0, 1.0) AS rank
 
 #### Markdown Chunking (`#chunkMarkdown`)
 
-Used by `index()` and `fetch_and_index()` for HTML content.
+Used by `ctx_index()` and `ctx_fetch_and_index()` for HTML content.
 
 - Splits on H1-H4 heading boundaries (`/^(#{1,4})\s+(.+)$/`)
 - Maintains a heading stack for breadcrumb titles (e.g., "H1 > H2 > H3")
@@ -541,9 +592,9 @@ const SHELL_ESCAPE_PATTERNS: Record<string, RegExp[]> = {
 The PreToolUse hook applies security checks to:
 
 - **Bash tool:** Stage 1 security check (deny patterns), then Stage 2 routing (curl/wget blocking, inline HTTP blocking).
-- **execute tool (shell language):** Checks code against Bash deny patterns.
-- **execute_file tool:** Checks file path against Read deny patterns AND shell code against Bash deny patterns.
-- **batch_execute tool:** Checks each command individually against Bash deny patterns.
+- **ctx_execute tool (shell language):** Checks code against Bash deny patterns.
+- **ctx_execute_file tool:** Checks file path against Read deny patterns AND shell code against Bash deny patterns.
+- **ctx_batch_execute tool:** Checks each command individually against Bash deny patterns.
 
 Decisions: `deny` (blocked with reason), `ask` (escalate to user), `allow` (pass through).
 
@@ -551,20 +602,20 @@ Decisions: `deny` (blocked with reason), `ask` (escalate to user), `allow` (pass
 
 ### PreToolUse Hook (`pretooluse.mjs`)
 
-Intercepts tool calls before execution. Registered for: Bash, WebFetch, Read, Grep, Task, execute, execute_file, batch_execute.
+Intercepts tool calls before execution. Registered for: Bash, WebFetch, Read, Grep, Task, ctx_execute, ctx_execute_file, ctx_batch_execute.
 
 **Tool routing:**
 
 | Tool | Action |
 |------|--------|
-| Bash (curl/wget) | Replaces command with echo redirect to `fetch_and_index` |
-| Bash (inline HTTP: fetch(), requests.get(), http.get()) | Replaces command with echo redirect to `execute` |
+| Bash (curl/wget) | Replaces command with echo redirect to `ctx_fetch_and_index` |
+| Bash (inline HTTP: fetch(), requests.get(), http.get()) | Replaces command with echo redirect to `ctx_execute` |
 | Bash (other) | Security check, then pass through |
-| Read | Adds guidance: use `execute_file` for analysis, Read for editing |
-| Grep | Adds guidance: use `execute` with shell for searches |
-| WebFetch | Denies with redirect to `fetch_and_index` |
+| Read | Adds guidance: use `ctx_execute_file` for analysis, Read for editing |
+| Grep | Adds guidance: use `ctx_execute` with shell for searches |
+| WebFetch | Denies with redirect to `ctx_fetch_and_index` |
 | Task (subagent) | Injects routing block into prompt, upgrades `subagent_type` from "Bash" to "general-purpose" |
-| execute/execute_file/batch_execute | Security checks only |
+| ctx_execute/ctx_execute_file/ctx_batch_execute | Security checks only |
 
 **Self-healing:** On every invocation, checks if the plugin directory name matches `package.json` version. If mismatched:
 1. Copies files to a correctly-named version directory
@@ -589,15 +640,15 @@ Emits XML routing rules as `additionalContext` at session start. Registered with
   </priority_instructions>
 
   <tool_selection_hierarchy>
-    1. GATHER: batch_execute(commands, queries)
-    2. FOLLOW-UP: search(queries: ["q1", "q2", ...])
-    3. PROCESSING: execute(language, code) | execute_file(path, language, code)
+    1. GATHER: ctx_batch_execute(commands, queries)
+    2. FOLLOW-UP: ctx_search(queries: ["q1", "q2", ...])
+    3. PROCESSING: ctx_execute(language, code) | ctx_execute_file(path, language, code)
   </tool_selection_hierarchy>
 
   <forbidden_actions>
     - DO NOT use Bash for commands producing >20 lines of output.
-    - DO NOT use Read for analysis (use execute_file).
-    - DO NOT use WebFetch (use fetch_and_index instead).
+    - DO NOT use Read for analysis (use ctx_execute_file).
+    - DO NOT use WebFetch (use ctx_fetch_and_index instead).
     - Bash is ONLY for git/mkdir/rm/mv/navigation.
   </forbidden_actions>
 
@@ -618,10 +669,10 @@ Emits XML routing rules as `additionalContext` at session start. Registered with
       { "matcher": "WebFetch", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
       { "matcher": "Read", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
       { "matcher": "Grep", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
-      { "matcher": "Task", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
-      { "matcher": "mcp__plugin_context-mode_context-mode__execute", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
-      { "matcher": "mcp__plugin_context-mode_context-mode__execute_file", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
-      { "matcher": "mcp__plugin_context-mode_context-mode__batch_execute", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] }
+      { "matcher": "Agent", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "mcp__plugin_context-mode_context-mode__ctx_execute", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "mcp__plugin_context-mode_context-mode__ctx_execute_file", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "mcp__plugin_context-mode_context-mode__ctx_batch_execute", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] }
     ],
     "SessionStart": [
       { "matcher": "", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }] }
@@ -632,7 +683,7 @@ Emits XML routing rules as `additionalContext` at session start. Registered with
 
 ## Skills
 
-context-mode ships 4 skills:
+context-mode ships 5 skills:
 
 ### context-mode (primary skill)
 
@@ -677,7 +728,6 @@ Self-update from GitHub:
 ```json
 {
   "name": "context-mode",
-  "version": "0.9.22",
   "description": "Claude Code MCP plugin that saves 98% of your context window.",
   "mcpServers": {
     "context-mode": {
@@ -761,8 +811,8 @@ Self-update from GitHub:
 
 - **Empty query array:** Returns error.
 - **No results found:** Returns list of all indexed sources with their labels and chunk counts.
-- **Throttle exceeded (>8 calls/minute):** Returns error demanding `batch_execute` usage.
-- **Output cap (40 KB for search, 80 KB for batch_execute):** Remaining queries get "(output cap reached)" placeholder.
+- **Throttle exceeded (>8 calls/minute):** Returns error demanding `ctx_batch_execute` usage.
+- **Output cap (40 KB for ctx_search, 80 KB for ctx_batch_execute):** Remaining queries get "(output cap reached)" placeholder.
 - **Non-FTS safe characters in trigram queries:** Sanitized by removing all characters except alphanumeric, spaces, underscores, and hyphens.
 
 ### Chunking Constraints
@@ -782,7 +832,7 @@ Self-update from GitHub:
 
 ## Intent-Driven Search Flow
 
-When `intent` is provided to `execute` or `execute_file` and output exceeds 5000 bytes:
+When `intent` is provided to `ctx_execute` or `ctx_execute_file` and output exceeds 5000 bytes:
 
 1. Output is indexed into FTS5 via `store.indexPlainText()` with source label `execute:{language}` or `file:{path}`.
 2. `searchWithFallback(intent, 5)` runs the three-tier search against the indexed content.

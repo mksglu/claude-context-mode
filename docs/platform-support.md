@@ -4,13 +4,13 @@ This document provides a comprehensive comparison of all platforms supported by 
 
 ## Overview
 
-context-mode supports nine platforms across three hook paradigms:
+context-mode supports twelve platforms across three hook paradigms:
 
 | Paradigm | Platforms |
 |----------|-----------|
-| **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, Codex CLI |
-| **TS Plugin** | OpenCode |
-| **MCP-only** | Antigravity, Kiro |
+| **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, Codex CLI, Qwen Code |
+| **TS Plugin** | OpenCode, OpenClaw |
+| **MCP-only** | Antigravity, Kiro, Zed |
 
 The MCP server layer is 100% portable and needs no adapter. Only the hook layer requires platform-specific adapters.
 
@@ -507,6 +507,91 @@ context-mode hook cursor stop
 - Hook payloads name MCP tools as `MCP:<tool>` and need adapter normalization
 - Claude-compatible Cursor behavior exists, but native Cursor config is the supported path
 - `additional_context` in postToolUse and sessionStart hooks is accepted but NOT surfaced to the model (Cursor upstream bug — [forum #155689](https://forum.cursor.com/t/native-posttooluse-hooks-accept-and-log-additional-context-successfully-but-the-injected-context-is-not-surfaced-to-the-model/155689), [forum #156157](https://forum.cursor.com/t/cursor-hooks-additional-context-not-injected-in-agent-context-in-posttooluse/156157)). Routing enforcement relies on `.mdc` rules file and MCP tool descriptions instead.
+
+---
+
+### OpenClaw
+
+**Status:** Fully supported
+
+**Hook Paradigm:** TS Plugin (gateway plugin via `api.registerHook()` / `api.on()`)
+
+OpenClaw is an OpenAI-stack agent gateway. context-mode ships as a native gateway plugin that registers hooks through OpenClaw's plugin API rather than the JSON stdin/stdout wire protocol. The same plugin entry also registers context-mode as a context engine, owning compaction.
+
+**Hook Names:**
+- `tool_call:before` -- equivalent to PreToolUse
+- `tool_call:after` -- equivalent to PostToolUse
+- `command:new` -- equivalent to SessionStart (fires on each new gateway command)
+- `before_prompt_build` -- lifecycle hook for routing instruction injection
+- `registerContextEngine` (with `ownsCompaction`) -- equivalent to PreCompact
+
+**Blocking:** `return { block: true, blockReason: "..." }` from the `tool_call:before` handler
+
+**Arg Modification:** mutate `event.params` in the `tool_call:before` handler (or return `{ params: ... }`)
+
+**Output Modification:** not supported (the plugin paradigm exposes args/context, not the rendered tool output)
+
+**Context Injection:** via `before_prompt_build` (session-level) and `registerContextEngine` (compaction-level)
+
+**Path Resolution:**
+- Detection root: `~/.openclaw/`
+- Plugin install: `~/.openclaw/extensions/context-mode/`
+- Project config: `openclaw.json` or `.openclaw/openclaw.json`
+- Global config fallback: `~/.openclaw/openclaw.json`
+- Project dir: `process.cwd()` (the gateway provides no dedicated env var)
+- Memory dir: project-relative `./memory`
+- Session dir: `~/.openclaw/context-mode/sessions/`
+- Routing instructions: `AGENTS.md`
+
+**Configuration:**
+- `openclaw.json` registers context-mode under `plugins.entries["context-mode"]` (`{ "enabled": true }`)
+- `plugins.slots.contextEngine = "context-mode"` enables ownership of compaction
+- No CLI hook command; OpenClaw imports the plugin module directly
+
+**Notes / Caveats:**
+- TS plugin paradigm — hooks run in-process, so there is no shell command to chmod and no platform-specific stdin/stdout quirks
+- `ask` decisions are converted to `block` (with the original reason) since the gateway has no interactive confirmation path
+- `context` decisions inside `tool_call:before` are dropped — context injection must be routed through `before_prompt_build` or the registered context engine
+- Session ID falls back to `pid-${process.ppid}` when the gateway does not surface one
+
+---
+
+### Zed
+
+**Status:** MCP-only (no hooks)
+
+**Hook Paradigm:** MCP-only
+
+Zed is a code editor with first-class MCP support but no hook pipeline. context-mode runs purely through Zed's `context_servers` configuration; routing enforcement falls back to the AGENTS.md instruction file (~60% compliance).
+
+**Hook Support:**
+- PreToolUse: --
+- PostToolUse: --
+- PreCompact: --
+- SessionStart: --
+- Stop: --
+- Can modify args: --
+- Can modify output: --
+- Can inject session context: --
+
+The hook adapter exists only to satisfy the interface contract — every parser throws `Error("Zed does not support hooks")` and every formatter returns `undefined`.
+
+**Path Resolution:**
+- Detection root: `~/.config/zed/`
+- Settings file: `~/.config/zed/settings.json`
+- MCP registration: `context_servers` object inside `settings.json`
+- Session dir: `~/.config/zed/context-mode/sessions/`
+- Routing instructions: `AGENTS.md` (sourced from `configs/zed/AGENTS.md` in the package, with an inline fallback if missing)
+
+**Detection:**
+- Auto-detected via the presence of `~/.config/zed/`
+- Override via `CONTEXT_MODE_PLATFORM=zed`
+
+**Notes / Caveats:**
+- No hook adapter implies no automatic routing — the model must follow AGENTS.md voluntarily
+- No marketplace or plugin registry for Zed; `getInstalledVersion()` always reports `not installed`
+- `validateHooks` always returns a single `warn` row reminding the user that Zed exposes only MCP integration
+- `configureAllHooks`, `setHookPermissions`, and `updatePluginRegistry` are intentional no-ops
 
 ---
 

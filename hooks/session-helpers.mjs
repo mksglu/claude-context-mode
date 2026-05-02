@@ -10,37 +10,85 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 
 /**
  * Returns the worktree suffix for session path isolation.
  * Mirrors the logic in src/server.ts — kept in sync manually since
  * hooks run as plain .mjs (no TypeScript build step).
+ *
+ * Two-level cache:
+ *   1. In-process module cache — same hook fire calls this 3× (db,
+ *      events, cleanup paths) so cache hits 2 of 3 cold within process.
+ *   2. Cross-process marker file in tmpdir keyed by sha256(cwd) — every
+ *      Pre/PostToolUse hook is a fresh node fork; without this each fire
+ *      pays 12-50ms for `git worktree list` on Linux/macOS, 50-150ms on
+ *      Windows where fork+exec is heavier.
+ *
+ * Marker filename uses sha256(cwd) so it is alphanumeric — safe across
+ * Windows path/filename rules. tmpdir() resolves correctly on all 3 OS.
  */
+let _wtCacheInProcess;
+function workTreeMarkerPath(cwd) {
+  const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+  return join(tmpdir(), `cm-wt-${hash}.txt`);
+}
+
 function getWorktreeSuffix() {
   const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
+  const cwd = process.cwd();
+
+  if (
+    _wtCacheInProcess &&
+    _wtCacheInProcess.cwd === cwd &&
+    _wtCacheInProcess.envSuffix === envSuffix
+  ) {
+    return _wtCacheInProcess.suffix;
+  }
+
+  let suffix;
   if (envSuffix !== undefined) {
-    return envSuffix ? `__${envSuffix}` : "";
-  }
-  try {
-    const cwd = process.cwd();
-    const mainWorktree = execFileSync(
-      "git",
-      ["worktree", "list", "--porcelain"],
-      { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
-    )
-      .split(/\r?\n/)
-      .find((l) => l.startsWith("worktree "))
-      ?.replace("worktree ", "")
-      ?.trim();
-    if (mainWorktree && cwd !== mainWorktree) {
-      return `__${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+    suffix = envSuffix ? `__${envSuffix}` : "";
+  } else {
+    // Try cross-process marker first.
+    const markerPath = workTreeMarkerPath(cwd);
+    try {
+      suffix = readFileSync(markerPath, "utf-8");
+      _wtCacheInProcess = { cwd, envSuffix, suffix };
+      return suffix;
+    } catch {
+      // marker missing → compute below
     }
-  } catch {
-    // git not available or not a git repo — no suffix
+
+    suffix = "";
+    try {
+      const mainWorktree = execFileSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
+      )
+        .split(/\r?\n/)
+        .find((l) => l.startsWith("worktree "))
+        ?.replace("worktree ", "")
+        ?.trim();
+      if (mainWorktree && cwd !== mainWorktree) {
+        suffix = `__${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+      }
+    } catch {
+      // git not available or not a git repo — no suffix
+    }
+
+    // Best-effort write so subsequent hook forks short-circuit.
+    try {
+      writeFileSync(markerPath, suffix, "utf-8");
+    } catch {
+      // tmpdir not writable — degrade gracefully
+    }
   }
-  return "";
+
+  _wtCacheInProcess = { cwd, envSuffix, suffix };
+  return suffix;
 }
 
 /** Claude Code platform options (default). */

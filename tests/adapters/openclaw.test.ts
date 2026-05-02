@@ -84,6 +84,33 @@ describe("OpenClawAdapter", () => {
       expect(event.projectDir).toBe(process.cwd());
     });
 
+    it("prefers input.cwd over env and process.cwd()", () => {
+      const saved = process.env.OPENCLAW_PROJECT_DIR;
+      process.env.OPENCLAW_PROJECT_DIR = "/env/openclaw";
+      try {
+        const event = adapter.parsePreToolUseInput({
+          toolName: "shell",
+          cwd: "/wire/cwd",
+        } as unknown as Record<string, unknown>);
+        expect(event.projectDir).toBe("/wire/cwd");
+      } finally {
+        if (saved === undefined) delete process.env.OPENCLAW_PROJECT_DIR;
+        else process.env.OPENCLAW_PROJECT_DIR = saved;
+      }
+    });
+
+    it("falls back to OPENCLAW_PROJECT_DIR when input.cwd missing", () => {
+      const saved = process.env.OPENCLAW_PROJECT_DIR;
+      process.env.OPENCLAW_PROJECT_DIR = "/env/openclaw";
+      try {
+        const event = adapter.parsePreToolUseInput({ toolName: "shell" });
+        expect(event.projectDir).toBe("/env/openclaw");
+      } finally {
+        if (saved === undefined) delete process.env.OPENCLAW_PROJECT_DIR;
+        else process.env.OPENCLAW_PROJECT_DIR = saved;
+      }
+    });
+
     it("falls back to pid when no sessionId", () => {
       const event = adapter.parsePreToolUseInput({
         toolName: "shell",

@@ -8,7 +8,7 @@
 
 import type { ContentStore, SearchResult } from "../store.js";
 import type { SessionDB, StoredEvent } from "../session/db.js";
-import { searchAutoMemory } from "./auto-memory.js";
+import { searchAutoMemory, type AutoMemoryAdapter } from "./auto-memory.js";
 
 const DEBUG = process.env.DEBUG?.includes("context-mode");
 
@@ -38,6 +38,8 @@ export interface SearchAllSourcesOpts {
   sessionDB?: SessionDB | null;
   projectDir?: string;
   configDir?: string;
+  /** Detected platform adapter — used for adapter-aware auto-memory. */
+  adapter?: AutoMemoryAdapter;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -64,6 +66,7 @@ export function searchAllSources(opts: SearchAllSourcesOpts): UnifiedSearchResul
     sessionDB,
     projectDir,
     configDir,
+    adapter,
   } = opts;
 
   const results: UnifiedSearchResult[] = [];
@@ -114,7 +117,7 @@ export function searchAllSources(opts: SearchAllSourcesOpts): UnifiedSearchResul
 
     // Source 3: Auto-memory
     try {
-      const memResults = searchAutoMemory([query], limit, projectDir, configDir);
+      const memResults = searchAutoMemory([query], limit, projectDir, configDir, adapter);
       results.push(...memResults);
     } catch (e) {
       if (DEBUG) process.stderr.write(`[ctx] auto-memory search failed: ${e}\n`);

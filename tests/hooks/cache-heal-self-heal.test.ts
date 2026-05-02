@@ -193,8 +193,11 @@ describe("selfHealCacheHealHook", () => {
     // Script should now have shebang + exec bit.
     const content = readFileSync(scriptPath, "utf-8");
     expect(content.startsWith("#!/usr/bin/env node\n")).toBe(true);
-    const mode = statSync(scriptPath).mode & 0o777;
-    expect(mode).toBe(0o755);
+    // Exec bit only meaningful on POSIX hosts — NTFS ignores chmod 0o755.
+    if (process.platform !== "win32") {
+      const mode = statSync(scriptPath).mode & 0o777;
+      expect(mode).toBe(0o755);
+    }
   });
 
   test("Windows: rewrites stale command using execPath form", () => {
@@ -284,8 +287,9 @@ describe("selfHealCacheHealHook", () => {
     expect(after.hooks.SessionStart[0].hooks[0].command).toBe(
       '"/usr/bin/echo" "unrelated hook"',
     );
+    // buildHookCommand normalizes backslashes → forward slashes for cross-platform safety.
     expect(after.hooks.SessionStart[1].hooks[0].command).toBe(
-      `"${scriptPath}"`,
+      `"${scriptPath.replace(/\\/g, "/")}"`,
     );
     expect(after.hooks.UserPromptSubmit[0].hooks[0].command).toBe(
       '"/usr/local/bin/other-tool"',

@@ -1538,8 +1538,16 @@ describe("Windows Shell Support", () => {
 
   test("buildCommand returns shell command array", async () => {
     const cmd = buildCommand(runtimes, "shell", "/tmp/script.sh");
-    assert.ok(Array.isArray(cmd) && cmd.length === 2, `Expected [shell, path], got: ${cmd}`);
-    assert.equal(cmd[1], "/tmp/script.sh");
+    assert.ok(Array.isArray(cmd) && cmd.length > 0, `Expected non-empty array, got: ${cmd}`);
+    if (process.platform === "win32" && (cmd[0].toLowerCase().includes("bash") || cmd[0].toLowerCase().endsWith("\\sh.exe"))) {
+      // Windows + bash → `bash -c "source 'path'"` to dodge MSYS path mangling.
+      assert.equal(cmd.length, 3, `Expected [bash, -c, source ...], got: ${cmd}`);
+      assert.equal(cmd[1], "-c");
+      assert.ok(cmd[2].includes("/tmp/script.sh"), `Expected source clause to reference path, got: ${cmd[2]}`);
+    } else {
+      assert.equal(cmd.length, 2, `Expected [shell, path], got: ${cmd}`);
+      assert.equal(cmd[1], "/tmp/script.sh");
+    }
   });
 
   // --- Issue #384: hide Windows console + drop .sh extension for shell ---

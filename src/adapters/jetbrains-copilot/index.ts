@@ -65,6 +65,15 @@ export class JetBrainsCopilotAdapter extends CopilotBaseAdapter {
     return process.env.IDEA_INITIAL_DIRECTORY || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   }
 
+  /** JetBrains Copilot honors .github/copilot-instructions.md per project. */
+  getConfigDir(): string {
+    return ".github";
+  }
+
+  getInstructionFiles(): string[] {
+    return ["copilot-instructions.md"];
+  }
+
   // ── Diagnostics (doctor) ─────────────────────────────────
 
   validateHooks(pluginRoot: string): DiagnosticResult[] {

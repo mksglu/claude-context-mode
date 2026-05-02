@@ -47,6 +47,32 @@ export abstract class BaseAdapter {
     return join(this.getSessionDir(), `${hash}-events.md`);
   }
 
+  /**
+   * Default: build config dir from sessionDirSegments rooted at $HOME.
+   * Adapters with project-scoped or non-home-rooted config dirs
+   * (cursor, vscode-copilot, jetbrains-copilot, openclaw, opencode)
+   * override this.
+   */
+  getConfigDir(): string {
+    return join(homedir(), ...this.sessionDirSegments);
+  }
+
+  /**
+   * Default: Claude Code convention. Most adapters override with their
+   * own platform-specific instruction file name (AGENTS.md, GEMINI.md, ...).
+   */
+  getInstructionFiles(): string[] {
+    return ["CLAUDE.md"];
+  }
+
+  /**
+   * Default: <configDir>/memory. Adapters with a different memory dir
+   * name (e.g., codex uses "memories" plural) override this.
+   */
+  getMemoryDir(): string {
+    return join(this.getConfigDir(), "memory");
+  }
+
   backupSettings(): string | null {
     const settingsPath = this.getSettingsPath();
     try {

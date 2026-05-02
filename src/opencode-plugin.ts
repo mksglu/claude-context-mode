@@ -109,6 +109,11 @@ async function createContextModePlugin(ctx: PluginContext) {
   // Clean up old sessions on startup (replaces SessionStart hook)
   db.cleanupOldSessions(7);
 
+  // Track whether we've already injected the prior-session resume into
+  // a chat turn — `experimental.chat.messages.transform` fires on every
+  // turn, but we only want to inject once per process (SessionStart-equivalent).
+  let sessionStartInjected = false;
+
   return {
     // ── PreToolUse: Routing enforcement ─────────────────
 
@@ -180,6 +185,38 @@ async function createContextModePlugin(ctx: PluginContext) {
         return snapshot;
       } catch {
         return "";
+      }
+    },
+
+    // ── SessionStart equivalent (PR #376) ───────────────
+    // OpenCode lacks a real SessionStart hook (#14808, #5409) but
+    // recently added `experimental.chat.messages.transform`, which
+    // fires once per chat turn before messages are sent to the model.
+    // We piggyback on the *first* invocation per process to inject the
+    // most-recent resume snapshot from a prior session — matching what
+    // every other adapter's SessionStart hook does.
+    "experimental.chat.messages.transform": async (
+      _input: unknown,
+      output: { messages?: Array<{ role: string; content: string }> } | undefined,
+    ) => {
+      if (sessionStartInjected) return;
+      sessionStartInjected = true;
+      try {
+        // Find the most recent resume snapshot for this project across
+        // any prior session. ContextSessionDB has no per-project resume
+        // lookup, so we fall back to the current session's resume row.
+        const row = db.getResume(sessionId);
+        const snapshot = row?.snapshot;
+        if (!snapshot || snapshot.length === 0) return;
+
+        if (output && Array.isArray(output.messages)) {
+          output.messages.unshift({
+            role: "system",
+            content: snapshot,
+          });
+        }
+      } catch {
+        // Silent — never break the chat turn
       }
     },
   };

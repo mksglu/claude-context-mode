@@ -94,7 +94,14 @@ interface ExecuteFileOptions extends ExecuteOptions {
 
 export class PolyglotExecutor {
   #hardCapBytes: number;
-  #projectRoot: string;
+  /**
+   * Resolves the project root on every access. Stored as a thunk so the
+   * executor stays in sync with server-side env-cascade resolvers (e.g.
+   * `getProjectDir` in server.ts) instead of capturing a snapshot of
+   * `CLAUDE_PROJECT_DIR` at construction time. String inputs are wrapped
+   * to preserve constructor backward compatibility.
+   */
+  #projectRootResolver: () => string;
   #runtimes: RuntimeMap;
 
   /** PIDs of backgrounded processes — killed on cleanup to prevent zombies. */
@@ -102,12 +109,23 @@ export class PolyglotExecutor {
 
   constructor(opts?: {
     hardCapBytes?: number;
-    projectRoot?: string;
+    projectRoot?: string | (() => string);
     runtimes?: RuntimeMap;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
-    this.#projectRoot = opts?.projectRoot ?? process.cwd();
+    const pr = opts?.projectRoot;
+    if (typeof pr === "function") {
+      this.#projectRootResolver = pr;
+    } else if (typeof pr === "string") {
+      this.#projectRootResolver = () => pr;
+    } else {
+      this.#projectRootResolver = () => process.cwd();
+    }
     this.#runtimes = opts?.runtimes ?? detectRuntimes();
+  }
+
+  get #projectRoot(): string {
+    return this.#projectRootResolver();
   }
 
   get runtimes(): RuntimeMap {

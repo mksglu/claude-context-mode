@@ -14,7 +14,7 @@
 
 import * as p from "@clack/prompts";
 import color from "picocolors";
-import { execFileSync } from "node:child_process";
+import { execFileSync, execFile as nodeExecFile } from "node:child_process";
 import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, mkdirSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
@@ -166,6 +166,58 @@ export function npmExec(command: string, opts: Record<string, unknown> = {}): vo
   });
 }
 
+/**
+ * Open a URL in the user's default browser without invoking a shell.
+ *
+ * Uses `execFile` with an arg array so the URL cannot be interpreted as
+ * shell metacharacters.  Original code used `execSync(`open "${url}"`)`
+ * which would shell-interpolate the URL — fragile if the URL ever
+ * becomes attacker-controlled (remote, weak port-validation, etc).
+ *
+ * Best-effort: if the OS opener is missing the function logs a copyable
+ * URL hint and returns; it never throws.  `runner` is injectable for
+ * tests; default is `child_process.execFile` (callback form, fire-and-
+ * forget).
+ */
+export type ExecFileFn = (
+  file: string,
+  args: readonly string[],
+  opts?: Record<string, unknown>,
+) => unknown;
+
+export function openInBrowser(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  runner: ExecFileFn = nodeExecFile as unknown as ExecFileFn,
+): void {
+  const opts = { stdio: "ignore" as const };
+  const hint = () =>
+    console.error(`\nCould not auto-open browser. Open manually: ${url}`);
+
+  try {
+    if (platform === "darwin") {
+      runner("open", [url], opts);
+    } else if (platform === "win32") {
+      // `start` is a cmd.exe builtin; first arg after `start` is the
+      // window title — pass empty so the URL isn't consumed as a title.
+      runner("cmd", ["/c", "start", "", url], opts);
+    } else {
+      // linux/bsd: try xdg-open, fall back to sensible-browser.
+      try {
+        runner("xdg-open", [url], opts);
+      } catch {
+        try {
+          runner("sensible-browser", [url], opts);
+        } catch {
+          hint();
+        }
+      }
+    }
+  } catch {
+    hint();
+  }
+}
+
 function defaultPluginRoot(): string {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
@@ -177,14 +229,18 @@ function defaultPluginRoot(): string {
   return __dirname;
 }
 
-// Opencode/Kilocode install plugins from npm into .cache folder
+// Opencode/Kilocode install plugins from npm into a per-package cache folder.
+// Layout (changed silently in late 2024 — see PR #376 / KiloCode#9503):
+//   POSIX  : ~/.cache/<platform>/packages/context-mode@latest/node_modules/context-mode
+//   Windows: %LOCALAPPDATA%\<platform>\packages\context-mode@latest\node_modules\context-mode
 function cachePluginRoot(platform: string): string {
+  const subPath = ["packages", "context-mode@latest", "node_modules", "context-mode"];
   if (process.platform === "win32") {
     const localApp = process.env.LOCALAPPDATA;
-    if (localApp) return resolve(localApp, platform, "node_modules", "context-mode");
-    return resolve(homedir(), "AppData", "Local", platform, "node_modules", "context-mode");
+    if (localApp) return resolve(localApp, platform, ...subPath);
+    return resolve(homedir(), "AppData", "Local", platform, ...subPath);
   }
-  return resolve(homedir(), ".cache", platform, "node_modules", "context-mode");
+  return resolve(homedir(), ".cache", platform, ...subPath);
 }
 
 function getPluginRoot(): string {
@@ -556,13 +612,8 @@ async function insight(port: number) {
     process.exit(1);
   }
 
-  // Open browser
-  const platform = process.platform;
-  try {
-    if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-    else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-    else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-  } catch { /* best effort */ }
+  // Open browser — execFile with arg array, no shell interpolation.
+  openInBrowser(url);
 
   // Keep alive until Ctrl+C
   process.on("SIGINT", () => { child.kill(); process.exit(0); });

@@ -105,6 +105,10 @@ export class ZedAdapter extends BaseAdapter implements HookAdapter {
     return resolve(homedir(), ".config", "zed", "settings.json");
   }
 
+  getInstructionFiles(): string[] {
+    return ["AGENTS.md"];
+  }
+
   generateHookConfig(_pluginRoot: string): HookRegistration {
     // Zed does not support hooks — return empty registration
     return {};

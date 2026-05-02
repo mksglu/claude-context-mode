@@ -59,6 +59,7 @@ interface OpenClawHookInput {
   is_error?: boolean;
   sessionId?: string;
   source?: string;
+  cwd?: string;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
       toolName: input.toolName ?? input.tool_name ?? "",
       toolInput: input.params ?? input.tool_input ?? {},
       sessionId: this.extractSessionId(input),
-      projectDir: process.cwd(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -110,7 +111,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
       toolOutput: input.output ?? input.tool_output,
       isError: input.isError ?? input.is_error,
       sessionId: this.extractSessionId(input),
-      projectDir: process.cwd(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -119,7 +120,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
     const input = raw as OpenClawHookInput;
     return {
       sessionId: this.extractSessionId(input),
-      projectDir: process.cwd(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -146,7 +147,7 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
     return {
       sessionId: this.extractSessionId(input),
       source,
-      projectDir: process.cwd(),
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -203,6 +204,23 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
   getSettingsPath(): string {
     // OpenClaw uses openclaw.json in the project root or ~/.openclaw/openclaw.json
     return resolve("openclaw.json");
+  }
+
+  /**
+   * OpenClaw stores everything in the project root — no separate
+   * config dir. Returned as empty so callers fall through to projectDir.
+   */
+  getConfigDir(): string {
+    return "";
+  }
+
+  getInstructionFiles(): string[] {
+    return ["AGENTS.md"];
+  }
+
+  /** Project-relative ./memory directory. */
+  getMemoryDir(): string {
+    return "memory";
   }
 
   generateHookConfig(_pluginRoot: string): HookRegistration {
@@ -490,6 +508,17 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
   }
 
   // ── Internal helpers ───────────────────────────────────
+
+  /**
+   * Resolve the project directory for an OpenClaw hook input.
+   * Priority: input.cwd > OPENCLAW_PROJECT_DIR env > process.cwd().
+   * Mirrors the cursor / opencode pattern so downstream hooks always
+   * receive a defined projectDir even under worktrees or when the
+   * platform omits cwd from the wire payload.
+   */
+  private getProjectDir(input: OpenClawHookInput): string {
+    return input.cwd ?? process.env.OPENCLAW_PROJECT_DIR ?? process.cwd();
+  }
 
   /**
    * Extract session ID from OpenClaw hook input.

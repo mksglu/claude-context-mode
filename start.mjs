@@ -209,14 +209,20 @@ try{
 // Rewrites placeholders to absolute paths using process.execPath (Datadog
 // model). Idempotent — only writes when needed. Survives upgrades because
 // it runs at every MCP boot.
-try {
-  const { normalizeHooksOnStartup } = await import("./hooks/normalize-hooks.mjs");
-  normalizeHooksOnStartup({
-    pluginRoot: __dirname,
-    nodePath: process.execPath,
-    platform: process.platform,
-  });
-} catch { /* best effort — never block server startup */ }
+//
+// Skip under vitest: server.test.ts spawns this script from the repo root,
+// and a mutated .claude-plugin/plugin.json poisons sibling tests that read
+// the file (cli.test.ts). VITEST is inherited by spawned subprocesses.
+if (!process.env.VITEST) {
+  try {
+    const { normalizeHooksOnStartup } = await import("./hooks/normalize-hooks.mjs");
+    normalizeHooksOnStartup({
+      pluginRoot: __dirname,
+      nodePath: process.execPath,
+      platform: process.platform,
+    });
+  } catch { /* best effort — never block server startup */ }
+}
 
 // Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs)
 // ensure-deps handles better-sqlite3 install + ABI cache/rebuild automatically (#148, #203)

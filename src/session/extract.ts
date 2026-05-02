@@ -71,8 +71,24 @@ function extractFileAndRule(input: HookInput): SessionEvent[] {
   if (tool_name === "Read") {
     const filePath = String(tool_input["file_path"] ?? "");
 
-    // Rule detection: CLAUDE.md or anything inside a .claude/ directory
-    const isRuleFile = /CLAUDE\.md$|\.claude[\\/]/i.test(filePath);
+    // Rule detection — covers every supported platform's instruction
+    // file convention plus per-user memory directories. Hardcoding here
+    // (instead of dispatching through the adapter) keeps extract.ts
+    // pure / sync / hot-path-safe — the tradeoff is that adding a new
+    // platform requires updating this regex.
+    //
+    //   Filenames: CLAUDE.md, AGENTS.md, AGENTS.override.md, GEMINI.md,
+    //              QWEN.md, KIRO.md, copilot-instructions.md,
+    //              context-mode.mdc
+    //   Directories: .claude/, .codex/memories/, .qwen/memory/,
+    //                .gemini/memory/, .config/<plat>/memory/, .cursor/memory/,
+    //                .github/memory/, .kiro/memory/, etc.
+    const isRuleFile =
+      /(?:CLAUDE|AGENTS(?:\.override)?|GEMINI|QWEN|KIRO)\.md$/i.test(filePath)
+      || /\/copilot-instructions\.md$/i.test(filePath)
+      || /\/context-mode\.mdc$/i.test(filePath)
+      || /\.claude[\\/]/i.test(filePath)
+      || /[\\/]memor(?:y|ies)[\\/][^\\/]+\.md$/i.test(filePath);
     if (isRuleFile) {
       events.push({
         type: "rule",

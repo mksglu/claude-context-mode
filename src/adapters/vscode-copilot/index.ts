@@ -86,6 +86,15 @@ export class VSCodeCopilotAdapter extends CopilotBaseAdapter {
     return dir;
   }
 
+  /** VS Code Copilot honors .github/copilot-instructions.md per project. */
+  getConfigDir(): string {
+    return ".github";
+  }
+
+  getInstructionFiles(): string[] {
+    return ["copilot-instructions.md"];
+  }
+
   // ── Diagnostics (doctor) ─────────────────────────────────
 
   validateHooks(pluginRoot: string): DiagnosticResult[] {

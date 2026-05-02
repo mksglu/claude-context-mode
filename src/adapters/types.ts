@@ -218,6 +218,31 @@ export interface HookAdapter {
   /** Compute per-project session events file path. */
   getSessionEventsPath(projectDir: string): string;
 
+  /**
+   * Platform config directory (e.g., ~/.claude, ~/.codex, ~/.qwen,
+   * ~/.config/opencode). For project-scoped platforms (cursor,
+   * vscode-copilot, jetbrains-copilot, openclaw), returns the in-project
+   * convention dir name (e.g., ".cursor", ".github") — callers resolve
+   * against projectDir as needed. Used for auto-memory + ctx_search timeline.
+   */
+  getConfigDir(): string;
+
+  /**
+   * Names of platform-native instruction/rule files that act as the
+   * project's "user CLAUDE.md equivalent" (e.g., ["CLAUDE.md"],
+   * ["AGENTS.md"], ["GEMINI.md"]). Auto-memory scans for these in the
+   * project root and config dir, and rule-detection emits "rule" events
+   * when they are read.
+   */
+  getInstructionFiles(): string[];
+
+  /**
+   * Directory where persistent per-user memory is stored
+   * (e.g., ~/.claude/memory, ~/.codex/memories). Auto-memory scans
+   * *.md files in this directory.
+   */
+  getMemoryDir(): string;
+
   /** Generate hook registration config for this platform. */
   generateHookConfig(pluginRoot: string): HookRegistration;
 

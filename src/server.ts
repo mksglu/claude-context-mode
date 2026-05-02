@@ -5,13 +5,14 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
 import { execSync, type ChildProcess } from "node:child_process";
-import { join, dirname, resolve, sep } from "node:path";
+import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { request as httpsRequest } from "node:https";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
+import { composeFetchCacheKey } from "./fetch-cache.js";
 import {
   readBashPolicies,
   evaluateCommandDenyOnly,
@@ -30,6 +31,7 @@ import { startLifecycleGuard } from "./lifecycle.js";
 import { getWorktreeSuffix, SessionDB } from "./session/db.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
+import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
@@ -67,9 +69,13 @@ server.server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts
 server.server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
 server.server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
 
+// Pass `getProjectDir` (env cascade) lazily so the executor stays in sync
+// with the same resolver used by ctx_index / resolveProjectPath. Capturing
+// a snapshot at construction would diverge when only CONTEXT_MODE_PROJECT_DIR
+// (or another non-CLAUDE_PROJECT_DIR var) is set — see PR #365.
 const executor = new PolyglotExecutor({
   runtimes,
-  projectRoot: process.env.CLAUDE_PROJECT_DIR,
+  projectRoot: () => getProjectDir(),
 });
 
 // ─────────────────────────────────────────────────────────
@@ -123,10 +129,28 @@ let _insightChild: ChildProcess | null = null;
 
 /**
  * Get the platform-specific sessions directory from the detected adapter.
- * Falls back to ~/.claude/context-mode/sessions/ before adapter detection.
+ *
+ * Pre-detection path (race window before MCP `initialize` completes):
+ * call `detectPlatform()` (sync, env-var-based) and look up segments via
+ * `getSessionDirSegments()` (sync map, no adapter instantiation). This keeps
+ * non-Claude platforms from spilling sessions into `~/.claude/`.
+ *
+ * Last-resort `.claude` fallback only fires if the segments map returns null
+ * (e.g., "unknown" PlatformId) or if anything throws.
  */
 function getSessionDir(): string {
   if (_detectedAdapter) return _detectedAdapter.getSessionDir();
+
+  try {
+    const signal = detectPlatform();
+    const segments = getSessionDirSegments(signal.platform);
+    if (segments) {
+      const dir = join(homedir(), ...segments, "context-mode", "sessions");
+      mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+  } catch { /* fall through to default */ }
+
   const dir = join(homedir(), ".claude", "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -149,8 +173,13 @@ function getProjectDir(): string {
     || process.env.VSCODE_CWD
     || process.env.OPENCODE_PROJECT_DIR
     || process.env.PI_PROJECT_DIR
+    || process.env.IDEA_INITIAL_DIRECTORY
     || process.env.CONTEXT_MODE_PROJECT_DIR
     || process.cwd();
+}
+
+function resolveProjectPath(filePath: string): string {
+  return isAbsolute(filePath) ? filePath : resolve(getProjectDir(), filePath);
 }
 
 /**
@@ -347,8 +376,10 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
     (sessionStats.bytesReturned[toolName] || 0) + bytes;
 
   // Persist to SessionDB so counters survive process restart, --continue, upgrade.
-  // Best-effort: never throws, never blocks.
-  persistToolCallCounter(toolName, bytes);
+  // Best-effort: never throws, never blocks. Deferred via setImmediate so the
+  // SQLite open/select/update/close (~1-5ms even after worktree-suffix cache)
+  // does not extend the response path on any of macOS / Linux / Windows.
+  setImmediate(() => persistToolCallCounter(toolName, bytes));
 
   // Persist a sidecar JSON snapshot for the status line — read at ~3-5 Hz
   // by external scripts that can't afford to open the SQLite database.
@@ -544,7 +575,11 @@ function checkFilePathDenyPolicy(
   toolName: string,
 ): ToolResult | null {
   try {
-    const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+    // Use the canonical getProjectDir() helper so deny-policy enforcement
+    // works on every supported adapter. The previous shortcut skipped the
+    // full env cascade and either failed open on non-Claude hosts or
+    // matched against an unrelated repo's deny rules.
+    const projectDir = getProjectDir();
     const denyGlobs = readToolDenyPatterns("Read", projectDir);
     const result = evaluateFilePath(
       filePath,
@@ -1264,16 +1299,18 @@ server.registerTool(
     }
 
     try {
+      const resolvedPath = path ? resolveProjectPath(path) : undefined;
+
       // Track the raw bytes being indexed (content or file)
       if (content) trackIndexed(Buffer.byteLength(content));
-      else if (path) {
+      else if (resolvedPath) {
         try {
           const fs = await import("fs");
-          trackIndexed(fs.readFileSync(path).byteLength);
+          trackIndexed(fs.readFileSync(resolvedPath).byteLength);
         } catch { /* ignore — file read errors handled by store */ }
       }
       const store = getStore();
-      const result = store.index({ content, path, source });
+      const result = store.index({ content, path: resolvedPath, source: source ?? resolvedPath });
 
       return trackResponse("ctx_index", {
         content: [
@@ -1447,19 +1484,25 @@ server.registerTool(
       let totalSize = 0;
       const sections: string[] = [];
 
-      // Open SessionDB once before the loop (Blocker 4: avoid open/close per query)
+      // Open SessionDB once before the loop (Blocker 4: avoid open/close per query).
+      // The DB filename must match what session-snapshot/session-extract write to,
+      // which is `${hash}${getWorktreeSuffix()}.db` — bug #4 was the missing suffix.
       let timelineDB: InstanceType<typeof SessionDB> | null = null;
       if (sort === "timeline") {
         try {
           const sessionsDir = getSessionDir();
-          const dbFile = join(sessionsDir, `${hashProjectDir()}.db`);
+          const dbFile = join(sessionsDir, `${hashProjectDir()}${getWorktreeSuffix()}.db`);
           if (existsSync(dbFile)) {
             timelineDB = new SessionDB({ dbPath: dbFile });
           }
         } catch { /* SessionDB unavailable — search ContentStore + auto-memory only */ }
       }
 
-      const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+      // Adapter-aware config dir. Falls back to CLAUDE_CONFIG_DIR / ~/.claude
+      // only when no platform adapter has been detected (e.g. raw `npx context-mode dev`).
+      const configDir = _detectedAdapter?.getConfigDir()
+        || process.env.CLAUDE_CONFIG_DIR
+        || join(homedir(), ".claude");
 
       try {
       for (const q of queryList) {
@@ -1480,6 +1523,7 @@ server.registerTool(
             sessionDB: timelineDB,
             projectDir: getProjectDir(),
             configDir,
+            adapter: _detectedAdapter ?? undefined,
           });
         } else {
           results = store.searchWithFallback(q, effectiveLimit, source, contentType);
@@ -1653,11 +1697,13 @@ server.registerTool(
     }),
   },
   async ({ url, source, force }) => {
-    // TTL cache: if source was indexed within 24h, return cached hint
+    // TTL cache: if source was indexed within 24h, return cached hint.
+    // Cache key composes (source, url) so two distinct URLs sharing the same
+    // `source` label do not collide — they each get their own cache slot.
     if (!force) {
       const store = getStore();
-      const label = source ?? url;
-      const meta = store.getSourceMeta(label);
+      const cacheKey = composeFetchCacheKey(source, url);
+      const meta = store.getSourceMeta(cacheKey);
       if (meta) {
         const indexedAt = new Date(meta.indexedAt + "Z"); // SQLite datetime is UTC without Z
         const ageMs = Date.now() - indexedAt.getTime();
@@ -1739,15 +1785,19 @@ server.registerTool(
 
       trackIndexed(Buffer.byteLength(markdown));
 
-      // Route to the appropriate indexing strategy based on Content-Type
+      // Route to the appropriate indexing strategy based on Content-Type.
+      // Storage label includes URL via composeFetchCacheKey so two URLs sharing
+      // a `source` label do not overwrite each other; ctx_search() still finds
+      // both via LIKE-mode source filter on the `source` substring.
+      const storageLabel = composeFetchCacheKey(source, url);
       let indexed: IndexResult;
       if (header === "__CM_CT__:json") {
-        indexed = store.indexJSON(markdown, source ?? url);
+        indexed = store.indexJSON(markdown, storageLabel);
       } else if (header === "__CM_CT__:text") {
-        indexed = store.indexPlainText(markdown, source ?? url);
+        indexed = store.indexPlainText(markdown, storageLabel);
       } else {
         // HTML (default) — content is already converted to markdown
-        indexed = store.index({ content: markdown, source: source ?? url });
+        indexed = store.index({ content: markdown, source: storageLabel });
       }
 
       // Build preview — first ~3KB of markdown for immediate use
@@ -2358,15 +2408,23 @@ server.registerTool(
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
       port: z.coerce.number().optional().describe("Port to serve on (default: 4747)"),
+      sessionDir: z.string().optional().describe("Override INSIGHT_SESSION_DIR: directory containing context-mode session .db files"),
+      contentDir: z.string().optional().describe("Override INSIGHT_CONTENT_DIR: directory containing context-mode content/index .db files"),
+      insightSessionDir: z.string().optional().describe("Alias for sessionDir / INSIGHT_SESSION_DIR"),
+      insightContentDir: z.string().optional().describe("Alias for contentDir / INSIGHT_CONTENT_DIR"),
     }),
   },
-  async ({ port: userPort }) => {
+  async ({ port: userPort, sessionDir, contentDir: inputContentDir, insightSessionDir, insightContentDir }) => {
     const port = userPort || 4747;
+    const userSessionDir = sessionDir || insightSessionDir;
+    const userContentDir = inputContentDir || insightContentDir;
     // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to plugin root
     const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
     const insightSource = resolve(pluginRoot, "insight");
-    // Use adapter-aware path: derive from sessions dir (works across all 12 adapters)
-    const sessDir = getSessionDir();
+    // Use adapter-aware path by default, with explicit overrides for hosts whose
+    // MCP adapter/session DB lives outside the detected default path.
+    const sessDir = userSessionDir ? resolve(userSessionDir) : getSessionDir();
+    const contentDir = userContentDir ? resolve(userContentDir) : join(dirname(sessDir), "content");
     const cacheDir = join(dirname(sessDir), "insight-cache");
 
     // Verify source exists
@@ -2445,9 +2503,10 @@ server.registerTool(
         // Port is free, proceed with spawn
       }
 
-      if (portOccupied && sourceUpdated) {
-        // Source was updated but stale server is running on port — kill it so fresh code runs
-        steps.push("Killing stale dashboard server (source updated)...");
+      if (portOccupied && (sourceUpdated || userSessionDir || userContentDir)) {
+        // Source or data-dir configuration changed while a server is already running —
+        // kill it so fresh code/env runs.
+        steps.push(sourceUpdated ? "Killing stale dashboard server (source updated)..." : "Killing existing dashboard server (data dir override)...");
         try {
           if (process.platform === "win32") {
             execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port}') do taskkill /F /PID %a`, { stdio: "pipe" });
@@ -2487,8 +2546,8 @@ server.registerTool(
         env: {
           ...process.env,
           PORT: String(port),
-          INSIGHT_SESSION_DIR: getSessionDir(),
-          INSIGHT_CONTENT_DIR: join(dirname(getSessionDir()), "content"),
+          INSIGHT_SESSION_DIR: sessDir,
+          INSIGHT_CONTENT_DIR: contentDir,
           INSIGHT_PARENT_PID: String(process.pid),
         },
         detached: true,
@@ -2532,6 +2591,8 @@ server.registerTool(
         else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
       } catch { /* browser open is best-effort */ }
 
+      if (userSessionDir) steps.push(`Session dir: ${sessDir}`);
+      if (userContentDir) steps.push(`Content dir: ${contentDir}`);
       steps.push(`Dashboard running at ${url}`);
 
       return trackResponse("ctx_insight", {

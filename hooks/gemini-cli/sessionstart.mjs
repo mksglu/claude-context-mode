@@ -16,7 +16,7 @@ import { createToolNamer } from "../core/tool-naming.mjs";
 
 const toolNamer = createToolNamer("gemini-cli");
 const ROUTING_BLOCK = createRoutingBlock(toolNamer);
-import { writeSessionEventsFile, buildSessionDirective, getSessionEvents, getLatestSessionEvents } from "../session-directive.mjs";
+import { writeSessionEventsFile, buildSessionDirective, getSessionEvents } from "../session-directive.mjs";
 import {
   readStdin, parseStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath,
   getProjectDir, GEMINI_OPTS,
@@ -63,7 +63,12 @@ try {
     const dbPath = getSessionDBPath(OPTS);
     const db = new SessionDB({ dbPath });
 
-    const events = getLatestSessionEvents(db);
+    // Filter events to the session being resumed. Falling back to
+    // getLatestSessionEvents(db) leaks events from any other session whose
+    // session_meta.started_at is more recent — observed cross-session bleed
+    // when a different session started after this one and before the resume.
+    const sessionId = getSessionId(input, OPTS);
+    const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS));
       additionalContext += buildSessionDirective("resume", eventMeta, toolNamer);

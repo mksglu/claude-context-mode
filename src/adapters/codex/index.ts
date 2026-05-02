@@ -89,7 +89,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       toolName: input.tool_name ?? "",
       toolInput: input.tool_input ?? {},
       sessionId: this.extractSessionId(input),
-      projectDir: input.cwd,
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -101,7 +101,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       toolInput: input.tool_input ?? {},
       toolOutput: input.tool_response,
       sessionId: this.extractSessionId(input),
-      projectDir: input.cwd,
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -110,7 +110,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     const input = raw as CodexHookInput;
     return {
       sessionId: this.extractSessionId(input),
-      projectDir: input.cwd,
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -137,7 +137,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return {
       sessionId: this.extractSessionId(input),
       source,
-      projectDir: input.cwd,
+      projectDir: this.getProjectDir(input),
       raw,
     };
   }
@@ -205,6 +205,16 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   getSettingsPath(): string {
     return resolve(homedir(), ".codex", "config.toml");
+  }
+
+  getInstructionFiles(): string[] {
+    // Codex CLI honors AGENTS.md plus an optional override file.
+    return ["AGENTS.md", "AGENTS.override.md"];
+  }
+
+  getMemoryDir(): string {
+    // Codex uses "memories" (plural), not the default "memory".
+    return resolve(homedir(), ".codex", "memories");
   }
 
   generateHookConfig(pluginRoot: string): HookRegistration {
@@ -382,6 +392,17 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   // ── Internal helpers ───────────────────────────────────
+
+  /**
+   * Resolve the project directory for a Codex hook input.
+   * Priority: input.cwd > CODEX_PROJECT_DIR env > process.cwd().
+   * Mirrors the cursor / opencode pattern so downstream hooks always
+   * receive a defined projectDir even under worktrees or when the
+   * platform omits cwd from the wire payload.
+   */
+  private getProjectDir(input: CodexHookInput): string {
+    return input.cwd ?? process.env.CODEX_PROJECT_DIR ?? process.cwd();
+  }
 
   /**
    * Extract session ID from Codex CLI hook input.
