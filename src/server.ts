@@ -2800,15 +2800,23 @@ server.registerTool(
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
       port: z.coerce.number().optional().describe("Port to serve on (default: 4747)"),
+      sessionDir: z.string().optional().describe("Override INSIGHT_SESSION_DIR: directory containing context-mode session .db files"),
+      contentDir: z.string().optional().describe("Override INSIGHT_CONTENT_DIR: directory containing context-mode content/index .db files"),
+      insightSessionDir: z.string().optional().describe("Alias for sessionDir / INSIGHT_SESSION_DIR"),
+      insightContentDir: z.string().optional().describe("Alias for contentDir / INSIGHT_CONTENT_DIR"),
     }),
   },
-  async ({ port: userPort }) => {
+  async ({ port: userPort, sessionDir, contentDir, insightSessionDir, insightContentDir }) => {
     const port = userPort || 4747;
+    const explicitSessionDir = sessionDir || insightSessionDir;
+    const explicitContentDir = contentDir || insightContentDir;
     // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to plugin root
     const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
     const insightSource = resolve(pluginRoot, "insight");
-    // Use adapter-aware path: derive from sessions dir (works across all 12 adapters)
-    const sessDir = getSessionDir();
+    // Use adapter-aware path by default, but allow MCP callers to pass explicit
+    // Insight data dirs for hosts whose adapter/default detection is unavailable.
+    const sessDir = explicitSessionDir ? resolve(explicitSessionDir) : getSessionDir();
+    const insightContentDirResolved = explicitContentDir ? resolve(explicitContentDir) : join(dirname(sessDir), "content");
     const cacheDir = join(dirname(sessDir), "insight-cache");
 
     // Verify source exists
@@ -2929,8 +2937,8 @@ server.registerTool(
         env: {
           ...process.env,
           PORT: String(port),
-          INSIGHT_SESSION_DIR: getSessionDir(),
-          INSIGHT_CONTENT_DIR: join(dirname(getSessionDir()), "content"),
+          INSIGHT_SESSION_DIR: sessDir,
+          INSIGHT_CONTENT_DIR: insightContentDirResolved,
           INSIGHT_PARENT_PID: String(process.pid),
         },
         detached: true,
