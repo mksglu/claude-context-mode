@@ -73,6 +73,7 @@
     "openclaw.plugin.json",
     "start.mjs",
     "scripts/postinstall.mjs",
+    "scripts/heal-better-sqlite3.mjs",
     "README.md",
     "LICENSE"
   ],

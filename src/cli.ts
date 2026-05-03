@@ -445,11 +445,32 @@ async function doctor(): Promise<number> {
       p.log.warn(color.yellow("FTS5 / better-sqlite3: SKIP") + color.dim(" — module not available (restart session after upgrade)"));
     } else {
       criticalFails++;
-      p.log.error(
-        color.red("FTS5 / better-sqlite3: FAIL") +
-          ` — ${message}` +
-          color.dim("\n  Try: npm rebuild better-sqlite3"),
-      );
+      // Detect better-sqlite3 native bindings-missing pattern (issue #408).
+      // The `bindings` package throws "Could not locate the bindings file"
+      // when better_sqlite3.node failed to install — typical on Windows
+      // when prebuild-install was not on PATH so install fell through to
+      // node-gyp without an MSVC toolchain.
+      const isBindingsMissing =
+        /Could not locate the bindings file/i.test(message) ||
+        /bindings\.node/i.test(message) ||
+        /\bbindings\b/i.test(message);
+      if (isBindingsMissing && process.platform === "win32") {
+        p.log.error(
+          color.red("FTS5 / better-sqlite3: FAIL") +
+            ` — ${message}` +
+            color.dim(
+              "\n  Root cause: prebuild-install was likely not on PATH, so install fell through to node-gyp without an MSVC toolchain (Windows)." +
+              "\n  Try (primary): npm install better-sqlite3   # re-resolves the dep tree and re-links the prebuild-install bin shim to fetch a prebuilt binary" +
+              "\n  Try (fallback): npm rebuild better-sqlite3",
+            ),
+        );
+      } else {
+        p.log.error(
+          color.red("FTS5 / better-sqlite3: FAIL") +
+            ` — ${message}` +
+            color.dim("\n  Try: npm rebuild better-sqlite3"),
+        );
+      }
     }
   }
 

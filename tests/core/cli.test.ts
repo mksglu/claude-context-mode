@@ -1222,3 +1222,134 @@ describe("Upgrade syncs skills to active install path (#228)", () => {
     expect(upgradeBody).toContain('adapter.name === "Claude Code"');
   });
 });
+
+// ── better-sqlite3 binding self-heal (#408) ───────────────────────────────
+//
+// On Windows, `npm rebuild better-sqlite3` falls through to node-gyp when
+// prebuild-install is not on cmd.exe PATH, then dies for users without
+// MSVC. The fix is a 3-layer heal (spawn prebuild-install via
+// process.execPath → `npm install better-sqlite3` → actionable stderr)
+// shared between scripts/postinstall.mjs and hooks/ensure-deps.mjs via
+// scripts/heal-better-sqlite3.mjs.
+//
+// Tests in this block cover:
+//   - doctor() in src/cli.ts: clearer hint when FTS5 check fails on a
+//     bindings-missing pattern.
+//   - scripts/postinstall.mjs: calls the shared heal helper after the
+//     existing nvm4w junction logic; mklink /J regression guard.
+//   - scripts/heal-better-sqlite3.mjs: single source of truth — pins the
+//     prebuild-install + npm install + Windows/#408 stderr surface so the
+//     dedupe doesn't silently regress.
+
+describe("better-sqlite3 binding self-heal (#408)", () => {
+  const CLI_SRC = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+  const POSTINSTALL_SRC = readFileSync(resolve(ROOT, "scripts", "postinstall.mjs"), "utf-8");
+  const HEAL_SRC = readFileSync(resolve(ROOT, "scripts", "heal-better-sqlite3.mjs"), "utf-8");
+
+  // Locate doctor()'s FTS5 / SQLite catch branch — the hint lives here.
+  function ftsCatchBlock(): string {
+    const ftsAnchor = CLI_SRC.indexOf("Checking FTS5 / SQLite");
+    expect(ftsAnchor).toBeGreaterThan(-1);
+    const catchIdx = CLI_SRC.indexOf("catch (err", ftsAnchor);
+    expect(catchIdx).toBeGreaterThan(-1);
+    const versionIdx = CLI_SRC.indexOf("Checking versions", catchIdx);
+    expect(versionIdx).toBeGreaterThan(catchIdx);
+    return CLI_SRC.slice(catchIdx, versionIdx);
+  }
+
+  // ── doctor(): bindings-missing hint ────────────────────────────────
+  describe("doctor: bindings-missing hint", () => {
+    it("hint mentions `npm install better-sqlite3` as the primary remedy", () => {
+      // On Windows `npm rebuild` falls through to node-gyp without MSVC,
+      // while `npm install` re-runs prebuild-install and pulls a prebuilt.
+      const block = ftsCatchBlock();
+      expect(block).toContain("npm install better-sqlite3");
+    });
+
+    it("hint explains the Windows / prebuild-install root cause", () => {
+      const block = ftsCatchBlock();
+      const mentionsRootCause =
+        /prebuild-install/i.test(block) || /Windows/i.test(block);
+      expect(mentionsRootCause).toBe(true);
+    });
+
+    it("retains `npm rebuild better-sqlite3` as a non-Windows fallback", () => {
+      // Existing rebuild hint is still valid on Linux/macOS where the
+      // toolchain is present. The fix only augments — does not delete.
+      const block = ftsCatchBlock();
+      expect(block).toContain("npm rebuild better-sqlite3");
+    });
+
+    it("bindings-error detection branches on the bindings error message", () => {
+      // Hint must be conditional on the actual bindings failure
+      // signature (`Could not locate the bindings file` / `bindings`),
+      // otherwise it would spam the install hint for unrelated FTS5 errors.
+      const block = ftsCatchBlock();
+      const detectsBindingsError =
+        /bindings file/i.test(block) || /\bbindings\b/.test(block);
+      expect(detectsBindingsError).toBe(true);
+    });
+  });
+
+  // ── scripts/postinstall.mjs: delegates to shared helper ────────────
+  describe("postinstall.mjs", () => {
+    it("imports the shared heal helper", () => {
+      // After dedupe, the inline 3-layer heal is gone — replaced by an
+      // import + call to the shared helper. Match either bare or
+      // explicit-extension import path.
+      const importsHelper = /from\s+["']\.\/heal-better-sqlite3(?:\.mjs)?["']/.test(POSTINSTALL_SRC);
+      expect(importsHelper).toBe(true);
+      expect(POSTINSTALL_SRC).toContain("healBetterSqlite3Binding");
+    });
+
+    it("calls healBetterSqlite3Binding(pkgRoot) after the nvm4w junction logic", () => {
+      // Order matters: the junction fix must run first so the heal can
+      // resolve prebuild-install through the correct node_modules path.
+      const junctionIdx = POSTINSTALL_SRC.indexOf("mklink /J");
+      expect(junctionIdx).toBeGreaterThan(-1);
+      const callIdx = POSTINSTALL_SRC.indexOf("healBetterSqlite3Binding(");
+      expect(callIdx).toBeGreaterThan(junctionIdx);
+    });
+
+    it("existing Windows nvm4w junction logic (mklink /J) remains intact", () => {
+      // Regression guard — Slice 3 must not have wiped the unrelated
+      // Windows install fix.
+      expect(/mklink\s+\/J/.test(POSTINSTALL_SRC)).toBe(true);
+    });
+  });
+
+  // ── scripts/heal-better-sqlite3.mjs: single source of truth ────────
+  describe("heal-better-sqlite3.mjs (shared helper)", () => {
+    it("exports healBetterSqlite3Binding", () => {
+      expect(/export\s+function\s+healBetterSqlite3Binding\s*\(/.test(HEAL_SRC)).toBe(true);
+    });
+
+    it("contains all three heal layers in one place (dedupe guarantee)", () => {
+      // Layer A — prebuild-install via process.execPath
+      expect(HEAL_SRC).toContain("prebuild-install");
+      expect(HEAL_SRC).toContain("process.execPath");
+      // Layer B — npm install fallback (NOT npm rebuild)
+      expect(/install\s+better-sqlite3/.test(HEAL_SRC)).toBe(true);
+      // Layer C — actionable stderr with Windows / #408 context
+      const mentionsContext =
+        /#408/.test(HEAL_SRC) ||
+        (/Windows/i.test(HEAL_SRC) && /better-sqlite3/.test(HEAL_SRC));
+      expect(mentionsContext).toBe(true);
+      const writesStderr =
+        /process\.stderr\.write\s*\(/.test(HEAL_SRC) ||
+        /console\.(error|warn)\s*\(/.test(HEAL_SRC);
+      expect(writesStderr).toBe(true);
+    });
+
+    it("ships in npm package (listed in package.json files array)", () => {
+      const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+      expect(pkg.files).toContain("scripts/heal-better-sqlite3.mjs");
+    });
+
+    it("never throws — all layers wrapped in try/catch (best-effort posture)", () => {
+      // Outer try/catch around the whole function body protects callers
+      // (postinstall + ensure-deps) from blocking on a heal failure.
+      expect(/function\s+healBetterSqlite3Binding[\s\S]{0,200}?try\s*\{/.test(HEAL_SRC)).toBe(true);
+    });
+  });
+});
