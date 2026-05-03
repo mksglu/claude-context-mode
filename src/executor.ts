@@ -15,8 +15,10 @@ const isWin = process.platform === "win32";
 
 /**
  * Pure helper: extension map for temp script files per language.
- * On Windows, shell scripts get NO extension to avoid Windows file-association
- * for `.sh` (which spawns a visible Git Bash window over the user's IDE).
+ * On Windows, shell scripts usually get NO extension to avoid Windows
+ * file-association for `.sh` (which spawns a visible Git Bash window over the
+ * user's IDE). Windows PowerShell/pwsh is the exception because `-File`
+ * requires `.ps1` there.
  */
 const SCRIPT_EXT: Record<Language, string> = {
   javascript: "js",
@@ -33,8 +35,17 @@ const SCRIPT_EXT: Record<Language, string> = {
 };
 
 /** Pure helper — exported for unit testing. Returns "script" or "script.<ext>". */
-export function buildScriptFilename(language: Language, platform: NodeJS.Platform): string {
-  if (platform === "win32" && language === "shell") return "script";
+export function buildScriptFilename(
+  language: Language,
+  platform: NodeJS.Platform,
+  shellPath?: string | null,
+): string {
+  if (platform === "win32" && language === "shell") {
+    const shellName = shellPath?.toLowerCase() ?? "";
+    return shellName.includes("powershell") || shellName.includes("pwsh")
+      ? "script.ps1"
+      : "script";
+  }
   return `script.${SCRIPT_EXT[language]}`;
 }
 
@@ -206,7 +217,14 @@ export class PolyglotExecutor {
       code = `Path.wildcard(Path.join(${escaped}, "*/ebin"))\n|> Enum.each(&Code.prepend_path/1)\n\n${code}`;
     }
 
-    const fp = join(tmpDir, buildScriptFilename(language, process.platform));
+    const fp = join(
+      tmpDir,
+      buildScriptFilename(
+        language,
+        process.platform,
+        language === "shell" ? this.#runtimes.shell : null,
+      ),
+    );
     if (language === "shell") {
       writeFileSync(fp, code, { encoding: "utf-8", mode: 0o700 });
     } else {

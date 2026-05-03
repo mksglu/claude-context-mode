@@ -1563,11 +1563,41 @@ describe("Windows Shell Support", () => {
 
   test("buildScriptFilename: shell on Windows has NO extension (avoid .sh file association)", async () => {
     assert.equal(buildScriptFilename("shell", "win32"), "script");
+    assert.equal(buildScriptFilename("shell", "win32", "C:\\Program Files\\Git\\usr\\bin\\bash.exe"), "script");
+    assert.equal(buildScriptFilename("shell", "win32", "sh"), "script");
+  });
+
+  test("buildScriptFilename: PowerShell on Windows uses .ps1 extension", async () => {
+    assert.equal(buildScriptFilename("shell", "win32", "powershell"), "script.ps1");
+    assert.equal(buildScriptFilename("shell", "win32", "pwsh"), "script.ps1");
+    assert.equal(
+      buildScriptFilename("shell", "win32", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"),
+      "script.ps1",
+    );
+    assert.equal(
+      buildScriptFilename("shell", "win32", "C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+      "script.ps1",
+    );
+  });
+
+  test.runIf(process.platform === "win32")("PowerShell shell runtime executes generated script", async () => {
+    const powershellRuntimes: RuntimeMap = { ...runtimes, shell: "powershell" };
+    const powershellExecutor = new PolyglotExecutor({ runtimes: powershellRuntimes });
+    const r = await powershellExecutor.execute({
+      language: "shell",
+      code: 'Write-Output "POWERSHELL_EXECUTOR_OK"',
+      timeout: 10_000,
+    });
+
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes("POWERSHELL_EXECUTOR_OK"), `stdout: ${r.stdout}`);
   });
 
   test("buildScriptFilename: shell on Unix keeps .sh extension", async () => {
     assert.equal(buildScriptFilename("shell", "darwin"), "script.sh");
     assert.equal(buildScriptFilename("shell", "linux"), "script.sh");
+    assert.equal(buildScriptFilename("shell", "linux", "pwsh"), "script.sh");
+    assert.equal(buildScriptFilename("shell", "darwin", "powershell"), "script.sh");
   });
 
   test("buildScriptFilename: non-shell languages keep their extension on Windows", async () => {
