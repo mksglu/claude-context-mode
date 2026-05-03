@@ -790,6 +790,30 @@ interface BatchExecutor {
   execute(input: { language: "shell"; code: string; timeout: number | undefined }): Promise<{ stdout: string; timedOut?: boolean }>;
 }
 
+function quotePosixSingle(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function quotePowerShellSingle(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+export function buildBatchNodeOptionsPrefix(shellPath: string, preloadPath: string): string {
+  const option = `--require ${preloadPath}`;
+  const shell = shellPath.toLowerCase();
+  const base = shell.split(/[\\/]/).pop() ?? shell;
+
+  if (shell.includes("powershell") || shell.includes("pwsh")) {
+    return `$env:NODE_OPTIONS=${quotePowerShellSingle(option)}; `;
+  }
+
+  if (base === "cmd" || base === "cmd.exe") {
+    return `set "NODE_OPTIONS=${option.replace(/"/g, '""')}" && `;
+  }
+
+  return `NODE_OPTIONS=${quotePosixSingle(option)} `;
+}
+
 function formatCommandOutput(label: string, raw: string, onFsBytes?: (bytes: number) => void): string {
   let output = raw || "(no output)";
   const fsMatches = output.matchAll(/__CM_FS__:(\d+)/g);
@@ -2328,7 +2352,7 @@ server.registerTool(
       // Inject NODE_OPTIONS for FS read tracking in spawned Node processes.
       // The executor denies NODE_OPTIONS in its env (security), so we set it
       // as an inline shell prefix. This only affects child `node` invocations.
-      const nodeOptsPrefix = `NODE_OPTIONS="--require ${CM_FS_PRELOAD}" `;
+      const nodeOptsPrefix = buildBatchNodeOptionsPrefix(runtimes.shell, CM_FS_PRELOAD);
 
       // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
       // Concurrency>1 switches to a worker pool with per-command timeouts.

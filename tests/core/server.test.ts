@@ -2074,7 +2074,7 @@ describe("batch_execute FS read tracking", () => {
   });
 
   test("sets NODE_OPTIONS with --require for batch commands", () => {
-    expect(serverSrc).toContain('NODE_OPTIONS="--require ${CM_FS_PRELOAD}"');
+    expect(serverSrc).toContain("buildBatchNodeOptionsPrefix");
     expect(serverSrc).toContain("nodeOptsPrefix");
   });
 
@@ -2112,7 +2112,11 @@ describe("batch_execute FS read tracking", () => {
 // runBatchCommands — concurrency, ordering, timeout semantics
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { runBatchCommands, type BatchCommand } from "../../src/server.js";
+import {
+  buildBatchNodeOptionsPrefix,
+  runBatchCommands,
+  type BatchCommand,
+} from "../../src/server.js";
 
 interface MockResult { stdout: string; timedOut?: boolean; }
 
@@ -2350,6 +2354,27 @@ describe("runBatchCommands edge cases", () => {
     const cmds: BatchCommand[] = [{ label: "A", command: "echo hi" }];
     await runBatchCommands(cmds, { timeout: 1000, concurrency: 1, nodeOptsPrefix: 'NODE_OPTIONS="--require /tmp/x" ' }, exec);
     expect(seen[0]).toBe('NODE_OPTIONS="--require /tmp/x" echo hi 2>&1');
+  });
+
+  test("buildBatchNodeOptionsPrefix formats POSIX shell assignment", () => {
+    const prefix = buildBatchNodeOptionsPrefix("bash", "/tmp/cm fs'preload.js");
+    expect(prefix).toBe("NODE_OPTIONS='--require /tmp/cm fs'\\''preload.js' ");
+  });
+
+  test("buildBatchNodeOptionsPrefix formats PowerShell assignment", () => {
+    const prefix = buildBatchNodeOptionsPrefix(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "C:\\Temp\\cm ' fs.js",
+    );
+    expect(prefix).toBe("$env:NODE_OPTIONS='--require C:\\Temp\\cm '' fs.js'; ");
+  });
+
+  test("buildBatchNodeOptionsPrefix formats cmd assignment", () => {
+    const prefix = buildBatchNodeOptionsPrefix(
+      "C:\\Windows\\System32\\cmd.exe",
+      "C:\\Temp\\cm-fs-preload.js",
+    );
+    expect(prefix).toBe('set "NODE_OPTIONS=--require C:\\Temp\\cm-fs-preload.js" && ');
   });
 });
 
