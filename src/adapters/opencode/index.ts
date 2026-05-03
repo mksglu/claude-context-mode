@@ -100,10 +100,10 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     preToolUse: true,
     postToolUse: true,
     preCompact: true, // experimental
-    sessionStart: false,
+    sessionStart: true,
     canModifyArgs: true,
     canModifyOutput: true, // with TUI bug caveat for bash (#13575)
-    canInjectSessionContext: false,
+    canInjectSessionContext: true,
   };
 
   private platform: AdapterPlatformType;
@@ -408,12 +408,12 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       });
     }
 
-    // Warn about SessionStart limitation
+    // Note: SessionStart handled via experimental.chat.system.transform surrogate
     results.push({
       check: "SessionStart hook",
-      status: "warn",
+      status: "pass",
       message:
-        `SessionStart not supported in ${this.name} (see issues #14808, #5409)`,
+        `SessionStart via experimental.chat.system.transform surrogate (native hook pending #14808, #5409)`,
     });
 
     return results;
