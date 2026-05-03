@@ -408,8 +408,12 @@ describe("sessionstart detectPlatformFromEnv", () => {
     expect(detectPlatformFromEnv({ QWEN_PROJECT_DIR: "/tmp/qwen" })).toBe("qwen-code");
   });
 
-  it("returns qwen-code when QWEN_SESSION_ID is set", () => {
-    expect(detectPlatformFromEnv({ QWEN_SESSION_ID: "qwen-1" })).toBe("qwen-code");
+  // QWEN_SESSION_ID retracted in v1.0.107 — 0 hits in qwen-code source
+  // (verified Phase 7 against refs/platforms/qwen-code/). Only QWEN_PROJECT_DIR
+  // is set by the Qwen hook runner — see src/adapters/detect.ts:69 comment
+  // and refs/platforms/qwen-code/packages/core/src/hooks/hookRunner.ts SET site.
+  it("does NOT promote bare QWEN_SESSION_ID (fabrication retraction)", () => {
+    expect(detectPlatformFromEnv({ QWEN_SESSION_ID: "qwen-1" })).toBe("claude-code");
   });
 
   it("returns gemini-cli when GEMINI_PROJECT_DIR is set", () => {
