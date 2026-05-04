@@ -966,6 +966,41 @@ describe("Cache dir safety (#181)", () => {
 
 // ── Issue #185: upgrade must not use execSync (shell) ──
 
+// ── Issue #418: ctx-upgrade must refresh the marketplace clone ──────
+
+describe("ctx-upgrade syncs marketplace clone (#418)", () => {
+  const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
+  const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+  const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+  test("upgrade() targets ~/.claude/plugins/marketplaces/context-mode for git refresh", () => {
+    // CC's marketplace clone (separate from cache dir) was previously left
+    // pinned at the install-time commit; users running /ctx-upgrade never
+    // received upstream changes through the marketplace metadata path.
+    expect(upgradeBody).toMatch(/marketplaces[\\/]+["']?\s*,\s*["']?context-mode["']?|"marketplaces"\s*,\s*"context-mode"/);
+  });
+
+  test("upgrade() runs git fetch + reset against marketplace dir", () => {
+    // Required: actual git invocation against the marketplace path.
+    // Look for fetch and reset --hard in the upgrade body.
+    expect(upgradeBody).toMatch(/execFileSync\(\s*["']git["']\s*,\s*\[\s*["']-C["']/);
+    expect(upgradeBody).toMatch(/["']fetch["']/);
+    expect(upgradeBody).toMatch(/["']reset["'].*?["']--hard["']/s);
+  });
+
+  test("upgrade() guards on .git existence so tarball installs do not fail", () => {
+    // Defensive guard — non-git install paths must not error out.
+    expect(upgradeBody).toMatch(/existsSync\([^)]*marketplaceDir[^)]*\.git/);
+  });
+
+  test("upgrade() preserves user dev edits via git status --porcelain check", () => {
+    // Mert-class users symlink the marketplace clone to a dev worktree.
+    // Destructive `reset --hard` would wipe in-progress work — must skip
+    // when uncommitted changes exist.
+    expect(upgradeBody).toMatch(/["']status["'].*?["']--porcelain["']/s);
+  });
+});
+
 describe("Shell-free upgrade (#185)", () => {
   const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
   const SERVER_SOURCE = readFileSync(resolve(ROOT, "src/server.ts"), "utf-8");

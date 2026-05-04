@@ -664,6 +664,46 @@ async function upgrade() {
   const changes: string[] = [];
   const s = p.spinner();
 
+  // Step 0: Sync the marketplace clone (#418).
+  // Claude Code reads plugin metadata from ~/.claude/plugins/marketplaces/context-mode/.
+  // Without a git pull there, the marketplace stays pinned at the install-time
+  // commit and CC keeps reporting the old version even after our cache dir is
+  // updated — users then see "ctx-upgrade succeeded" but nothing actually
+  // changed at the plugin-system level.
+  const marketplaceDir = resolve(homedir(), ".claude", "plugins", "marketplaces", "context-mode");
+  if (existsSync(join(marketplaceDir, ".git"))) {
+    s.start("Syncing marketplace clone");
+    try {
+      // Preserve user dev edits (Mert-class users symlink the clone to a worktree).
+      const statusOut = execFileSync(
+        "git", ["-C", marketplaceDir, "status", "--porcelain"],
+        { stdio: "pipe", encoding: "utf-8", timeout: 5000 },
+      );
+      if (statusOut.trim()) {
+        s.stop(color.yellow("Marketplace clone has local edits — skipping git pull"));
+        p.log.info(
+          color.dim(`  Run manually: git -C "${marketplaceDir}" stash && git pull --ff-only`),
+        );
+      } else {
+        execFileSync(
+          "git", ["-C", marketplaceDir, "fetch", "--tags", "origin"],
+          { stdio: "pipe", timeout: 30000 },
+        );
+        execFileSync(
+          "git", ["-C", marketplaceDir, "reset", "--hard", "origin/HEAD"],
+          { stdio: "pipe", timeout: 10000 },
+        );
+        s.stop(color.green("Marketplace clone synced"));
+        changes.push("Marketplace clone updated to upstream");
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      s.stop(color.yellow("Marketplace sync skipped"));
+      p.log.warn(color.yellow("git refresh on marketplace failed") + ` — ${message}`);
+      p.log.info(color.dim("  Continuing — cache dir update will still happen."));
+    }
+  }
+
   // Step 1: Pull latest from GitHub
   p.log.step("Pulling latest from GitHub...");
   const localVersion = getLocalVersion();
