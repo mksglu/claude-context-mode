@@ -702,11 +702,7 @@ function renderProjectMemory(
   ) {
     return [];
   }
-  // Show enough categories that the user can SEE what's actually being
-  // tracked, instead of "Files tracked + Project rules · 21 more" hiding
-  // the storytelling. 15 covers the 14-category-and-below typical case
-  // fully and still keeps the terminal output under one screen height.
-  const topN = opts?.topN ?? 15;
+  const topN = opts?.topN ?? 2;
   const out: string[] = [];
   out.push("");
   out.push("Persistent memory  ✓ preserved across compact, restart & upgrade");

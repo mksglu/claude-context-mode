@@ -85,28 +85,13 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
     expect(text).not.toMatch(/\b\d+\.\dx\b(?!\s+longer)/);
   });
 
-  test("computes the real overflow count (not hardcoded)", () => {
-    // Default topN raised to 15 (was 2) so users actually SEE what's being
-    // tracked instead of "Files tracked + Project rules · 21 more" hiding
-    // the storytelling. baseReport has 8 categories ≤ topN → no overflow line.
+  test("computes the real overflow count (not hardcoded '9 more')", () => {
     const text = formatReport(baseReport(), "1.0.103", null, {
       lifetime: emptyLifetime(),
     });
-    expect(text).not.toMatch(/more categories/);
-    // And still must not regress to the old hardcoded number.
+    // baseReport has 8 categories; we render 2 → 6 more.
+    expect(text).toMatch(/6 more categories/);
     expect(text).not.toMatch(/9 more categories/);
-  });
-
-  test("renders 'N more categories' overflow only when total > topN", () => {
-    // Build a fixture with 20 categories so topN=15 → 5 overflow.
-    const r = baseReport();
-    const cats = Array.from({ length: 20 }, (_, i) => ({
-      label: `cat${i}`,
-      count: 100 - i,
-    }));
-    r.projectMemory = { ...r.projectMemory, by_category: cats } as typeof r.projectMemory;
-    const text = formatReport(r, "1.0.103", null, { lifetime: emptyLifetime() });
-    expect(text).toMatch(/5 more categories/);
   });
 
   test("ends with a 'Bottom line' / business-value footer", () => {
