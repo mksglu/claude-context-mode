@@ -441,7 +441,7 @@ export class SessionDB extends SQLiteBase {
    */
   insertEvent(
     sessionId: string,
-    event: SessionEvent,
+    event: Omit<SessionEvent, "data_hash"> & { data_hash?: string },
     sourceHook: string = "PostToolUse",
     attribution?: Partial<ProjectAttribution>,
   ): void {

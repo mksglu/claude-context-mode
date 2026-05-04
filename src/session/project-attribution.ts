@@ -47,6 +47,8 @@ export type AttributionSource =
   | "workspace_root"
   | "last_seen"
   | "session_origin"
+  | "env"
+  | "test"
   | "unknown";
 
 export interface ProjectAttribution {
