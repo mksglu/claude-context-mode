@@ -43,10 +43,9 @@ export const PLATFORM_ENV_VARS = [
   // 800+ hits in major OSS detection libs (Vercel Next.js, Bun, Google
   // gemini-cli, Nx, CrewAI).
   ["cursor",             ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
-  // kilo (OpenCode fork) — Kilo-Org/kilocode packages/opencode/src/index.ts:140
-  // sets `process.env.KILO_PID = String(process.pid)`. Bare KILO is NEVER set
-  // (verified). Kilo also sets OPENCODE=1 (fork) — listed before opencode.
-  ["kilo",               ["KILO_PID"]],
+  // kilo (OpenCode fork) — Kilo-Org/kilocode packages/opencode/src/index.ts:138 + 139
+  // sets `process.env.KILO = 1` + `process.env.KILO_PID = String(process.pid)`. 
+  ["kilo",               ["KILO", "KILO_PID"]],
   // opencode — sst/opencode packages/opencode/src/index.ts:108-109 sets
   // OPENCODE=1 + OPENCODE_PID=<pid> on every CLI invocation.
   ["opencode",           ["OPENCODE", "OPENCODE_PID"]],
