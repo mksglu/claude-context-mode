@@ -287,7 +287,7 @@ async function createContextModePlugin(ctx: PluginContext) {
 
       let decision;
       try {
-        decision = routing.routePreToolUse(toolName, toolInput, projectDir, getPlatform());
+        decision = routing.routePreToolUse(toolName, toolInput, projectDir, platform);
       } catch {
         return; // Routing failure → allow passthrough
       }
