@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import Database from "better-sqlite3";
 
+declare const Bun: { sleepSync: (ms: number) => void } | undefined;
+
 const ROOT = resolve(import.meta.dirname, "../..");
 const SOURCE_SERVER = resolve(ROOT, "insight", "server.mjs");
 const DIST_INDEX_NAME = "index.html";
@@ -153,7 +155,7 @@ function startInsight(runtime: "node" | "bun" = "node"): { port: number; child: 
   mkdirSync(join(tempInsightDir, "dist"), { recursive: true });
   cpSync(SOURCE_SERVER, join(tempInsightDir, "server.mjs"));
   writeFileSync(join(tempInsightDir, "dist", DIST_INDEX_NAME), "<!doctype html><html><body>stub</body></html>");
-  symlinkSync(resolve(ROOT, "node_modules"), join(tempRoot, "node_modules"), "dir");
+  symlinkSync(resolve(ROOT, "node_modules"), join(tempRoot, "node_modules"), "junction");
 
   const { sessionsDir, contentDir } = seedFixtureDBs(tempRoot);
   const port = 49152 + Math.floor(Math.random() * 16383);

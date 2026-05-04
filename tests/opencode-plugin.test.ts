@@ -1,4 +1,4 @@
-import "./setup-home";
+import "./setup-home.js";
 /**
  * Tests for the OpenCode TypeScript plugin entry point.
  *

@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import { api, type Chunk } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RatioBar, COLORS } from "@/components/analytics";
 import { ArrowLeft, ChevronDown, Layers, Code, FileText } from "lucide-react";

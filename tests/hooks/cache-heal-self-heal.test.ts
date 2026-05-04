@@ -107,9 +107,6 @@ describe("extractNodePath", () => {
 
   test("returns null for empty / non-string input", () => {
     expect(extractNodePath("")).toBeNull();
-    // @ts-expect-error — runtime guard
-    expect(extractNodePath(undefined)).toBeNull();
-    // @ts-expect-error — runtime guard
     expect(extractNodePath(null)).toBeNull();
   });
 

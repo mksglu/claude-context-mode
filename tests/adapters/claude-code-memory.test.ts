@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
 import { join } from "node:path";

@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 /**
  * Hook Integration Tests — VS Code Copilot hooks
  *

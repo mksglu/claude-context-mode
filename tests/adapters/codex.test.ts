@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";

@@ -1,4 +1,4 @@
-import "./setup-home";
+import "./setup-home.js";
 /**
  * Pi Extension Tests — TDD vertical slices.
  *

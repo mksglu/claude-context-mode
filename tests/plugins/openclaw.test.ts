@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 /**
  * Consolidated OpenClaw plugin tests.
  *
@@ -960,7 +960,7 @@ describe("resume injection (before_prompt_build)", () => {
     const resume = db.getResume(sid);
     assert.equal(resume, null, "new session has no resume");
 
-    const result = resume ? { prependSystemContext: resume.snapshot } : undefined;
+    const result = resume ? { prependSystemContext: (resume as any).snapshot } : undefined;
     assert.equal(result, undefined, "must return undefined if no resume");
   });
 

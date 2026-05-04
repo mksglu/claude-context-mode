@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 /**
  * Hook Integration Tests — Gemini CLI hooks
  *

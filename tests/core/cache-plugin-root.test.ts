@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

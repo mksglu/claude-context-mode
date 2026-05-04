@@ -1222,7 +1222,7 @@ describe("ctx_execute_file: CONTEXT_MODE_PROJECT_DIR env cascade", () => {
   function spawnServerCtxModeOnly(projectDirEnv: string): ChildProcess {
     // Strip every CLAUDE_*-style projectDir signal so the executor MUST
     // fall back through the env cascade to CONTEXT_MODE_PROJECT_DIR.
-    const env = { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" };
+    const env = { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" } as Record<string, string | undefined>;
     delete env.CLAUDE_PROJECT_DIR;
     delete env.GEMINI_PROJECT_DIR;
     delete env.VSCODE_CWD;

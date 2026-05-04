@@ -32,7 +32,7 @@ async function bench(
   iterations: number = 10,
 ): Promise<BenchResult | null> {
   // Check if runtime is available
-  const runtimeMap: Record<string, string | null> = runtimes;
+  const runtimeMap = runtimes as unknown as Record<string, string | null>;
   if (
     language !== "javascript" &&
     language !== "shell" &&

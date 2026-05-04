@@ -28,7 +28,7 @@ let extractEvents: (input: {
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_response: string;
-  tool_output?: unknown;
+  tool_output?: { isError?: boolean };
 }) => unknown[];
 
 beforeAll(async () => {

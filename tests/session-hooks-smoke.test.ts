@@ -32,7 +32,7 @@ beforeAll(() => {
 
   // Symlink node_modules (needed for better-sqlite3, too large to copy)
   if (existsSync(join(PROJECT_ROOT, "node_modules"))) {
-    symlinkSync(join(PROJECT_ROOT, "node_modules"), join(fakePluginDir, "node_modules"));
+    symlinkSync(join(PROJECT_ROOT, "node_modules"), join(fakePluginDir, "node_modules"), "junction");
   }
 
   // Copy package.json (needed for module resolution)

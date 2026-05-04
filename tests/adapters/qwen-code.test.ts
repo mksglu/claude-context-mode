@@ -1,11 +1,11 @@
-import "../setup-home";
+import "../setup-home.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { QwenCodeAdapter } from "../../src/adapters/qwen-code/index.js";
-import { fakeHome, realHome } from "../setup-home";
+import { fakeHome, realHome } from "../setup-home.js";
 
 describe("QwenCodeAdapter", () => {
   let adapter: QwenCodeAdapter;

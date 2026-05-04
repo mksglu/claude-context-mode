@@ -16,7 +16,7 @@ import type { SessionEvent } from "../../src/types.js";
 const TEST_BASE = resolve("/tmp/test-projects");
 
 function makeEvent(type: string, data: string, ts = Date.now()): SessionEvent {
-  return { type, data, ts } as SessionEvent;
+  return { type, data, ts } as unknown as SessionEvent;
 }
 
 describe("resolveProjectAttribution", () => {

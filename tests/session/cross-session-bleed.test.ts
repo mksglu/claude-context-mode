@@ -27,7 +27,6 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, test } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
-// @ts-expect-error — .mjs has no .d.ts; functions are tested via runtime contract.
 import { getSessionEvents, getLatestSessionEvents } from "../../hooks/session-directive.mjs";
 
 const cleanups: Array<() => void> = [];

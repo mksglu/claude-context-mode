@@ -1,0 +1,15 @@
+export const GEMINI_OPTS: any;
+export const VSCODE_OPTS: any;
+export const CURSOR_OPTS: any;
+export const CODEX_OPTS: any;
+export const KIRO_OPTS: any;
+export const JETBRAINS_OPTS: any;
+export function resolveConfigDir(...args: any[]): any;
+export function parseStdin(...args: any[]): any;
+export function readStdin(...args: any[]): any;
+export function getProjectDir(...args: any[]): any;
+export function getInputProjectDir(...args: any[]): any;
+export function getSessionId(...args: any[]): any;
+export function getSessionDBPath(...args: any[]): any;
+export function getSessionEventsPath(...args: any[]): any;
+export function getCleanupFlagPath(...args: any[]): any;

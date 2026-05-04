@@ -1,5 +1,5 @@
-import "../setup-home";
-import { fakeHome } from "../setup-home";
+import "../setup-home.js";
+import { fakeHome } from "../setup-home.js";
 import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";

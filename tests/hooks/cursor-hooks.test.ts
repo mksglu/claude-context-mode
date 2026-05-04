@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 /**
  * Hook Integration Tests — Cursor hooks
  */
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, rmSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
-import { fakeHome, realHome } from "../setup-home";
+import { fakeHome, realHome } from "../setup-home.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = join(__dirname, "..", "..", "hooks", "cursor");

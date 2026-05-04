@@ -1,4 +1,4 @@
-import "../setup-home";
+import "../setup-home.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -335,7 +335,7 @@ describe("CursorAdapter", () => {
       };
 
       for (const [capability, script] of Object.entries(capabilityToScript)) {
-        const enabled = (adapter.capabilities as Record<string, unknown>)[capability];
+        const enabled = (adapter.capabilities as unknown as Record<string, unknown>)[capability];
         if (enabled === true) {
           expect(
             existsSync(join(hooksDir, script)),
