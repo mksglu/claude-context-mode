@@ -157,3 +157,19 @@ if (process.platform === "win32" && process.env.npm_config_global === "true") {
 // Logic lives in scripts/heal-better-sqlite3.mjs (shared with
 // hooks/ensure-deps.mjs so there's one source of truth).
 try { healBetterSqlite3Binding(pkgRoot); } catch { /* best effort — don't block install */ }
+
+// ── 4. Hook normalization at install time (#414) ─────────────────────
+// hooks/hooks.json + .claude-plugin/plugin.json ship with `${CLAUDE_PLUGIN_ROOT}`
+// + bare `node` command. On Windows + Claude Code that combination triggers
+// `cjs/loader:1479 MODULE_NOT_FOUND` (placeholder mangling, MSYS path issues,
+// PATH lookup failure). start.mjs normalizes on every MCP boot, but normalizing
+// here too closes the gap for the very first hook fire after a fresh install
+// (before any MCP server has run).
+try {
+  const { normalizeHooksOnStartup } = await import("../hooks/normalize-hooks.mjs");
+  normalizeHooksOnStartup({
+    pluginRoot: pkgRoot,
+    nodePath: process.execPath,
+    platform: process.platform,
+  });
+} catch { /* best effort — never block install */ }

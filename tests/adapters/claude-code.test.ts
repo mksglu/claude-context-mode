@@ -562,6 +562,84 @@ describe("ClaudeCodeAdapter", () => {
       expect(command).toContain("sessionstart.mjs");
     });
 
+    it("preserves co-located user hooks when removing duplicate context-mode entries (#415)", () => {
+      // Plugin hooks.json covers all required hooks → triggers the "allCovered" branch
+      writeFileSync(
+        join(pluginRoot, "hooks", "hooks.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] }],
+            SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }] }],
+          },
+        }),
+      );
+
+      // settings.json: ONE SessionStart matcher entry containing 3 user hooks AND 1 ctx-mode hook
+      // (co-located in same `hooks` array — the destructive bug wipes the entire entry).
+      // User hooks are shell/CLI commands without `.mjs` path → they pass safe-block existsSync filter.
+      const userHook1 = { type: "command", command: "echo 'session started'" };
+      const userHook2 = { type: "command", command: "my-custom-cli notify" };
+      const userHook3 = { type: "command", command: "/usr/local/bin/log-session" };
+      const ctxModeHook = { type: "command", command: `node "${join(pluginRoot, "hooks", "sessionstart.mjs")}"` };
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{
+              matcher: "",
+              hooks: [userHook1, userHook2, ctxModeHook, userHook3],
+            }],
+          },
+        }),
+      );
+
+      adapter.configureAllHooks(pluginRoot);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      const sessionEntries = settings.hooks?.SessionStart ?? [];
+      // Entry must survive — it has 3 user hooks
+      expect(sessionEntries).toHaveLength(1);
+      // Inner ctx-mode hook stripped, 3 user hooks preserved in same matcher entry
+      expect(sessionEntries[0].hooks).toHaveLength(3);
+      expect(sessionEntries[0].hooks).toContainEqual(userHook1);
+      expect(sessionEntries[0].hooks).toContainEqual(userHook2);
+      expect(sessionEntries[0].hooks).toContainEqual(userHook3);
+      expect(sessionEntries[0].hooks).not.toContainEqual(ctxModeHook);
+    });
+
+    it("removes context-mode entries that are alone in their matcher entry (#415 regression)", () => {
+      // Plugin hooks.json covers all required hooks → triggers the "allCovered" branch
+      writeFileSync(
+        join(pluginRoot, "hooks", "hooks.json"),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] }],
+            SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }] }],
+          },
+        }),
+      );
+
+      // settings.json: SessionStart entry contains ONLY ctx-mode hook (no user hooks).
+      // After inner-strip, entry's hooks[] is empty → entry must be pruned entirely.
+      writeFileSync(
+        join(tempDir, "settings.json"),
+        JSON.stringify({
+          hooks: {
+            SessionStart: [{
+              matcher: "",
+              hooks: [{ type: "command", command: `node "${join(pluginRoot, "hooks", "sessionstart.mjs")}"` }],
+            }],
+          },
+        }),
+      );
+
+      adapter.configureAllHooks(pluginRoot);
+
+      const settings = JSON.parse(readFileSync(join(tempDir, "settings.json"), "utf-8"));
+      const sessionEntries = settings.hooks?.SessionStart ?? [];
+      expect(sessionEntries).toHaveLength(0);
+    });
+
     it("removes existing valid context-mode hooks from settings.json when plugin hooks.json covers all required hooks", () => {
       // Plugin hooks.json covers all required hooks (pluginRoot already has scripts from beforeEach)
       writeFileSync(

@@ -728,12 +728,16 @@ async function upgrade() {
       } catch { /* some files may not exist in source */ }
     }
 
-    // Write .mcp.json with resolved absolute path (fixes #132)
+    // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
+    // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
+    // (#181) deletes after upgrade — breaking MCP server resolution. The literal
+    // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
+    // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
     const mcpConfig = {
       mcpServers: {
         "context-mode": {
           command: "node",
-          args: [resolve(pluginRoot, "start.mjs")],
+          args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
         },
       },
     };

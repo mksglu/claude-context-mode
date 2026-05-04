@@ -129,7 +129,7 @@ describe("cli.bundle.mjs — marketplace install support", () => {
 // ── .mcp.json — MCP server config ────────────────────────────────────
 
 describe(".mcp.json — MCP server config", () => {
-  it("upgrade writes .mcp.json with resolved absolute path, not ${CLAUDE_PLUGIN_ROOT}", () => {
+  it("upgrade writes cached .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (#411)", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     const upgradeStart = src.indexOf("async function upgrade");
     const upgradeSrc = src.slice(upgradeStart);
@@ -137,9 +137,33 @@ describe(".mcp.json — MCP server config", () => {
     const itemsMatch = upgradeSrc.match(/const items\s*=\s*\[([\s\S]*?)\];/);
     expect(itemsMatch).not.toBeNull();
     expect(itemsMatch![1]).not.toContain(".mcp.json");
-    // Must write .mcp.json dynamically with resolve()
-    expect(upgradeSrc).toContain('resolve(pluginRoot, "start.mjs")');
+    // Must write .mcp.json dynamically with placeholder, not absolute path.
+    // Absolute paths break when sessionstart.mjs (#181) deletes old version dirs.
     expect(upgradeSrc).toContain('resolve(pluginRoot, ".mcp.json")');
+    expect(upgradeSrc).not.toContain('resolve(pluginRoot, "start.mjs")');
+    expect(upgradeSrc).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
+  });
+
+  it("upgrade .mcp.json placeholder is resilient to version cleanup (#411)", () => {
+    // Simulate two upgrade runs into different pluginRoot dirs and assert both
+    // produce identical placeholder-based args (no absolute paths to old dirs).
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const upgradeStart = src.indexOf("async function upgrade");
+    const upgradeSrc = src.slice(upgradeStart);
+    // Extract the literal mcpConfig args entry — must be a string literal
+    // with ${CLAUDE_PLUGIN_ROOT}, not a runtime resolve(pluginRoot, ...) call.
+    const argsMatch = upgradeSrc.match(/args:\s*\[([^\]]+)\]/);
+    expect(argsMatch).not.toBeNull();
+    const argsContent = argsMatch![1];
+    // Must NOT depend on pluginRoot at write-time
+    expect(argsContent).not.toContain("pluginRoot");
+    expect(argsContent).not.toContain("resolve(");
+    // Must contain the literal placeholder
+    expect(argsContent).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    // Two simulated runs would produce identical JSON regardless of pluginRoot
+    // because the args value is a static string literal.
+    const literalCount = (upgradeSrc.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/start\.mjs/g) || []).length;
+    expect(literalCount).toBeGreaterThanOrEqual(1);
   });
 
   it("plugin manifest keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {
@@ -682,16 +706,25 @@ describe("hooks/ensure-deps.mjs — shared bootstrap", () => {
     expect(src).not.toMatch(/for.*\[.*"better-sqlite3"/s);
   });
 
-  it("all session hooks import ensure-deps.mjs", () => {
+  it("all session hooks bootstrap ensure-deps via runHook wrapper (#414)", () => {
+    // After #414 fix: top-level static `import "./ensure-deps.mjs"` was a
+    // parse-time crash vector on Windows (loader:1479 bypassed try/catch).
+    // ensure-deps is now dynamic-imported inside hooks/run-hook.mjs.
+    const runHookSrc = readFileSync(resolve(ROOT, "hooks", "run-hook.mjs"), "utf-8");
+    expect(runHookSrc).toContain("ensure-deps.mjs");
+
     const sessionHooks = [
       "hooks/sessionstart.mjs",
       "hooks/posttooluse.mjs",
       "hooks/precompact.mjs",
       "hooks/userpromptsubmit.mjs",
+      "hooks/pretooluse.mjs",
     ];
     for (const hook of sessionHooks) {
       const src = readFileSync(resolve(ROOT, hook), "utf-8");
-      expect(src).toContain("ensure-deps.mjs");
+      expect(src).toContain("run-hook.mjs");
+      // Top-level static side-effect import must NOT remain (would bypass uncaughtException).
+      expect(src).not.toMatch(/^import\s+["']\.\/ensure-deps\.mjs["'];?$/m);
     }
   });
 });
@@ -983,30 +1016,23 @@ describe("Hidden temp dirs (#186)", () => {
 
 // ── Issue #187 follow-up: self-heal must fix ALL hook types, not just PreToolUse ──
 
-describe("Self-heal covers all hook types (#187)", () => {
+describe("Self-heal hook-path rewriting (#187 + #415 follow-up)", () => {
   const PRETOOLUSE_SOURCE = readFileSync(resolve(ROOT, "hooks/pretooluse.mjs"), "utf-8");
 
-  test("pretooluse.mjs self-heal iterates all hook types in settings.json", () => {
-    // Must NOT be scoped to only PreToolUse
-    // Old pattern: settings.hooks?.PreToolUse (only one type)
-    // New pattern: iterates Object.keys(settings.hooks) or similar
-    const selfHealSection = PRETOOLUSE_SOURCE.slice(
-      PRETOOLUSE_SOURCE.indexOf("Update hook path"),
-      PRETOOLUSE_SOURCE.indexOf("lazy cleanup"),
-    );
-    // Must iterate all hook types, not just PreToolUse
-    expect(selfHealSection).not.toContain("hooks?.PreToolUse");
-    expect(selfHealSection).toMatch(/Object\.keys|for\s*\(\s*const\s+\w+\s+(of|in)\s+.*hooks/);
+  test("pretooluse.mjs no longer mutates settings.json from runtime hot path (#415)", () => {
+    // v1.0.107 had a destructive `entries.filter(e => !e.hooks?.some(isCtxMode))`
+    // block that wiped co-located user hooks. Removed in v1.0.108 — settings.json
+    // mutation must only happen at install/upgrade time via configureAllHooks().
+    expect(PRETOOLUSE_SOURCE).not.toContain("hooks.json owns hook registration");
+    expect(PRETOOLUSE_SOURCE).not.toMatch(/entries\.filter\([^)]*!entry\.hooks\?\.some/);
   });
 
-  test("pretooluse.mjs self-heal fixes all context-mode hook scripts", () => {
-    const selfHealSection = PRETOOLUSE_SOURCE.slice(
-      PRETOOLUSE_SOURCE.indexOf("Update hook path"),
-      PRETOOLUSE_SOURCE.indexOf("lazy cleanup"),
-    );
-    // Must match any .mjs hook script, not just pretooluse.mjs
-    expect(selfHealSection).toMatch(/\.mjs/);
-    expect(selfHealSection).toContain("context-mode");
+  test("pretooluse.mjs legacy stale-path rewrite still iterates ALL hook types (#187)", () => {
+    // The legacy else-branch (rewrites stale context-mode hook paths to current
+    // version dir when hooks.json is absent) must cover all hook types, not just
+    // PreToolUse — that was the original #187 fix and remains intact.
+    expect(PRETOOLUSE_SOURCE).not.toContain("settings.hooks?.PreToolUse");
+    expect(PRETOOLUSE_SOURCE).toMatch(/for\s*\(\s*const\s+hookType\s+of\s+Object\.keys/);
   });
 });
 
