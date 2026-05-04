@@ -77,22 +77,31 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(src).toContain("existsSync");
   });
 
-  it("cli.ts upgrade rebuilds better-sqlite3 native addon after deps install", () => {
+  it("cli.ts upgrade refreshes better-sqlite3 native addon after deps install", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     // Extract only the upgrade function body (starts with "async function upgrade")
     const upgradeStart = src.indexOf("async function upgrade");
     expect(upgradeStart).toBeGreaterThan(-1);
     const upgradeSrc = src.slice(upgradeStart);
-    // Must rebuild native addons between production deps and global install
+    // Must refresh native addons between production deps and global install.
+    // v1.0.110 replaced raw `npm rebuild better-sqlite3` with an existsSync
+    // pre-check + delegation to the shared `healBetterSqlite3Binding` helper
+    // (the helper-missing fallback still mentions npm rebuild as a hint).
+    // Either path is valid — what matters is SOMETHING refreshes the binding
+    // and it sits between the deps install and the global install steps.
     const depsIdx = upgradeSrc.indexOf('"install", "--production"');
     const rebuildIdx = upgradeSrc.indexOf('"rebuild", "better-sqlite3"');
+    const healIdx = upgradeSrc.indexOf('healBetterSqlite3Binding');
+    const refreshIdx = healIdx > -1
+      ? (rebuildIdx > -1 ? Math.min(healIdx, rebuildIdx) : healIdx)
+      : rebuildIdx;
     const globalIdx = upgradeSrc.indexOf('"install", "-g"');
     expect(depsIdx).toBeGreaterThan(-1);
-    expect(rebuildIdx).toBeGreaterThan(-1);
+    expect(refreshIdx).toBeGreaterThan(-1);
     expect(globalIdx).toBeGreaterThan(-1);
-    // rebuild must come after deps and before global install
-    expect(rebuildIdx).toBeGreaterThan(depsIdx);
-    expect(rebuildIdx).toBeLessThan(globalIdx);
+    // refresh step must come after deps and before global install
+    expect(refreshIdx).toBeGreaterThan(depsIdx);
+    expect(refreshIdx).toBeLessThan(globalIdx);
   });
 
   it("cli.ts upgrade chmod handles both cli binaries", () => {
