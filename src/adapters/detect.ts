@@ -88,6 +88,7 @@ export const PLATFORM_ENV_VARS = [
 export function getSessionDirSegments(platform: string): string[] | null {
   switch (platform) {
     case "claude-code":      return [".claude"];
+    case "claude-desktop":   return [".claude-desktop"];
     case "gemini-cli":       return [".gemini"];
     case "antigravity":      return [".gemini"];
     case "openclaw":         return [".openclaw"];
@@ -136,7 +137,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   const platformOverride = process.env.CONTEXT_MODE_PLATFORM;
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
-      "claude-code", "gemini-cli", "kilo", "opencode", "codex",
+      "claude-code", "claude-desktop", "gemini-cli", "kilo", "opencode", "codex",
       "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
@@ -280,6 +281,13 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "claude-code": {
       const { ClaudeCodeAdapter } = await import("./claude-code/index.js");
       return new ClaudeCodeAdapter();
+    }
+
+    case "claude-desktop": {
+      const { ClaudeDesktopAdapter } = await import(
+        "./claude-desktop/index.js"
+      );
+      return new ClaudeDesktopAdapter();
     }
 
     case "gemini-cli": {

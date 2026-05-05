@@ -11,6 +11,7 @@ import type { PlatformId } from "./types.js";
 
 export const CLIENT_NAME_TO_PLATFORM: Record<string, PlatformId> = {
   "claude-code": "claude-code",
+  "claude-ai": "claude-desktop",
   "gemini-cli-mcp-client": "gemini-cli",
   "antigravity-client": "antigravity",
   "cursor-vscode": "cursor",

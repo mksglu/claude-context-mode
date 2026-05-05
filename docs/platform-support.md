@@ -10,7 +10,7 @@ context-mode supports twelve platforms across three hook paradigms:
 |----------|-----------|
 | **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, Codex CLI, Qwen Code |
 | **TS Plugin** | OpenCode, OpenClaw |
-| **MCP-only** | Antigravity, Kiro, Zed |
+| **MCP-only** | Antigravity, Kiro, Zed, Claude Desktop |
 
 The MCP server layer is 100% portable and needs no adapter. Only the hook layer requires platform-specific adapters.
 
@@ -101,6 +101,55 @@ context-mode hook claude-code userpromptsubmit
 ```
 
 **Known Issues:** None significant.
+
+---
+
+### Claude Desktop
+
+**Status:** MCP-only (no hooks)
+
+**Hook Paradigm:** MCP-only
+
+Anthropic's Claude Desktop is the consumer chat app for [claude.ai](https://claude.ai/download). It is distinct from Claude Code (the CLI / IDE plugin with full hook support). Claude Desktop accepts custom MCP servers via `claude_desktop_config.json` but exposes no `SessionStart`, `PreToolUse`, `PostToolUse`, or `PreCompact` hook surface — every routing decision happens through the model rather than a programmatic interceptor.
+
+**Configuration:**
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json` (Anthropic does not officially ship a Linux build; path mirrors XDG conventions for parity)
+
+MCP servers configured in `mcpServers` object, same shape as Claude Code's MCP-only fallback install.
+
+**Detection:**
+- Auto-detected via MCP protocol handshake (`clientInfo.name: "claude-ai"`, version `0.1.0` at time of writing)
+- Fallback: `CONTEXT_MODE_PLATFORM=claude-desktop` environment variable override
+
+**Routing Instructions:**
+- `configs/claude-desktop/CLAUDE.md` ships with the package
+- Users paste it into a Claude Desktop **Project → Custom Instructions** field, or as the first message of each conversation
+- Claude Desktop has no auto-loading mechanism for project-level rules files
+
+**Session Storage:**
+- `~/.claude-desktop/context-mode/sessions/` — kept separate from `~/.claude/` (Claude Code) to avoid cross-contamination when both clients are installed on the same machine
+
+**Capabilities:**
+- PreToolUse: --
+- PostToolUse: --
+- PreCompact: --
+- SessionStart: --
+- Can modify args: --
+- Can modify output: --
+- Can inject session context: --
+
+**Known Issues / Caveats:**
+- No hook support — routing instruction file is the only enforcement (~60% compliance, similar to Antigravity / Zed)
+- `ctx_doctor` reports "Hook script: PASS" because the scripts exist on disk — this only confirms the install layout, not that hooks ever fire
+- No slash commands (`/context-mode:ctx-stats` etc.); users type the natural-language phrase ("ctx stats") and the model invokes the MCP tool
+- Plugin-config changes require a full quit (⌘Q on macOS, tray-icon Quit on Windows) — `X` / close button leaves the MCP server running in the background
+- Conversation compaction loses session continuity (no `PreCompact` hook to checkpoint state)
+
+**Sources:**
+- clientInfo: empirically observed in `~/Library/Logs/Claude/mcp-server-context-mode.log` during initialize handshake
+- Config path: [Anthropic MCP quickstart](https://modelcontextprotocol.io/quickstart/user)
 
 ---
 
