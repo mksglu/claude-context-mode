@@ -36,11 +36,11 @@ export function createRoutingBlock(t, options = {}) {
 
   <forbidden_actions>
     - NO Bash for commands producing >20 lines output.
-    - NO Read for analysis — use execute_file. Read IS correct for files you intend to Edit.
+    - NO Read for analysis — use ${t("ctx_execute_file")}. Read IS correct for files you intend to Edit.
     - NO WebFetch — use ${t("ctx_fetch_and_index")}.
     - Bash ONLY for git/mkdir/rm/mv/navigation.
     - NO ${t("ctx_execute")} or ${t("ctx_execute_file")} for file creation/modification.
-      ctx_execute is for analysis, processing, computation only.
+      ${t("ctx_execute")} is for analysis, processing, computation only.
   </forbidden_actions>
 
   <file_writing_policy>

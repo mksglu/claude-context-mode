@@ -470,3 +470,72 @@ console.log(JSON.stringify({ ok: true }));
     expect(out).toEqual({ ok: true });
   });
 });
+
+// ── better-sqlite3 binding self-heal (#408) ───────────────────────────────
+//
+// The missing-binding heal previously inlined ~30 lines of prebuild-install
+// + npm install + stderr logic in `ensureDeps()`. PR #410 review: that
+// block was a copy of the same logic in scripts/postinstall.mjs. The fix
+// extracts both into scripts/heal-better-sqlite3.mjs and has each caller
+// delegate. ABI-mismatch heal in ensureNativeCompat() is unrelated and
+// must remain (regression-critical — guards #148, #203).
+
+import { readFileSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
+
+describe("ensure-deps: better-sqlite3 binding self-heal (#408)", () => {
+  const ENSURE_DEPS_SRC = readFileSync(
+    resolvePath(fileURLToPath(import.meta.url), "..", "..", "..", "hooks", "ensure-deps.mjs"),
+    "utf-8",
+  );
+
+  test("references the shared heal helper at scripts/heal-better-sqlite3.mjs", () => {
+    // After dedupe the inline heal is gone — replaced by a reference to
+    // scripts/heal-better-sqlite3.mjs. Accept either a static import or a
+    // dynamic-import path: the helper is lazy-loaded so synthetic test
+    // harnesses (e.g. tests/session-hooks-smoke) that don't ship `scripts/`
+    // alongside `hooks/` don't crash the hook on load.
+    const referencesHelperPath =
+      /["']\.\.\/scripts\/heal-better-sqlite3(?:\.mjs)?["']/.test(ENSURE_DEPS_SRC) ||
+      /scripts[\\/]heal-better-sqlite3\.mjs/.test(ENSURE_DEPS_SRC) ||
+      /heal-better-sqlite3\.mjs/.test(ENSURE_DEPS_SRC);
+    expect(referencesHelperPath).toBe(true);
+    expect(ENSURE_DEPS_SRC).toContain("healBetterSqlite3Binding");
+  });
+
+  test("calls healBetterSqlite3Binding(...) inside the missing-binding branch", () => {
+    // The else-if guarding against a missing native binary must invoke the
+    // shared helper (not inline its own copy).
+    const anchor = ENSURE_DEPS_SRC.indexOf(
+      "!existsSync(resolve(pkgDir, ...NATIVE_BINARIES[pkg]))",
+    );
+    expect(anchor).toBeGreaterThan(-1);
+    const end = ENSURE_DEPS_SRC.indexOf("\nexport function ensureNativeCompat", anchor);
+    const branch = ENSURE_DEPS_SRC.slice(anchor, end === -1 ? ENSURE_DEPS_SRC.length : end);
+    expect(/healBetterSqlite3Binding\s*\(/.test(branch)).toBe(true);
+
+    // Inline 3-layer heal must be gone — no `npm rebuild better-sqlite3`,
+    // no direct `prebuild-install` resolve, no manual process.execPath
+    // spawn here. The helper owns all of that now.
+    expect(/\brebuild\s+better-sqlite3\b/.test(branch)).toBe(false);
+    expect(/prebuild-install/.test(branch)).toBe(false);
+    expect(/process\.execPath/.test(branch)).toBe(false);
+  });
+
+  test("ABI-mismatch rebuild path in ensureNativeCompat() remains intact", () => {
+    // Regression guard — the ABI-mismatch heal (separate from #408's
+    // missing-binding heal) MUST keep using `npm rebuild better-sqlite3
+    // --ignore-scripts=false` for the cached-binary fallback flow.
+    expect(
+      /\brebuild\s+better-sqlite3\s+--ignore-scripts=false/.test(ENSURE_DEPS_SRC),
+    ).toBe(true);
+    expect(
+      /export function ensureNativeCompat\s*\(/.test(ENSURE_DEPS_SRC),
+    ).toBe(true);
+    // The rebuild appears at least twice (skipProbe path + probe-failed path).
+    const rebuildCount = (ENSURE_DEPS_SRC.match(
+      /\brebuild\s+better-sqlite3\s+--ignore-scripts=false/g,
+    ) || []).length;
+    expect(rebuildCount).toBeGreaterThanOrEqual(2);
+  });
+});

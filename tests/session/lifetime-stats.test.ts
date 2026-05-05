@@ -103,4 +103,35 @@ describe("getLifetimeStats — cross-session totals + auto-memory", () => {
     expect(stats.autoMemoryCount).toBe(0);
     expect(stats.autoMemoryProjects).toBe(0);
   });
+
+  // ── Cycle 2: aggregate per-category counts across every SessionDB ──
+  test("aggregates categoryCounts across multiple SessionDBs", () => {
+    const sessionsDir = tmpDir("sessions-cats");
+
+    function eventOfCategory(cat: string, data: string) {
+      return { type: cat, category: cat, data, priority: 2, data_hash: "" };
+    }
+
+    const db1 = new SessionDB({ dbPath: tmpDbPath(sessionsDir, "proj-a") });
+    cleanups.push(() => db1.cleanup());
+    db1.ensureSession("sess-a1", "/p/a");
+    db1.insertEvent("sess-a1", eventOfCategory("file", "/p/a/x.ts"), "PostToolUse");
+    db1.insertEvent("sess-a1", eventOfCategory("file", "/p/a/y.ts"), "PostToolUse");
+    db1.insertEvent("sess-a1", eventOfCategory("cwd", "/p/a"), "PostToolUse");
+    db1.close();
+
+    const db2 = new SessionDB({ dbPath: tmpDbPath(sessionsDir, "proj-b") });
+    cleanups.push(() => db2.cleanup());
+    db2.ensureSession("sess-b1", "/p/b");
+    db2.insertEvent("sess-b1", eventOfCategory("file", "/p/b/m.ts"), "PostToolUse");
+    db2.insertEvent("sess-b1", eventOfCategory("rule", "AGENTS.md"), "PostToolUse");
+    db2.close();
+
+    const memoryRoot = tmpDir("projects-empty-cats");
+    const stats = getLifetimeStats({ sessionsDir, memoryRoot });
+    expect(stats.categoryCounts).toBeDefined();
+    expect(stats.categoryCounts.file).toBe(3); // 2 from a + 1 from b
+    expect(stats.categoryCounts.cwd).toBe(1);
+    expect(stats.categoryCounts.rule).toBe(1);
+  });
 });

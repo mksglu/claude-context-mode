@@ -393,20 +393,36 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
         this.checkHookType(undefined, pluginHooks, ht),
       );
       if (allCovered) {
-        // Remove ALL existing context-mode hooks from settings.json — hooks.json
-        // is the source of truth. Keeping them causes duplicate concurrent hook
-        // processes (one from settings.json, one from hooks.json), which triggers
-        // "non-blocking hook error" warnings on every tool call.
+        // Strip ONLY the inner context-mode hook commands from each matcher entry —
+        // hooks.json is the source of truth for ctx-mode. User hooks co-located in
+        // the same matcher entry MUST be preserved (#415: entry-level filter wiped
+        // every co-located user hook). After stripping, prune entries whose `hooks`
+        // array becomes empty.
+        const ctxScriptNames = Object.values(HOOK_SCRIPTS);
+        const isCtxModeCommand = (cmd?: string): boolean =>
+          cmd != null &&
+          (ctxScriptNames.some((s) => cmd.includes(s)) ||
+            cmd.includes("context-mode hook"));
         for (const hookType of Object.keys(hooks)) {
           const entries = hooks[hookType];
           if (!Array.isArray(entries)) continue;
-          const filtered = (entries as Array<Record<string, unknown>>).filter((entry) =>
-            !isAnyContextModeHook(entry as { hooks?: Array<{ command?: string }> }),
-          );
-          const removed = entries.length - filtered.length;
-          if (removed > 0) {
-            hooks[hookType] = filtered;
-            changes.push(`Removed ${removed} duplicate ${hookType} hook(s) — covered by plugin hooks.json`);
+          let totalRemoved = 0;
+          for (const entry of entries as Array<Record<string, unknown>>) {
+            const typedEntry = entry as { hooks?: Array<{ command?: string }> };
+            const innerHooks = typedEntry.hooks ?? [];
+            const before = innerHooks.length;
+            typedEntry.hooks = innerHooks.filter((h) => !isCtxModeCommand(h.command));
+            totalRemoved += before - typedEntry.hooks.length;
+          }
+          const pruned = (entries as Array<Record<string, unknown>>).filter((e) => {
+            const ih = (e as { hooks?: unknown[] }).hooks;
+            return Array.isArray(ih) && ih.length > 0;
+          });
+          if (totalRemoved > 0 || pruned.length !== entries.length) {
+            hooks[hookType] = pruned;
+            if (totalRemoved > 0) {
+              changes.push(`Removed ${totalRemoved} duplicate ${hookType} hook(s) — covered by plugin hooks.json`);
+            }
           }
         }
         settings.hooks = hooks;

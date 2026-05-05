@@ -12,6 +12,7 @@ import { readFileSync, existsSync, accessSync, constants, mkdirSync, writeFileSy
 import { resolve, join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { execSync } from "node:child_process";
 import { toUnixPath } from "../../src/cli.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -76,22 +77,31 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(src).toContain("existsSync");
   });
 
-  it("cli.ts upgrade rebuilds better-sqlite3 native addon after deps install", () => {
+  it("cli.ts upgrade refreshes better-sqlite3 native addon after deps install", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     // Extract only the upgrade function body (starts with "async function upgrade")
     const upgradeStart = src.indexOf("async function upgrade");
     expect(upgradeStart).toBeGreaterThan(-1);
     const upgradeSrc = src.slice(upgradeStart);
-    // Must rebuild native addons between production deps and global install
+    // Must refresh native addons between production deps and global install.
+    // v1.0.110 replaced raw `npm rebuild better-sqlite3` with an existsSync
+    // pre-check + delegation to the shared `healBetterSqlite3Binding` helper
+    // (the helper-missing fallback still mentions npm rebuild as a hint).
+    // Either path is valid — what matters is SOMETHING refreshes the binding
+    // and it sits between the deps install and the global install steps.
     const depsIdx = upgradeSrc.indexOf('"install", "--production"');
     const rebuildIdx = upgradeSrc.indexOf('"rebuild", "better-sqlite3"');
+    const healIdx = upgradeSrc.indexOf('healBetterSqlite3Binding');
+    const refreshIdx = healIdx > -1
+      ? (rebuildIdx > -1 ? Math.min(healIdx, rebuildIdx) : healIdx)
+      : rebuildIdx;
     const globalIdx = upgradeSrc.indexOf('"install", "-g"');
     expect(depsIdx).toBeGreaterThan(-1);
-    expect(rebuildIdx).toBeGreaterThan(-1);
+    expect(refreshIdx).toBeGreaterThan(-1);
     expect(globalIdx).toBeGreaterThan(-1);
-    // rebuild must come after deps and before global install
-    expect(rebuildIdx).toBeGreaterThan(depsIdx);
-    expect(rebuildIdx).toBeLessThan(globalIdx);
+    // refresh step must come after deps and before global install
+    expect(refreshIdx).toBeGreaterThan(depsIdx);
+    expect(refreshIdx).toBeLessThan(globalIdx);
   });
 
   it("cli.ts upgrade chmod handles both cli binaries", () => {
@@ -129,7 +139,7 @@ describe("cli.bundle.mjs — marketplace install support", () => {
 // ── .mcp.json — MCP server config ────────────────────────────────────
 
 describe(".mcp.json — MCP server config", () => {
-  it("upgrade writes .mcp.json with resolved absolute path, not ${CLAUDE_PLUGIN_ROOT}", () => {
+  it("upgrade writes cached .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (#411)", () => {
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     const upgradeStart = src.indexOf("async function upgrade");
     const upgradeSrc = src.slice(upgradeStart);
@@ -137,9 +147,33 @@ describe(".mcp.json — MCP server config", () => {
     const itemsMatch = upgradeSrc.match(/const items\s*=\s*\[([\s\S]*?)\];/);
     expect(itemsMatch).not.toBeNull();
     expect(itemsMatch![1]).not.toContain(".mcp.json");
-    // Must write .mcp.json dynamically with resolve()
-    expect(upgradeSrc).toContain('resolve(pluginRoot, "start.mjs")');
+    // Must write .mcp.json dynamically with placeholder, not absolute path.
+    // Absolute paths break when sessionstart.mjs (#181) deletes old version dirs.
     expect(upgradeSrc).toContain('resolve(pluginRoot, ".mcp.json")');
+    expect(upgradeSrc).not.toContain('resolve(pluginRoot, "start.mjs")');
+    expect(upgradeSrc).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
+  });
+
+  it("upgrade .mcp.json placeholder is resilient to version cleanup (#411)", () => {
+    // Simulate two upgrade runs into different pluginRoot dirs and assert both
+    // produce identical placeholder-based args (no absolute paths to old dirs).
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const upgradeStart = src.indexOf("async function upgrade");
+    const upgradeSrc = src.slice(upgradeStart);
+    // Extract the literal mcpConfig args entry — must be a string literal
+    // with ${CLAUDE_PLUGIN_ROOT}, not a runtime resolve(pluginRoot, ...) call.
+    const argsMatch = upgradeSrc.match(/args:\s*\[([^\]]+)\]/);
+    expect(argsMatch).not.toBeNull();
+    const argsContent = argsMatch![1];
+    // Must NOT depend on pluginRoot at write-time
+    expect(argsContent).not.toContain("pluginRoot");
+    expect(argsContent).not.toContain("resolve(");
+    // Must contain the literal placeholder
+    expect(argsContent).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    // Two simulated runs would produce identical JSON regardless of pluginRoot
+    // because the args value is a static string literal.
+    const literalCount = (upgradeSrc.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/start\.mjs/g) || []).length;
+    expect(literalCount).toBeGreaterThanOrEqual(1);
   });
 
   it("plugin manifest keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {
@@ -149,9 +183,17 @@ describe(".mcp.json — MCP server config", () => {
     // bundled server path. Repo-root .mcp.json is for contributors opening
     // the repo as a regular project and uses a relative path to avoid the
     // "Missing environment variable: CLAUDE_PLUGIN_ROOT" warning.
-    const plugin = JSON.parse(
-      readFileSync(resolve(ROOT, ".claude-plugin", "plugin.json"), "utf-8"),
-    );
+    //
+    // We read the COMMITTED file via `git show HEAD:` rather than the
+    // working-tree copy because hooks/normalize-hooks.mjs intentionally
+    // rewrites the on-disk plugin.json to absolute paths on Windows after
+    // postinstall (#378 — MSYS path mangling). The marketplace assertion
+    // is about what we SHIP, not about what local install scripts mutate.
+    const committed = execSync("git show HEAD:.claude-plugin/plugin.json", {
+      cwd: ROOT,
+      encoding: "utf-8",
+    });
+    const plugin = JSON.parse(committed);
     const args = plugin.mcpServers["context-mode"].args;
     expect(args[0]).toContain("CLAUDE_PLUGIN_ROOT");
   });
@@ -682,16 +724,25 @@ describe("hooks/ensure-deps.mjs — shared bootstrap", () => {
     expect(src).not.toMatch(/for.*\[.*"better-sqlite3"/s);
   });
 
-  it("all session hooks import ensure-deps.mjs", () => {
+  it("all session hooks bootstrap ensure-deps via runHook wrapper (#414)", () => {
+    // After #414 fix: top-level static `import "./ensure-deps.mjs"` was a
+    // parse-time crash vector on Windows (loader:1479 bypassed try/catch).
+    // ensure-deps is now dynamic-imported inside hooks/run-hook.mjs.
+    const runHookSrc = readFileSync(resolve(ROOT, "hooks", "run-hook.mjs"), "utf-8");
+    expect(runHookSrc).toContain("ensure-deps.mjs");
+
     const sessionHooks = [
       "hooks/sessionstart.mjs",
       "hooks/posttooluse.mjs",
       "hooks/precompact.mjs",
       "hooks/userpromptsubmit.mjs",
+      "hooks/pretooluse.mjs",
     ];
     for (const hook of sessionHooks) {
       const src = readFileSync(resolve(ROOT, hook), "utf-8");
-      expect(src).toContain("ensure-deps.mjs");
+      expect(src).toContain("run-hook.mjs");
+      // Top-level static side-effect import must NOT remain (would bypass uncaughtException).
+      expect(src).not.toMatch(/^import\s+["']\.\/ensure-deps\.mjs["'];?$/m);
     }
   });
 });
@@ -933,6 +984,104 @@ describe("Cache dir safety (#181)", () => {
 
 // ── Issue #185: upgrade must not use execSync (shell) ──
 
+// ── Statusline self-locate: survive plugin-root staleness post-upgrade ──
+
+describe("statuslineForward survives stale getPluginRoot() (post-upgrade)", () => {
+  const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
+  const fnStart = CLI_SOURCE.indexOf("function statuslineForward");
+  const fnBody = CLI_SOURCE.slice(fnStart, fnStart + 2000);
+
+  test("statuslineForward falls back to the marketplace clone path", () => {
+    // After ctx-upgrade, the running CLI binary may live in a cache dir that
+    // sessionstart.mjs (#181) has already cleaned, so getPluginRoot() resolves
+    // to a directory whose bin/statusline.mjs has been removed. Falling back
+    // to the marketplace clone (~/.claude/plugins/marketplaces/context-mode)
+    // keeps the statusline alive — that path is stable across upgrades and is
+    // now refreshed every /ctx-upgrade per #418.
+    expect(fnBody).toMatch(/marketplaces[\\/]+["']?\s*,\s*["']?context-mode["']?|"marketplaces"\s*,\s*"context-mode"/);
+  });
+
+  test("statuslineForward also tries installed_plugins.json install path", () => {
+    // Defence in depth — if the marketplace clone is also missing (manual
+    // cleanup, custom install), use the path Claude Code actually loads from.
+    expect(fnBody).toMatch(/installed_plugins\.json/);
+  });
+
+  test("statuslineForward exits silently on total failure (no stderr noise)", () => {
+    // Statusline writes to CC's status bar. Stderr from this process surfaces
+    // visibly. When NO candidate exists, exit 0 quietly — the user already
+    // sees the empty bar, an error message would be redundant noise.
+    expect(fnBody).toMatch(/process\.exit\(0\)/);
+  });
+});
+
+// ── Statusline staleness fix: server emits a periodic stats heartbeat ──
+
+describe("server emits periodic stats heartbeat (statusline liveness fix)", () => {
+  const SERVER_SOURCE = readFileSync(resolve(ROOT, "src/server.ts"), "utf-8");
+
+  test("server.ts schedules a setInterval that calls persistStats", () => {
+    // bin/statusline.mjs flags the session as "stale — restart to resume saving"
+    // when stats.updated_at is >30min old. Pre-fix, updated_at only advanced on
+    // MCP tool calls — long Bash/Read/Edit stretches (or post-/compact pauses)
+    // would falsely flip the statusline to red even though the MCP server was
+    // alive. Server must refresh the stats file on a timer regardless of tool
+    // activity so updated_at reflects true server liveness.
+    expect(SERVER_SOURCE).toMatch(/setInterval\([\s\S]*?persistStats[\s\S]*?,\s*\d/);
+  });
+
+  test("heartbeat interval is shorter than the statusline staleness threshold", () => {
+    // statusline threshold: 30min (bin/statusline.mjs:272). Heartbeat must fire
+    // well below this — allow up to 5min so the file refresh is frequent enough
+    // that one missed tick (sleep, host pause) still keeps us below the cliff.
+    const m = SERVER_SOURCE.match(/setInterval\(\s*\(\)\s*=>\s*persistStats\(\)\s*,\s*(\d[\d_]*)\s*\)/);
+    expect(m, "Expected `setInterval(() => persistStats(), <ms>)` in server.ts").not.toBeNull();
+    const ms = Number(m![1].replace(/_/g, ""));
+    expect(ms).toBeGreaterThanOrEqual(10_000);   // not absurdly chatty
+    expect(ms).toBeLessThanOrEqual(5 * 60_000);  // safely under the 30min cliff
+  });
+
+  test("heartbeat setInterval is .unref()ed so it does not block process exit", () => {
+    // Matches the pattern of the existing version-check interval (~3115).
+    expect(SERVER_SOURCE).toMatch(/setInterval\(\s*\(\)\s*=>\s*persistStats\(\)[^.]*\.unref\(\)/s);
+  });
+});
+
+// ── Issue #418: ctx-upgrade must refresh the marketplace clone ──────
+
+describe("ctx-upgrade syncs marketplace clone (#418)", () => {
+  const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
+  const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+  const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+  test("upgrade() targets ~/.claude/plugins/marketplaces/context-mode for git refresh", () => {
+    // CC's marketplace clone (separate from cache dir) was previously left
+    // pinned at the install-time commit; users running /ctx-upgrade never
+    // received upstream changes through the marketplace metadata path.
+    expect(upgradeBody).toMatch(/marketplaces[\\/]+["']?\s*,\s*["']?context-mode["']?|"marketplaces"\s*,\s*"context-mode"/);
+  });
+
+  test("upgrade() runs git fetch + reset against marketplace dir", () => {
+    // Required: actual git invocation against the marketplace path.
+    // Look for fetch and reset --hard in the upgrade body.
+    expect(upgradeBody).toMatch(/execFileSync\(\s*["']git["']\s*,\s*\[\s*["']-C["']/);
+    expect(upgradeBody).toMatch(/["']fetch["']/);
+    expect(upgradeBody).toMatch(/["']reset["'].*?["']--hard["']/s);
+  });
+
+  test("upgrade() guards on .git existence so tarball installs do not fail", () => {
+    // Defensive guard — non-git install paths must not error out.
+    expect(upgradeBody).toMatch(/existsSync\([^)]*marketplaceDir[^)]*\.git/);
+  });
+
+  test("upgrade() preserves user dev edits via git status --porcelain check", () => {
+    // Mert-class users symlink the marketplace clone to a dev worktree.
+    // Destructive `reset --hard` would wipe in-progress work — must skip
+    // when uncommitted changes exist.
+    expect(upgradeBody).toMatch(/["']status["'].*?["']--porcelain["']/s);
+  });
+});
+
 describe("Shell-free upgrade (#185)", () => {
   const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
   const SERVER_SOURCE = readFileSync(resolve(ROOT, "src/server.ts"), "utf-8");
@@ -983,30 +1132,23 @@ describe("Hidden temp dirs (#186)", () => {
 
 // ── Issue #187 follow-up: self-heal must fix ALL hook types, not just PreToolUse ──
 
-describe("Self-heal covers all hook types (#187)", () => {
+describe("Self-heal hook-path rewriting (#187 + #415 follow-up)", () => {
   const PRETOOLUSE_SOURCE = readFileSync(resolve(ROOT, "hooks/pretooluse.mjs"), "utf-8");
 
-  test("pretooluse.mjs self-heal iterates all hook types in settings.json", () => {
-    // Must NOT be scoped to only PreToolUse
-    // Old pattern: settings.hooks?.PreToolUse (only one type)
-    // New pattern: iterates Object.keys(settings.hooks) or similar
-    const selfHealSection = PRETOOLUSE_SOURCE.slice(
-      PRETOOLUSE_SOURCE.indexOf("Update hook path"),
-      PRETOOLUSE_SOURCE.indexOf("lazy cleanup"),
-    );
-    // Must iterate all hook types, not just PreToolUse
-    expect(selfHealSection).not.toContain("hooks?.PreToolUse");
-    expect(selfHealSection).toMatch(/Object\.keys|for\s*\(\s*const\s+\w+\s+(of|in)\s+.*hooks/);
+  test("pretooluse.mjs no longer mutates settings.json from runtime hot path (#415)", () => {
+    // v1.0.107 had a destructive `entries.filter(e => !e.hooks?.some(isCtxMode))`
+    // block that wiped co-located user hooks. Removed in v1.0.108 — settings.json
+    // mutation must only happen at install/upgrade time via configureAllHooks().
+    expect(PRETOOLUSE_SOURCE).not.toContain("hooks.json owns hook registration");
+    expect(PRETOOLUSE_SOURCE).not.toMatch(/entries\.filter\([^)]*!entry\.hooks\?\.some/);
   });
 
-  test("pretooluse.mjs self-heal fixes all context-mode hook scripts", () => {
-    const selfHealSection = PRETOOLUSE_SOURCE.slice(
-      PRETOOLUSE_SOURCE.indexOf("Update hook path"),
-      PRETOOLUSE_SOURCE.indexOf("lazy cleanup"),
-    );
-    // Must match any .mjs hook script, not just pretooluse.mjs
-    expect(selfHealSection).toMatch(/\.mjs/);
-    expect(selfHealSection).toContain("context-mode");
+  test("pretooluse.mjs legacy stale-path rewrite still iterates ALL hook types (#187)", () => {
+    // The legacy else-branch (rewrites stale context-mode hook paths to current
+    // version dir when hooks.json is absent) must cover all hook types, not just
+    // PreToolUse — that was the original #187 fix and remains intact.
+    expect(PRETOOLUSE_SOURCE).not.toContain("settings.hooks?.PreToolUse");
+    expect(PRETOOLUSE_SOURCE).toMatch(/for\s*\(\s*const\s+hookType\s+of\s+Object\.keys/);
   });
 });
 
@@ -1193,7 +1335,11 @@ describe("Cursor CLI hook dispatch — stop event", () => {
 describe("Upgrade syncs skills to active install path (#228)", () => {
   const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
   const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
-  const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+  // Bound the slice to the upgrade() function only — without this the slice
+  // includes downstream helpers (statuslineForward, etc.) and assertions like
+  // "no marketplace ref" fire on UNRELATED code added later in the file.
+  const upgradeEnd = CLI_SOURCE.indexOf("\n/* ---", upgradeStart);
+  const upgradeBody = CLI_SOURCE.slice(upgradeStart, upgradeEnd > 0 ? upgradeEnd : undefined);
 
   test("upgrade reads installed_plugins.json to find active install path", () => {
     expect(upgradeBody).toContain("installed_plugins.json");
@@ -1220,5 +1366,180 @@ describe("Upgrade syncs skills to active install path (#228)", () => {
   test("restart hint is adapter-aware (Claude Code gets /reload-plugins)", () => {
     expect(upgradeBody).toContain("reload-plugins");
     expect(upgradeBody).toContain('adapter.name === "Claude Code"');
+  });
+});
+
+// ── better-sqlite3 binding self-heal (#408) ───────────────────────────────
+//
+// On Windows, `npm rebuild better-sqlite3` falls through to node-gyp when
+// prebuild-install is not on cmd.exe PATH, then dies for users without
+// MSVC. The fix is a 3-layer heal (spawn prebuild-install via
+// process.execPath → `npm install better-sqlite3` → actionable stderr)
+// shared between scripts/postinstall.mjs and hooks/ensure-deps.mjs via
+// scripts/heal-better-sqlite3.mjs.
+//
+// Tests in this block cover:
+//   - doctor() in src/cli.ts: clearer hint when FTS5 check fails on a
+//     bindings-missing pattern.
+//   - scripts/postinstall.mjs: calls the shared heal helper after the
+//     existing nvm4w junction logic; mklink /J regression guard.
+//   - scripts/heal-better-sqlite3.mjs: single source of truth — pins the
+//     prebuild-install + npm install + Windows/#408 stderr surface so the
+//     dedupe doesn't silently regress.
+
+describe("better-sqlite3 binding self-heal (#408)", () => {
+  const CLI_SRC = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+  const POSTINSTALL_SRC = readFileSync(resolve(ROOT, "scripts", "postinstall.mjs"), "utf-8");
+  const HEAL_SRC = readFileSync(resolve(ROOT, "scripts", "heal-better-sqlite3.mjs"), "utf-8");
+
+  // Locate doctor()'s FTS5 / SQLite catch branch — the hint lives here.
+  function ftsCatchBlock(): string {
+    const ftsAnchor = CLI_SRC.indexOf("Checking FTS5 / SQLite");
+    expect(ftsAnchor).toBeGreaterThan(-1);
+    const catchIdx = CLI_SRC.indexOf("catch (err", ftsAnchor);
+    expect(catchIdx).toBeGreaterThan(-1);
+    const versionIdx = CLI_SRC.indexOf("Checking versions", catchIdx);
+    expect(versionIdx).toBeGreaterThan(catchIdx);
+    return CLI_SRC.slice(catchIdx, versionIdx);
+  }
+
+  // ── doctor(): bindings-missing hint ────────────────────────────────
+  describe("doctor: bindings-missing hint", () => {
+    it("hint mentions `npm install better-sqlite3` as the primary remedy", () => {
+      // On Windows `npm rebuild` falls through to node-gyp without MSVC,
+      // while `npm install` re-runs prebuild-install and pulls a prebuilt.
+      const block = ftsCatchBlock();
+      expect(block).toContain("npm install better-sqlite3");
+    });
+
+    it("hint explains the Windows / prebuild-install root cause", () => {
+      const block = ftsCatchBlock();
+      const mentionsRootCause =
+        /prebuild-install/i.test(block) || /Windows/i.test(block);
+      expect(mentionsRootCause).toBe(true);
+    });
+
+    it("retains `npm rebuild better-sqlite3` as a non-Windows fallback", () => {
+      // Existing rebuild hint is still valid on Linux/macOS where the
+      // toolchain is present. The fix only augments — does not delete.
+      const block = ftsCatchBlock();
+      expect(block).toContain("npm rebuild better-sqlite3");
+    });
+
+    it("bindings-error detection branches on the bindings error message", () => {
+      // Hint must be conditional on the actual bindings failure
+      // signature (`Could not locate the bindings file` / `bindings`),
+      // otherwise it would spam the install hint for unrelated FTS5 errors.
+      const block = ftsCatchBlock();
+      const detectsBindingsError =
+        /bindings file/i.test(block) || /\bbindings\b/.test(block);
+      expect(detectsBindingsError).toBe(true);
+    });
+  });
+
+  // ── scripts/postinstall.mjs: delegates to shared helper ────────────
+  describe("postinstall.mjs", () => {
+    it("imports the shared heal helper", () => {
+      // After dedupe, the inline 3-layer heal is gone — replaced by an
+      // import + call to the shared helper. Match either bare or
+      // explicit-extension import path.
+      const importsHelper = /from\s+["']\.\/heal-better-sqlite3(?:\.mjs)?["']/.test(POSTINSTALL_SRC);
+      expect(importsHelper).toBe(true);
+      expect(POSTINSTALL_SRC).toContain("healBetterSqlite3Binding");
+    });
+
+    it("calls healBetterSqlite3Binding(pkgRoot) after the nvm4w junction logic", () => {
+      // Order matters: the junction fix must run first so the heal can
+      // resolve prebuild-install through the correct node_modules path.
+      const junctionIdx = POSTINSTALL_SRC.indexOf("mklink /J");
+      expect(junctionIdx).toBeGreaterThan(-1);
+      const callIdx = POSTINSTALL_SRC.indexOf("healBetterSqlite3Binding(");
+      expect(callIdx).toBeGreaterThan(junctionIdx);
+    });
+
+    it("existing Windows nvm4w junction logic (mklink /J) remains intact", () => {
+      // Regression guard — Slice 3 must not have wiped the unrelated
+      // Windows install fix.
+      expect(/mklink\s+\/J/.test(POSTINSTALL_SRC)).toBe(true);
+    });
+  });
+
+  // ── scripts/heal-better-sqlite3.mjs: single source of truth ────────
+  describe("heal-better-sqlite3.mjs (shared helper)", () => {
+    it("exports healBetterSqlite3Binding", () => {
+      expect(/export\s+function\s+healBetterSqlite3Binding\s*\(/.test(HEAL_SRC)).toBe(true);
+    });
+
+    it("contains all three heal layers in one place (dedupe guarantee)", () => {
+      // Layer A — prebuild-install via process.execPath
+      expect(HEAL_SRC).toContain("prebuild-install");
+      expect(HEAL_SRC).toContain("process.execPath");
+      // Layer B — npm install fallback (NOT npm rebuild)
+      expect(/install\s+better-sqlite3/.test(HEAL_SRC)).toBe(true);
+      // Layer C — actionable stderr with Windows / #408 context
+      const mentionsContext =
+        /#408/.test(HEAL_SRC) ||
+        (/Windows/i.test(HEAL_SRC) && /better-sqlite3/.test(HEAL_SRC));
+      expect(mentionsContext).toBe(true);
+      const writesStderr =
+        /process\.stderr\.write\s*\(/.test(HEAL_SRC) ||
+        /console\.(error|warn)\s*\(/.test(HEAL_SRC);
+      expect(writesStderr).toBe(true);
+    });
+
+    it("ships in npm package (listed in package.json files array)", () => {
+      const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+      expect(pkg.files).toContain("scripts/heal-better-sqlite3.mjs");
+    });
+
+    it("never throws — all layers wrapped in try/catch (best-effort posture)", () => {
+      // Outer try/catch around the whole function body protects callers
+      // (postinstall + ensure-deps) from blocking on a heal failure.
+      expect(/function\s+healBetterSqlite3Binding[\s\S]{0,200}?try\s*\{/.test(HEAL_SRC)).toBe(true);
+    });
+  });
+});
+
+// ── Upgrade flow: skip npm rebuild when binding present (v1.0.110 fix) ──
+//
+// `/ctx-upgrade` previously ran `npm rebuild better-sqlite3` unconditionally
+// after `npm install --production`. That rebuild's internal prebuild-install
+// spawn raced with the npm install tree-prune and intermittently failed
+// resolving `rc/index` — printing a scary "Native addon rebuild warning"
+// even though the binding from npm install was already healthy. Fix: pre-
+// check `existsSync(better_sqlite3.node)` and skip the rebuild when present;
+// otherwise delegate to the same `healBetterSqlite3Binding` helper used by
+// postinstall + ensure-deps so all three sites share one battle-tested path.
+//
+// Repro context: macOS upgrade 2026-05-04 (Mert), zero binding-functional
+// regression but cosmetic stderr noise + yellow warning that erodes trust.
+
+describe("Upgrade rebuild guard (v1.0.110 — skip npm rebuild when binding present)", () => {
+  const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
+  const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+  const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+  it("guards npm rebuild with existsSync check on better_sqlite3.node", () => {
+    // A guard must sit on the same code path that calls `npm rebuild
+    // better-sqlite3` so the rebuild is skipped when the binding already
+    // works. Look for an existsSync call referencing the binding within
+    // the rebuild block.
+    const rebuildStartIdx = upgradeBody.indexOf("Rebuilding native addons");
+    expect(rebuildStartIdx).toBeGreaterThan(-1);
+    const region = upgradeBody.slice(
+      Math.max(0, rebuildStartIdx - 600),
+      rebuildStartIdx + 800,
+    );
+    expect(region).toMatch(/better_sqlite3\.node/);
+    expect(region).toMatch(/existsSync\(/);
+  });
+
+  it("delegates to healBetterSqlite3Binding when binding is missing", () => {
+    // Single source of truth — when a heal IS needed, use the shared
+    // helper (PR #410) instead of raw `npm rebuild`. Eliminates the
+    // npm-internal prebuild-install / rc resolution race.
+    const rebuildStartIdx = upgradeBody.indexOf("Rebuilding native addons");
+    const region = upgradeBody.slice(rebuildStartIdx, rebuildStartIdx + 1500);
+    expect(region).toContain("healBetterSqlite3Binding");
   });
 });

@@ -49,7 +49,14 @@ function baseReport(): FullReport {
 }
 
 function emptyLifetime(): LifetimeStats {
-  return { totalEvents: 0, totalSessions: 0, autoMemoryCount: 0, autoMemoryProjects: 0, autoMemoryByPrefix: {} };
+  return {
+    totalEvents: 0,
+    totalSessions: 0,
+    autoMemoryCount: 0,
+    autoMemoryProjects: 0,
+    autoMemoryByPrefix: {},
+    categoryCounts: {},
+  };
 }
 
 describe("Opus pricing", () => {
@@ -111,5 +118,58 @@ describe("formatReport — Bugs #5/#6/#7/#8", () => {
     expect(text).toMatch(/18 preferences learned/);
     expect(text).toMatch(/across 6 projects/);
     expect(text).toMatch(/feedback\s+7/);
+  });
+
+  // ── Cycle 1: Auto-memory must include proportional bars (Mert: "no bars") ──
+  test("auto-memory rows include proportional █ bars", () => {
+    const text = formatReport(baseReport(), "1.0.103", null, {
+      lifetime: {
+        totalEvents: 160,
+        totalSessions: 40,
+        autoMemoryCount: 22,
+        autoMemoryProjects: 5,
+        autoMemoryByPrefix: { project: 11, memory: 6, feedback: 3, user: 1, reference: 1 },
+      },
+    });
+    // Must have bar characters in the auto-memory block.
+    expect(text).toMatch(/Auto-memory[\s\S]*?█/);
+    // Largest entry (project=11) bar must be wider than smallest (reference=1).
+    // Capture each row's bar width by counting █ chars.
+    const projectBar = (text.match(/^\s+project\s+\d+\s+(█+)/m) ?? [])[1] ?? "";
+    const referenceBar = (text.match(/^\s+reference\s+\d+\s+(█+)/m) ?? [])[1] ?? "";
+    expect(projectBar.length).toBeGreaterThan(0);
+    expect(referenceBar.length).toBeGreaterThan(0);
+    expect(projectBar.length).toBeGreaterThan(referenceBar.length);
+  });
+
+  // ── Cycle 2: Persistent memory bar block must use lifetime category counts ──
+  // Aggregated across every SessionDB so the bars are never silently empty
+  // when a fresh project's local DB has no events yet.
+  test("persistent memory bars render from lifetime.categoryCounts when project DB is empty", () => {
+    const fresh: FullReport = {
+      ...baseReport(),
+      projectMemory: {
+        total_events: 0, // fresh project — no local events yet
+        session_count: 0,
+        by_category: [],
+      },
+    };
+    const text = formatReport(fresh, "1.0.103", null, {
+      lifetime: {
+        totalEvents: 16_300,
+        totalSessions: 489,
+        autoMemoryCount: 0,
+        autoMemoryProjects: 0,
+        autoMemoryByPrefix: {},
+        categoryCounts: { file: 8000, cwd: 5000, rule: 2000, git: 1000, env: 300 },
+      },
+    });
+    // Lifetime header still present.
+    expect(text).toMatch(/events.*sessions.*saved lifetime/);
+    // Bar block now populated from lifetime categoryCounts.
+    expect(text).toMatch(/Files tracked/);
+    expect(text).toMatch(/Working directory/);
+    // Must contain bar characters under the persistent memory header.
+    expect(text).toMatch(/Persistent memory[\s\S]*?Files tracked[\s\S]*?█/);
   });
 });

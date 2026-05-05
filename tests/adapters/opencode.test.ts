@@ -28,12 +28,12 @@ describe("OpenCodeAdapter", () => {
   // ── Capabilities ──────────────────────────────────────
 
   describe("capabilities", () => {
-    it("sessionStart is false", () => {
-      expect(adapter.capabilities.sessionStart).toBe(false);
+    it("sessionStart is true", () => {
+      expect(adapter.capabilities.sessionStart).toBe(true);
     });
 
-    it("canInjectSessionContext is false", () => {
-      expect(adapter.capabilities.canInjectSessionContext).toBe(false);
+    it("canInjectSessionContext is true", () => {
+      expect(adapter.capabilities.canInjectSessionContext).toBe(true);
     });
 
     it("preToolUse and postToolUse are true", () => {
@@ -452,8 +452,8 @@ describe("OpenCodeAdapter for KiloCode", () => {
 
   describe("capabilities", () => {
     it("has same capabilities as OpenCode", () => {
-      expect(adapter.capabilities.sessionStart).toBe(false);
-      expect(adapter.capabilities.canInjectSessionContext).toBe(false);
+      expect(adapter.capabilities.sessionStart).toBe(true);
+      expect(adapter.capabilities.canInjectSessionContext).toBe(true);
       expect(adapter.capabilities.preToolUse).toBe(true);
       expect(adapter.capabilities.postToolUse).toBe(true);
       expect(adapter.paradigm).toBe("ts-plugin");

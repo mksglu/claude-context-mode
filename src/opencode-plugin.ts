@@ -287,7 +287,7 @@ async function createContextModePlugin(ctx: PluginContext) {
 
       let decision;
       try {
-        decision = routing.routePreToolUse(toolName, toolInput, projectDir, getPlatform());
+        decision = routing.routePreToolUse(toolName, toolInput, projectDir, platform);
       } catch {
         return; // Routing failure → allow passthrough
       }
@@ -304,7 +304,10 @@ async function createContextModePlugin(ctx: PluginContext) {
         Object.assign(output.args, decision.updatedInput);
       }
 
-      // "context" action → no-op (OpenCode doesn't support context injection)
+      if (decision.action === "context" && decision.additionalContext) {
+        // Mutate output.args — OpenCode reads the mutated output object
+        output.args.additionalContext = decision.additionalContext;
+      }
     },
 
     // ── PostToolUse: Session event capture ──────────────

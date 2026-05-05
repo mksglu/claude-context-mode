@@ -670,3 +670,141 @@ describe("formatReport", () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// PR-B — Issue #2 (lifetime monotonic) + Issue #3 (PO copy)
+// ─────────────────────────────────────────────────────────
+
+describe("PR-B: stats UX fixes", () => {
+  describe("[Issue #2] lifetime ≥ session (monotonic)", () => {
+    it("footer: lifetime ≥ session when no prior LifetimeStats provided", () => {
+      // Fresh user, first session, real savings — lifetime must NOT show $0.
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 5,
+          total_bytes_returned: 100_000,
+          kept_out: 1_000_000,
+          total_processed: 1_100_000,
+        },
+      });
+      const output = formatReport(report, "1.0.108");
+
+      // Footer pattern: "$X.XX this session  ·  $Y.YY lifetime"
+      const footer = output.match(/\$(\d+\.\d{2})\s+this session\s+·\s+\$(\d+\.\d{2})\s+lifetime/);
+      expect(footer).toBeTruthy();
+      const sessionUsd = parseFloat(footer![1]);
+      const lifetimeUsd = parseFloat(footer![2]);
+
+      expect(sessionUsd).toBeGreaterThan(0);
+      expect(lifetimeUsd).toBeGreaterThanOrEqual(sessionUsd);
+    });
+
+    it("mid-table: 'saved lifetime' line ≥ session $", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 5,
+          total_bytes_returned: 100_000,
+          kept_out: 1_000_000,
+          total_processed: 1_100_000,
+        },
+      });
+      const output = formatReport(report, "1.0.108");
+
+      const sessionMatch = output.match(/\$(\d+\.\d{2})\s+this session/);
+      const midTableMatch = output.match(/~\$(\d+\.\d{2})\s+saved lifetime/);
+
+      expect(sessionMatch).toBeTruthy();
+      expect(midTableMatch).toBeTruthy();
+      const sessionUsd = parseFloat(sessionMatch![1]);
+      const lifetimeUsd = parseFloat(midTableMatch![1]);
+
+      expect(lifetimeUsd).toBeGreaterThanOrEqual(sessionUsd);
+    });
+
+    it("when prior lifetime > session, both render distinct values (footer)", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 1,
+          total_bytes_returned: 50_000,
+          kept_out: 200_000,
+          total_processed: 250_000,
+        },
+      });
+      const output = formatReport(report, "1.0.108", null, {
+        lifetime: {
+          totalEvents: 50_000,
+          totalSessions: 12,
+          autoMemoryCount: 0,
+          autoMemoryProjects: 0,
+          autoMemoryByPrefix: {},
+        },
+      });
+
+      const footer = output.match(/\$(\d+\.\d{2})\s+this session\s+·\s+\$(\d+\.\d{2})\s+lifetime/);
+      expect(footer).toBeTruthy();
+      const sessionUsd = parseFloat(footer![1]);
+      const lifetimeUsd = parseFloat(footer![2]);
+
+      expect(lifetimeUsd).toBeGreaterThan(sessionUsd);
+    });
+  });
+
+  describe("[Issue #3] MCP concurrency PO copy", () => {
+    it("renders 'Parallel I/O' heading and strips mcp__*__ namespace when max_concurrency > 1", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 5,
+          total_bytes_returned: 1000,
+          kept_out: 5000,
+          total_processed: 6000,
+        },
+      });
+      const output = formatReport(report, "1.0.108", null, {
+        mcpUsage: [
+          {
+            tool_name: "mcp__context_mode__ctx_batch_execute",
+            calls: 43,
+            median_concurrency: 3,
+            max_concurrency: 5,
+          } as any,
+        ],
+      });
+
+      expect(output).toContain("Parallel I/O");
+      expect(output).toContain("ctx_batch_execute"); // bare name
+      expect(output).not.toContain("mcp__context_mode__"); // namespace stripped
+      expect(output).not.toContain("MCP concurrency usage"); // engineer-speak gone
+      expect(output).not.toContain("median="); // engineer-speak gone
+    });
+
+    it("hides MCP section entirely when max_concurrency ≤ 1 (no false parallelism claim)", () => {
+      const report = makeReport({
+        savings: {
+          ...makeReport().savings,
+          total_calls: 1,
+          total_bytes_returned: 100,
+          kept_out: 200,
+          total_processed: 300,
+        },
+      });
+      const output = formatReport(report, "1.0.108", null, {
+        mcpUsage: [
+          {
+            tool_name: "mcp__context_mode__ctx_search",
+            calls: 5,
+            median_concurrency: 1,
+            max_concurrency: 1,
+          } as any,
+        ],
+      });
+
+      expect(output).not.toContain("Parallel I/O");
+      expect(output).not.toContain("MCP concurrency usage");
+      expect(output).not.toContain("median=");
+    });
+  });
+});

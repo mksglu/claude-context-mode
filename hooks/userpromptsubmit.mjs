@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-import "./suppress-stderr.mjs";
-import "./ensure-deps.mjs";
 /**
  * UserPromptSubmit hook for context-mode session continuity.
  *
@@ -8,71 +6,84 @@ import "./ensure-deps.mjs";
  * point where the user left off after compact or session restart.
  *
  * Must be fast (<10ms). Just a single SQLite write.
+ *
+ * Crash-resilience: wrapped via runHook (#414) — module loads happen
+ * dynamically so missing deps log + exit 0 instead of MODULE_NOT_FOUND.
  */
 
-import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir } from "./session-helpers.mjs";
-import { createSessionLoaders, attributeAndInsertEvents } from "./session-loaders.mjs";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { runHook } from "./run-hook.mjs";
 
-const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
-const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
+await runHook(async () => {
+  const {
+    readStdin,
+    parseStdin,
+    getSessionId,
+    getSessionDBPath,
+    getInputProjectDir,
+  } = await import("./session-helpers.mjs");
+  const { createSessionLoaders, attributeAndInsertEvents } = await import("./session-loaders.mjs");
+  const { dirname } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
 
-try {
-  const raw = await readStdin();
-  const input = parseStdin(raw);
-  const projectDir = getInputProjectDir(input);
+  const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
+  const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoaders(HOOK_DIR);
 
-  const prompt = input.prompt ?? input.message ?? "";
-  const trimmed = (prompt || "").trim();
+  try {
+    const raw = await readStdin();
+    const input = parseStdin(raw);
+    const projectDir = getInputProjectDir(input);
 
-  // Skip system-generated messages — only capture genuine user prompts
-  const isSystemMessage = trimmed.startsWith("<task-notification>")
-    || trimmed.startsWith("<system-reminder>")
-    || trimmed.startsWith("<context_guidance>")
-    || trimmed.startsWith("<tool-result>");
+    const prompt = input.prompt ?? input.message ?? "";
+    const trimmed = (prompt || "").trim();
 
-  if (trimmed.length > 0 && !isSystemMessage) {
-    const { SessionDB } = await loadSessionDB();
-    const { extractUserEvents } = await loadExtract();
-    const { resolveProjectAttributions } = await loadProjectAttribution();
-    const dbPath = getSessionDBPath();
-    const db = new SessionDB({ dbPath });
-    const sessionId = getSessionId(input);
+    // Skip system-generated messages — only capture genuine user prompts
+    const isSystemMessage = trimmed.startsWith("<task-notification>")
+      || trimmed.startsWith("<system-reminder>")
+      || trimmed.startsWith("<context_guidance>")
+      || trimmed.startsWith("<tool-result>");
 
-    db.ensureSession(sessionId, projectDir);
+    if (trimmed.length > 0 && !isSystemMessage) {
+      const { SessionDB } = await loadSessionDB();
+      const { extractUserEvents } = await loadExtract();
+      const { resolveProjectAttributions } = await loadProjectAttribution();
+      const dbPath = getSessionDBPath();
+      const db = new SessionDB({ dbPath });
+      const sessionId = getSessionId(input);
 
-    // 1. Always save the raw prompt
-    const promptEvent = {
-      type: "user_prompt",
-      category: "user-prompt",
-      data: prompt,
-      priority: 1,
-    };
-    const promptAttributions = attributeAndInsertEvents(
-      db, sessionId, [promptEvent], input, projectDir, "UserPromptSubmit", resolveProjectAttributions,
-    );
+      db.ensureSession(sessionId, projectDir);
 
-    // 2. Extract decision/role/intent/data from user message
-    const userEvents = extractUserEvents(trimmed);
-    // Feed lastKnownProjectDir from the first attribution into the second batch
-    const savedLastKnown = promptAttributions[0]?.projectDir || null;
-    const sessionStats = db.getSessionStats(sessionId);
-    const lastKnownProjectDir = typeof db.getLatestAttributedProjectDir === "function"
-      ? db.getLatestAttributedProjectDir(sessionId)
-      : null;
-    const userAttributions = resolveProjectAttributions(userEvents, {
-      sessionOriginDir: sessionStats?.project_dir || projectDir,
-      inputProjectDir: projectDir,
-      workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
-      lastKnownProjectDir: savedLastKnown || lastKnownProjectDir,
-    });
-    for (let i = 0; i < userEvents.length; i++) {
-      db.insertEvent(sessionId, userEvents[i], "UserPromptSubmit", userAttributions[i]);
+      // 1. Always save the raw prompt
+      const promptEvent = {
+        type: "user_prompt",
+        category: "user-prompt",
+        data: prompt,
+        priority: 1,
+      };
+      const promptAttributions = attributeAndInsertEvents(
+        db, sessionId, [promptEvent], input, projectDir, "UserPromptSubmit", resolveProjectAttributions,
+      );
+
+      // 2. Extract decision/role/intent/data from user message
+      const userEvents = extractUserEvents(trimmed);
+      // Feed lastKnownProjectDir from the first attribution into the second batch
+      const savedLastKnown = promptAttributions[0]?.projectDir || null;
+      const sessionStats = db.getSessionStats(sessionId);
+      const lastKnownProjectDir = typeof db.getLatestAttributedProjectDir === "function"
+        ? db.getLatestAttributedProjectDir(sessionId)
+        : null;
+      const userAttributions = resolveProjectAttributions(userEvents, {
+        sessionOriginDir: sessionStats?.project_dir || projectDir,
+        inputProjectDir: projectDir,
+        workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
+        lastKnownProjectDir: savedLastKnown || lastKnownProjectDir,
+      });
+      for (let i = 0; i < userEvents.length; i++) {
+        db.insertEvent(sessionId, userEvents[i], "UserPromptSubmit", userAttributions[i]);
+      }
+
+      db.close();
     }
-
-    db.close();
+  } catch {
+    // UserPromptSubmit must never block the session — silent fallback
   }
-} catch {
-  // UserPromptSubmit must never block the session — silent fallback
-}
+});

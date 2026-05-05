@@ -22,10 +22,27 @@
 import { existsSync, copyFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
+
+// Shared 3-layer heal helper (also used by scripts/postinstall.mjs).
+// Lazy-loaded via dynamic import so older installs and synthetic test
+// harnesses (e.g. tests/session-hooks-smoke) — which don't ship
+// `scripts/heal-better-sqlite3.mjs` — degrade to a no-op instead of
+// crashing the hook with ERR_MODULE_NOT_FOUND. Best-effort posture
+// matches the rest of this module.
+async function healBetterSqlite3Binding(pkgRoot) {
+  try {
+    const helperPath = resolve(__dirname, "..", "scripts", "heal-better-sqlite3.mjs");
+    if (!existsSync(helperPath)) return { healed: false, reason: "helper-missing" };
+    const mod = await import(pathToFileURL(helperPath).href);
+    return mod.healBetterSqlite3Binding(pkgRoot);
+  } catch {
+    return { healed: false, reason: "helper-error" };
+  }
+}
 
 const NATIVE_DEPS = ["better-sqlite3"];
 const NATIVE_BINARIES = {
@@ -46,7 +63,7 @@ function hasModernSqlite() {
   return major > 22 || (major === 22 && minor >= 5);
 }
 
-export function ensureDeps() {
+export async function ensureDeps() {
   // Bun ships bun:sqlite and never needs better-sqlite3
   if (typeof globalThis.Bun !== "undefined") return;
   for (const pkg of NATIVE_DEPS) {
@@ -62,14 +79,11 @@ export function ensureDeps() {
         });
       } catch { /* best effort — hook degrades gracefully without DB */ }
     } else if (!existsSync(resolve(pkgDir, ...NATIVE_BINARIES[pkg]))) {
-      // Package installed but native binary missing (e.g., npm ignore-scripts=true)
-      try {
-        execSync(`${process.platform === "win32" ? "npm.cmd" : "npm"} rebuild ${pkg} --ignore-scripts=false`, {
-          cwd: root,
-          stdio: "pipe",
-          timeout: 120000,
-        });
-      } catch { /* best effort — hook degrades gracefully without DB */ }
+      // Package installed but native binary missing (e.g., npm ignore-scripts=true,
+      // or Windows where `npm rebuild` falls through to node-gyp without MSVC — #408).
+      // Delegate to the shared 3-layer heal (single source of truth, also used by
+      // scripts/postinstall.mjs).
+      try { await healBetterSqlite3Binding(root); } catch { /* helper already best-effort */ }
     }
   }
 }
@@ -188,6 +202,8 @@ export function codesignBinary(binaryPath) {
   }
 }
 
-// Auto-run on import (like suppress-stderr.mjs)
-ensureDeps();
+// Auto-run on import (like suppress-stderr.mjs).
+// Top-level await ensures the heal completes before the importer's next
+// statement runs (which is typically `new Database(...)`).
+await ensureDeps();
 ensureNativeCompat(root);

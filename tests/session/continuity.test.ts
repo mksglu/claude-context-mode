@@ -110,6 +110,129 @@ describe("SessionStart Hook", () => {
   });
 });
 
+// ── SessionStart Hook — /resume support (#413) ───────────────────────
+//
+// User reports `/resume` doesn't restore context, while `--continue` does.
+// Both fire `source: "resume"` per CC docs. The gap: when the resumed session
+// is compacted (or CC issues a fresh session_id for /resume), live events for
+// that session_id are gone — they live in `session_resume.snapshot`. The
+// resume branch must fall back to `claimLatestUnconsumedResume` (the same
+// pattern OpenCode/OpenClaw plugins already use).
+
+describe("SessionStart Hook — /resume snapshot fallback (#413)", () => {
+  let tmpHome: string;
+  let dbPath: string;
+  let projectDir: string;
+  const SNAPSHOT_BODY =
+    '<session_summary events="42">Prior session context for /resume test (#413).</session_summary>';
+
+  function runHookIn(input: Record<string, unknown>) {
+    const result = spawnSync("node", [HOOK_PATH], {
+      input: JSON.stringify(input),
+      encoding: "utf-8",
+      timeout: 30_000,
+      env: {
+        ...process.env,
+        HOME: tmpHome,
+        USERPROFILE: tmpHome,           // Windows compat
+        CLAUDE_PROJECT_DIR: projectDir,
+      },
+    });
+    return {
+      exitCode: result.status ?? 1,
+      stdout: (result.stdout ?? "").trim(),
+      stderr: (result.stderr ?? "").trim(),
+    };
+  }
+
+  let prevHome: string | undefined;
+  let prevUserProfile: string | undefined;
+  let prevProjectDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "ctxmode-413-"));
+    projectDir = mkdtempSync(join(tmpdir(), "ctxmode-413-proj-"));
+
+    // Match the env the hook subprocess sees BEFORE computing dbPath, so the
+    // path we seed and the path the hook reads stay in lockstep.
+    prevHome = process.env.HOME;
+    prevUserProfile = process.env.USERPROFILE;
+    prevProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    const { getSessionDBPath } = await import("../../hooks/session-helpers.mjs");
+    dbPath = getSessionDBPath();
+
+    const { mkdirSync } = await import("node:fs");
+    const { dirname: d } = await import("node:path");
+    mkdirSync(d(dbPath), { recursive: true });
+
+    const { SessionDB } = await import("../../src/session/db.js");
+    const db = new SessionDB({ dbPath });
+    db.upsertResume("prior-session-uuid", SNAPSHOT_BODY, 42);
+    db.close();
+  });
+
+  afterEach(() => {
+    rmSync(tmpHome, { recursive: true, force: true });
+    rmSync(projectDir, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevUserProfile;
+    if (prevProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prevProjectDir;
+  });
+
+  it("falls back to snapshot when resumed session has no live events", () => {
+    // /resume creates a fresh active session_id whose events table is empty —
+    // the prior snapshot must still surface.
+    const result = runHookIn({
+      hook_event_name: "SessionStart",
+      source: "resume",
+      session_id: "fresh-resume-uuid",
+      cwd: projectDir,
+    });
+
+    assert.equal(result.exitCode, 0, `exit ${result.exitCode}, stderr: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    assert.ok(
+      ctx.includes(SNAPSHOT_BODY),
+      `Expected snapshot fallback to inject snapshot body, got:\n${ctx.slice(0, 500)}`,
+    );
+  });
+
+  it("prefers live events over snapshot when both exist (--continue path stays correct)", async () => {
+    // Seed live events for the SAME session_id we'll resume — the hook must
+    // pick the live-events branch (buildSessionDirective wrapper) and skip the
+    // raw snapshot append. Guards against regressing --continue back to
+    // raw-snapshot output once the fallback exists.
+    const { SessionDB } = await import("../../src/session/db.js");
+    const liveDb = new SessionDB({ dbPath });
+    const ACTIVE_ID = "active-with-live-events";
+    liveDb.insertEvent(ACTIVE_ID, {
+      type: "task", category: "task", priority: 1,
+      data: JSON.stringify({ subject: "live event canary" }),
+    }, "PreToolUse");
+    liveDb.close();
+
+    const result = runHookIn({
+      hook_event_name: "SessionStart",
+      source: "resume",
+      session_id: ACTIVE_ID,
+      cwd: projectDir,
+    });
+
+    assert.equal(result.exitCode, 0, `exit ${result.exitCode}, stderr: ${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    const ctx = parsed.hookSpecificOutput.additionalContext;
+    assert.ok(
+      !ctx.includes(SNAPSHOT_BODY),
+      "Snapshot fallback must NOT fire when live events exist for the resumed session",
+    );
+  });
+});
+
 // ── renderTaskState — task completion filtering ──────────────────────
 
 describe("renderTaskState — task completion filtering", () => {

@@ -13,6 +13,7 @@ import { execSync } from "node:child_process";
 import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { healBetterSqlite3Binding } from "./heal-better-sqlite3.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
@@ -146,3 +147,29 @@ if (process.platform === "win32" && process.env.npm_config_global === "true") {
     // Best effort — don't block install. User can use npx as fallback.
   }
 }
+
+// ── 3. Native binding self-heal — better-sqlite3 (#408) ──────────────
+// On Windows, `npm rebuild` falls through to node-gyp without MSVC; bypass
+// that by spawning prebuild-install directly. Cross-platform safety net —
+// the binding can also go missing on macOS/Linux when prebuilds are stale
+// or the install was interrupted.
+//
+// Logic lives in scripts/heal-better-sqlite3.mjs (shared with
+// hooks/ensure-deps.mjs so there's one source of truth).
+try { healBetterSqlite3Binding(pkgRoot); } catch { /* best effort — don't block install */ }
+
+// ── 4. Hook normalization at install time (#414) ─────────────────────
+// hooks/hooks.json + .claude-plugin/plugin.json ship with `${CLAUDE_PLUGIN_ROOT}`
+// + bare `node` command. On Windows + Claude Code that combination triggers
+// `cjs/loader:1479 MODULE_NOT_FOUND` (placeholder mangling, MSYS path issues,
+// PATH lookup failure). start.mjs normalizes on every MCP boot, but normalizing
+// here too closes the gap for the very first hook fire after a fresh install
+// (before any MCP server has run).
+try {
+  const { normalizeHooksOnStartup } = await import("../hooks/normalize-hooks.mjs");
+  normalizeHooksOnStartup({
+    pluginRoot: pkgRoot,
+    nodePath: process.execPath,
+    platform: process.platform,
+  });
+} catch { /* best effort — never block install */ }

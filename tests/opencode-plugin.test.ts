@@ -142,6 +142,19 @@ describe("ContextModePlugin", () => {
       );
       expect(result).toBeUndefined();
     });
+
+    it("injects guidance for allowed grep commands", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "before-guidance"));
+
+      const input = { tool: "grep", sessionID: "test-session", callID: "call-4" };
+      const output = { args: { command: "grep hello", additionalContext: undefined } };
+
+      await plugin["tool.execute.before"](input, output);
+
+      // Guidance should be injected as additionalContext in args
+      expect(output.args).toHaveProperty("additionalContext");
+      expect(output.args.additionalContext).toContain("<context_guidance>");
+    });
   });
 
   // ── tool.execute.after ────────────────────────────────

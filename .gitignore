@@ -20,3 +20,5 @@ context-mode-guidance-*/
 .claude-worktrees/
 .vibetree/
 .cw/
+/.cocoindex_code/
+/.kilo/

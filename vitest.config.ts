@@ -24,6 +24,5 @@ export default defineConfig({
     // Without this, Ubuntu CI consistently fails with "Worker exited unexpectedly"
     // even though all tests pass.
     teardownTimeout: isCI ? 15_000 : 5_000,
-    forceExit: isCI,
   },
 });

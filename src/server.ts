@@ -30,6 +30,7 @@ import {
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
 import { getWorktreeSuffix, SessionDB } from "./session/db.js";
+import { persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
@@ -188,6 +189,19 @@ function hashProjectDir(): string {
   const projectDir = getProjectDir();
   const normalized = projectDir.replace(/\\/g, "/");
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+}
+
+/**
+ * Resolve the per-project SessionDB path the way 4742160 originally did
+ * for `persistToolCallCounter`. Centralized so the write-back, the
+ * restore-on-startup, and any future SessionDB consumer all hash to the
+ * same file under worktree isolation.
+ */
+function getSessionDbPath(): string {
+  return join(
+    getSessionDir(),
+    `${hashProjectDir()}${getWorktreeSuffix()}.db`,
+  );
 }
 
 /**
@@ -375,10 +389,14 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   // Persist a sidecar JSON snapshot for the statusline — read at ~3-5 Hz by
   // bin/statusline.mjs (and any external dashboard) so they don't have to
   // open the SQLite database. Throttled inside persistStats() (500ms) so
-  // it's safe to call on every response. The b392c2f concurrency refactor
-  // dropped the SessionDB tool-call counter (`persistToolCallCounter`); we
-  // keep persistStats here because the statusline depends on it.
+  // it's safe to call on every response.
   persistStats();
+
+  // Persist to SessionDB so counters survive process restart, --continue,
+  // upgrade. Re-introduces the write path 4742160 added and b392c2f dropped.
+  // setImmediate keeps this off the response hot path; the helper itself
+  // is best-effort (never throws).
+  setImmediate(() => persistToolCallCounter(getSessionDbPath(), toolName, bytes));
   return response;
 }
 
@@ -3104,6 +3122,28 @@ async function main() {
     }
   } catch { /* best effort — _detectedAdapter stays null, falls back to .claude */ }
 
+  // Restore tool-call counters from SessionDB BEFORE the heartbeat fires
+  // so the very first persistStats() carries the prior PID's totals into
+  // the sidecar JSON the statusline reads. Otherwise `/ctx-upgrade` flashes
+  // `0 calls / $0.00` until the user makes another MCP tool call. Wrapped
+  // in try/catch — a stats-restore failure must never block server startup.
+  try {
+    const restored = restoreSessionStats(getSessionDbPath());
+    if (restored) {
+      for (const [tool, count] of Object.entries(restored.calls)) {
+        sessionStats.calls[tool] = count;
+      }
+      for (const [tool, bytes] of Object.entries(restored.bytesReturned)) {
+        sessionStats.bytesReturned[tool] = bytes;
+      }
+      // Anchor uptime_ms to the original session start so `/ctx-upgrade`
+      // doesn't reset the "session age" the statusline shows.
+      if (restored.sessionStart > 0) {
+        sessionStats.sessionStart = restored.sessionStart;
+      }
+    }
+  } catch { /* best effort — never block startup on a stats restore failure */ }
+
   // Non-blocking version check — result stored for trackResponse warnings.
   // First fetch at startup, then refresh every hour so long-running sessions
   // (some users keep the MCP server alive 24h+) catch new releases without a
@@ -3113,6 +3153,14 @@ async function main() {
   setInterval(() => {
     fetchLatestVersion().then(v => { if (v !== "unknown") _latestVersion = v; });
   }, 60 * 60 * 1000).unref();
+
+  // Stats heartbeat — keep the statusline truthful while the user works in
+  // tools other than MCP (Bash/Read/Edit during long sessions or post-/compact
+  // pauses). Without this, stats.updated_at only advances on MCP tool calls,
+  // so bin/statusline.mjs falsely flips to "stale — restart to resume saving"
+  // even though the server is alive. Heartbeat refreshes updated_at every 60s;
+  // statusline staleness threshold is 30min (cliff is 30 missed ticks away).
+  setInterval(() => persistStats(), 60_000).unref();
 
   console.error(`Context Mode MCP server v${VERSION} running on stdio`);
   console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
