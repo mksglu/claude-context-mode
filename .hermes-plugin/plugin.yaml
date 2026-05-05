@@ -1,0 +1,6 @@
+name: hermes-context-mode
+description: "Context Mode integration for Hermes Agent — blocks curl/wget, enforces sandbox routing, tracks context savings."
+version: 1.0.0
+hooks:
+  - pre_tool_call
+  - pre_llm_call
