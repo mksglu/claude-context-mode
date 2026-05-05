@@ -185,8 +185,7 @@ function resolveProjectPath(filePath: string): string {
  * Normalizes Windows backslashes before hashing so the same project
  * always produces the same hash regardless of path separator.
  */
-function hashProjectDir(): string {
-  const projectDir = getProjectDir();
+function hashProjectDir(projectDir = getProjectDir()): string {
   const normalized = projectDir.replace(/\\/g, "/");
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
@@ -198,9 +197,10 @@ function hashProjectDir(): string {
  * same file under worktree isolation.
  */
 function getSessionDbPath(): string {
+  const projectDir = getProjectDir();
   return join(
     getSessionDir(),
-    `${hashProjectDir()}${getWorktreeSuffix()}.db`,
+    `${hashProjectDir(projectDir)}${getWorktreeSuffix(projectDir)}.db`,
   );
 }
 
@@ -1652,7 +1652,8 @@ server.registerTool(
       if (sort === "timeline") {
         try {
           const sessionsDir = getSessionDir();
-          const dbFile = join(sessionsDir, `${hashProjectDir()}${getWorktreeSuffix()}.db`);
+          const projectDir = getProjectDir();
+          const dbFile = join(sessionsDir, `${hashProjectDir(projectDir)}${getWorktreeSuffix(projectDir)}.db`);
           if (existsSync(dbFile)) {
             timelineDB = new SessionDB({ dbPath: dbFile });
           }
@@ -2493,8 +2494,9 @@ server.registerTool(
     // ONE call, ONE source — AnalyticsEngine.queryAll()
     let text: string;
     try {
-      const dbHash = hashProjectDir();
-      const worktreeSuffix = getWorktreeSuffix();
+      const projectDir = getProjectDir();
+      const dbHash = hashProjectDir(projectDir);
+      const worktreeSuffix = getWorktreeSuffix(projectDir);
       const sessionDbPath = join(
         getSessionDir(),
         `${dbHash}${worktreeSuffix}.db`
@@ -2801,8 +2803,9 @@ server.registerTool(
 
     // 3. Wipe session events DB (analytics, metadata, resume snapshots)
     try {
-      const dbHash = hashProjectDir();
-      const worktreeSuffix = getWorktreeSuffix();
+      const projectDir = getProjectDir();
+      const dbHash = hashProjectDir(projectDir);
+      const worktreeSuffix = getWorktreeSuffix(projectDir);
       const sessDir = getSessionDir();
       const sessDbPath = join(sessDir, `${dbHash}${worktreeSuffix}.db`);
       const eventsPath = join(sessDir, `${dbHash}${worktreeSuffix}-events.md`);
