@@ -154,6 +154,43 @@ function benchTokenDedup(): { dup: number; deduped: number } {
   }
 }
 
+function benchStaleRefreshPrepare(): { adhoc: number; cached: number; rows: number } {
+  // Mirrors the SQL run by ContentStore.#refreshStaleSources on every search()
+  // call when stale-detection is active. Compares ad-hoc db.prepare() per call
+  // (pre-patch behavior) vs reusing a cached PreparedStatement (post-patch).
+  const dbPath = join(tmpdir(), `bench-stale-${Date.now()}.db`);
+  const db = new Database(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE sources (
+        label TEXT PRIMARY KEY,
+        file_path TEXT,
+        content_hash TEXT,
+        indexed_at TEXT
+      );
+    `);
+    const insert = db.prepare(
+      "INSERT INTO sources (label, file_path, content_hash, indexed_at) VALUES (?, ?, ?, ?)",
+    );
+    const now = new Date().toISOString();
+    const rows = 50;
+    for (let i = 0; i < rows; i++) {
+      insert.run(`src-${i}`, `/tmp/file-${i}.txt`, `hash-${i}`, now);
+    }
+    const sql =
+      "SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL";
+    const cachedStmt = db.prepare(sql);
+    // warmup
+    for (let i = 0; i < 200; i++) { db.prepare(sql).all(); cachedStmt.all(); }
+    const adhoc = usPerCall(() => { db.prepare(sql).all(); }, SEARCH_N_ITERS);
+    const cached = usPerCall(() => { cachedStmt.all(); }, SEARCH_N_ITERS);
+    return { adhoc, cached, rows };
+  } finally {
+    db.close();
+    cleanupSearchDB(dbPath);
+  }
+}
+
 function printTable(results: BenchResult[]) {
   console.log(
     "\n| Benchmark                     | Lang       | Avg (ms) | Min (ms) | P50 (ms) | P95 (ms) | Max (ms) |",
@@ -414,6 +451,13 @@ print(f"filtered: {len(filtered)}")
   console.log(`  5× duplicate tokens (pre-dedup) : ${dedup.dup.toFixed(1)} µs/query`);
   console.log(`  1 token (post-dedup)            : ${dedup.deduped.toFixed(1)} µs/query`);
   console.log(`  speedup from dedup              : ${(dedup.dup / dedup.deduped).toFixed(2)}×`);
+
+  const stmt = benchStaleRefreshPrepare();
+  console.log(`\nstale-refresh prepare cache (raw sqlite, ${stmt.rows} sources)`);
+  console.log(`  ad-hoc db.prepare() per call : ${stmt.adhoc.toFixed(2)} µs/call`);
+  console.log(`  cached PreparedStatement     : ${stmt.cached.toFixed(2)} µs/call`);
+  console.log(`  speedup                      : ${(stmt.adhoc / stmt.cached).toFixed(2)}×`);
+  console.log(`  saved per search()           : ${(stmt.adhoc - stmt.cached).toFixed(2)} µs`);
 
   // === Print Summary Table ===
   console.log("\n=== Full Results Table ===");

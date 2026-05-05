@@ -375,6 +375,7 @@ export class ContentStore {
   #stmtCleanupChunks!: PreparedStatement;
   #stmtCleanupChunksTrigram!: PreparedStatement;
   #stmtCleanupSources!: PreparedStatement;
+  #stmtRefreshStaleSources!: PreparedStatement;
 
   // FTS5 optimization: track inserts and optimize periodically to defragment
   // the index. FTS5 b-trees fragment over many insert/delete cycles, degrading
@@ -779,6 +780,11 @@ export class ContentStore {
     );
     this.#stmtCleanupSources = this.#db.prepare(
       "DELETE FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days')",
+    );
+
+    // Stale-source refresh path — runs on every search() call via #refreshStaleSources
+    this.#stmtRefreshStaleSources = this.#db.prepare(
+      "SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL",
     );
   }
 
@@ -1215,9 +1221,7 @@ export class ContentStore {
    */
   #refreshStaleSources(): void {
     this.lastRefreshCount = 0;
-    const sources = this.#db.prepare(
-      "SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL",
-    ).all() as Array<{ label: string; file_path: string; content_hash: string; indexed_at: string }>;
+    const sources = this.#stmtRefreshStaleSources.all() as Array<{ label: string; file_path: string; content_hash: string; indexed_at: string }>;
 
     for (const src of sources) {
       try {

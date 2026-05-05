@@ -184,8 +184,22 @@ export const categoryHints: Record<string, string> = {
 // AnalyticsEngine
 // ─────────────────────────────────────────────────────────
 
+type Stmt = ReturnType<DatabaseAdapter["prepare"]>;
+
 export class AnalyticsEngine {
   private readonly db: DatabaseAdapter;
+
+  // Prepared-statement cache. Lazy-initialized on first call to avoid running
+  // SQL prepare() against a DB that may not be migrated yet at construction.
+  private stmtMcpToolUsage?: Stmt;
+  private stmtLatestSession?: Stmt;
+  private stmtEventTotal?: Stmt;
+  private stmtByCategory?: Stmt;
+  private stmtMeta?: Stmt;
+  private stmtResume?: Stmt;
+  private stmtPreviewRows?: Stmt;
+  private stmtProjectTotals?: Stmt;
+  private stmtProjectByCategory?: Stmt;
 
   /**
    * Create an AnalyticsEngine.
@@ -265,9 +279,10 @@ export class AnalyticsEngine {
   getMcpToolUsage(): McpToolUsageRow[] {
     let rows: Array<{ data: string }>;
     try {
-      rows = this.db.prepare(
+      this.stmtMcpToolUsage ??= this.db.prepare(
         "SELECT data FROM session_events WHERE category = 'mcp_tool_call'",
-      ).all() as Array<{ data: string }>;
+      );
+      rows = this.stmtMcpToolUsage.all() as Array<{ data: string }>;
     } catch {
       return [];
     }
@@ -337,9 +352,10 @@ export class AnalyticsEngine {
    */
   queryAll(runtimeStats: RuntimeStats): FullReport {
     // ── Resolve latest session ID ──
-    const latestSession = this.db.prepare(
+    this.stmtLatestSession ??= this.db.prepare(
       "SELECT session_id FROM session_meta ORDER BY started_at DESC LIMIT 1",
-    ).get() as { session_id: string } | undefined;
+    );
+    const latestSession = this.stmtLatestSession.get() as { session_id: string } | undefined;
     const sid = latestSession?.session_id ?? "";
 
     // ── Runtime savings ──
@@ -386,28 +402,33 @@ export class AnalyticsEngine {
     }
 
     // ── Continuity data (scoped to current session) ──
-    const eventTotal = (this.db.prepare(
+    this.stmtEventTotal ??= this.db.prepare(
       "SELECT COUNT(*) as cnt FROM session_events WHERE session_id = ?",
-    ).get(sid) as { cnt: number }).cnt;
+    );
+    const eventTotal = (this.stmtEventTotal.get(sid) as { cnt: number }).cnt;
 
-    const byCategory = this.db.prepare(
+    this.stmtByCategory ??= this.db.prepare(
       "SELECT category, COUNT(*) as cnt FROM session_events WHERE session_id = ? GROUP BY category ORDER BY cnt DESC",
-    ).all(sid) as Array<{ category: string; cnt: number }>;
+    );
+    const byCategory = this.stmtByCategory.all(sid) as Array<{ category: string; cnt: number }>;
 
-    const meta = this.db.prepare(
+    this.stmtMeta ??= this.db.prepare(
       "SELECT compact_count FROM session_meta WHERE session_id = ?",
-    ).get(sid) as { compact_count: number } | undefined;
+    );
+    const meta = this.stmtMeta.get(sid) as { compact_count: number } | undefined;
     const compactCount = meta?.compact_count ?? 0;
 
-    const resume = this.db.prepare(
+    this.stmtResume ??= this.db.prepare(
       "SELECT event_count, consumed FROM session_resume WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
-    ).get(sid) as { event_count: number; consumed: number } | undefined;
+    );
+    const resume = this.stmtResume.get(sid) as { event_count: number; consumed: number } | undefined;
     const resumeReady = resume ? !resume.consumed : false;
 
     // Build category previews (current session only)
-    const previewRows = this.db.prepare(
+    this.stmtPreviewRows ??= this.db.prepare(
       "SELECT category, type, data FROM session_events WHERE session_id = ? ORDER BY id DESC",
-    ).all(sid) as Array<{ category: string; type: string; data: string }>;
+    );
+    const previewRows = this.stmtPreviewRows.all(sid) as Array<{ category: string; type: string; data: string }>;
 
     const previews = new Map<string, Set<string>>();
     for (const row of previewRows) {
@@ -436,13 +457,15 @@ export class AnalyticsEngine {
     }));
 
     // ── Project-wide persistent memory (all sessions, no session_id filter) ──
-    const projectTotals = this.db.prepare(
+    this.stmtProjectTotals ??= this.db.prepare(
       "SELECT COUNT(*) as cnt, COUNT(DISTINCT session_id) as sessions FROM session_events",
-    ).get() as { cnt: number; sessions: number };
+    );
+    const projectTotals = this.stmtProjectTotals.get() as { cnt: number; sessions: number };
 
-    const projectByCategory = this.db.prepare(
+    this.stmtProjectByCategory ??= this.db.prepare(
       "SELECT category, COUNT(*) as cnt FROM session_events GROUP BY category ORDER BY cnt DESC",
-    ).all() as Array<{ category: string; cnt: number }>;
+    );
+    const projectByCategory = this.stmtProjectByCategory.all() as Array<{ category: string; cnt: number }>;
 
     const projectMemoryByCategory = projectByCategory
       .filter((row) => row.cnt > 0)
