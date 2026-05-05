@@ -1,3 +1,8 @@
+---
+name: UPSTREAM-CREDITS
+description: Attribution document for vendored skills from mattpocock/skills. Not an executable skill.
+---
+
 # Upstream Skill Credits
 
 context-mode vendors a small set of operating-discipline skills authored
