@@ -122,6 +122,112 @@ This gives you all 11 MCP tools without automatic routing. The model can still u
 </details>
 
 <details>
+<summary><strong>Claude Desktop</strong> — MCP-only, no hooks</summary>
+
+**Prerequisites:** Node.js 18+, [Claude Desktop](https://claude.ai/download) installed (macOS or Windows).
+
+> Claude Desktop is the consumer chat app. It's not Claude Code. Claude Code has full hook support (`/plugin marketplace add`, slash commands, `SessionStart`). Claude Desktop is MCP-only — every tool call still works, but routing is "manual paste of CLAUDE.md into a Project's Custom Instructions" instead of automatic. If you can run `/plugin marketplace add`, follow [the Claude Code section](#install) instead.
+
+**Install:**
+
+1. Install context-mode globally:
+
+   ```bash
+   npm install -g context-mode
+   ```
+
+2. Edit Claude Desktop's MCP config:
+   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+   Add the `mcpServers` block (preserve any existing `preferences` block):
+
+   ```json
+   {
+     "mcpServers": {
+       "context-mode": {
+         "command": "context-mode"
+       }
+     }
+   }
+   ```
+
+3. Copy routing instructions. Claude Desktop has no `SessionStart` hook, so the model needs the rules at conversation start:
+
+   ```bash
+   cat node_modules/context-mode/configs/claude-desktop/CLAUDE.md
+   ```
+
+   Paste the output into a Claude Desktop **Project → Custom Instructions** field. Without it, the hooks-free Claude Desktop falls back to raw `Bash`/`Read` for ~40% of operations.
+
+4. Quit Claude Desktop **completely**. The X / close button keeps the MCP server running in the background:
+   - **macOS:** `⌘Q`
+   - **Windows:** right-click tray icon → Quit
+
+   Then reopen.
+
+**Verify:** Open a new conversation, click the MCP / tools icon below the input box — `context-mode` should show all 11 tools. In chat, type `ctx stats`.
+
+**Routing:** Manual via Project Custom Instructions (~60% compliance, similar to Antigravity / Zed). No programmatic interception.
+
+**Limitations vs Claude Code:**
+
+| Feature | Claude Code | Claude Desktop |
+|---|:-:|:-:|
+| MCP tools (all 11) | ✅ | ✅ |
+| `SessionStart` hook | ✅ | ❌ |
+| `PreToolUse` / `PostToolUse` | ✅ | ❌ |
+| `PreCompact` (session continuity across compaction) | ✅ | ❌ |
+| Slash commands (`/context-mode:ctx-stats` etc.) | ✅ | ❌ — type `ctx stats` instead |
+| Plugin marketplace install | ✅ | ❌ — manual JSON edit |
+| Auto-restart on config change | `/reload-plugins` | full quit + reopen |
+
+> `ctx_doctor` may report "Hook script: PASS" — that only verifies hook scripts exist on disk. Claude Desktop never executes them. The status is structural, not a functional guarantee.
+
+<details>
+<summary>Alternative — npx-on-demand (no global install)</summary>
+
+```json
+{
+  "mcpServers": {
+    "context-mode": {
+      "command": "npx",
+      "args": ["-y", "context-mode@latest"]
+    }
+  }
+}
+```
+
+First conversation will be slow (~30-60s) while npm downloads context-mode. Subsequent runs cached. Useful for trying before committing to a global install.
+
+</details>
+
+<details>
+<summary>Troubleshooting</summary>
+
+- **`context-mode` doesn't show in the MCP panel:** check the log
+  ```bash
+  tail -f ~/Library/Logs/Claude/mcp-server-context-mode.log
+  ```
+  Common cause: `command: "context-mode"` is not on Claude Desktop's `PATH`. Replace with the absolute path (e.g. `/opt/homebrew/bin/context-mode` or your NVM path).
+
+- **`better_sqlite3.node was compiled against NODE_MODULE_VERSION X`:** native module ABI mismatch. Switch to the npx-on-demand variant — it rebuilds against the runtime Node version on first use.
+
+- **`ctx_doctor` reports the wrong platform on Claude Desktop:** detection should auto-pick `claude-desktop` from MCP `clientInfo.name="claude-ai"`. If it still shows `claude-code`, set the override explicitly:
+  ```json
+  "context-mode": {
+    "command": "context-mode",
+    "env": { "CONTEXT_MODE_PLATFORM": "claude-desktop" }
+  }
+  ```
+
+</details>
+
+Full configs: [`configs/claude-desktop/claude_desktop_config.json`](configs/claude-desktop/claude_desktop_config.json) | [`configs/claude-desktop/CLAUDE.md`](configs/claude-desktop/CLAUDE.md)
+
+</details>
+
+<details>
 <summary><strong>Gemini CLI</strong> — one config file, hooks included</summary>
 
 **Prerequisites:** Node.js 18+, Gemini CLI installed.
