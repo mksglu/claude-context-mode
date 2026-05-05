@@ -335,6 +335,7 @@ export function buildNodeCommand(scriptPath: string): string {
 /** Supported platform identifiers. */
 export type PlatformId =
   | "claude-code"
+  | "claude-desktop"
   | "gemini-cli"
   | "opencode"
   | "kilo"
