@@ -6,6 +6,10 @@ describe("CLIENT_NAME_TO_PLATFORM", () => {
     expect(CLIENT_NAME_TO_PLATFORM["claude-code"]).toBe("claude-code");
   });
 
+  it("maps claude-ai → claude-desktop", () => {
+    expect(CLIENT_NAME_TO_PLATFORM["claude-ai"]).toBe("claude-desktop");
+  });
+
   it("maps antigravity-client → antigravity", () => {
     expect(CLIENT_NAME_TO_PLATFORM["antigravity-client"]).toBe("antigravity");
   });
