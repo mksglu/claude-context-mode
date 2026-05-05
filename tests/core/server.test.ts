@@ -1632,6 +1632,9 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     resolve(__dirname, "../../src/server.ts"),
     "utf-8",
   );
+  const packageJson = JSON.parse(
+    readFileSync(resolve(__dirname, "../../package.json"), "utf-8"),
+  );
 
   test("tries cli.bundle.mjs first", () => {
     expect(serverSrc).toContain("cli.bundle.mjs");
@@ -1650,10 +1653,16 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     expect(serverSrc).toMatch(/\.ctx-upgrade-inline\.mjs/);
   });
 
-  test("inline fallback copies key files to plugin root", () => {
-    // The inline script must copy build artifacts back
-    expect(serverSrc).toMatch(/server\.bundle\.mjs/);
-    expect(serverSrc).toMatch(/cli\.bundle\.mjs/);
+  test("inline fallback copies package files to plugin root", () => {
+    // The inline script must copy the published package payload back, including
+    // newly added files such as the statusline bin directory.
+    expect(packageJson.files).toEqual(
+      expect.arrayContaining(["server.bundle.mjs", "cli.bundle.mjs", "bin"]),
+    );
+    expect(serverSrc).toContain('readFileSync(join(T,"package.json"),"utf8")');
+    expect(serverSrc).toContain("pkg.files");
+    expect(serverSrc).toContain("Array.isArray(pkg.files)");
+    expect(serverSrc).toContain("cpSync(from,to,{recursive:true,force:true})");
     expect(serverSrc).toMatch(/npm.*install/);
   });
 
