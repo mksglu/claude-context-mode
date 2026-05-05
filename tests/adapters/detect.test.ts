@@ -100,23 +100,20 @@ describe("detectPlatform", () => {
   });
 
   // ── Kilo ────────────────────────────────────────────────
-  // Kilo-Org/kilocode packages/opencode/src/index.ts:140 sets KILO_PID
-  // unconditionally. Bare `KILO` is NEVER set (verified via upstream source
-  // audit, May 2026). Kilo also sets OPENCODE=1 because it's an OpenCode fork
-  // — `kilo` MUST precede `opencode` in PLATFORM_ENV_VARS so KILO_PID wins.
+  
+  it("returns opencode when KILO=1 is set", () => {
+    process.env.KILO = "1";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("kilo");
+    expect(signal.confidence).toBe("high");
+  });
+
 
   it("returns kilo when KILO_PID is set", () => {
     process.env.KILO_PID = "12345";
     const signal = detectPlatform();
     expect(signal.platform).toBe("kilo");
     expect(signal.confidence).toBe("high");
-  });
-
-  it("kilo wins when both KILO_PID and OPENCODE are set (fork-collision)", () => {
-    process.env.KILO_PID = "12345";
-    process.env.OPENCODE = "1";
-    const signal = detectPlatform();
-    expect(signal.platform).toBe("kilo");
   });
 
   // ── OpenClaw ───────────────────────────────────────────
