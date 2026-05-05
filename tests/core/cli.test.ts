@@ -27,6 +27,11 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(pkg.files).toContain("cli.bundle.mjs");
   });
 
+  it("package.json files field includes statusline bin", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.files).toContain("bin");
+  });
+
   it("package.json bundle script builds cli.bundle.mjs", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts.bundle).toContain("cli.bundle.mjs");
@@ -1116,6 +1121,21 @@ describe("Shell-free upgrade (#185)", () => {
     // Generated script lines must import execFileSync
     expect(inlineSection).toContain("execFileSync");
     expect(inlineSection).not.toMatch(/(?<!File)execSync/);
+  });
+
+  test("server.ts inline fallback copies package files including bin", () => {
+    const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");
+    expect(inlineStart).toBeGreaterThan(-1);
+    const inlineSection = SERVER_SOURCE.slice(inlineStart, SERVER_SOURCE.indexOf("cmd =", inlineStart + 500));
+
+    expect(inlineSection).toContain('readFileSync(join(T,"package.json"),"utf8")');
+    expect(inlineSection).toContain("pkg.files");
+    expect(inlineSection).toContain("Array.isArray(pkg.files)");
+    expect(inlineSection).toContain("for(const item of items)");
+    expect(inlineSection).toContain('writeFileSync(join(P,".mcp.json")');
+    expect(inlineSection).toContain("\\${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    expect(inlineSection).not.toContain("copyDirs");
+    expect(inlineSection).not.toContain("copyFiles");
   });
 });
 
