@@ -138,3 +138,18 @@ export const EventPriority = {
 } as const;
 
 export type EventPriorityLevel = (typeof EventPriority)[keyof typeof EventPriority];
+
+// ─────────────────────────────────────────────────────────
+// Cross-project dependency types (ctx-deps)
+// ─────────────────────────────────────────────────────────
+
+/** A single dependency declaration from .ctx-deps.json. */
+export interface DepDeclaration {
+  /** Filesystem path relative to the declaring project. */
+  path: string;
+}
+
+/** Top-level .ctx-deps.json schema. */
+export interface DepManifest {
+  dependencies: Record<string, DepDeclaration>;
+}
