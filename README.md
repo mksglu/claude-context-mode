@@ -918,6 +918,52 @@ This means `--continue` sessions preserve indexed docs across restarts. No re-fe
 - **Calls 4-8:** Reduced results (1 per query) + warning
 - **Calls 9+:** Blocked — redirects to `ctx_batch_execute`
 
+## Cross-Project Dependencies (ctx-deps)
+
+When your project depends on an upstream library, framework, or monorepo sibling, you need its API signatures, CLI flags, and conventions at hand — without manually copying documentation. ctx-deps makes upstream project context searchable from your downstream project.
+
+### Setup
+
+Run `ctx_deps add` with a name and path (relative or absolute):
+
+```
+ctx_deps add shared-api ../shared-api-lib
+```
+
+This writes a `.ctx-deps.json` file:
+
+```json
+{
+  "dependencies": {
+    "shared-api": { "path": "../shared-api-lib" }
+  }
+}
+```
+
+### Two tiers
+
+| Tier | Condition | What you get |
+|------|-----------|-------------|
+| **Full** | Upstream project has a ContentStore (has been used with context-mode) | All indexed upstream content — docs, code, session history. Results tagged `origin: "upstream-dep"`, `source: "dep:shared-api"`. |
+| **Fallback** | Upstream project exists but no ContentStore yet | Key instruction files indexed from upstream: `CLAUDE.md`, `AGENTS.md`, `CONTEXT.md`, and `skills/*.md`. Tagged `source: "dep-fallback:shared-api"`. |
+
+Once the upstream project runs context-mode, the next search automatically transitions from fallback to full tier — no action needed.
+
+### How search works
+
+Every `ctx_search` query fans out to all dependency ContentStores alongside your current project. Each dep store is opened read-only (no locking conflicts). Results merge with fair limit distribution: each dep gets `limit / (depCount + 1)` slots. Upstream results carry `origin: "upstream-dep"` and `source: "dep:<name>"` so you always know where a result came from.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `ctx_deps status` | List deps with tier (full/fallback) and chunk counts |
+| `ctx_deps add <name> <path>` | Register a new dependency |
+| `ctx_deps remove <name>` | Drop a dependency and clean up indexed data |
+| `ctx_deps refresh` | Re-open dep stores and re-index fallback content |
+
+Dependencies take effect immediately — no session restart needed.
+
 ## Session Continuity
 
 When the context window fills up, the agent compacts the conversation — dropping older messages to make room. Without session tracking, the model forgets which files it was editing, what tasks are in progress, what errors were resolved, and what you last asked for.
