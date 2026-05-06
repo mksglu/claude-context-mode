@@ -1,33 +1,60 @@
-/**
- * Classify non-zero exit codes for ctx_execute / ctx_execute_file.
- *
- * Shell commands like `grep` exit 1 for "no matches" — not a real error.
- * We treat exit code 1 as a soft failure when:
- *   - language is "shell"
- *   - exit code is exactly 1
- *   - stdout has non-whitespace content
- */
 export interface ExitClassification {
   isError: boolean;
   output: string;
 }
 
-export function classifyNonZeroExit(params: {
+type Params = {
   language: string;
   exitCode: number;
   stdout: string;
   stderr: string;
-}): ExitClassification {
-  const { language, exitCode, stdout, stderr } = params;
-  const isSoftFail =
-    language === "shell" &&
-    exitCode === 1 &&
-    stdout.trim().length > 0;
+  command?: string;
+  maxOutputLength?: number;
+};
+
+const SOFT_FAIL_CODES = new Set([1]);
+const SOFT_FAIL_COMMANDS = ["grep", "diff", "test"];
+
+function isShellSoftFailure({
+  language,
+  exitCode,
+  stdout,
+  command,
+}: Params): boolean {
+  if (language !== "shell") return false;
+
+  const hasOutput = stdout.trim().length > 0;
+  const knownCommand =
+    command && SOFT_FAIL_COMMANDS.some(cmd => command.includes(cmd));
+
+  return SOFT_FAIL_CODES.has(exitCode) && (hasOutput || knownCommand);
+}
+
+function truncate(text: string, limit?: number): string {
+  if (!limit || text.length <= limit) return text;
+  return text.slice(0, limit) + "\n... (truncated)";
+}
+
+export function classifyNonZeroExit(params: Params): ExitClassification {
+  const { exitCode, stdout, stderr, maxOutputLength } = params;
+
+  const soft = isShellSoftFailure(params);
+
+  if (soft) {
+    return {
+      isError: false,
+      output: truncate(stdout, maxOutputLength),
+    };
+  }
+
+  const safeStdout = stdout.trim() || "[no stdout]";
+  const safeStderr = stderr.trim() || "[no stderr]";
 
   return {
-    isError: !isSoftFail,
-    output: isSoftFail
-      ? stdout
-      : `Exit code: ${exitCode}\n\nstdout:\n${stdout}\n\nstderr:\n${stderr}`,
+    isError: true,
+    output: truncate(
+      `Exit code: ${exitCode}\n\nstdout:\n${safeStdout}\n\nstderr:\n${safeStderr}`,
+      maxOutputLength
+    ),
   };
-}
+    }
