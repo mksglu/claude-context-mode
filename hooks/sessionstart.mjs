@@ -39,9 +39,11 @@ await runHook(async () => {
     "./session-directive.mjs"
   );
   const { createSessionLoaders } = await import("./session-loaders.mjs");
-  const { join, dirname } = await import("node:path");
+  const { join, dirname, resolve } = await import("node:path");
   const { fileURLToPath } = await import("node:url");
-  const { readFileSync, unlinkSync, readdirSync, rmSync, statSync } = await import("node:fs");
+  const { readFileSync, unlinkSync, readdirSync, rmSync, statSync, existsSync, writeFileSync, mkdirSync } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  const { homedir } = await import("node:os");
 
   const detectedPlatform = detectPlatformFromEnv();
   const toolNamer = createToolNamer(detectedPlatform);
@@ -164,6 +166,121 @@ await runHook(async () => {
       }
 
       db.close();
+
+      // ── ctx-deps: Cross-project dependency bootstrapping ──
+      try {
+        const manifestPath = join(projectDir, ".ctx-deps.json");
+        if (existsSync(manifestPath)) {
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+          const resolvedDeps = [];
+          // CLAUDE_CONFIG_DIR is /Users/<user>/.claude — use directly.
+          const configDirPath = process.env.CLAUDE_CONFIG_DIR
+            || join(homedir(), ".claude");
+
+          for (const [name, decl] of Object.entries(manifest.dependencies || {})) {
+            const depPath = decl.path.startsWith("/")
+              ? decl.path
+              : resolve(projectDir, decl.path);
+            if (!existsSync(depPath)) continue;
+
+            resolvedDeps.push({ name, path: depPath, configDir: configDirPath });
+
+            // Check if upstream ContentStore DB exists.
+            // Layout: <configDirPath>/context-mode/content/<sha256[:16]>.db
+            const hash = createHash("sha256")
+              .update(depPath.replace(/\\/g, "/"))
+              .digest("hex").slice(0, 16);
+            const depDBPath = join(configDirPath, "context-mode", "content", `${hash}.db`);
+
+            if (!existsSync(depDBPath)) {
+              const fallbackLines = [];
+              const label = `dep:${name}`;
+              const MAX_BYTES = 100_000;
+
+              // Index upstream instruction files (cap at 100KB each)
+              for (const f of ["CLAUDE.md", "AGENTS.md", "GEMINI.md", "CONTEXT.md"]) {
+                const fp = join(depPath, f);
+                if (existsSync(fp)) {
+                  let content = readFileSync(fp, "utf-8");
+                  if (Buffer.byteLength(content) > MAX_BYTES) {
+                    content = content.slice(0, MAX_BYTES) +
+                      `\n\n_(truncated at ${MAX_BYTES} bytes)_`;
+                  }
+                  fallbackLines.push(`# ${label}/${f}`);
+                  fallbackLines.push("");
+                  fallbackLines.push(content);
+                  fallbackLines.push("");
+                }
+              }
+
+              // Index skills directory (cap at 20 files)
+              const skillsDir = join(depPath, "skills");
+              if (existsSync(skillsDir)) {
+                try {
+                  const skillFiles = readdirSync(skillsDir, { recursive: true })
+                    .filter(f => f.endsWith(".md"));
+                  for (const sf of skillFiles.slice(0, 20)) {
+                    const sfp = join(skillsDir, sf);
+                    try {
+                      fallbackLines.push(`# ${label}/skills/${sf}`);
+                      fallbackLines.push("");
+                      fallbackLines.push(readFileSync(sfp, "utf-8"));
+                      fallbackLines.push("");
+                    } catch { /* skip */ }
+                  }
+                } catch { /* skip */ }
+              }
+
+              // Index memory directory (cap at 10 files)
+              const memoryDir = join(depPath, "memory");
+              if (existsSync(memoryDir)) {
+                try {
+                  const memFiles = readdirSync(memoryDir).filter(f => f.endsWith(".md"));
+                  for (const mf of memFiles.slice(0, 10)) {
+                    const mfp = join(memoryDir, mf);
+                    try {
+                      fallbackLines.push(`# ${label}/memory/${mf}`);
+                      fallbackLines.push("");
+                      fallbackLines.push(readFileSync(mfp, "utf-8"));
+                      fallbackLines.push("");
+                    } catch { /* skip */ }
+                  }
+                } catch { /* skip */ }
+              }
+
+              if (fallbackLines.length > 0) {
+                const sessionsDir = join(configDirPath, "context-mode", "sessions");
+                mkdirSync(sessionsDir, { recursive: true });
+                const projHash = createHash("sha256")
+                  .update((projectDir || "").replace(/\\/g, "/"))
+                  .digest("hex").slice(0, 16);
+                const fallbackPath = join(sessionsDir,
+                  `${projHash}-deps-fallback-${name}.md`);
+                writeFileSync(fallbackPath, fallbackLines.join("\n"), "utf-8");
+              }
+
+              additionalContext +=
+                `\nDependency "${name}" (${depPath}): no ContentStore DB yet. ` +
+                `Key files indexed as fallback. Run context-mode in that project for full upstream context.`;
+            }
+          }
+
+          // Write resolved config for MCP server.
+          // Path: <configDirPath>/context-mode/content/<projectHash>-deps.json
+          // Must match getResolvedDepsPath() in server.ts.
+          if (resolvedDeps.length > 0) {
+            const contentDir = join(configDirPath, "context-mode", "content");
+            mkdirSync(contentDir, { recursive: true });
+            const projHash = createHash("sha256")
+              .update((projectDir || "").replace(/\\/g, "/"))
+              .digest("hex").slice(0, 16);
+            const resolvedPath = join(contentDir, `${projHash}-deps.json`);
+            writeFileSync(resolvedPath, JSON.stringify({ deps: resolvedDeps }, null, 2), "utf-8");
+          }
+        }
+      } catch (e) {
+        // Best-effort: deps bootstrapping never blocks session start
+      }
 
       // Age-gated lazy cleanup of old plugin cache version dirs (#181).
       // Only delete dirs older than 1 hour to avoid breaking active sessions.
