@@ -31,7 +31,10 @@ import { homedir, tmpdir } from "node:os";
  */
 let _wtCacheInProcess;
 function normalizeWorktreePath(path) {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = path.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
 }
 
 function gitOutput(projectDir, args) {
@@ -57,16 +60,17 @@ function getMainWorktreeRoot(projectDir) {
 }
 
 function workTreeMarkerPath(projectDir) {
-  const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
+  const hash = createHash("sha256").update(normalizeWorktreePath(projectDir)).digest("hex").slice(0, 16);
   return join(tmpdir(), `cm-wt-${hash}.txt`);
 }
 
 function getWorktreeSuffix(projectDir = process.cwd()) {
   const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
+  const normalizedProjectDir = normalizeWorktreePath(projectDir);
 
   if (
     _wtCacheInProcess &&
-    _wtCacheInProcess.projectDir === projectDir &&
+    _wtCacheInProcess.projectDir === normalizedProjectDir &&
     _wtCacheInProcess.envSuffix === envSuffix
   ) {
     return _wtCacheInProcess.suffix;
@@ -80,7 +84,7 @@ function getWorktreeSuffix(projectDir = process.cwd()) {
     const markerPath = workTreeMarkerPath(projectDir);
     try {
       suffix = readFileSync(markerPath, "utf-8");
-      _wtCacheInProcess = { projectDir, envSuffix, suffix };
+      _wtCacheInProcess = { projectDir: normalizedProjectDir, envSuffix, suffix };
       return suffix;
     } catch {
       // marker missing → compute below
@@ -105,7 +109,7 @@ function getWorktreeSuffix(projectDir = process.cwd()) {
     }
   }
 
-  _wtCacheInProcess = { projectDir, envSuffix, suffix };
+  _wtCacheInProcess = { projectDir: normalizedProjectDir, envSuffix, suffix };
   return suffix;
 }
 
@@ -252,7 +256,7 @@ export function getSessionId(input, opts = CLAUDE_OPTS) {
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>.db
  */
 export function getSessionDBPath(opts = CLAUDE_OPTS, projectDirOverride) {
-  const projectDir = projectDirOverride || getProjectDir(opts);
+  const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
@@ -265,7 +269,7 @@ export function getSessionDBPath(opts = CLAUDE_OPTS, projectDirOverride) {
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>-events.md
  */
 export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride) {
-  const projectDir = projectDirOverride || getProjectDir(opts);
+  const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
@@ -278,7 +282,7 @@ export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride) {
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>.cleanup
  */
 export function getCleanupFlagPath(opts = CLAUDE_OPTS, projectDirOverride) {
-  const projectDir = projectDirOverride || getProjectDir(opts);
+  const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });

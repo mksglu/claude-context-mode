@@ -8,7 +8,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { join, dirname, resolve } from "node:path";
+import { basename, join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   mkdirSync,
@@ -681,6 +681,44 @@ describe("resolveConfigDir (#289)", () => {
       expect(r.stdout).toContain("context-mode");
       expect(r.stdout).toContain("sessions");
       expect(r.stdout).toMatch(/\.db$/);
+    } finally {
+      rmSync(customDir, { recursive: true, force: true });
+    }
+  });
+
+  test("session path helpers normalize Windows separators and trailing slashes before hashing", async () => {
+    const customDir = mkdtempSync(join(tmpdir(), "ctx-config-dir-test-"));
+    try {
+      const code = `
+        process.env.CLAUDE_CONFIG_DIR = ${JSON.stringify(customDir)};
+        process.env.CONTEXT_MODE_SESSION_SUFFIX = "";
+        const {
+          getSessionDBPath,
+          getSessionEventsPath,
+          getCleanupFlagPath,
+        } = await import(${JSON.stringify(pathToFileURL(HELPERS_PATH).href)});
+        const opts = { configDir: ".claude", configDirEnv: "CLAUDE_CONFIG_DIR", projectDirEnv: "CLAUDE_PROJECT_DIR" };
+        const backslashProject = "C:\\\\Users\\\\me\\\\repo\\\\";
+        const slashProject = "C:/Users/me/repo";
+        process.stdout.write(JSON.stringify({
+          dbA: getSessionDBPath(opts, backslashProject),
+          dbB: getSessionDBPath(opts, slashProject),
+          eventsA: getSessionEventsPath(opts, backslashProject),
+          eventsB: getSessionEventsPath(opts, slashProject),
+          cleanupA: getCleanupFlagPath(opts, backslashProject),
+          cleanupB: getCleanupFlagPath(opts, slashProject),
+        }));
+      `;
+      const r = spawnSync("node", ["--input-type=module", "-e", code], {
+        encoding: "utf-8",
+        env: { ...process.env, CLAUDE_CONFIG_DIR: customDir, CONTEXT_MODE_SESSION_SUFFIX: "" },
+        timeout: 10000,
+      });
+      expect(r.status).toBe(0);
+      const result = JSON.parse(r.stdout);
+      expect(basename(result.dbA)).toBe(basename(result.dbB));
+      expect(basename(result.eventsA)).toBe(basename(result.eventsB));
+      expect(basename(result.cleanupA)).toBe(basename(result.cleanupB));
     } finally {
       rmSync(customDir, { recursive: true, force: true });
     }

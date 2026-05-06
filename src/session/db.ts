@@ -32,7 +32,10 @@ import { execFileSync } from "node:child_process";
 let _wtCache: { projectDir: string; envSuffix: string | undefined; suffix: string } | undefined;
 
 function normalizeWorktreePath(path: string): string {
-  return path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalized = path.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
 }
 
 function gitOutput(projectDir: string, args: string[]): string {

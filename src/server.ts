@@ -185,8 +185,15 @@ function resolveProjectPath(filePath: string): string {
  * Normalizes Windows backslashes before hashing so the same project
  * always produces the same hash regardless of path separator.
  */
-function hashProjectDir(projectDir = getProjectDir()): string {
+function normalizeProjectDirForHash(projectDir: string): string {
   const normalized = projectDir.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
+}
+
+function hashProjectDir(projectDir = getProjectDir()): string {
+  const normalized = normalizeProjectDirForHash(projectDir);
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
 

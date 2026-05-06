@@ -1809,11 +1809,14 @@ describe("Project dir hash consistency", () => {
   );
 
   test("shared hashProjectDir helper exists and normalizes backslashes", () => {
+    const normalizeFn = serverSrc.match(/function normalizeProjectDirForHash[\s\S]*?^}/m);
+    expect(normalizeFn).not.toBeNull();
+    expect(normalizeFn![0]).toMatch(/replace\(.*\\\\.*\/.*\)/);
+
     const fn = serverSrc.match(/function hashProjectDir[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
     const body = fn![0];
-    // Must normalize Windows backslashes before hashing
-    expect(body).toMatch(/replace\(.*\\\\.*\/.*\)/);
+    expect(body).toContain("normalizeProjectDirForHash");
     expect(body).toContain("createHash");
   });
 
