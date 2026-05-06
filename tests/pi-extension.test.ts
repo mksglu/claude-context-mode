@@ -515,6 +515,40 @@ describe("Pi Extension", () => {
     });
   });
 
+  describe("Slice 6b: Native tools", () => {
+    const expectedTools = [
+      "ctx_execute",
+      "ctx_execute_file",
+      "ctx_index",
+      "ctx_search",
+      "ctx_fetch_and_index",
+      "ctx_batch_execute",
+      "ctx_stats",
+      "ctx_doctor",
+      "ctx_upgrade",
+      "ctx_purge",
+      "ctx_insight",
+    ];
+
+    it("registers the ctx tool surface", async () => {
+      await registerPiExtension(api);
+
+      const tools = api.registerTool.mock.calls.map(([tool]) => tool.name);
+      expect(tools).toEqual(expect.arrayContaining(expectedTools));
+    });
+
+    it("registers callable tool definitions", async () => {
+      await registerPiExtension(api);
+
+      for (const [tool] of api.registerTool.mock.calls) {
+        expect(tool.label).toBe(tool.name);
+        expect(tool.description.length).toBeGreaterThan(0);
+        expect(tool.parameters.type).toBe("object");
+        expect(typeof tool.execute).toBe("function");
+      }
+    });
+  });
+
   // ═══════════════════════════════════════════════════════════
   // Slice 7: Routing block injection (Pi-1)
   // ═══════════════════════════════════════════════════════════

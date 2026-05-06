@@ -21,6 +21,7 @@ import { extractEvents, extractUserEvents } from "./session/extract.js";
 import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
+import { NATIVE_TOOL_DEFS } from "./native-tools.js";
 
 // ── Pi Tool Name Mapping ─────────────────────────────────
 // Pi uses lowercase; shared extractors expect PascalCase (Claude Code convention).
@@ -517,4 +518,14 @@ export default function piExtension(pi: any): void {
       return handleCommandText(text, ctx);
     },
   });
+
+  if (typeof pi.registerTool === "function") {
+    for (const tool of NATIVE_TOOL_DEFS) {
+      try {
+        pi.registerTool(tool);
+      } catch {
+        // best effort
+      }
+    }
+  }
 }
