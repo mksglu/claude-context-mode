@@ -50,10 +50,34 @@ const VERSION: string = (() => {
 // ── Types ─────────────────────────────────────────────────
 
 /** KiloCode/OpenCode plugin input — both platforms pass at least `directory`. */
-interface PluginContext {
+type PluginClientAppLogBodyExtra = {
+  sessionId?: string;
+  source?: string;
+};
+
+type PluginClientAppLogBody = {
+  service: string;
+  level: "info" | "warn" | "error" | "debug"; // Strict union for log levels
+  message: string;
+  extra?: PluginClientAppLogBodyExtra;
+};
+
+type PluginClientAppLogOptions = {
+  body: PluginClientAppLogBody;
+};
+
+type PluginClientApp = {
+  log: (options: PluginClientAppLogOptions) => Promise<void>;
+};
+
+type PluginClient = {
+  app: PluginClientApp;
+};
+
+type PluginContext = {
+  client: PluginClient;
   directory: string;
-  [key: string]: unknown;
-}
+};
 
 /** OpenCode tool.execute.before — first parameter */
 interface BeforeHookInput {
@@ -191,7 +215,7 @@ function getPlatform(): AdapterPlatformType {
  * Plugin factory. Called once when KiloCode/OpenCode loads the plugin.
  * Returns an object mapping hook event names to async handler functions.
  *
- * KiloCode expects: export default { server: (input) => Promise<Hooks> }
+ * KiloCode expects: export default { id: string, server: (input) => Promise<Hooks> }
  * OpenCode expects: export const ContextModePlugin = (ctx) => Promise<Hooks>
  */
 async function createContextModePlugin(ctx: PluginContext) {
@@ -225,7 +249,7 @@ async function createContextModePlugin(ctx: PluginContext) {
   // OpenCode/Kilo provide the real `input.sessionID` on every hook, and a
   // process-global UUID would (a) never match prior-session resume rows and
   // (b) collide across multi-session reuse (Mickey / PR #376 root cause).
-  const projectDir = ctx.directory;
+  const projectDir = ctx?.directory ?? process.cwd();
   const db = new SessionDB({ dbPath: adapter.getSessionDBPath(projectDir) });
 
   // Clean up old sessions on startup (no SessionStart hook to do this).
@@ -276,6 +300,19 @@ async function createContextModePlugin(ctx: PluginContext) {
         // file missing or unreadable — skip silently
       }
     }
+  }
+
+  function logger(
+    message = "context-mode debug log", extra?: PluginClientAppLogBodyExtra
+  ): Promise<void> {
+    return ctx.client.app.log({
+      body: {
+        service: "context-mode-logger",
+        level: "info",
+        message,
+        extra
+      },
+    });
   }
 
   return {
@@ -396,6 +433,13 @@ async function createContextModePlugin(ctx: PluginContext) {
         // Mutate output.context to inject the snapshot
         output.context.push(snapshot);
 
+        if (process.env.OPENCODE_DEBUG) {
+          await logger(snapshot, {
+            sessionId,
+            source: "on compaction - snapshot",
+          });
+        }
+
         // OC-3 / Z3: Add budget-capped auto-injection (P1 role / P2 rules /
         // P3 skills / P4 intent — ≤500 tokens / ~2000 chars per
         // hooks/auto-injection.mjs). Pushed as a separate context entry so
@@ -404,6 +448,13 @@ async function createContextModePlugin(ctx: PluginContext) {
           const autoBlock: string = autoInjectionMod.buildAutoInjection(events);
           if (autoBlock && autoBlock.length > 0) {
             output.context.push(autoBlock);
+          }
+          
+          if (process.env.OPENCODE_DEBUG) {
+            await logger(autoBlock, {
+              sessionId,
+              source: "on compaction - autoBlock",
+            });
           }
         } catch {
           // Auto-injection failure must NOT break the snapshot path.
@@ -436,26 +487,36 @@ async function createContextModePlugin(ctx: PluginContext) {
       // resume snapshot path below — routing block must fire even when
       // no prior session row exists. Splice at index 1 (NOT unshift) for
       // the same OpenCode llm.ts:117-128 cache-fold reason as resume.
-      if (!routingInjected.has(sessionId) && Array.isArray(output?.system)) {
+      if (Array.isArray(output?.system)) {
         try {
           // Visible marker — mirror the resume-snapshot pattern below so
           // users can grep OPENCODE_DEBUG logs to confirm the routing block
           // reached the model (Mickey-class verification path).
           const marker = `<!-- context-mode v${VERSION}: routing block injected (sessionID=${sessionId.slice(0, 8)}) -->\n`;
           output.system.splice(1, 0, marker + routingBlock);
-          routingInjected.add(sessionId);
         } catch {
           // Never break the chat turn on routing-block injection failure.
         }
+        
+        if (process.env.OPENCODE_DEBUG) {
+          await logger(output.system[1], {sessionId, source: 'on routing block injection'});
+        }
       }
 
-      if (resumeInjected.has(sessionId)) return;
       try {
         // Pass current sessionId so SQL excludes self-injection (v1.0.106 — Mickey #376
         // follow-up): if Session B compacts mid-flight and produces its own row,
         // B's next system.transform must NOT claim that row back into B's prompt.
         const row = db.claimLatestUnconsumedResume(sessionId);
         if (!row || !row.snapshot) return;        // no row → leave `resumeInjected` unset → retry on next turn
+
+        if (process.env.OPENCODE_DEBUG) {
+          await logger(row.snapshot, {
+            sessionId,
+            source: "on resume - snapshot",
+          });
+        }
+        
         if (Array.isArray(output?.system)) {
           // Visible signal — without this, the injection is silent and users
           // cannot tell the feature is active (Mickey: "I can't find use case
@@ -478,7 +539,9 @@ async function createContextModePlugin(ctx: PluginContext) {
           // snapshot ride along inside the cached body block.
           output.system.splice(1, 0, marker + row.snapshot);
           // Mark consumed only AFTER successful splice so failed paths can retry
-          resumeInjected.add(sessionId);
+          if (process.env.OPENCODE_DEBUG) {
+            await logger(output.system[1], { sessionId, source: "on resume" });
+          }
         }
       } catch {
         // Silent — never break the chat turn
@@ -490,5 +553,5 @@ async function createContextModePlugin(ctx: PluginContext) {
 // ── Exports ──────────────────────────────────────────────
 // KiloCode PluginModule: default export with { server } shape
 // OpenCode compat: named export for direct import("context-mode/plugin")
-export default { server: createContextModePlugin };
+export default { id:"context-mode", server: createContextModePlugin };
 export { createContextModePlugin as ContextModePlugin };

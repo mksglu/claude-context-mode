@@ -26,7 +26,14 @@ async function createTestPlugin(tempDir: string) {
   // Monkey-patch the session dir to use temp directory
   // The plugin uses homedir() internally, but we can control the DB path
   // by creating the plugin with a unique directory that produces a unique hash
-  return ContextModePlugin({ directory: tempDir });
+  return ContextModePlugin({
+    directory: tempDir,
+    client: {
+      app: {
+        log: async () => {},
+      },
+    },
+  });
 }
 
 // ── Tests ─────────────────────────────────────────────────
@@ -380,7 +387,7 @@ describe("ContextModePlugin", () => {
       expect(middle).toContain("<context_window_protection>");
     });
 
-    it("does NOT re-inject on second call with the same sessionID (multi-turn)", async () => {
+    it("does NOT re-inject resume snapshot on second call with the same sessionID (multi-turn)", async () => {
       const projectDir = join(tempDir, "sysxform-once-per-session");
       const plugin = await createTestPlugin(projectDir);
 
@@ -407,8 +414,10 @@ describe("ContextModePlugin", () => {
         { sessionID: "turn-X", model: {} } as any,
         out2,
       );
-      // Same session — already injected this process — silent (header only).
-      expect(out2.system).toEqual(["HEADER"]);
+      // Same session — resume snapshot consumed from DB. Routing block re-injects (no dedup).
+      expect(out2.system.length).toBe(2); // HEADER + routing block
+      expect(out2.system[1]).toContain("<context_window_protection>");
+      expect(out2.system.join("\n")).not.toContain("session_resume");
     });
 
     // v1.0.106 — Mickey #376 follow-up: self-injection guard
@@ -469,15 +478,16 @@ describe("ContextModePlugin", () => {
         { context: [] as string[], prompt: undefined },
       );
 
-      // C's next turn — routing already injected this session, but resume
-      // gate not consumed yet (no premature gate). Should pick up donor row.
+      // C's next turn — routing block re-injects (every turn), plus resume
+      // snapshot from donor (no premature gate — DB claim still available).
       const out2 = { system: ["HEADER"] };
       await plugin["experimental.chat.system.transform"](
         { sessionID: "C", model: {} } as any,
         out2,
       );
-      expect(out2.system.length).toBe(2); // HEADER + snapshot (no re-routing)
+      expect(out2.system.length).toBe(3); // HEADER + snapshot + routing
       expect(out2.system[1]).toContain("session_resume");
+      expect(out2.system[2]).toContain("<context_window_protection>");
     });
 
     // v1.0.106 — prefer next session over self-injection
@@ -595,8 +605,8 @@ describe("ContextModePlugin", () => {
       expect(joined).toContain("context-mode_ctx_search");
     });
 
-    it("OC-1: does NOT re-inject routing block on second turn per session", async () => {
-      const plugin = await createTestPlugin(join(tempDir, "oc1-once"));
+    it("OC-1: re-injects routing block on every turn (per-turn reliability)", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "oc1-every-turn"));
       const out1 = { system: ["HEADER"] };
       await plugin["experimental.chat.system.transform"](
         { sessionID: "oc1-twice", model: {} } as any,
@@ -609,8 +619,9 @@ describe("ContextModePlugin", () => {
         { sessionID: "oc1-twice", model: {} } as any,
         out2,
       );
-      // Second turn — routing block already injected this process; silent.
-      expect(out2.system).toEqual(["HEADER"]);
+      // Routing block injects every turn for reliability (no dedup set).
+      expect(out2.system.join("\n")).toContain("<context_window_protection>");
+      expect(out2.system.length).toBe(2);
     });
   });
 
