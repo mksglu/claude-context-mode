@@ -16,9 +16,24 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
+  rmdirSync,
+  readdirSync,
   existsSync,
   unlinkSync,
 } from "node:fs";
+
+// Robust recursive delete — fs.rmSync silently no-ops on Windows when the
+// target path lives under a tmpdir whose name contains non-ASCII chars (#454).
+function rmSyncRobust(dir: string) {
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  if (!existsSync(dir)) return;
+  try {
+    for (const name of readdirSync(dir)) {
+      try { unlinkSync(resolve(dir, name)); } catch {}
+    }
+    rmdirSync(dir);
+  } catch {}
+}
 import { tmpdir } from "node:os";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -47,8 +62,8 @@ const mcpSentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
 const mcpSentinel = resolve(mcpSentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
-  try { rmSync(_guidanceDir, { recursive: true, force: true }); } catch {}
-  try { rmSync(_sessionGuidanceDir, { recursive: true, force: true }); } catch {}
+  rmSyncRobust(_guidanceDir);
+  rmSyncRobust(_sessionGuidanceDir);
   writeFileSync(mcpSentinel, String(process.pid));
 });
 

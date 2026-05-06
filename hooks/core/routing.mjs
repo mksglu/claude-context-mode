@@ -16,7 +16,7 @@ import {
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
-import { existsSync, mkdirSync, rmSync, openSync, closeSync, constants as fsConstants } from "node:fs";
+import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, constants as fsConstants } from "node:fs";
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
@@ -84,12 +84,30 @@ function guidanceOnce(type, content, sessionId) {
   return { action: "context", additionalContext: content };
 }
 
+/**
+ * Robust recursive delete. On Windows, `fs.rmSync` on directories under a
+ * tmpdir whose path contains non-ASCII characters (e.g. a Chinese / Japanese /
+ * Korean username) silently no-ops without throwing — see #454. Fall back to a
+ * manual unlink + rmdir walk so the marker dir actually goes away.
+ */
+function rmSyncRobust(dir) {
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  if (!existsSync(dir)) return;
+  // Manual fallback for Windows + non-ASCII tmpdir paths
+  try {
+    for (const name of readdirSync(dir)) {
+      try { unlinkSync(resolve(dir, name)); } catch {}
+    }
+    rmdirSync(dir);
+  } catch {}
+}
+
 export function resetGuidanceThrottle(sessionId) {
   _guidanceShown.clear();
   // Clear ppid-based dir (legacy / fallback callers) and the sessionId dir if given
-  try { rmSync(guidanceDirFor(), { recursive: true, force: true }); } catch {}
+  rmSyncRobust(guidanceDirFor());
   if (sessionId) {
-    try { rmSync(guidanceDirFor(sessionId), { recursive: true, force: true }); } catch {}
+    rmSyncRobust(guidanceDirFor(sessionId));
   }
 }
 

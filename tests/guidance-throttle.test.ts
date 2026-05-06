@@ -141,7 +141,17 @@ describe("guidance throttle", () => {
     }
 
     function clearSessionDir(sessionId: string) {
-      try { fs.rmSync(sessionDir(sessionId), { recursive: true, force: true }); } catch {}
+      const dir = sessionDir(sessionId);
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      // Windows + non-ASCII tmpdir: rmSync silently no-ops (#454). Manual fallback.
+      if (fs.existsSync(dir)) {
+        try {
+          for (const name of fs.readdirSync(dir)) {
+            try { fs.unlinkSync(path.resolve(dir, name)); } catch {}
+          }
+          fs.rmdirSync(dir);
+        } catch {}
+      }
     }
 
     beforeEach(() => {

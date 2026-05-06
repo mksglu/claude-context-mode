@@ -10,7 +10,7 @@ import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach } fr
 import { spawnSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, rmSync, existsSync, unlinkSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, rmdirSync, readdirSync, existsSync, unlinkSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
 
@@ -126,8 +126,19 @@ describe("VS Code Copilot hooks", () => {
     const suffix = wid ? `${process.pid}-w${wid}` : String(process.pid);
     const legacyDir = resolve(tmpdir(), `context-mode-guidance-${suffix}`);
     const sessionDir = resolve(tmpdir(), `context-mode-guidance-s-pid-${process.pid}`);
-    try { rmSync(legacyDir, { recursive: true, force: true }); } catch { /* best effort */ }
-    try { rmSync(sessionDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    // fs.rmSync silently no-ops on Windows when tmpdir contains non-ASCII chars (#454).
+    const rmRobust = (dir: string) => {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+      if (!existsSync(dir)) return;
+      try {
+        for (const name of readdirSync(dir)) {
+          try { unlinkSync(resolve(dir, name)); } catch {}
+        }
+        rmdirSync(dir);
+      } catch {}
+    };
+    rmRobust(legacyDir);
+    rmRobust(sessionDir);
     writeFileSync(mcpSentinel, String(process.pid));
   });
 
