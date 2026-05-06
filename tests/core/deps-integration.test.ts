@@ -36,6 +36,9 @@ describe("ctx-deps integration", () => {
       source: "dep-docs",
     });
 
+    // Close write-mode dep store so read-only open doesn't conflict with WAL
+    depStore.close();
+
     const currentStore = new ContentStore();
     currentStore.index({
       content: "# Current Project\n\nCalls foo() from my-dep",
@@ -57,7 +60,7 @@ describe("ctx-deps integration", () => {
     const depResults = results.filter(r => r.origin === "upstream-dep");
     expect(results.filter(r => r.origin === "current-session").length).toBeGreaterThan(0);
     expect(depResults.length).toBeGreaterThan(0);
-    expect(depResults[0].content).toContain("My Dep API");
+    expect(depResults[0].title).toContain("My Dep API");
   });
 
   it("gracefully handles missing dep ContentStore (null from openDepStore)", () => {
