@@ -3357,5 +3357,58 @@ describe("SessionDB.searchEvents (unified)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// 8. Dep stores (searchAllSources with dependency stores)
+// ═══════════════════════════════════════════════════════════
+
+describe("searchAllSources with dep stores", () => {
+  let currentStore: ContentStore;
+  let depStore: ContentStore;
+
+  beforeEach(() => {
+    currentStore = new ContentStore();
+    depStore = new ContentStore();
+  });
+
+  it("tags dep results with origin upstream-dep", () => {
+    currentStore.index({ content: "# Current\n\nlocal content", source: "current" });
+    depStore.index({ content: "# Upstream API\n\nexport function foo()", source: "dep-docs" });
+
+    const depStores = new Map([["repo-b", depStore]]);
+    const results = searchAllSources({
+      query: "foo", limit: 10, store: currentStore, depStores,
+    });
+
+    const depResults = results.filter(r => r.origin === "upstream-dep");
+    expect(depResults.length).toBeGreaterThan(0);
+    expect(depResults[0].source).toBe("dep:repo-b");
+    expect(depResults[0].content).toContain("foo");
+  });
+
+  it("includes current-session results before upstream-dep results", () => {
+    currentStore.index({ content: "# Current\n\nlocal content foo", source: "current" });
+    depStore.index({ content: "# Upstream\n\nalso has foo", source: "dep-docs" });
+
+    const results = searchAllSources({
+      query: "foo", limit: 10, store: currentStore,
+      depStores: new Map([["repo-b", depStore]]),
+    });
+
+    const currentIdx = results.findIndex(r => r.origin === "current-session");
+    const depIdx = results.findIndex(r => r.origin === "upstream-dep");
+    expect(currentIdx).toBeLessThan(depIdx);
+  });
+
+  it("survives a failing dep store", () => {
+    currentStore.index({ content: "# Current\n\nlocal", source: "current" });
+    const results = searchAllSources({
+      query: "local", limit: 10, store: currentStore,
+      depStores: new Map([["broken-dep", new ContentStore()]]),
+    });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some(r => r.origin === "current-session")).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
 // 11. Knowledge-reuse event (removed — read path must not mutate state)
 // ═══════════════════════════════════════════════════════════

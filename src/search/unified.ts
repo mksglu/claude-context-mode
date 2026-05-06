@@ -20,7 +20,7 @@ export interface UnifiedSearchResult {
   title: string;
   content: string;
   source: string;
-  origin: "current-session" | "prior-session" | "auto-memory";
+  origin: "current-session" | "prior-session" | "auto-memory" | "upstream-dep";
   timestamp?: string;
   rank?: number;
   matchLayer?: string;
@@ -40,6 +40,8 @@ export interface SearchAllSourcesOpts {
   configDir?: string;
   /** Detected platform adapter — used for adapter-aware auto-memory. */
   adapter?: AutoMemoryAdapter;
+  /** Read-only ContentStores for upstream dependencies, keyed by dep name. */
+  depStores?: Map<string, ContentStore>;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -67,6 +69,7 @@ export function searchAllSources(opts: SearchAllSourcesOpts): UnifiedSearchResul
     projectDir,
     configDir,
     adapter,
+    depStores,
   } = opts;
 
   const results: UnifiedSearchResult[] = [];
@@ -121,6 +124,31 @@ export function searchAllSources(opts: SearchAllSourcesOpts): UnifiedSearchResul
       results.push(...memResults);
     } catch (e) {
       if (DEBUG) process.stderr.write(`[ctx] auto-memory search failed: ${e}\n`);
+    }
+  }
+
+  // ── Source 4: Upstream dependency ContentStores ──
+  if (depStores && depStores.size > 0) {
+    const depLimit = Math.max(1, Math.ceil(limit / (depStores.size + 1)));
+    for (const [depName, depStore] of depStores) {
+      try {
+        const depResults = depStore.searchWithFallback(query, depLimit, source, contentType);
+        results.push(
+          ...depResults.map((r: SearchResult) => ({
+            title: r.title,
+            content: r.content,
+            source: `dep:${depName}`,
+            origin: "upstream-dep" as const,
+            timestamp: r.timestamp || sessionStartTime,
+            rank: r.rank,
+            matchLayer: r.matchLayer,
+            highlighted: r.highlighted,
+            contentType: r.contentType,
+          })),
+        );
+      } catch (e) {
+        if (DEBUG) process.stderr.write(`[ctx] Dep store "${depName}" search failed: ${e}\n`);
+      }
     }
   }
 
