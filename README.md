@@ -860,6 +860,7 @@ npm install -g context-mode
 | `ctx_doctor` | Diagnose installation: runtimes, hooks, FTS5, versions. | — |
 | `ctx_upgrade` | Upgrade to latest version from GitHub, rebuild, reconfigure hooks. | — |
 | `ctx_purge` | Permanently deletes all indexed content from the knowledge base. | — |
+| `ctx_deps` | Manage cross-project dependencies: add/remove/status/refresh upstream context. | — |
 
 ## How the Sandbox Works
 
