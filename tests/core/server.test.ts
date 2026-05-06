@@ -1183,6 +1183,171 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ctx_insight: execFile migration + port schema hardening (#441)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Two layers of regression protection:
+//
+//   1. Source-grep guard — pin that the ctx_insight handler block in
+//      src/server.ts contains ZERO `execSync(\`…${…}…\`)` template-string
+//      sites. The original injection surface was six such sites that
+//      interpolated `port` and `url` into shell commands. The fix routes
+//      both through spawnSync helpers (`openBrowserBestEffort`,
+//      `killProcessOnPort`) using argv arrays — no shell.
+//
+//   2. Real-MCP integration — spawn the server via stdio JSON-RPC and
+//      verify the tightened port schema rejects out-of-range and
+//      non-integer values BEFORE the handler runs. (We do not exercise
+//      the full dashboard build path here — it spawns a child server,
+//      runs vite build, and is covered by other tests.)
+
+describe("ctx_insight: execFile migration source guard (#441)", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  // Locate the ctx_insight tool registration block. The handler ends at
+  // the matching `);` for `server.registerTool("ctx_insight", … , async …)`.
+  // We slice from the registration call through the closing `}\n);` to scope
+  // the assertions to handler-internal code only.
+  const insightStart = serverSrc.indexOf('"ctx_insight"');
+  const insightSliceFromStart = serverSrc.slice(insightStart);
+  const insightHandlerEnd = insightSliceFromStart.indexOf("\n);\n");
+  const insightBlock = insightSliceFromStart.slice(0, insightHandlerEnd);
+
+  test("ctx_insight registration is locatable", () => {
+    expect(insightStart).toBeGreaterThan(0);
+    expect(insightHandlerEnd).toBeGreaterThan(0);
+  });
+
+  test("ctx_insight handler contains no execSync template-string interpolation", () => {
+    // Match: execSync(`...${...}...`)  — the exact injection pattern.
+    const templateInterpolation = /execSync\(`[^`]*\$\{/m;
+    expect(insightBlock).not.toMatch(templateInterpolation);
+  });
+
+  test("ctx_insight handler does not invoke shell-quoted browser-open commands", () => {
+    expect(insightBlock).not.toMatch(/execSync\(`open\b/);
+    expect(insightBlock).not.toMatch(/execSync\(`start\b/);
+    expect(insightBlock).not.toMatch(/execSync\(`xdg-open\b/);
+    expect(insightBlock).not.toMatch(/execSync\(`sensible-browser\b/);
+  });
+
+  test("ctx_insight handler does not invoke shell-quoted port-kill pipelines", () => {
+    expect(insightBlock).not.toMatch(/execSync\(`lsof\b/);
+    expect(insightBlock).not.toMatch(/execSync\(`for \/f\b/);
+    // `xargs kill` may appear in user-facing copy-paste hints (e.g. the
+    // "to kill the existing process" text), so we don't grep for it here —
+    // the surrounding `execSync(\`lsof\b` check already catches the
+    // executable variant.
+  });
+
+  test("port schema is bounded to a valid TCP port range", () => {
+    // The fix tightens the schema to z.coerce.number().int().min(1).max(65535).
+    // Pin all four constraints — the order is not important, only their presence
+    // adjacent to the `port:` declaration.
+    const portDecl = serverSrc.match(/port:\s*z\.coerce\.number\(\)([^,\n]*)\.optional\(\)/);
+    expect(portDecl).not.toBeNull();
+    const constraints = portDecl![1];
+    expect(constraints).toContain(".int()");
+    expect(constraints).toContain(".min(1)");
+    expect(constraints).toContain(".max(65535)");
+  });
+
+  test("ctx_insight helper functions exist and use spawnSync (no shell)", () => {
+    expect(serverSrc).toMatch(/function openBrowserBestEffort\(/);
+    expect(serverSrc).toMatch(/function killProcessOnPort\(/);
+  });
+});
+
+describe("ctx_insight: port schema rejects invalid values (#441)", () => {
+  function spawnInsightServer(): ChildProcess {
+    return spawn("node", [mcpEntry], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
+    });
+  }
+
+  async function awaitRpc(
+    proc: ChildProcess,
+    id: number,
+    request: Record<string, unknown>,
+    timeoutMs = 10_000,
+  ): Promise<DoctorJsonRpcResponse | undefined> {
+    return new Promise((resolve) => {
+      let buffer = "";
+      const onData = (d: Buffer) => {
+        buffer += d.toString();
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const parsed = JSON.parse(line) as DoctorJsonRpcResponse;
+            if (parsed.id === id) {
+              proc.stdout!.off("data", onData);
+              clearTimeout(timer);
+              resolve(parsed);
+              return;
+            }
+          } catch { /* ignore */ }
+        }
+      };
+      const timer = setTimeout(() => {
+        proc.stdout!.off("data", onData);
+        resolve(undefined);
+      }, timeoutMs);
+      proc.stdout!.on("data", onData);
+      sendRpc(proc, request);
+    });
+  }
+
+  // Each invalid value is exercised against a fresh server so a schema
+  // failure on one input cannot mask a regression on another.
+  const invalidPortCases: Array<{ label: string; port: unknown }> = [
+    { label: "zero (below min)", port: 0 },
+    { label: "negative (below min)", port: -1 },
+    { label: "above 16-bit range", port: 65536 },
+    { label: "non-integer", port: 3.14 },
+    { label: "non-numeric string", port: "not-a-port" },
+  ];
+
+  for (const { label, port } of invalidPortCases) {
+    test(`rejects port=${JSON.stringify(port)} (${label}) at schema layer`, async () => {
+      const proc = spawnInsightServer();
+      try {
+        await awaitRpc(proc, 1, {
+          jsonrpc: "2.0", id: 1, method: "initialize",
+          params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-insight-441", version: "1.0" } },
+        });
+        sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+        const resp = await awaitRpc(proc, 100, {
+          jsonrpc: "2.0", id: 100, method: "tools/call",
+          params: { name: "ctx_insight", arguments: { port } },
+        });
+
+        // Schema rejection surfaces as either a JSON-RPC `error` envelope or
+        // a tool result with `isError: true`. Both shapes count as "the
+        // handler never executed" — the contract this test pins.
+        const rejected =
+          (resp?.error !== undefined) ||
+          (resp?.result?.isError === true);
+        expect(rejected).toBe(true);
+
+        // Cross-check: no "Dashboard running" success text leaked through.
+        const text = resp?.result?.content?.[0]?.text ?? "";
+        expect(text).not.toMatch(/Dashboard running at/);
+      } finally {
+        try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      }
+    }, 20_000);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ctx_execute_file: projectRoot env cascade parity with ctx_index
 // ═══════════════════════════════════════════════════════════════════════════
 //

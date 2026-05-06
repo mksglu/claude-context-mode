@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
-import { execSync, type ChildProcess } from "node:child_process";
+import { execSync, spawnSync, type ChildProcess } from "node:child_process";
 import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir, cpus } from "node:os";
@@ -2846,6 +2846,61 @@ server.registerTool(
   },
 );
 
+// ── ctx-insight helpers: cross-platform browser-open and port-kill ───────────
+//
+// Both helpers use spawnSync with argv arrays — never `sh -c <string>` — so
+// caller-derived values (port, url) cannot escape into shell context.
+// Replaces six execSync template-string sites in the ctx_insight handler that
+// previously interpolated `port` and `url` into double-quoted shell commands.
+// See issue #441.
+
+function openBrowserBestEffort(url: string): void {
+  try {
+    if (process.platform === "darwin") {
+      spawnSync("open", [url], { stdio: "ignore" });
+    } else if (process.platform === "win32") {
+      // `cmd /c start "" "<url>"` — `start` is a cmd builtin, no PowerShell.
+      // The empty title arg ("") prevents `start` from interpreting the URL
+      // as a window title. spawnSync passes argv unmodified to cmd, which
+      // does not perform shell-style metacharacter expansion on argv beyond
+      // its own quoting rules — meaningfully tighter than `execSync(\`start "" "${url}"\`)`.
+      spawnSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
+    } else {
+      const xdg = spawnSync("xdg-open", [url], { stdio: "ignore" });
+      if (xdg.error || (xdg.status !== null && xdg.status !== 0)) {
+        spawnSync("sensible-browser", [url], { stdio: "ignore" });
+      }
+    }
+  } catch { /* best-effort — failures are silent on the original code path */ }
+}
+
+function killProcessOnPort(port: number): void {
+  try {
+    if (process.platform === "win32") {
+      const r = spawnSync("netstat", ["-ano"], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+      if (r.status !== 0 || typeof r.stdout !== "string") return;
+      const portTag = `:${port}`;
+      const pids = new Set<string>();
+      for (const line of r.stdout.split(/\r?\n/)) {
+        if (!line.includes(portTag)) continue;
+        const tokens = line.trim().split(/\s+/);
+        const pid = tokens[tokens.length - 1];
+        if (pid && /^\d+$/.test(pid)) pids.add(pid);
+      }
+      for (const pid of pids) {
+        spawnSync("taskkill", ["/F", "/PID", pid], { stdio: "ignore" });
+      }
+    } else {
+      const r = spawnSync("lsof", ["-ti", `:${port}`], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+      if (r.status !== 0 || typeof r.stdout !== "string") return;
+      for (const pid of r.stdout.split(/\r?\n/).filter(Boolean)) {
+        if (!/^\d+$/.test(pid)) continue;
+        spawnSync("kill", [pid], { stdio: "ignore" });
+      }
+    }
+  } catch { /* best-effort — failures are silent on the original code path */ }
+}
+
 // ── ctx-insight: analytics dashboard ──────────────────────────────────────────
 server.registerTool(
   "ctx_insight",
@@ -2857,7 +2912,7 @@ server.registerTool(
       "parallel work patterns, project focus, and actionable insights. " +
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
-      port: z.coerce.number().optional().describe("Port to serve on (default: 4747)"),
+      port: z.coerce.number().int().min(1).max(65535).optional().describe("Port to serve on (default: 4747)"),
       sessionDir: z.string().optional().describe("Override INSIGHT_SESSION_DIR: directory containing context-mode session .db files"),
       contentDir: z.string().optional().describe("Override INSIGHT_CONTENT_DIR: directory containing context-mode content/index .db files"),
       insightSessionDir: z.string().optional().describe("Alias for sessionDir / INSIGHT_SESSION_DIR"),
@@ -2956,25 +3011,14 @@ server.registerTool(
       if (portOccupied && sourceUpdated) {
         // Source was updated but stale server is running on port — kill it so fresh code runs
         steps.push("Killing stale dashboard server (source updated)...");
-        try {
-          if (process.platform === "win32") {
-            execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port}') do taskkill /F /PID %a`, { stdio: "pipe" });
-          } else {
-            execSync(`lsof -ti:${port} | xargs kill 2>/dev/null`, { stdio: "pipe" });
-          }
-          await new Promise(r => setTimeout(r, 500)); // Wait for port to free
-        } catch { /* no process to kill — proceed anyway */ }
+        killProcessOnPort(port);
+        await new Promise(r => setTimeout(r, 500)); // Wait for port to free
         steps.push("Stale server killed.");
       } else if (portOccupied) {
         // Source unchanged, server is running fine — just open browser
         steps.push("Dashboard already running.");
         const url = `http://localhost:${port}`;
-        const platform = process.platform;
-        try {
-          if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-          else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-          else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-        } catch { /* browser open is best-effort */ }
+        openBrowserBestEffort(url);
         return trackResponse("ctx_insight", {
           content: [{ type: "text" as const, text: `Dashboard already running at http://localhost:${port}` }],
         });
@@ -3033,12 +3077,7 @@ server.registerTool(
 
       // Open browser (cross-platform)
       const url = `http://localhost:${port}`;
-      const platform = process.platform;
-      try {
-        if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-        else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-        else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-      } catch { /* browser open is best-effort */ }
+      openBrowserBestEffort(url);
 
       steps.push(`Dashboard running at ${url}`);
 
