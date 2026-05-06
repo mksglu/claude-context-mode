@@ -36,7 +36,7 @@ import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
-import { resolveDepManifest, openDepStore, addDepToManifest, removeDepFromManifest } from "./deps.js";
+import { resolveDepManifest, openDepStore, addDepToManifest, removeDepFromManifest, writeResolvedConfig } from "./deps.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -2552,18 +2552,31 @@ server.registerTool(
             isError: true,
           });
         }
-        const result = addDepToManifest(getProjectDir(), name, dep_path);
+        const projectDir = getProjectDir();
+        const result = addDepToManifest(projectDir, name, dep_path);
         if (!result.added) {
           return trackResponse("ctx_deps", {
             content: [{ type: "text" as const, text: `Failed to add dependency: ${result.error}` }],
             isError: true,
           });
         }
+        // Sync resolved config immediately — no restart needed.
+        try {
+          const manifest = resolveDepManifest(projectDir);
+          if (manifest) {
+            const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+            const deps = Object.entries(manifest.dependencies).map(([n, d]) => {
+              const absPath = d.path.startsWith("/") ? d.path : resolve(projectDir, d.path);
+              return { name: n, path: absPath };
+            });
+            writeResolvedConfig(projectDir, configDir, deps);
+          }
+        } catch { /* best-effort — search still works after restart */ }
         if (_depStores) { for (const store of _depStores.values()) store.close(); }
         _depStores = null;
         _depStoresConfigMtime = 0;
         return trackResponse("ctx_deps", {
-          content: [{ type: "text" as const, text: `Added dependency "${name}" -> "${dep_path}". Written to .ctx-deps.json. Restart session for full bootstrapping (or ctx_deps refresh to re-open stores).` }],
+          content: [{ type: "text" as const, text: `Added dependency "${name}" -> "${dep_path}". Active immediately — no restart needed.` }],
         });
       }
 
@@ -2577,13 +2590,26 @@ server.registerTool(
             isError: true,
           });
         }
-        const result = removeDepFromManifest(getProjectDir(), name);
+        const projectDir = getProjectDir();
+        const result = removeDepFromManifest(projectDir, name);
         if (!result.removed) {
           return trackResponse("ctx_deps", {
             content: [{ type: "text" as const, text: `Failed to remove dependency: ${result.error}` }],
             isError: true,
           });
         }
+        // Sync resolved config immediately.
+        try {
+          const manifest = resolveDepManifest(projectDir);
+          const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+          const deps = manifest
+            ? Object.entries(manifest.dependencies).map(([n, d]) => {
+                const absPath = d.path.startsWith("/") ? d.path : resolve(projectDir, d.path);
+                return { name: n, path: absPath };
+              })
+            : [];
+          writeResolvedConfig(projectDir, configDir, deps);
+        } catch { /* best-effort */ }
         if (_depStores) {
           const store = _depStores.get(name);
           if (store) { store.close(); _depStores.delete(name); }

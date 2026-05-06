@@ -6,7 +6,7 @@
  * for upstream projects.
  */
 
-import { existsSync, readFileSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve, isAbsolute, join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -84,6 +84,37 @@ export function removeDepFromManifest(
     writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   } catch (e: any) { return { removed: false, error: e.message }; }
   return { removed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Resolved config — sync manifest changes for live reload
+// ---------------------------------------------------------------------------
+
+/**
+ * Regenerate the resolved deps config file so dep changes take effect
+ * immediately without requiring a session restart.
+ *
+ * Mirrors the SessionStart hook's write in hooks/sessionstart.mjs lines 268-279.
+ * Called from the ctx_deps add/remove handlers in server.ts.
+ */
+export function writeResolvedConfig(
+  projectDir: string,
+  configDirPath: string,
+  deps: Array<{ name: string; path: string }>,
+): void {
+  if (deps.length === 0) {
+    try {
+      const projHash = hashProjectPath(projectDir);
+      const resolvedPath = join(configDirPath, "context-mode", "content", `${projHash}-deps.json`);
+      if (existsSync(resolvedPath)) rmSync(resolvedPath);
+    } catch { /* best-effort */ }
+    return;
+  }
+  const contentDir = join(configDirPath, "context-mode", "content");
+  mkdirSync(contentDir, { recursive: true });
+  const projHash = hashProjectPath(projectDir);
+  const resolvedPath = join(contentDir, `${projHash}-deps.json`);
+  writeFileSync(resolvedPath, JSON.stringify({ deps }, null, 2), "utf-8");
 }
 
 // ---------------------------------------------------------------------------

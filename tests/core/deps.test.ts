@@ -9,6 +9,7 @@ import {
   openDepStore,
   addDepToManifest,
   removeDepFromManifest,
+  writeResolvedConfig,
 } from "../../src/deps.js";
 
 const TEST_ROOT = join(tmpdir(), "ctx-deps-test-" + Date.now());
@@ -136,6 +137,42 @@ describe("removeDepFromManifest", () => {
     const result = removeDepFromManifest(PROJECT_A, "nonexistent");
     expect(result.removed).toBe(false);
     expect(result.error).toContain("not found");
+  });
+});
+
+describe("writeResolvedConfig", () => {
+  const configDir = join(tmpdir(), ".claude-wrc-test");
+  const projDir = join(TEST_ROOT, "wrc-project");
+
+  beforeEach(() => {
+    cleanup();
+    mkdirSync(projDir, { recursive: true });
+    mkdirSync(join(configDir, "context-mode", "content"), { recursive: true });
+  });
+  afterEach(cleanup);
+
+  it("writes resolved config with absolute paths", () => {
+    writeResolvedConfig(projDir, configDir, [
+      { name: "a", path: "/abs/path/a" },
+      { name: "b", path: "/abs/path/b" },
+    ]);
+    const hash = require("crypto").createHash("sha256")
+      .update(projDir.replace(/\\/g, "/")).digest("hex").slice(0, 16);
+    const p = join(configDir, "context-mode", "content", `${hash}-deps.json`);
+    expect(existsSync(p)).toBe(true);
+    const data = JSON.parse(readFileSync(p, "utf-8"));
+    expect(data.deps.length).toBe(2);
+    expect(data.deps[0].name).toBe("a");
+    expect(data.deps[0].path).toBe("/abs/path/a");
+  });
+
+  it("deletes resolved config when deps is empty", () => {
+    const hash = require("crypto").createHash("sha256")
+      .update(projDir.replace(/\\/g, "/")).digest("hex").slice(0, 16);
+    const p = join(configDir, "context-mode", "content", `${hash}-deps.json`);
+    writeFileSync(p, "{}");
+    writeResolvedConfig(projDir, configDir, []);
+    expect(existsSync(p)).toBe(false);
   });
 });
 
