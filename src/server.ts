@@ -36,6 +36,7 @@ import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
+import { resolveDepManifest, openDepStore } from "./deps.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -103,12 +104,22 @@ function maybeIndexSessionEvents(store: ContentStore): void {
   try {
     const sessionsDir = getSessionDir();
     if (!existsSync(sessionsDir)) return;
-    const files = readdirSync(sessionsDir).filter(f => f.endsWith("-events.md"));
+    const files = readdirSync(sessionsDir).filter(
+      f => f.endsWith("-events.md") || f.includes("-deps-fallback-")
+    );
     for (const file of files) {
       const filePath = join(sessionsDir, file);
       try {
-        store.index({ path: filePath, source: "session-events" });
-        unlinkSync(filePath);
+        const isFallback = file.includes("-deps-fallback-");
+        const source = isFallback
+          ? `dep-fallback:${file.match(/-deps-fallback-(.+)\.md$/)?.[1] || "unknown"}`
+          : "session-events";
+        store.index({ path: filePath, source });
+        if (!isFallback) {
+          unlinkSync(filePath); // session events are one-shot
+        }
+        // Fallback files stay on disk — ContentStore content-hash stale
+        // detection handles re-indexing when upstream files change.
       } catch { /* best-effort per file */ }
     }
   } catch { /* best-effort — session continuity never blocks tools */ }
@@ -244,6 +255,56 @@ function getStore(): ContentStore {
   }
   maybeIndexSessionEvents(_store);
   return _store;
+}
+
+// ── Dependency stores (ctx-deps) ──
+
+/** Path to resolved deps config written by SessionStart hook. */
+function getResolvedDepsPath(): string {
+  const dir = dirname(getStorePath());
+  return join(dir, `${hashProjectDir()}-deps.json`);
+}
+
+interface ResolvedDepsFile {
+  deps: Array<{ name: string; path: string; configDir: string }>;
+}
+
+function readResolvedDeps(): Array<{ name: string; path: string; configDir: string }> | null {
+  try {
+    const p = getResolvedDepsPath();
+    if (!existsSync(p)) return null;
+    const parsed: ResolvedDepsFile = JSON.parse(readFileSync(p, "utf-8"));
+    return Array.isArray(parsed.deps) ? parsed.deps : null;
+  } catch { return null; }
+}
+
+let _depStores: Map<string, ContentStore> | null = null;
+let _depStoresConfigMtime: number = 0;
+
+function getDepStores(): Map<string, ContentStore> {
+  const resolvedPath = getResolvedDepsPath();
+  let mtime = 0;
+  try { mtime = statSync(resolvedPath).mtimeMs; } catch {}
+
+  const resolved = readResolvedDeps();
+  if (!resolved) return new Map();
+  if (_depStores && mtime === _depStoresConfigMtime) return _depStores;
+
+  const stores = new Map<string, ContentStore>();
+  for (const dep of resolved) {
+    const store = openDepStore(dep.path, dep.configDir);
+    if (store) {
+      // Transition: dep now has a full ContentStore — clean up stale
+      // fallback chunks that were indexed before upstream ran context-mode.
+      const currentStore = getStore();
+      currentStore.removeSource(`dep-fallback:${dep.name}`);
+      stores.set(dep.name, store);
+    }
+  }
+
+  _depStores = stores;
+  _depStoresConfigMtime = mtime;
+  return stores;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1578,6 +1639,7 @@ server.registerTool(
   async (params) => {
     try {
       const store = getStore();
+      const depStores = getDepStores();
       const sort = (params as Record<string, unknown>).sort as string || "relevance";
 
       // Guard: redirect when the index is empty — ctx_search is a follow-up
@@ -1668,23 +1730,19 @@ server.registerTool(
           continue;
         }
 
-        let results;
-        if (sort === "timeline") {
-          results = searchAllSources({
-            query: q,
-            limit: effectiveLimit,
-            store,
-            sort,
-            source,
-            contentType,
-            sessionDB: timelineDB,
-            projectDir: getProjectDir(),
-            configDir,
-            adapter: _detectedAdapter ?? undefined,
-          });
-        } else {
-          results = store.searchWithFallback(q, effectiveLimit, source, contentType);
-        }
+        const results = searchAllSources({
+          query: q,
+          limit: effectiveLimit,
+          store,
+          sort: sort as "relevance" | "timeline",
+          source,
+          contentType,
+          sessionDB: sort === "timeline" ? timelineDB : null,
+          projectDir: getProjectDir(),
+          configDir,
+          adapter: _detectedAdapter ?? undefined,
+          depStores,
+        });
 
         if (results.length === 0) {
           sections.push(`## ${q}\nNo results found.`);
@@ -2455,6 +2513,82 @@ server.registerTool(
             text: `Batch execution error: ${message}`,
           },
         ],
+        isError: true,
+      });
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────
+// Tool: deps — cross-project dependency status and refresh
+// ─────────────────────────────────────────────────────────
+
+server.registerTool(
+  "ctx_deps",
+  {
+    title: "Dependency Status",
+    description:
+      "Show status of cross-project context dependencies (ctx-deps). " +
+      "Lists each dependency with tier (full=upstream FTS5 DB, fallback=key files indexed into current DB) " +
+      "and chunk counts. " +
+      "Use 'refresh' to re-index fallback dependencies from upstream project files.",
+    inputSchema: z.object({
+      action: z
+        .enum(["status", "refresh"])
+        .optional()
+        .default("status")
+        .describe("'status' lists deps with tier info, 'refresh' re-indexes fallback deps"),
+    }),
+  },
+  async ({ action }) => {
+    try {
+      const resolved = readResolvedDeps();
+      if (!resolved || resolved.length === 0) {
+        return trackResponse("ctx_deps", {
+          content: [{
+            type: "text" as const,
+            text: "No dependencies configured. Create a .ctx-deps.json file in your project root:\n\n" +
+              '```json\n{\n  "dependencies": {\n    "my-dep": { "path": "../my-dep" }\n  }\n}\n```',
+          }],
+        });
+      }
+
+      if (action === "refresh") {
+        if (_depStores) {
+          for (const store of _depStores.values()) store.close();
+        }
+        _depStores = null;
+        _depStoresConfigMtime = 0;
+        const store = getStore();
+        maybeIndexSessionEvents(store);
+        return trackResponse("ctx_deps", {
+          content: [{
+            type: "text" as const,
+            text: `Refreshed dependency stores. ${resolved.length} dep(s) will be re-opened on next search.`,
+          }],
+        });
+      }
+
+      // status
+      const stores = getDepStores();
+      const lines: string[] = [`${resolved.length} dependency(s) configured:\n`];
+      for (const dep of resolved) {
+        const store = stores.get(dep.name);
+        const tier = store ? "full" : "fallback";
+        const chunks = store ? store.getStats().chunks : 0;
+        const icon = store ? "OK" : "WARN";
+        lines.push(`  [${icon}] ${dep.name} (${tier}, ${chunks} chunks) -> ${dep.path}`);
+        if (!store) {
+          lines.push(`       Run context-mode in ${dep.path} for full upstream context.`);
+        }
+      }
+      return trackResponse("ctx_deps", {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return trackResponse("ctx_deps", {
+        content: [{ type: "text" as const, text: `ctx_deps error: ${message}` }],
         isError: true,
       });
     }
