@@ -328,6 +328,10 @@ function findMinSpan(positionLists: number[][]): number {
   return minSpan;
 }
 
+export interface ContentStoreOptions {
+  readonly?: boolean;
+}
+
 export class ContentStore {
   #db: DatabaseInstance;
   #dbPath: string;
@@ -391,25 +395,27 @@ export class ContentStore {
   #fuzzyCache = new Map<string, string | null>();
   static readonly FUZZY_CACHE_SIZE = 256;
 
-  constructor(dbPath?: string, opts?: { readonly?: boolean }) {
-    const readonly = opts?.readonly ?? false;
+  constructor(dbPath?: string, opts?: ContentStoreOptions) {
+    const isReadonly = opts?.readonly ?? false;
     const Database = loadDatabase();
     this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
-    cleanOrphanedWALFiles(this.#dbPath);
+    if (!isReadonly) {
+      cleanOrphanedWALFiles(this.#dbPath);
+    }
     let db: DatabaseInstance;
     try {
       db = new Database(this.#dbPath, {
-        timeout: readonly ? 0 : 30000,
-        readonly,
+        timeout: isReadonly ? 0 : 30000,
+        readonly: isReadonly,
       });
-      if (!readonly) {
+      if (!isReadonly) {
         applyWALPragmas(db);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isSQLiteCorruptionError(msg)) {
-        if (readonly) throw new Error(`Cannot open read-only dep store (corrupt): ${this.#dbPath}`);
+        if (isReadonly) throw new Error(`Cannot open read-only dep store (corrupt): ${this.#dbPath}`);
         deleteDBFiles(this.#dbPath);
         cleanOrphanedWALFiles(this.#dbPath);
         try {
@@ -426,9 +432,9 @@ export class ContentStore {
     }
 
     this.#db = db;
-    this.#readonly = readonly;
+    this.#readonly = isReadonly;
 
-    if (!readonly) {
+    if (!isReadonly) {
       this.#initSchema();
     }
     this.#prepareStatements();
@@ -436,7 +442,7 @@ export class ContentStore {
 
   /** Delete this session's DB files. Call on process exit. */
   cleanup(): void {
-    if (this.#readonly) throw new Error("Cannot index into read-only ContentStore");
+    if (this.#readonly) throw new Error("Cannot cleanup read-only ContentStore");
     try {
       this.#db.close();
     } catch { /* ignore */ }
@@ -446,7 +452,7 @@ export class ContentStore {
   }
 
   removeSource(label: string): void {
-    if (this.#readonly) return;
+    if (this.#readonly) throw new Error("Cannot modify read-only ContentStore");
     withRetry(() => {
       this.#stmtDeleteChunksByLabel.run(label);
       this.#stmtDeleteChunksTrigramByLabel.run(label);

@@ -1811,3 +1811,163 @@ describe("Stopword filtering in search queries", () => {
     store.close();
   });
 });
+
+// ── Readonly mode guards ──────────────────────────────────────────
+
+describe("Readonly mode", () => {
+  const tmpDbPath = () => join(
+    tmpdir(),
+    `ctx-readonly-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+  );
+
+  test("opening with readonly: true works and can search pre-indexed content", () => {
+    const dbPath = tmpDbPath();
+    // First, index via writable store
+    const writer = new ContentStore(dbPath);
+    writer.index({ content: "# Hello\nTest content for readonly search.", source: "test-source" });
+    writer.close();
+
+    // Open readonly and search
+    const reader = new ContentStore(dbPath, { readonly: true });
+    const results = reader.search("Hello test content", 3);
+    assert.ok(results.length > 0, "Readonly store should find indexed content");
+    assert.equal(results[0].source, "test-source");
+    reader.close();
+
+    // Cleanup
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("index() throws when readonly is true", () => {
+    const dbPath = tmpDbPath();
+    const writer = new ContentStore(dbPath);
+    writer.close();
+    const reader = new ContentStore(dbPath, { readonly: true });
+    assert.throws(
+      () => reader.index({ content: "# New\nContent", source: "new" }),
+      /Cannot index into read-only ContentStore/,
+    );
+    reader.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("indexJSON() throws when readonly is true", () => {
+    const dbPath = tmpDbPath();
+    const writer = new ContentStore(dbPath);
+    writer.close();
+    const reader = new ContentStore(dbPath, { readonly: true });
+    assert.throws(
+      () => reader.indexJSON('{"a": 1}', "test"),
+      /Cannot index into read-only ContentStore/,
+    );
+    reader.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("indexPlainText() throws when readonly is true", () => {
+    const dbPath = tmpDbPath();
+    const writer = new ContentStore(dbPath);
+    writer.close();
+    const reader = new ContentStore(dbPath, { readonly: true });
+    assert.throws(
+      () => reader.indexPlainText("hello", "test"),
+      /Cannot index into read-only ContentStore/,
+    );
+    reader.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("cleanup() throws when readonly is true", () => {
+    const dbPath = tmpDbPath();
+    const writer = new ContentStore(dbPath);
+    writer.close();
+    const reader = new ContentStore(dbPath, { readonly: true });
+    assert.throws(
+      () => reader.cleanup(),
+      /Cannot cleanup read-only ContentStore/,
+    );
+    reader.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("removeSource() throws when readonly is true", () => {
+    const dbPath = tmpDbPath();
+    const writer = new ContentStore(dbPath);
+    writer.index({ content: "# Data\nSome data.", source: "removable" });
+    writer.close();
+    const reader = new ContentStore(dbPath, { readonly: true });
+    assert.throws(
+      () => reader.removeSource("removable"),
+      /Cannot modify read-only ContentStore/,
+    );
+    reader.close();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+
+  test("removeSource() deletes chunks by label when not readonly", () => {
+    const store = createStore();
+    store.index({ content: "# Keep\nKeep this.", source: "keep" });
+    store.index({ content: "# Gone\nRemove this.", source: "gone" });
+
+    assert.equal(store.listSources().length, 2);
+    assert.ok(store.getSourceMeta("gone") !== null);
+
+    store.removeSource("gone");
+
+    assert.equal(store.listSources().length, 1);
+    assert.equal(store.getSourceMeta("gone"), null);
+    assert.ok(store.getSourceMeta("keep") !== null);
+
+    store.close();
+  });
+
+  test("readonly store can search content indexed by writable store at same DB path", () => {
+    const dbPath = tmpDbPath();
+    // Index several sources with writable store
+    const writer = new ContentStore(dbPath);
+    writer.index({ content: "# Alpha\nAlpha content for searching.", source: "alpha" });
+    writer.index({ content: "# Beta\nBeta content for searching.", source: "beta" });
+    writer.index({ content: "# Gamma\nGamma content for searching.", source: "gamma" });
+    writer.close();
+
+    // Open readonly and verify all sources are searchable
+    const reader = new ContentStore(dbPath, { readonly: true });
+    const allResults = reader.search("content searching", 10);
+    assert.ok(allResults.length >= 3, "Readonly store should find all indexed sources");
+
+    const alphaResults = reader.search("Alpha", 3);
+    assert.ok(alphaResults.length > 0);
+    assert.equal(alphaResults[0].source, "alpha");
+
+    const betaResults = reader.search("Beta", 3);
+    assert.ok(betaResults.length > 0);
+    assert.equal(betaResults[0].source, "beta");
+
+    const gammaResults = reader.search("Gamma", 3);
+    assert.ok(gammaResults.length > 0);
+    assert.equal(gammaResults[0].source, "gamma");
+
+    // listSources should also work
+    const sources = reader.listSources();
+    assert.equal(sources.length, 3);
+
+    reader.close();
+
+    // Cleanup
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { unlinkSync(dbPath + suffix); } catch { /* ignore */ }
+    }
+  });
+});
