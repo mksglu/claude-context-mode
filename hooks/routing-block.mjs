@@ -86,7 +86,6 @@ ${includeCommands ? `
     → Call purge MCP tool with confirm: true. Warn: irreversible.
 
     After /clear or /compact: knowledge base preserved. Tell user: "context-mode knowledge base preserved. Use \`ctx purge\` to start fresh."
-    **NEVER** summarize any command output. **ALWAYS display it verbatim**.    
   </ctx_commands>
 ` : ''}
 </context_window_protection>`;
