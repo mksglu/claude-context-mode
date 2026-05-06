@@ -581,7 +581,7 @@ export class ContentStore {
         highlight(chunks, 1, char(2), char(3)) AS highlighted
       FROM chunks
       JOIN sources ON sources.id = chunks.source_id
-      WHERE chunks MATCH ? AND sources.label LIKE ?
+      WHERE chunks MATCH ? AND sources.label LIKE ? ESCAPE '\\'
       ORDER BY rank
       LIMIT ?
     `);
@@ -626,7 +626,7 @@ export class ContentStore {
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
       FROM chunks_trigram
       JOIN sources ON sources.id = chunks_trigram.source_id
-      WHERE chunks_trigram MATCH ? AND sources.label LIKE ?
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ? ESCAPE '\\'
       ORDER BY rank
       LIMIT ?
     `);
@@ -673,7 +673,7 @@ export class ContentStore {
         highlight(chunks, 1, char(2), char(3)) AS highlighted
       FROM chunks
       JOIN sources ON sources.id = chunks.source_id
-      WHERE chunks MATCH ? AND sources.label LIKE ? AND chunks.content_type = ?
+      WHERE chunks MATCH ? AND sources.label LIKE ? ESCAPE '\\' AND chunks.content_type = ?
       ORDER BY rank
       LIMIT ?
     `);
@@ -718,7 +718,7 @@ export class ContentStore {
         highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
       FROM chunks_trigram
       JOIN sources ON sources.id = chunks_trigram.source_id
-      WHERE chunks_trigram MATCH ? AND sources.label LIKE ? AND chunks_trigram.content_type = ?
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ? ESCAPE '\\' AND chunks_trigram.content_type = ?
       ORDER BY rank
       LIMIT ?
     `);
@@ -944,7 +944,8 @@ export class ContentStore {
   }
 
   #sourceFilterParam(source: string, sourceMatchMode: SourceMatchMode): string {
-    return sourceMatchMode === "exact" ? source : `%${source}%`;
+    if (sourceMatchMode === "exact") return source;
+    return `%${source.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
   }
 
   search(

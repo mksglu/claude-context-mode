@@ -21,6 +21,29 @@
 import { existsSync } from "node:fs";
 import { SessionDB } from "./db.js";
 
+const persistentDBs = new Map<string, SessionDB>();
+
+function getPersistentDB(sessionDbPath: string): SessionDB {
+  let sdb = persistentDBs.get(sessionDbPath);
+  if (!sdb) {
+    sdb = new SessionDB({ dbPath: sessionDbPath });
+    persistentDBs.set(sessionDbPath, sdb);
+  }
+  return sdb;
+}
+
+export function closePersistentToolCallDBs(): void {
+  for (const [dbPath, sdb] of persistentDBs.entries()) {
+    try {
+      sdb.close();
+    } catch {
+      // Best-effort cleanup only.
+    } finally {
+      persistentDBs.delete(dbPath);
+    }
+  }
+}
+
 /**
  * Shape returned by {@link restoreSessionStats}. Subset of the in-memory
  * `sessionStats` object the MCP server keeps — only the fields that can
@@ -53,15 +76,16 @@ export function persistToolCallCounter(
 ): void {
   try {
     if (!existsSync(sessionDbPath)) return;
-    const sdb = new SessionDB({ dbPath: sessionDbPath });
-    try {
-      const sid = sdb.getLatestSessionId();
-      if (!sid) return;
-      sdb.incrementToolCall(sid, toolName, bytes);
-    } finally {
-      sdb.close();
-    }
+    const sdb = getPersistentDB(sessionDbPath);
+    const sid = sdb.getLatestSessionId();
+    if (!sid) return;
+    sdb.incrementToolCall(sid, toolName, bytes);
   } catch {
+    const cached = persistentDBs.get(sessionDbPath);
+    if (cached) {
+      try { cached.close(); } catch { /* best-effort */ }
+      persistentDBs.delete(sessionDbPath);
+    }
     // Best-effort: counter must never throw and break the parent tool call.
   }
 }

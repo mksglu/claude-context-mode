@@ -739,6 +739,33 @@ describe("Source-Scoped Search", () => {
     store.close();
   });
 
+  test("LIKE source filter treats wildcard characters literally", () => {
+    const store = createStore();
+    store.index({
+      content: "# Release\n\nsentinel shared token",
+      source: "release_2026",
+    });
+    store.index({
+      content: "# Release\n\nsentinel shared token",
+      source: "releaseX2026",
+    });
+    store.index({
+      content: "# Plain\n\nsentinel shared token",
+      source: "plain docs",
+    });
+
+    const underscoreResults = store.search("sentinel", 5, "release_2026");
+    assert.ok(underscoreResults.length > 0, "Literal underscore source should match itself");
+    assert.ok(
+      underscoreResults.every((r) => r.source === "release_2026"),
+      `Wildcard leak: ${underscoreResults.map((r) => r.source).join(", ")}`,
+    );
+
+    const percentResults = store.search("sentinel", 5, "%");
+    assert.equal(percentResults.length, 0, "Literal percent should not behave as match-all wildcard");
+    store.close();
+  });
+
   test("listSources returns all indexed sources", () => {
     const store = createStore();
     store.index({ content: "# A\n\nContent A.", source: "Source A" });

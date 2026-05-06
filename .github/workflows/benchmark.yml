@@ -1,0 +1,69 @@
+name: Benchmark Guard
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, next]
+  push:
+    branches: [main, next]
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run benchmark suite
+        run: npm run benchmark | tee benchmark-output.txt
+
+      - name: Enforce baseline thresholds
+        run: |
+          node -e "
+          const fs = require('fs');
+          const out = fs.readFileSync('benchmark-output.txt', 'utf8');
+
+          const requireMatch = (re, label) => {
+            const m = out.match(re);
+            if (!m) {
+              console.error('Missing benchmark signal:', label);
+              process.exit(1);
+            }
+            return m;
+          };
+
+          if (!out.includes('=== Full Results Table ===')) {
+            console.error('Full benchmark table not found');
+            process.exit(1);
+          }
+
+          const jsHello = requireMatch(/\\|\\s+hello-world\\s+\\|\\s+javascript\\s+\\|\\s+([0-9.]+)/, 'hello-world/javascript');
+          const jsHelloAvg = Number(jsHello[1]);
+          if (!Number.isFinite(jsHelloAvg) || jsHelloAvg > 5000) {
+            console.error('hello-world/javascript avg too high:', jsHelloAvg);
+            process.exit(1);
+          }
+
+          const fuzzySpeedup = requireMatch(/speedup\\s+:\\s+([0-9.]+)×/, 'fuzzy speedup');
+          const fuzzyX = Number(fuzzySpeedup[1]);
+          if (!Number.isFinite(fuzzyX) || fuzzyX < 1.1) {
+            console.error('Fuzzy-cache speedup below threshold:', fuzzyX);
+            process.exit(1);
+          }
+
+          const dedupSpeedup = requireMatch(/speedup from dedup\\s+:\\s+([0-9.]+)×/, 'token-dedup speedup');
+          const dedupX = Number(dedupSpeedup[1]);
+          if (!Number.isFinite(dedupX) || dedupX < 1.02) {
+            console.error('Token-dedup speedup below threshold:', dedupX);
+            process.exit(1);
+          }
+
+          console.log('Benchmark thresholds passed');
+          "

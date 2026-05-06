@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { afterAll, describe, expect, test } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
 import {
+  closePersistentToolCallDBs,
   persistToolCallCounter,
   restoreSessionStats,
 } from "../../src/session/persist-tool-calls.js";
@@ -28,6 +29,7 @@ import {
 const tmpDirs: string[] = [];
 
 afterAll(() => {
+  closePersistentToolCallDBs();
   for (const dir of tmpDirs) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
@@ -106,6 +108,24 @@ describe("Cycle 1 — persistToolCallCounter (write-back)", () => {
       const stats = db.getToolCallStats("sess-write-2");
       expect(stats.totalCalls).toBe(2);
       expect(stats.totalBytesReturned).toBe(1200);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("cached persistence connection can be closed and reopened", () => {
+    const dbPath = freshDbPath();
+    seedSession(dbPath, "sess-write-cache");
+
+    persistToolCallCounter(dbPath, "ctx_search", 100);
+    closePersistentToolCallDBs();
+    persistToolCallCounter(dbPath, "ctx_search", 200);
+
+    const db = new SessionDB({ dbPath });
+    try {
+      const stats = db.getToolCallStats("sess-write-cache");
+      expect(stats.totalCalls).toBe(2);
+      expect(stats.totalBytesReturned).toBe(300);
     } finally {
       db.close();
     }

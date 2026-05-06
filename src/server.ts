@@ -30,12 +30,15 @@ import {
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
 import { getWorktreeSuffix, SessionDB } from "./session/db.js";
-import { persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
+import { closePersistentToolCallDBs, persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
+import { createSearchThrottle, coerceJsonArray, coerceCommandsArray, SEARCH_BLOCK_AFTER, SEARCH_MAX_RESULTS_AFTER, SEARCH_WINDOW_MS } from "./tools/indexing-search.js";
+import { createMinimalDbAdapter } from "./tools/meta-tools.js";
+import { FETCH_PREVIEW_LIMIT, FETCH_TTL_MS } from "./tools/fetch-tools.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -1499,42 +1502,7 @@ server.registerTool(
 // Tool: search — progressive throttling
 // ─────────────────────────────────────────────────────────
 
-// Track search calls per 60-second window for progressive throttling
-let searchCallCount = 0;
-let searchWindowStart = Date.now();
-const SEARCH_WINDOW_MS = 60_000;
-const SEARCH_MAX_RESULTS_AFTER = 3; // after 3 calls: 1 result per query
-const SEARCH_BLOCK_AFTER = 8; // after 8 calls: refuse, demand batching
-
-/**
- * Defensive coercion: parse stringified JSON arrays.
- * Works around Claude Code double-serialization bug where array params
- * are sent as JSON strings (e.g. "[\"a\",\"b\"]" instead of ["a","b"]).
- * See: https://github.com/anthropics/claude-code/issues/34520
- */
-function coerceJsonArray(val: unknown): unknown {
-  if (typeof val === "string") {
-    try {
-      const parsed = JSON.parse(val);
-      if (Array.isArray(parsed)) return parsed;
-    } catch { /* not valid JSON, let zod handle the error */ }
-  }
-  return val;
-}
-
-/**
- * Coerce commands array: handles double-serialization AND the case where
- * the model passes plain command strings instead of {label, command} objects.
- */
-function coerceCommandsArray(val: unknown): unknown {
-  const arr = coerceJsonArray(val);
-  if (Array.isArray(arr)) {
-    return arr.map((item, i) =>
-      typeof item === "string" ? { label: `cmd_${i + 1}`, command: item } : item
-    );
-  }
-  return arr;
-}
+const searchThrottle = createSearchThrottle();
 
 server.registerTool(
   "ctx_search",
@@ -1617,20 +1585,14 @@ server.registerTool(
 
       const { limit = 3, source, contentType } = params as { limit?: number; source?: string; contentType?: "code" | "prose" };
 
-      // Progressive throttling: track calls in time window
-      const now = Date.now();
-      if (now - searchWindowStart > SEARCH_WINDOW_MS) {
-        searchCallCount = 0;
-        searchWindowStart = now;
-      }
-      searchCallCount++;
+      const throttle = searchThrottle.record(getSessionDbPath(), limit);
 
       // After SEARCH_BLOCK_AFTER calls: refuse
-      if (searchCallCount > SEARCH_BLOCK_AFTER) {
+      if (throttle.blocked) {
         return trackResponse("ctx_search", {
           content: [{
             type: "text" as const,
-            text: `BLOCKED: ${searchCallCount} search calls in ${Math.round((now - searchWindowStart) / 1000)}s. ` +
+            text: `BLOCKED: ${throttle.callCount} search calls in ${Math.round(throttle.elapsedMs / 1000)}s. ` +
               "You're flooding context. STOP making individual search calls. " +
               "Use ctx_batch_execute(commands, queries) for your next research step.",
           }],
@@ -1638,10 +1600,7 @@ server.registerTool(
         });
       }
 
-      // Determine per-query result limit based on throttle level
-      const effectiveLimit = searchCallCount > SEARCH_MAX_RESULTS_AFTER
-        ? 1 // after 3 calls: only 1 result per query
-        : Math.min(limit, 2); // normal: max 2
+      const effectiveLimit = throttle.effectiveLimit;
 
       const MAX_TOTAL = 40 * 1024; // 40KB total cap
       let totalSize = 0;
@@ -1717,8 +1676,8 @@ server.registerTool(
       }
 
       // Add throttle warning after threshold
-      if (searchCallCount >= SEARCH_MAX_RESULTS_AFTER) {
-        output += `\n\n⚠ search call #${searchCallCount}/${SEARCH_BLOCK_AFTER} in this window. ` +
+      if (throttle.callCount >= SEARCH_MAX_RESULTS_AFTER) {
+        output += `\n\n⚠ search call #${throttle.callCount}/${SEARCH_BLOCK_AFTER} in this window. ` +
           `Results limited to ${effectiveLimit}/query. ` +
           `Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`;
       }
@@ -1832,9 +1791,6 @@ main();
 // ─────────────────────────────────────────────────────────
 // fetch_and_index helpers — split into parallel-safe fetch and serial-only index
 // ─────────────────────────────────────────────────────────
-
-const FETCH_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const FETCH_PREVIEW_LIMIT = 3072;
 
 type FetchOneResult =
   | { kind: "cached"; label: string; chunkCount: number; estimatedBytes: number; ageStr: string }
@@ -2465,20 +2421,6 @@ server.registerTool(
 // Tool: stats
 // ─────────────────────────────────────────────────────────
 
-/**
- * Create a minimal in-memory DB adapter for when the session DB is unavailable.
- * All queries return empty results so AnalyticsEngine.queryAll() still works.
- */
-function createMinimalDb(): import("./session/analytics.js").DatabaseAdapter {
-  return {
-    prepare: () => ({
-      run: () => undefined,
-      get: (..._args: unknown[]) => ({ cnt: 0, compact_count: 0, minutes: null, rate: 0, avg: 0, outcome: "exploratory" }),
-      all: () => [],
-    }),
-  };
-}
-
 server.registerTool(
   "ctx_stats",
   {
@@ -2519,14 +2461,14 @@ server.registerTool(
       } else {
         // No session DB — build a minimal report from runtime stats only.
         // Lifetime still meaningful (other projects, auto-memory) so include it.
-        const engine = new AnalyticsEngine(createMinimalDb());
+        const engine = new AnalyticsEngine(createMinimalDbAdapter());
         const report = engine.queryAll(sessionStats);
         const lifetime = getLifetimeStats();
         text = formatReport(report, VERSION, _latestVersion, { lifetime });
       }
     } catch {
       // Session DB not available or incompatible — build minimal report from runtime stats
-      const engine = new AnalyticsEngine(createMinimalDb());
+      const engine = new AnalyticsEngine(createMinimalDbAdapter());
       const report = engine.queryAll(sessionStats);
       let lifetime;
       try { lifetime = getLifetimeStats(); } catch { /* never block ctx_stats */ }
@@ -3085,6 +3027,7 @@ async function main() {
     if (_insightChild && _insightChild.pid && !_insightChild.killed) {
       try { _insightChild.kill("SIGTERM"); } catch { /* best effort */ }
     }
+    closePersistentToolCallDBs();
   };
   const gracefulShutdown = async () => {
     // Final stats flush — bypass throttle so the last 0-500ms of
