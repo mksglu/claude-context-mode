@@ -331,6 +331,7 @@ function findMinSpan(positionLists: number[][]): number {
 export class ContentStore {
   #db: DatabaseInstance;
   #dbPath: string;
+  #readonly: boolean;
 
   // ── Cached Prepared Statements ──
   // Prepared once at construction, reused on every call to avoid
@@ -390,18 +391,25 @@ export class ContentStore {
   #fuzzyCache = new Map<string, string | null>();
   static readonly FUZZY_CACHE_SIZE = 256;
 
-  constructor(dbPath?: string) {
+  constructor(dbPath?: string, opts?: { readonly?: boolean }) {
+    const readonly = opts?.readonly ?? false;
     const Database = loadDatabase();
     this.#dbPath =
       dbPath ?? join(tmpdir(), `context-mode-${process.pid}.db`);
     cleanOrphanedWALFiles(this.#dbPath);
     let db: DatabaseInstance;
     try {
-      db = new Database(this.#dbPath, { timeout: 30000 });
-      applyWALPragmas(db);
+      db = new Database(this.#dbPath, {
+        timeout: readonly ? 0 : 30000,
+        readonly,
+      });
+      if (!readonly) {
+        applyWALPragmas(db);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isSQLiteCorruptionError(msg)) {
+        if (readonly) throw new Error(`Cannot open read-only dep store (corrupt): ${this.#dbPath}`);
         deleteDBFiles(this.#dbPath);
         cleanOrphanedWALFiles(this.#dbPath);
         try {
@@ -409,26 +417,41 @@ export class ContentStore {
           applyWALPragmas(db);
         } catch (retryErr) {
           throw new Error(
-            `Failed to create fresh DB after deleting corrupt file: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`
+            `Failed to create database after corruption: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
           );
         }
       } else {
         throw err;
       }
     }
+
     this.#db = db;
-    this.#initSchema();
+    this.#readonly = readonly;
+
+    if (!readonly) {
+      this.#initSchema();
+    }
     this.#prepareStatements();
   }
 
   /** Delete this session's DB files. Call on process exit. */
   cleanup(): void {
+    if (this.#readonly) throw new Error("Cannot index into read-only ContentStore");
     try {
       this.#db.close();
     } catch { /* ignore */ }
     for (const suffix of ["", "-wal", "-shm"]) {
       try { unlinkSync(this.#dbPath + suffix); } catch { /* ignore */ }
     }
+  }
+
+  removeSource(label: string): void {
+    if (this.#readonly) return;
+    withRetry(() => {
+      this.#stmtDeleteChunksByLabel.run(label);
+      this.#stmtDeleteChunksTrigramByLabel.run(label);
+      this.#stmtDeleteSourcesByLabel.run(label);
+    });
   }
 
   // ── Schema ──
@@ -789,6 +812,7 @@ export class ContentStore {
     path?: string;
     source?: string;
   }): IndexResult {
+    if (this.#readonly) throw new Error("Cannot index into read-only ContentStore");
     const { content, path, source } = options;
 
     // Treat empty string as "no content" so an empty `content` paired with a
@@ -825,6 +849,7 @@ export class ContentStore {
     source: string,
     linesPerChunk: number = 20,
   ): IndexResult {
+    if (this.#readonly) throw new Error("Cannot index into read-only ContentStore");
     if (!content || content.trim().length === 0) {
       return this.#insertChunks([], source, "");
     }
@@ -852,6 +877,7 @@ export class ContentStore {
     source: string,
     maxChunkBytes: number = MAX_CHUNK_BYTES,
   ): IndexResult {
+    if (this.#readonly) throw new Error("Cannot index into read-only ContentStore");
     if (!content || content.trim().length === 0) {
       return this.indexPlainText("", source);
     }
