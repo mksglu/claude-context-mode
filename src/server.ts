@@ -36,7 +36,7 @@ import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
-import { resolveDepManifest, openDepStore } from "./deps.js";
+import { resolveDepManifest, openDepStore, addDepToManifest, removeDepFromManifest } from "./deps.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -2528,26 +2528,82 @@ server.registerTool(
   {
     title: "Dependency Status",
     description:
-      "Show status of cross-project context dependencies (ctx-deps). " +
+      "Manage cross-project context dependencies (ctx-deps). " +
       "Lists each dependency with tier (full=upstream FTS5 DB, fallback=key files indexed into current DB) " +
       "and chunk counts. " +
-      "Use 'refresh' to re-index fallback dependencies from upstream project files.",
+      "Use 'add <name> <path>' to register a new dependency, 'remove <name>' to drop one, or 'refresh' to re-index fallback content.",
     inputSchema: z.object({
       action: z
-        .enum(["status", "refresh"])
+        .enum(["status", "refresh", "add", "remove"])
         .optional()
         .default("status")
-        .describe("'status' lists deps with tier info, 'refresh' re-indexes fallback deps"),
+        .describe("'status' lists deps, 'add' registers a dep, 'remove' drops one, 'refresh' re-indexes fallback deps"),
+      name: z.string().optional().describe("Dependency name (required for 'add' and 'remove')"),
+      dep_path: z.string().optional().describe("Path to dependency project, relative or absolute (required for 'add')"),
     }),
   },
-  async ({ action }) => {
+  async ({ action, name, dep_path }) => {
     try {
+      // ── add ──
+      if (action === "add") {
+        if (!name || !dep_path) {
+          return trackResponse("ctx_deps", {
+            content: [{ type: "text" as const, text: "Usage: ctx_deps add <name> <path>. Both name and dep_path are required." }],
+            isError: true,
+          });
+        }
+        const result = addDepToManifest(getProjectDir(), name, dep_path);
+        if (!result.added) {
+          return trackResponse("ctx_deps", {
+            content: [{ type: "text" as const, text: `Failed to add dependency: ${result.error}` }],
+            isError: true,
+          });
+        }
+        if (_depStores) { for (const store of _depStores.values()) store.close(); }
+        _depStores = null;
+        _depStoresConfigMtime = 0;
+        return trackResponse("ctx_deps", {
+          content: [{ type: "text" as const, text: `Added dependency "${name}" -> "${dep_path}". Written to .ctx-deps.json. Restart session for full bootstrapping (or ctx_deps refresh to re-open stores).` }],
+        });
+      }
+
       const resolved = readResolvedDeps();
+
+      // ── remove ──
+      if (action === "remove") {
+        if (!name) {
+          return trackResponse("ctx_deps", {
+            content: [{ type: "text" as const, text: "Usage: ctx_deps remove <name>." }],
+            isError: true,
+          });
+        }
+        const result = removeDepFromManifest(getProjectDir(), name);
+        if (!result.removed) {
+          return trackResponse("ctx_deps", {
+            content: [{ type: "text" as const, text: `Failed to remove dependency: ${result.error}` }],
+            isError: true,
+          });
+        }
+        if (_depStores) {
+          const store = _depStores.get(name);
+          if (store) { store.close(); _depStores.delete(name); }
+        }
+        _depStoresConfigMtime = 0;
+        const currentStore = getStore();
+        currentStore.removeSource(`dep-fallback:${name}`);
+        currentStore.removeSource(`dep:${name}`);
+        return trackResponse("ctx_deps", {
+          content: [{ type: "text" as const, text: `Removed dependency "${name}".` }],
+        });
+      }
+
       if (!resolved || resolved.length === 0) {
         return trackResponse("ctx_deps", {
           content: [{
             type: "text" as const,
-            text: "No dependencies configured. Create a .ctx-deps.json file in your project root:\n\n" +
+            text: "No dependencies configured. Use ctx_deps add <name> <path> to register one:\n\n" +
+              '  ctx_deps add my-dep ../my-dep\n\n' +
+              'Or create .ctx-deps.json manually:\n\n' +
               '```json\n{\n  "dependencies": {\n    "my-dep": { "path": "../my-dep" }\n  }\n}\n```',
           }],
         });

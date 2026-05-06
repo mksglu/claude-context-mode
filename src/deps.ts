@@ -6,8 +6,8 @@
  * for upstream projects.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { resolve, isAbsolute, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
+import { resolve, isAbsolute, join, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { ContentStore } from "./store.js";
@@ -40,6 +40,50 @@ export function resolveDepManifest(projectDir: string): DepManifest | null {
   } catch {
     return null;
   }
+}
+
+export function addDepToManifest(
+  projectDir: string,
+  name: string,
+  depPath: string,
+): { added: boolean; error?: string } {
+  const manifestPath = join(projectDir, ".ctx-deps.json");
+  let manifest: DepManifest;
+  if (existsSync(manifestPath)) {
+    try { manifest = JSON.parse(readFileSync(manifestPath, "utf-8")); } catch { return { added: false, error: "Invalid JSON in .ctx-deps.json" }; }
+  } else {
+    manifest = { dependencies: {} };
+  }
+  if (!manifest.dependencies) manifest.dependencies = {};
+  if (manifest.dependencies[name]) {
+    return { added: false, error: `Dependency "${name}" already exists` };
+  }
+  manifest.dependencies[name] = { path: depPath };
+  try {
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  } catch (e: any) { return { added: false, error: e.message }; }
+  return { added: true };
+}
+
+export function removeDepFromManifest(
+  projectDir: string,
+  name: string,
+): { removed: boolean; error?: string; deletedFile?: boolean } {
+  const manifestPath = join(projectDir, ".ctx-deps.json");
+  if (!existsSync(manifestPath)) return { removed: false, error: "No .ctx-deps.json found" };
+  let manifest: DepManifest;
+  try { manifest = JSON.parse(readFileSync(manifestPath, "utf-8")); } catch { return { removed: false, error: "Invalid JSON in .ctx-deps.json" }; }
+  if (!manifest.dependencies?.[name]) return { removed: false, error: `Dependency "${name}" not found` };
+  delete manifest.dependencies[name];
+  const keys = Object.keys(manifest.dependencies);
+  try {
+    if (keys.length === 0) {
+      rmSync(manifestPath);
+      return { removed: true, deletedFile: true };
+    }
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  } catch (e: any) { return { removed: false, error: e.message }; }
+  return { removed: true };
 }
 
 // ---------------------------------------------------------------------------

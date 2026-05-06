@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ContentStore } from "../../src/store.js";
@@ -7,6 +7,8 @@ import {
   resolveDepManifest,
   computeDepDBPath,
   openDepStore,
+  addDepToManifest,
+  removeDepFromManifest,
 } from "../../src/deps.js";
 
 const TEST_ROOT = join(tmpdir(), "ctx-deps-test-" + Date.now());
@@ -54,6 +56,86 @@ describe("resolveDepManifest", () => {
     });
     const manifest = resolveDepManifest(join(TEST_ROOT, "empty-path"));
     expect(manifest).toBeNull();
+  });
+});
+
+describe("addDepToManifest", () => {
+  beforeEach(() => { cleanup(); mkdirSync(PROJECT_A, { recursive: true }); });
+  afterEach(cleanup);
+
+  it("creates .ctx-deps.json and adds a dependency", () => {
+    expect(existsSync(join(PROJECT_A, ".ctx-deps.json"))).toBe(false);
+    const result = addDepToManifest(PROJECT_A, "my-dep", "../my-dep");
+    expect(result.added).toBe(true);
+    expect(existsSync(join(PROJECT_A, ".ctx-deps.json"))).toBe(true);
+    const manifest = resolveDepManifest(PROJECT_A);
+    expect(manifest?.dependencies["my-dep"].path).toBe("../my-dep");
+  });
+
+  it("adds to existing .ctx-deps.json", () => {
+    writeFileSync(join(PROJECT_A, ".ctx-deps.json"), JSON.stringify({
+      dependencies: { "existing": { path: "../existing" } },
+    }));
+    const result = addDepToManifest(PROJECT_A, "new-dep", "../new-dep");
+    expect(result.added).toBe(true);
+    const manifest = resolveDepManifest(PROJECT_A);
+    expect(manifest?.dependencies).toHaveProperty("existing");
+    expect(manifest?.dependencies).toHaveProperty("new-dep");
+  });
+
+  it("returns error for duplicate name", () => {
+    writeFileSync(join(PROJECT_A, ".ctx-deps.json"), JSON.stringify({
+      dependencies: { "dup": { path: "../first" } },
+    }));
+    const result = addDepToManifest(PROJECT_A, "dup", "../second");
+    expect(result.added).toBe(false);
+    expect(result.error).toContain("already exists");
+  });
+
+  it("returns error for malformed existing .ctx-deps.json", () => {
+    writeFileSync(join(PROJECT_A, ".ctx-deps.json"), "{not json}");
+    const result = addDepToManifest(PROJECT_A, "dep", "../dep");
+    expect(result.added).toBe(false);
+    expect(result.error).toContain("Invalid JSON");
+  });
+});
+
+describe("removeDepFromManifest", () => {
+  beforeEach(() => {
+    cleanup();
+    mkdirSync(PROJECT_A, { recursive: true });
+    writeFileSync(join(PROJECT_A, ".ctx-deps.json"), JSON.stringify({
+      dependencies: { "keep": { path: "../keep" }, "drop": { path: "../drop" } },
+    }));
+  });
+  afterEach(cleanup);
+
+  it("removes a dependency", () => {
+    const result = removeDepFromManifest(PROJECT_A, "drop");
+    expect(result.removed).toBe(true);
+    const manifest = resolveDepManifest(PROJECT_A);
+    expect(manifest?.dependencies).toHaveProperty("keep");
+    expect(manifest?.dependencies).not.toHaveProperty("drop");
+  });
+
+  it("deletes .ctx-deps.json when last dep removed", () => {
+    removeDepFromManifest(PROJECT_A, "drop");
+    const result = removeDepFromManifest(PROJECT_A, "keep");
+    expect(result.removed).toBe(true);
+    expect(result.deletedFile).toBe(true);
+    expect(existsSync(join(PROJECT_A, ".ctx-deps.json"))).toBe(false);
+  });
+
+  it("returns error when .ctx-deps.json does not exist", () => {
+    const result = removeDepFromManifest(join(TEST_ROOT, "no-file"), "dep");
+    expect(result.removed).toBe(false);
+    expect(result.error).toContain("No .ctx-deps.json");
+  });
+
+  it("returns error for unknown name", () => {
+    const result = removeDepFromManifest(PROJECT_A, "nonexistent");
+    expect(result.removed).toBe(false);
+    expect(result.error).toContain("not found");
   });
 });
 
