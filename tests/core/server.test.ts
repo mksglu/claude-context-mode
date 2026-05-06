@@ -1194,40 +1194,28 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
 // containing a Read deny pattern matching the target file.
 
 describe("ctx_index: Read deny-policy enforcement (#442)", () => {
-  const projectDir = mkdtempSync(join(tmpdir(), "ctx-index-deny-"));
-  const secretFile = "secret.env";
-  const allowedFile = "public-doc.md";
-  const secretMarker = `secret-marker-${process.pid}-${Date.now()}`;
-  const allowedMarker = `allowed-marker-${process.pid}-${Date.now()}`;
-
-  beforeAll(() => {
-    mkdirSync(join(projectDir, ".claude"), { recursive: true });
+  // Per-test projectDir prevents FTS5 cross-pollution between tests and
+  // removes order-coupling on the empty-store cross-check.
+  function setupProject(
+    denyRules: string[],
+    files: Record<string, string>,
+  ): string {
+    const dir = mkdtempSync(join(tmpdir(), "ctx-index-deny-"));
+    mkdirSync(join(dir, ".claude"), { recursive: true });
     writeFileSync(
-      join(projectDir, ".claude", "settings.json"),
-      JSON.stringify({
-        permissions: {
-          deny: ["Read(./secret.env)", "Read(secret.env)"],
-        },
-      }),
+      join(dir, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { deny: denyRules } }),
       "utf-8",
     );
-    writeFileSync(
-      join(projectDir, secretFile),
-      `SECRET_TOKEN=${secretMarker}\n`,
-      "utf-8",
-    );
-    writeFileSync(
-      join(projectDir, allowedFile),
-      `# Public doc\n\n${allowedMarker}\n`,
-      "utf-8",
-    );
-  });
+    for (const [rel, content] of Object.entries(files)) {
+      const full = join(dir, rel);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, content, "utf-8");
+    }
+    return dir;
+  }
 
-  afterAll(() => {
-    rmSync(projectDir, { recursive: true, force: true });
-  });
-
-  function spawnServerInProject(): ChildProcess {
+  function spawnServerInProject(projectDir: string): ChildProcess {
     return spawn("node", [mcpEntry], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
@@ -1238,14 +1226,19 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
     });
   }
 
+  // Rejects on timeout (rather than resolving undefined) so silent
+  // server-spawn / import failures surface as a failing test instead of
+  // false-positive assertions on optional-chained undefined access.
   async function awaitRpc(
     proc: ChildProcess,
-    id: number,
-    request: Record<string, unknown>,
+    request: Record<string, unknown> & { id: number },
     timeoutMs = 15_000,
-  ): Promise<DoctorJsonRpcResponse | undefined> {
-    return new Promise((resolve) => {
+  ): Promise<DoctorJsonRpcResponse> {
+    const id = request.id;
+    return new Promise((resolve, reject) => {
       let buffer = "";
+      let stderr = "";
+      const onStderr = (d: Buffer) => { stderr += d.toString(); };
       const onData = (d: Buffer) => {
         buffer += d.toString();
         let idx: number;
@@ -1257,112 +1250,204 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
             const parsed = JSON.parse(line) as DoctorJsonRpcResponse;
             if (parsed.id === id) {
               proc.stdout!.off("data", onData);
+              proc.stderr!.off("data", onStderr);
               clearTimeout(timer);
               resolve(parsed);
               return;
             }
-          } catch { /* ignore */ }
+          } catch { /* not JSON-RPC line */ }
         }
       };
       const timer = setTimeout(() => {
         proc.stdout!.off("data", onData);
-        resolve(undefined);
+        proc.stderr!.off("data", onStderr);
+        reject(new Error(
+          `awaitRpc timeout after ${timeoutMs}ms for id=${id} method=${request.method}\n` +
+          `stderr: ${stderr.slice(-2000)}`,
+        ));
       }, timeoutMs);
       proc.stdout!.on("data", onData);
+      proc.stderr!.on("data", onStderr);
       sendRpc(proc, request);
     });
   }
 
+  async function initServer(proc: ChildProcess, clientName: string): Promise<void> {
+    await awaitRpc(proc, {
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: clientName, version: "1.0" } },
+    });
+    sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+  }
+
+  function killProc(proc: ChildProcess): void {
+    try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+  }
+
   test("ctx_index({ path: <denied> }) returns deny-policy error and never indexes", async () => {
-    const proc = spawnServerInProject();
+    const secretMarker = `secret-marker-${process.pid}-${Date.now()}`;
+    const projectDir = setupProject(
+      ["Read(./secret.env)", "Read(secret.env)"],
+      { "secret.env": `SECRET_TOKEN=${secretMarker}\n` },
+    );
+    const proc = spawnServerInProject(projectDir);
     try {
-      await awaitRpc(proc, 1, {
-        jsonrpc: "2.0", id: 1, method: "initialize",
-        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-deny-442", version: "1.0" } },
-      });
-      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+      await initServer(proc, "ctx-index-deny-442");
 
-      // Attempt to index the denied file.
-      const indexResp = await awaitRpc(proc, 100, {
+      const indexResp = await awaitRpc(proc, {
         jsonrpc: "2.0", id: 100, method: "tools/call",
-        params: { name: "ctx_index", arguments: { path: secretFile } },
+        params: { name: "ctx_index", arguments: { path: "secret.env" } },
       });
 
-      expect(indexResp?.error).toBeUndefined();
-      expect(indexResp?.result?.isError).toBe(true);
-      const indexText = indexResp?.result?.content?.[0]?.text ?? "";
+      expect(indexResp.error).toBeUndefined();
+      expect(indexResp.result?.isError).toBe(true);
+      const indexText = indexResp.result?.content?.[0]?.text ?? "";
       expect(indexText).toContain("blocked by security policy");
       expect(indexText).toContain("Read deny pattern");
-      // Critical: no "Indexed N section" success message.
+      // Pin the matched pattern so a future bug firing the wrong rule
+      // cannot pass on the generic substring alone.
+      expect(indexText).toMatch(/Read deny pattern \.?\/?secret\.env/);
       expect(indexText).not.toMatch(/Indexed \d+ section/);
 
-      // Cross-check: the secret marker is NOT queryable via ctx_search.
-      // If the deny check were bypassed, the file's content would be
-      // chunked into FTS5 and surface here.
-      const searchResp = await awaitRpc(proc, 101, {
+      // Per-test projectDir guarantees an empty FTS5 store, so the secret
+      // marker absence is the load-bearing exfil-prevention pin.
+      const searchResp = await awaitRpc(proc, {
         jsonrpc: "2.0", id: 101, method: "tools/call",
         params: { name: "ctx_search", arguments: { queries: [secretMarker] } },
       });
-      expect(searchResp?.error).toBeUndefined();
-      const searchText = searchResp?.result?.content?.[0]?.text ?? "";
-      // Search echoes the query, so a substring match on `secretMarker` would
-      // false-positive. Two valid empty-store signals prove the FTS5 store
-      // never received the file's content: "No results found" (store has
-      // other indexed content but no marker hit) or the empty-store guidance
-      // ("After indexing, ctx_search becomes available") when nothing was
-      // indexed at all this run.
+      expect(searchResp.error).toBeUndefined();
+      const searchText = searchResp.result?.content?.[0]?.text ?? "";
       const searchedEmpty =
         searchText.includes("No results found") ||
         searchText.includes("After indexing");
       expect(searchedEmpty).toBe(true);
     } finally {
-      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <denied via glob *.env> }) blocks", async () => {
+    const projectDir = setupProject(
+      ["Read(*.env)"],
+      { "secret.env": `SECRET_TOKEN=glob-${process.pid}\n` },
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-glob-442");
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: "secret.env" } },
+      });
+      expect(indexResp.result?.isError).toBe(true);
+      const text = indexResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("blocked by security policy");
+      expect(text).toMatch(/Read deny pattern .*\*\.env/);
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <absolute denied> }) blocks", async () => {
+    const projectDir = setupProject(
+      [], // populated below after we know absolute path
+      { "secret.env": `SECRET_TOKEN=abs-${process.pid}\n` },
+    );
+    const absSecret = join(projectDir, "secret.env");
+    // Rewrite settings.json with the absolute deny rule.
+    writeFileSync(
+      join(projectDir, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { deny: [`Read(${absSecret})`] } }),
+      "utf-8",
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-abs-442");
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: absSecret } },
+      });
+      expect(indexResp.result?.isError).toBe(true);
+      const text = indexResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("blocked by security policy");
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <denied via ../traversal> }) blocks", async () => {
+    // Use a glob deny rule that matches the canonical (lexical/realpath)
+    // form — proves evaluateFilePath's canonicalization defeats the
+    // `sub/../secret.env` traversal trick.
+    const projectDir = setupProject(
+      ["Read(**/secret.env)"],
+      {
+        "secret.env": `SECRET_TOKEN=trav-${process.pid}\n`,
+        "sub/placeholder.md": "# placeholder\n",
+      },
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-trav-442");
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: "sub/../secret.env" } },
+      });
+      expect(indexResp.result?.isError).toBe(true);
+      const text = indexResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("blocked by security policy");
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
     }
   }, 30_000);
 
   test("ctx_index({ path: <allowed> }) succeeds and is searchable", async () => {
-    const proc = spawnServerInProject();
+    const allowedMarker = `allowed-marker-${process.pid}-${Date.now()}`;
+    const projectDir = setupProject(
+      ["Read(./secret.env)", "Read(secret.env)"],
+      { "public-doc.md": `# Public doc\n\n${allowedMarker}\n` },
+    );
+    const proc = spawnServerInProject(projectDir);
     try {
-      await awaitRpc(proc, 1, {
-        jsonrpc: "2.0", id: 1, method: "initialize",
-        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-allow-442", version: "1.0" } },
-      });
-      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+      await initServer(proc, "ctx-index-allow-442");
 
-      const indexResp = await awaitRpc(proc, 100, {
+      const indexResp = await awaitRpc(proc, {
         jsonrpc: "2.0", id: 100, method: "tools/call",
-        params: { name: "ctx_index", arguments: { path: allowedFile } },
+        params: { name: "ctx_index", arguments: { path: "public-doc.md" } },
       });
-
-      expect(indexResp?.error).toBeUndefined();
-      expect(indexResp?.result?.isError).toBeFalsy();
-      const indexText = indexResp?.result?.content?.[0]?.text ?? "";
+      expect(indexResp.error).toBeUndefined();
+      expect(indexResp.result?.isError).toBeFalsy();
+      const indexText = indexResp.result?.content?.[0]?.text ?? "";
       expect(indexText).toMatch(/Indexed \d+ section/);
 
-      const searchResp = await awaitRpc(proc, 101, {
+      const searchResp = await awaitRpc(proc, {
         jsonrpc: "2.0", id: 101, method: "tools/call",
         params: { name: "ctx_search", arguments: { queries: [allowedMarker] } },
       });
-      expect(searchResp?.error).toBeUndefined();
-      const searchText = searchResp?.result?.content?.[0]?.text ?? "";
-      expect(searchText).toContain(allowedMarker);
+      expect(searchResp.error).toBeUndefined();
+      expect(searchResp.result?.content?.[0]?.text ?? "").toContain(allowedMarker);
     } finally {
-      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
     }
   }, 30_000);
 
-  test("ctx_index({ content: ... }) bypass branch is unaffected by deny-policy", async () => {
-    const proc = spawnServerInProject();
+  test("ctx_index({ content: ... }) bypass branch — gate truly tied to `path`", async () => {
+    // Configure a deny rule that WOULD match the inline `source` value if
+    // the gate naively ran on it. Success here proves the bypass is keyed
+    // on `path` absence, not on `source`.
+    const projectDir = setupProject(
+      ["Read(test-inline)", "Read(./test-inline)"],
+      {},
+    );
+    const proc = spawnServerInProject(projectDir);
     try {
-      await awaitRpc(proc, 1, {
-        jsonrpc: "2.0", id: 1, method: "initialize",
-        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-index-content-442", version: "1.0" } },
-      });
-      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
-
-      // No `path` — caller passed inline content. Deny-policy gate must skip.
+      await initServer(proc, "ctx-index-content-442");
       const inlineMarker = `inline-marker-${process.pid}-${Date.now()}`;
-      const indexResp = await awaitRpc(proc, 100, {
+      const indexResp = await awaitRpc(proc, {
         jsonrpc: "2.0", id: 100, method: "tools/call",
         params: {
           name: "ctx_index",
@@ -1372,13 +1457,12 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
           },
         },
       });
-
-      expect(indexResp?.error).toBeUndefined();
-      expect(indexResp?.result?.isError).toBeFalsy();
-      const indexText = indexResp?.result?.content?.[0]?.text ?? "";
-      expect(indexText).toMatch(/Indexed \d+ section/);
+      expect(indexResp.error).toBeUndefined();
+      expect(indexResp.result?.isError).toBeFalsy();
+      expect(indexResp.result?.content?.[0]?.text ?? "").toMatch(/Indexed \d+ section/);
     } finally {
-      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
     }
   }, 30_000);
 });

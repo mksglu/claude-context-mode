@@ -1332,7 +1332,7 @@ server.registerTool(
   },
   async ({ path, language, code, timeout, intent }) => {
     // Security: check file path against Read deny patterns
-    const pathDenied = checkFilePathDenyPolicy(path, "execute_file");
+    const pathDenied = checkFilePathDenyPolicy(path, "ctx_execute_file");
     if (pathDenied) return pathDenied;
 
     // Security: check code parameter against Bash deny patterns
