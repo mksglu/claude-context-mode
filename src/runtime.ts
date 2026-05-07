@@ -67,6 +67,19 @@ function commandExists(cmd: string): boolean {
   }
 }
 
+function runnableCommandExists(cmd: string): boolean {
+  if (!commandExists(cmd)) return false;
+  try {
+    execFileSync(cmd, ["--version"], {
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function bunExists(): boolean {
   if (commandExists("bun")) return true;
   for (const p of bunFallbackPaths()) {
@@ -171,10 +184,12 @@ export function detectRuntimes(): RuntimeMap {
         : commandExists("ts-node")
           ? "ts-node"
           : null,
-    python: commandExists("python3")
+    python: runnableCommandExists("python3")
       ? "python3"
-      : commandExists("python")
+      : runnableCommandExists("python")
         ? "python"
+        : isWin && runnableCommandExists("py")
+          ? "py"
         : null,
     shell: shellOverride ?? (isWin
       ? (resolveWindowsBash() ?? (commandExists("sh") ? "sh" : commandExists("powershell") ? "powershell" : "cmd.exe"))
@@ -301,7 +316,7 @@ export function buildCommand(
     case "python":
       if (!runtimes.python) {
         throw new Error(
-          "No Python runtime available. Install python3 or python.",
+          "No Python runtime available. Install python3 or python (or py on Windows).",
         );
       }
       return [runtimes.python, filePath];

@@ -63,6 +63,118 @@ describe("runtime version reporting", () => {
   });
 });
 
+describe("Python runtime detection", () => {
+  const originalPlatform = process.platform;
+  const originalShell = process.env.SHELL;
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    if (originalShell === undefined) delete process.env.SHELL;
+    else process.env.SHELL = originalShell;
+    vi.resetModules();
+    vi.doUnmock("node:child_process");
+  });
+
+  function mockWindowsPythonDetection(states: {
+    python3?: "missing" | "stub" | "runnable";
+    python?: "missing" | "stub" | "runnable";
+    py?: "missing" | "stub" | "runnable";
+  }) {
+    const stateFor = (cmd: string) => states[cmd as "python3" | "python" | "py"] ?? "missing";
+
+    const execSync = vi.fn((command: string) => {
+      const cmd = command.replace(/^where\s+/, "");
+      if (cmd === "powershell") {
+        return "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\r\n";
+      }
+      if (cmd === "python3" || cmd === "python" || cmd === "py") {
+        if (stateFor(cmd) === "missing") throw new Error(`${cmd} not found`);
+        return cmd === "python3"
+          ? "C:\\Users\\dev\\AppData\\Local\\Microsoft\\WindowsApps\\python3.exe\r\n"
+          : `C:\\Python312\\${cmd}.exe\r\n`;
+      }
+      throw new Error(`${cmd} not found`);
+    });
+
+    const execFileSync = vi.fn((cmd: string, args: string[]) => {
+      expect(args).toEqual(["--version"]);
+      if ((cmd === "python3" || cmd === "python" || cmd === "py") && stateFor(cmd) === "runnable") {
+        return "Python 3.12.7\r\n";
+      }
+      throw new Error(`${cmd} is not runnable`);
+    });
+
+    vi.doMock("node:child_process", () => ({
+      execFileSync,
+      execSync,
+    }));
+
+    return { execFileSync, execSync };
+  }
+
+  async function detectRuntimesAsWindows() {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    delete process.env.SHELL;
+    const { detectRuntimes } = await import("../src/runtime.js");
+    return detectRuntimes();
+  }
+
+  test("Windows skips a python3 command that exists but cannot run", async () => {
+    const { execFileSync } = mockWindowsPythonDetection({
+      python3: "stub",
+      python: "runnable",
+    });
+
+    const runtimes = await detectRuntimesAsWindows();
+
+    expect(runtimes.python).toBe("python");
+    expect(execFileSync).toHaveBeenCalledWith(
+      "python3",
+      ["--version"],
+      expect.objectContaining({ timeout: 5000 }),
+    );
+    expect(execFileSync).toHaveBeenCalledWith(
+      "python",
+      ["--version"],
+      expect.objectContaining({ timeout: 5000 }),
+    );
+  });
+
+  test("Windows falls back to the Python launcher when python3 and python are unusable", async () => {
+    mockWindowsPythonDetection({
+      python3: "stub",
+      python: "stub",
+      py: "runnable",
+    });
+
+    const runtimes = await detectRuntimesAsWindows();
+
+    expect(runtimes.python).toBe("py");
+  });
+
+  test("Windows still prefers python3 when it is runnable", async () => {
+    const { execFileSync } = mockWindowsPythonDetection({
+      python3: "runnable",
+      python: "runnable",
+      py: "runnable",
+    });
+
+    const runtimes = await detectRuntimesAsWindows();
+
+    expect(runtimes.python).toBe("python3");
+    expect(execFileSync).toHaveBeenCalledWith(
+      "python3",
+      ["--version"],
+      expect.objectContaining({ timeout: 5000 }),
+    );
+    expect(execFileSync).not.toHaveBeenCalledWith(
+      "python",
+      ["--version"],
+      expect.anything(),
+    );
+  });
+});
+
 describe("SHELL env var override", () => {
   let tmpDir: string;
   let allowlistedShell: string;
