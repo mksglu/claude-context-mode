@@ -227,11 +227,14 @@ async function createContextModePlugin(ctx: PluginContext) {
   const platform = getPlatform();
   const adapter = new OpenCodeAdapter(platform);
   const buildDir = dirname(fileURLToPath(import.meta.url));
+  // initSecurity() looks for `<dir>/security.js`, which lives at the
+  // top of build/ — two levels up from this adapter directory.
+  const buildRoot = resolve(buildDir, "..", "..");
 
   // Load routing module (ESM .mjs, lives outside build/ in hooks/)
   const routingPath = resolve(buildDir, "..", "..", "..", "hooks", "core", "routing.mjs");
   const routing = await import(pathToFileURL(routingPath).href);
-  await routing.initSecurity(buildDir);
+  await routing.initSecurity(buildRoot);
 
   // OC-1 / OC-3: Load hook helpers once at plugin init. Dynamic import keeps
   // the .mjs ESM islands isolated from the .ts compile graph.

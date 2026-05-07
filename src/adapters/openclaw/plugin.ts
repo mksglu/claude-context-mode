@@ -282,7 +282,10 @@ export default {
     const initPromise = (async () => {
       const routingPath = resolve(buildDir, "..", "..", "..", "hooks", "core", "routing.mjs");
       const routing = await import(pathToFileURL(routingPath).href);
-      await routing.initSecurity(buildDir);
+      // initSecurity() looks for `<dir>/security.js`, which lives at the
+      // top of build/ — two levels up from this adapter directory.
+      const buildRoot = resolve(buildDir, "..", "..");
+      await routing.initSecurity(buildRoot);
 
       try {
         const blockMod = await import(
