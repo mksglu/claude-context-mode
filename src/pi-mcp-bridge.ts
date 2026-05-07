@@ -184,11 +184,6 @@ export class MCPStdioClient {
     this.initialized = false;
     this.exited = true;
   }
-
-  /** True iff start() has been called and the child is still alive. */
-  get running(): boolean {
-    return this.child !== null && !this.exited;
-  }
 }
 
 /**

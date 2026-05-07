@@ -880,6 +880,14 @@ describe("Pi MCP bridge (#426)", () => {
   // ── Integration: bootstrapMCPTools + real MCP server ──────────────
 
   describe("bootstrapMCPTools — registers every ctx_* tool with Pi", () => {
+    // Lifted out of each `it` so the path resolution lives in one place
+    // and a future MCP-entrypoint move only has to change one line.
+    const path = require("node:path") as typeof import("node:path");
+    const url = require("node:url") as typeof import("node:url");
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const mcpEntry = path.resolve(here, "..", "start.mjs");
+    const mcpEnv = { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" };
+
     let bridge: { tools: string[]; shutdown: () => void } | null = null;
 
     afterEach(() => {
@@ -890,11 +898,6 @@ describe("Pi MCP bridge (#426)", () => {
     });
 
     it("registers the canonical ctx_* tool set", async () => {
-      const path = require("node:path") as typeof import("node:path");
-      const url = require("node:url") as typeof import("node:url");
-      const here = path.dirname(url.fileURLToPath(import.meta.url));
-      const mcpEntry = path.resolve(here, "..", "start.mjs");
-
       const registered: Array<{ name: string; label: string; description: string; parameters: unknown; execute: Function }> = [];
       const fakePi = {
         registerTool: (tool: any) => {
@@ -903,9 +906,7 @@ describe("Pi MCP bridge (#426)", () => {
       };
 
       const { bootstrapMCPTools } = await import("../src/pi-mcp-bridge.js");
-      bridge = await bootstrapMCPTools(fakePi, mcpEntry, {
-        env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
-      });
+      bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
 
       // Pin the canonical names — adding new MCP tools is fine
       // (arrayContaining), but losing one of these is the bug regression.
@@ -934,20 +935,13 @@ describe("Pi MCP bridge (#426)", () => {
     }, 30_000);
 
     it("execute() round-trips through tools/call to the MCP server", async () => {
-      const path = require("node:path") as typeof import("node:path");
-      const url = require("node:url") as typeof import("node:url");
-      const here = path.dirname(url.fileURLToPath(import.meta.url));
-      const mcpEntry = path.resolve(here, "..", "start.mjs");
-
       const registered: any[] = [];
       const fakePi = {
         registerTool: (tool: any) => registered.push(tool),
       };
 
       const { bootstrapMCPTools } = await import("../src/pi-mcp-bridge.js");
-      bridge = await bootstrapMCPTools(fakePi, mcpEntry, {
-        env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
-      });
+      bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
 
       const indexTool = registered.find((t) => t.name === "ctx_index");
       expect(indexTool).toBeDefined();
@@ -965,6 +959,52 @@ describe("Pi MCP bridge (#426)", () => {
       // arg-passing also fails this test.
       expect(result.content[0].text).toMatch(/pi-bridge-smoke/);
       expect(result.isError).toBeFalsy();
+    }, 30_000);
+  });
+
+  // ── Wiring: pi-extension.ts default export must call bootstrapMCPTools
+  //
+  // This is the regression that the rest of the suite does NOT catch: if
+  // a future refactor drops the `bootstrapMCPTools(pi, …)` call from
+  // src/pi-extension.ts but keeps the bridge module intact, every other
+  // bridge test stays green and the bug silently re-enters. We assert
+  // here that the extension's default export, after `_mcpBridgeReady`
+  // settles, has actually called `pi.registerTool` for at least the
+  // canonical ctx_* set.
+
+  describe("pi-extension.ts wiring (#426 regression guard)", () => {
+    it("registerPiExtension awaits bridge bootstrap and registers ctx_* via pi.registerTool", async () => {
+      const wireApi = createMockPiApi();
+      // PI_PROJECT_DIR / CLAUDE_PROJECT_DIR set inside registerPiExtension.
+      await registerPiExtension(wireApi, { projectDir: tempDir });
+
+      // Bootstrap is fire-and-forget on extension load — wait on the
+      // exported promise so the test does not race the spawn.
+      const mod = await import("../src/pi-extension.js");
+      await mod._mcpBridgeReady;
+
+      const calls = (wireApi.registerTool as any).mock.calls as Array<[any]>;
+      const registeredNames = calls.map(([t]) => t?.name).filter(Boolean);
+
+      // Same canonical pin as the bridge integration test — but reached
+      // through registerPiExtension instead of bootstrapMCPTools, so
+      // dropping the wiring fails this test even when the bridge module
+      // still works.
+      expect(registeredNames).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+        ]),
+      );
+
+      // Cleanup: SIGTERM the bridge child the wiring spawned so it does
+      // not leak past this test.
+      const sd = mod.default as any;
+      void sd; // silence unused
+      await wireApi._trigger("session_shutdown");
     }, 30_000);
   });
 });

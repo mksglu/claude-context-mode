@@ -61,6 +61,19 @@ let _sessionId = "";
 // invisible to the LLM and the routing block is dead weight.
 let _mcpBridge: BridgeHandle | null = null;
 
+/**
+ * Settles when the MCP bridge bootstrap has finished — resolves on
+ * success AND on failure (the bootstrap is best-effort; failures are
+ * logged to stderr but never propagated). Exposed for tests so they
+ * can `await` the wiring deterministically without relying on internal
+ * timing or `setImmediate` polling.
+ *
+ * Reset to a fresh promise on every `piExtension(pi)` call so repeated
+ * registrations in one test process don't see a stale resolution from
+ * a prior load.
+ */
+export let _mcpBridgeReady: Promise<void> = Promise.resolve();
+
 // Per-session gate: routing block injected at most once per session_id.
 const _routingInjected: Set<string> = new Set();
 
@@ -552,7 +565,7 @@ export default function piExtension(pi: any): void {
   // from initializing. We log to stderr and continue.
   const serverBundle = resolve(pluginRoot, "server.bundle.mjs");
   if (existsSync(serverBundle)) {
-    bootstrapMCPTools(pi, serverBundle).then(
+    _mcpBridgeReady = bootstrapMCPTools(pi, serverBundle).then(
       (handle) => {
         _mcpBridge = handle;
       },
@@ -564,5 +577,9 @@ export default function piExtension(pi: any): void {
         );
       },
     );
+  } else {
+    // No bundle on disk → nothing to await. Tests can still rely on
+    // _mcpBridgeReady being a settled promise.
+    _mcpBridgeReady = Promise.resolve();
   }
 }
