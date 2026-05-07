@@ -26,6 +26,22 @@ import {
   hasBunRuntime,
   getAvailableLanguages,
 } from "./runtime.js";
+// Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
+// duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
+// Keep in sync — pure data, no I/O.
+function browserOpenArgv(
+  url: string,
+  platform: NodeJS.Platform,
+): readonly { cmd: string; args: readonly string[] }[] {
+  if (platform === "darwin") return [{ cmd: "open", args: [url] }];
+  if (platform === "win32") {
+    return [{ cmd: "cmd", args: ["/c", "start", "", url] }];
+  }
+  return [
+    { cmd: "xdg-open", args: [url] },
+    { cmd: "sensible-browser", args: [url] },
+  ];
+}
 
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
@@ -191,28 +207,18 @@ export function openInBrowser(
   const hint = () =>
     console.error(`\nCould not auto-open browser. Open manually: ${url}`);
 
-  try {
-    if (platform === "darwin") {
-      runner("open", [url], opts);
-    } else if (platform === "win32") {
-      // `start` is a cmd.exe builtin; first arg after `start` is the
-      // window title — pass empty so the URL isn't consumed as a title.
-      runner("cmd", ["/c", "start", "", url], opts);
-    } else {
-      // linux/bsd: try xdg-open, fall back to sensible-browser.
-      try {
-        runner("xdg-open", [url], opts);
-      } catch {
-        try {
-          runner("sensible-browser", [url], opts);
-        } catch {
-          hint();
-        }
-      }
-    }
-  } catch {
-    hint();
+  // Platform→argv mapping is canonical in src/server.ts; mirrored privately
+  // above to avoid pulling server boot side effects into the cli bundle.
+  const attempts = browserOpenArgv(url, platform);
+  let opened = false;
+  for (const { cmd, args } of attempts) {
+    try {
+      runner(cmd, args as string[], opts);
+      opened = true;
+      break;
+    } catch { /* try next fallback */ }
   }
+  if (!opened) hint();
 }
 
 function defaultPluginRoot(): string {
