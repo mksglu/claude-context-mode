@@ -2,7 +2,7 @@ import "./setup-home";
 /**
  * Pi Extension Tests — TDD vertical slices.
  *
- * The Pi extension (src/pi-extension.ts) is a default-exported function that
+ * The Pi extension (src/adapters/pi/extension.ts) is a default-exported function that
  * receives a Pi API object and registers event handlers. Since we cannot test
  * against a real Pi runtime, we mock the Pi API to capture registered handlers
  * and invoke them with simulated events.
@@ -77,7 +77,7 @@ async function registerPiExtension(
   process.env.PI_PROJECT_DIR = projectDir;
   process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-  const mod = await import("../src/pi-extension.js");
+  const mod = await import("../src/adapters/pi/extension.js");
   const register = mod.default;
   await register(mockApi);
 
@@ -767,7 +767,7 @@ describe("Pi MCP bridge (#426)", () => {
           }
         });
       `);
-      const { MCPStdioClient } = await import("../src/pi-mcp-bridge.js");
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
       const client = new MCPStdioClient(fakePath);
       client.start();
       try {
@@ -803,7 +803,7 @@ describe("Pi MCP bridge (#426)", () => {
           }
         });
       `);
-      const { MCPStdioClient } = await import("../src/pi-mcp-bridge.js");
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
       const client = new MCPStdioClient(fakePath);
       client.start();
       try {
@@ -822,7 +822,7 @@ describe("Pi MCP bridge (#426)", () => {
       const fakePath = writeFakeServer(`
         process.stdin.once("data", () => process.exit(0));
       `);
-      const { MCPStdioClient } = await import("../src/pi-mcp-bridge.js");
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
       const client = new MCPStdioClient(fakePath);
       client.start();
       const promise = client.request("tools/list", {});
@@ -835,7 +835,7 @@ describe("Pi MCP bridge (#426)", () => {
         process.stdin.on("data", () => {});
         setInterval(() => {}, 1000);
       `);
-      const { MCPStdioClient } = await import("../src/pi-mcp-bridge.js");
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
       const client = new MCPStdioClient(fakePath);
       client.start();
       try {
@@ -865,7 +865,7 @@ describe("Pi MCP bridge (#426)", () => {
           }
         });
       `);
-      const { MCPStdioClient } = await import("../src/pi-mcp-bridge.js");
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
       const client = new MCPStdioClient(fakePath);
       client.start();
       try {
@@ -905,7 +905,7 @@ describe("Pi MCP bridge (#426)", () => {
         },
       };
 
-      const { bootstrapMCPTools } = await import("../src/pi-mcp-bridge.js");
+      const { bootstrapMCPTools } = await import("../src/adapters/pi/mcp-bridge.js");
       bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
 
       // Pin the canonical names — adding new MCP tools is fine
@@ -940,7 +940,7 @@ describe("Pi MCP bridge (#426)", () => {
         registerTool: (tool: any) => registered.push(tool),
       };
 
-      const { bootstrapMCPTools } = await import("../src/pi-mcp-bridge.js");
+      const { bootstrapMCPTools } = await import("../src/adapters/pi/mcp-bridge.js");
       bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
 
       const indexTool = registered.find((t) => t.name === "ctx_index");
@@ -966,7 +966,7 @@ describe("Pi MCP bridge (#426)", () => {
   //
   // This is the regression that the rest of the suite does NOT catch: if
   // a future refactor drops the `bootstrapMCPTools(pi, …)` call from
-  // src/pi-extension.ts but keeps the bridge module intact, every other
+  // src/adapters/pi/extension.ts but keeps the bridge module intact, every other
   // bridge test stays green and the bug silently re-enters. We assert
   // here that the extension's default export, after `_mcpBridgeReady`
   // settles, has actually called `pi.registerTool` for at least the
@@ -980,7 +980,7 @@ describe("Pi MCP bridge (#426)", () => {
 
       // Bootstrap is fire-and-forget on extension load — wait on the
       // exported promise so the test does not race the spawn.
-      const mod = await import("../src/pi-extension.js");
+      const mod = await import("../src/adapters/pi/extension.js");
       await mod._mcpBridgeReady;
 
       const calls = (wireApi.registerTool as any).mock.calls as Array<[any]>;

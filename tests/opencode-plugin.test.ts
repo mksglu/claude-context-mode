@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
  */
 async function createTestPlugin(tempDir: string) {
   // Import the plugin module
-  const { ContextModePlugin } = await import("../src/opencode-plugin.js");
+  const { ContextModePlugin } = await import("../src/adapters/opencode/plugin.js");
 
   // Monkey-patch the session dir to use temp directory
   // The plugin uses homedir() internally, but we can control the DB path

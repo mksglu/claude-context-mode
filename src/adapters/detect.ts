@@ -67,7 +67,7 @@ export const PLATFORM_ENV_VARS = [
   // qwen-code — QWEN_PROJECT_DIR per QwenLM/qwen-code docs/users/features/hooks.md.
   // (QWEN_SESSION_ID removed — 0 hits in qwen-code repository.)
   ["qwen-code",          ["QWEN_PROJECT_DIR"]],
-  // pi — PI_PROJECT_DIR consumed by src/pi-extension.ts:154 + src/server.ts:153
+  // pi — PI_PROJECT_DIR consumed by src/adapters/pi/extension.ts:154 + src/server.ts:153
   // — implies the Pi runtime sets it before invoking the extension.
   ["pi",                 ["PI_PROJECT_DIR"]],
   // openclaw — removed (runtime never sets OPENCLAW_HOME or OPENCLAW_CLI;

@@ -16,12 +16,12 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { SessionDB } from "./session/db.js";
-import { extractEvents, extractUserEvents } from "./session/extract.js";
-import type { HookInput } from "./session/extract.js";
-import { buildResumeSnapshot } from "./session/snapshot.js";
-import type { SessionEvent } from "./types.js";
-import { bootstrapMCPTools, type BridgeHandle } from "./pi-mcp-bridge.js";
+import { SessionDB } from "../../session/db.js";
+import { extractEvents, extractUserEvents } from "../../session/extract.js";
+import type { HookInput } from "../../session/extract.js";
+import { buildResumeSnapshot } from "../../session/snapshot.js";
+import type { SessionEvent } from "../../types.js";
+import { bootstrapMCPTools, type BridgeHandle } from "./mcp-bridge.js";
 
 // ── Pi Tool Name Mapping ─────────────────────────────────
 // Pi uses lowercase; shared extractors expect PascalCase (Claude Code convention).
@@ -213,7 +213,7 @@ function handleCommandText(
 /** Pi extension default export. Called once by Pi runtime with the extension API. */
 export default function piExtension(pi: any): void {
   const buildDir = dirname(fileURLToPath(import.meta.url));
-  const pluginRoot = resolve(buildDir, "..");
+  const pluginRoot = resolve(buildDir, "..", "..", "..");
   const projectDir = process.env.PI_PROJECT_DIR || process.cwd();
 
   const db = getOrCreateDB();

@@ -29,7 +29,7 @@
   "homepage": "https://github.com/mksglu/context-mode#readme",
   "pi": {
     "extensions": [
-      "./build/pi-extension.js"
+      "./build/adapters/pi/extension.js"
     ],
     "skills": [
       "./skills"
@@ -37,15 +37,15 @@
   },
   "openclaw": {
     "extensions": [
-      "./build/openclaw-plugin.js"
+      "./build/adapters/openclaw/plugin.js"
     ]
   },
   "bugs": "https://github.com/mksglu/context-mode/issues",
-  "main": "./build/opencode-plugin.js",
+  "main": "./build/adapters/opencode/plugin.js",
   "exports": {
-    ".": "./build/opencode-plugin.js",
-    "./plugin": "./build/opencode-plugin.js",
-    "./openclaw": "./build/openclaw-plugin.js",
+    ".": "./build/adapters/opencode/plugin.js",
+    "./plugin": "./build/adapters/opencode/plugin.js",
+    "./openclaw": "./build/adapters/openclaw/plugin.js",
     "./cli": "./cli.bundle.mjs"
   },
   "bin": {

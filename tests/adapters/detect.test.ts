@@ -152,7 +152,7 @@ describe("detectPlatform", () => {
 
   // ── Pi ─────────────────────────────────────────────────
   // Pi runtime sets PI_PROJECT_DIR before invoking the extension —
-  // verified by src/pi-extension.ts:154 + src/server.ts:153 consumers.
+  // verified by src/adapters/pi/extension.ts:154 + src/server.ts:153 consumers.
 
   it("detects pi via PI_PROJECT_DIR env var", () => {
     process.env.PI_PROJECT_DIR = "/some/project";

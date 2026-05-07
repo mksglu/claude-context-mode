@@ -823,7 +823,7 @@ describe("Bin entry uses cli.bundle.mjs", () => {
   });
 
   it("openclaw-plugin.ts doctor/upgrade use cli.bundle.mjs with fallback", () => {
-    const src = readFileSync(resolve(ROOT, "src", "openclaw-plugin.ts"), "utf-8");
+    const src = readFileSync(resolve(ROOT, "src", "adapters", "openclaw", "plugin.ts"), "utf-8");
     expect(src).toContain("cli.bundle.mjs");
     // Find the registerCommand blocks, not comments
     const doctorIdx = src.indexOf('name: "ctx-doctor"');
@@ -934,19 +934,19 @@ describe("SKILL.md prefers MCP tool over Bash", () => {
 
 describe("Package exports", () => {
   test("named export exposes ContextModePlugin factory", async () => {
-    const mod = await import("../../src/opencode-plugin.js");
+    const mod = await import("../../src/adapters/opencode/plugin.js");
     expect(mod.ContextModePlugin).toBeDefined();
     expect(typeof mod.ContextModePlugin).toBe("function");
   });
 
   test("default export has KiloCode PluginModule shape { server }", async () => {
-    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    const mod = (await import("../../src/adapters/opencode/plugin.js")) as any;
     expect(mod.default).toBeDefined();
     expect(typeof mod.default.server).toBe("function");
   });
 
   test("default export does not leak CLI internals", async () => {
-    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    const mod = (await import("../../src/adapters/opencode/plugin.js")) as any;
     expect(mod.toUnixPath).toBeUndefined();
     expect(mod.doctor).toBeUndefined();
     expect(mod.upgrade).toBeUndefined();

@@ -1,1 +1,1 @@
-export { default } from "../../../build/pi-extension.js";
+export { default } from "../../../build/adapters/pi/extension.js";
