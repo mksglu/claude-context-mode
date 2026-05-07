@@ -2938,7 +2938,7 @@ describe("runBatchCommands P0 hardening", () => {
 // runPool — shared concurrency primitive (PRD finding G)
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { runPool, type PoolJob } from "../../src/concurrency/runPool.js";
+import { runPool, type PoolJob } from "../../src/runPool.js";
 
 describe("runPool primitive", () => {
   test("empty jobs returns empty settled array", async () => {

@@ -11,7 +11,7 @@ import { homedir, tmpdir, cpus } from "node:os";
 import { request as httpsRequest } from "node:https";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { runPool, type PoolJob } from "./concurrency/runPool.js";
+import { runPool, type PoolJob } from "./runPool.js";
 import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
 import { composeFetchCacheKey } from "./fetch-cache.js";
 import {
