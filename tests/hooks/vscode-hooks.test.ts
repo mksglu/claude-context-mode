@@ -175,9 +175,11 @@ describe("VS Code Copilot hooks", () => {
     });
 
     test("run_in_terminal: safe short command passes through with guidance", () => {
+      // Use an unbounded command — `git status` is now in the #463
+      // structurally-bounded allowlist and short-circuits the nudge.
       const result = runHook("pretooluse.mjs", {
         tool_name: "run_in_terminal",
-        tool_input: { command: "git status" },
+        tool_input: { command: "npm install" },
       }, vscodeEnv());
 
       expect(result.exitCode).toBe(0);

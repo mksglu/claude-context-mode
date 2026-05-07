@@ -184,10 +184,14 @@ describe("Bash: Redirected Commands", () => {
 });
 
 describe("Bash: Allowed Commands", () => {
-  test("Bash + git status: additionalContext with BASH_GUIDANCE", () => {
+  // After #463 the Bash routing nudge is short-circuited for structurally-
+  // bounded commands (pwd, whoami, git status, mkdir, --version probes,
+  // etc.) — those return null. Use unbounded commands here so we still pin
+  // the "normal Bash command → context guidance" path end-to-end.
+  test("Bash + npm install: additionalContext with BASH_GUIDANCE", () => {
     const result = runHook({
       tool_name: "Bash",
-      tool_input: { command: "git status" },
+      tool_input: { command: "npm install" },
     });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
@@ -198,10 +202,10 @@ describe("Bash: Allowed Commands", () => {
     );
   });
 
-  test("Bash + mkdir /tmp/test: additionalContext with BASH_GUIDANCE", () => {
+  test("Bash + find /: additionalContext with BASH_GUIDANCE", () => {
     const result = runHook({
       tool_name: "Bash",
-      tool_input: { command: "mkdir /tmp/test" },
+      tool_input: { command: "find /etc -name '*.conf'" },
     });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
@@ -210,6 +214,17 @@ describe("Bash: Allowed Commands", () => {
       parsed.hookSpecificOutput.additionalContext.includes("<context_guidance>"),
       "Expected <context_guidance> in Bash additionalContext",
     );
+  });
+
+  test("Bash + git status: short-circuited by #463 allowlist (no nudge)", () => {
+    // Pre-#463 this returned BASH_GUIDANCE context. Now it short-circuits
+    // before the throttle: result is null and the hook emits nothing.
+    const result = runHook({
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.trim(), "", "Expected empty stdout — null decision should not emit a hook payload");
   });
 });
 
@@ -417,12 +432,16 @@ describe("Security Policy Enforcement", () => {
   });
 
   test("Security: Bash + git allowed, falls through to Stage 2", () => {
+    // Use an unbounded command — `git status` now short-circuits via the
+    // #463 allowlist before reaching the guidance branch, so it would no
+    // longer exercise "falls through to Stage 2 routing → context guidance".
     const result = runHook(
-      { tool_name: "Bash", tool_input: { command: "git status" } },
+      { tool_name: "Bash", tool_input: { command: "git diff" } },
       secEnv,
     );
     // git is in allow list -> falls through to Stage 2 routing
-    // Stage 2: git is not curl/wget/fetch -> additionalContext with BASH_GUIDANCE
+    // Stage 2: git diff is not in the structurally-bounded allowlist
+    // (raw diff can be huge) -> additionalContext with BASH_GUIDANCE
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     assert.ok(parsed.hookSpecificOutput.additionalContext, "Allowed Bash command should get additionalContext");

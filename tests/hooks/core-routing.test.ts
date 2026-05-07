@@ -190,19 +190,19 @@ describe("routePreToolUse", () => {
       );
     });
 
-    it("allows git status with BASH_GUIDANCE context", () => {
+    it("git status — bypassed by structurally-bounded allowlist (#463)", () => {
+      // Pre-#463: this returned BASH_GUIDANCE context. The #463 allowlist
+      // now short-circuits the nudge for read-only git subcommands so the
+      // guidance reads as signal, not noise.
       const result = routePreToolUse("Bash", { command: "git status" });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
-      expect(result!.additionalContext).toBeDefined();
+      expect(result).toBeNull();
     });
 
-    it("allows mkdir with BASH_GUIDANCE context", () => {
+    it("mkdir — bypassed by structurally-bounded allowlist (#463)", () => {
       const result = routePreToolUse("Bash", {
         command: "mkdir -p /tmp/test-dir",
       });
-      expect(result).not.toBeNull();
-      expect(result!.action).toBe("context");
+      expect(result).toBeNull();
     });
 
     it("allows npm install with BASH_GUIDANCE context", () => {
@@ -247,8 +247,12 @@ describe("routePreToolUse", () => {
     });
 
     it("does not false-positive on gradle in quoted text", () => {
+      // Use a command whose first word is NOT in the #463 structurally-bounded
+      // allowlist (`echo` is allowlisted), so we still exercise the
+      // strip-quotes-then-match-gradle path. The intent is to prove the
+      // gradle build-tool redirect doesn't fire on quoted occurrences.
       const result = routePreToolUse("Bash", {
-        command: 'echo "run gradle build to compile"',
+        command: 'find . -name "run gradle build to compile"',
       });
       expect(result).not.toBeNull();
       // stripped version removes quoted content → no gradle match → context
