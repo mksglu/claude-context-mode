@@ -239,8 +239,12 @@ export function loadDatabase(): typeof DatabaseConstructor {
       // node:sqlite is built into Node >= 22.5, no flag needed since 22.13.
       // Probe FTS5 support before committing — some Linux Node builds ship
       // node:sqlite without FTS5, which would silently break ctx_search (#461).
+      // The probe runs at most once per process (cached via _Database below),
+      // so the cost of opening an in-memory DatabaseSync is negligible.
       let DatabaseSync: any = null;
       try {
+        // Array.join() prevents esbuild from resolving the specifier at bundle time
+        // (mirrors the bun:sqlite branch above).
         ({ DatabaseSync } = require(["node", "sqlite"].join(":")));
       } catch {
         DatabaseSync = null;
@@ -254,6 +258,10 @@ export function loadDatabase(): typeof DatabaseConstructor {
         } as any;
       } else {
         // node:sqlite missing or built without FTS5 — fall through to better-sqlite3.
+        // Trade-off: this reintroduces the native-addon path that #228 routed
+        // around (Linux SIGSEGV per nodejs/node#62515). Deliberate — a visible
+        // crash on the rare unstable build is preferable to a silent
+        // "no such module: fts5" on every ctx_search call.
         _Database = require("better-sqlite3") as typeof DatabaseConstructor;
       }
     } else {
