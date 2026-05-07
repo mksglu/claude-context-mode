@@ -3881,3 +3881,134 @@ describe("killProcessOnPort — input validation", () => {
     expect(r.errors.join(" ")).toMatch(/invalid port/);
   });
 });
+
+// ─── ctx_insight helper follow-ups (#441 follow-up) ──────────────────────────
+//
+// 1. Hard timeout on every helper-internal spawnSync. A hung lsof/xdg-open/
+//    taskkill would otherwise block the MCP tool indefinitely. We assert the
+//    timeout option is propagated to the runner — the actual cap value is an
+//    implementation detail, but its presence is the regression we lock.
+//
+// 2. Windows non-English locale support. The pre-followup parser keyed off
+//    `state !== "LISTENING"` which is locale-translated (Windows-FR shows
+//    `À l'écoute`, Windows-DE `ABHÖREN`, Windows-ES `ESCUCHANDO`, etc.), so
+//    on non-EN Windows the helper would silently match zero rows and never
+//    free a stuck dashboard port. The remote-address column is NOT
+//    locale-translated; we now key off it instead.
+
+describe("Helper spawnSync timeout (#441 follow-up)", () => {
+  test("openBrowserSync passes a timeout to the runner", () => {
+    const { runner, calls } = makeRunner([{ status: 0 }]);
+    openBrowserSync("http://x", "darwin", runner);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts).toBeDefined();
+    expect(typeof (calls[0].opts as { timeout?: number }).timeout).toBe("number");
+    expect((calls[0].opts as { timeout: number }).timeout).toBeGreaterThan(0);
+  });
+
+  test("killProcessOnPort (Linux) passes a timeout to lsof and kill", () => {
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: "1234\n" },
+      { status: 0 }, // kill 1234
+    ]);
+    killProcessOnPort(4747, "linux", runner);
+
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(typeof (c.opts as { timeout?: number }).timeout).toBe("number");
+      expect((c.opts as { timeout: number }).timeout).toBeGreaterThan(0);
+    }
+  });
+
+  test("killProcessOnPort (Windows) passes a timeout to netstat and taskkill", () => {
+    const winFixture = [
+      "  Proto  Local Address          Foreign Address        State           PID",
+      "  TCP    0.0.0.0:4747           0.0.0.0:0              LISTENING       1234",
+      "",
+    ].join("\r\n");
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: winFixture },
+      { status: 0 }, // taskkill 1234
+    ]);
+    killProcessOnPort(4747, "win32", runner);
+
+    expect(calls.map(c => c.cmd)).toEqual(["netstat", "taskkill"]);
+    for (const c of calls) {
+      expect(typeof (c.opts as { timeout?: number }).timeout).toBe("number");
+      expect((c.opts as { timeout: number }).timeout).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("killProcessOnPort — Windows non-English locale (#441 follow-up)", () => {
+  // Same regression fixture as the en-US Windows test, but with the STATE
+  // column translated. Pre-followup, the helper required `state === "LISTENING"`
+  // and so silently produced zero PIDs on non-EN Windows. The follow-up keys
+  // off the remote-address column (locale-independent) so this fixture must
+  // now match LISTENING rows 1234 + 1235 and skip the ESTABLISHED row 9876
+  // and the UDP row 5555.
+  const netstatFr = [
+    "Connexions actives",
+    "",
+    "  Proto  Adresse locale         Adresse distante       État            PID",
+    "  TCP    0.0.0.0:4747           0.0.0.0:0              À l'écoute      1234",
+    "  TCP    192.168.1.5:54321      8.8.8.8:4747           ESTABLI         9876",
+    "  UDP    0.0.0.0:4747           *:*                                    5555",
+    "  TCP    [::]:4747              [::]:0                 À l'écoute      1235",
+    "",
+  ].join("\r\n");
+
+  const netstatDe = [
+    "Aktive Verbindungen",
+    "",
+    "  Proto  Lokale Adresse         Remoteadresse          Status          PID",
+    "  TCP    0.0.0.0:4747           0.0.0.0:0              ABHÖREN         1234",
+    "  TCP    192.168.1.5:54321      8.8.8.8:4747           HERGESTELLT     9876",
+    "  TCP    [::]:4747              [::]:0                 ABHÖREN         1235",
+    "",
+  ].join("\r\n");
+
+  test("French Windows netstat output: kills 1234 and 1235, ignores 9876 + 5555", () => {
+    const { runner } = makeRunner([
+      { status: 0, stdout: netstatFr },
+      { status: 0 }, // taskkill 1234
+      { status: 0 }, // taskkill 1235
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+    expect(r.attemptedPids).not.toContain("9876");
+    expect(r.attemptedPids).not.toContain("5555");
+    expect(r.killedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+  });
+
+  test("German Windows netstat output: kills 1234 and 1235, ignores 9876", () => {
+    const { runner } = makeRunner([
+      { status: 0, stdout: netstatDe },
+      { status: 0 }, // taskkill 1234
+      { status: 0 }, // taskkill 1235
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+    expect(r.attemptedPids).not.toContain("9876");
+    expect(r.killedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+  });
+
+  test("a connected remote :port still does NOT match (remote-column anchor)", () => {
+    // Sanity: the predicate must still reject the ESTABLISHED row whose
+    // REMOTE is 8.8.8.8:4747. This was the original pre-#441 bug; the
+    // follow-up must not regress it while changing the locale strategy.
+    const onlyEstablished = [
+      "  Proto  Local Address          Foreign Address        State           PID",
+      "  TCP    192.168.1.5:54321      8.8.8.8:4747           ESTABLISHED     9876",
+      "",
+    ].join("\r\n");
+    const { runner, calls } = makeRunner([{ status: 0, stdout: onlyEstablished }]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual([]);
+    expect(calls).toHaveLength(1); // netstat only — no taskkill issued
+  });
+});

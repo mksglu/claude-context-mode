@@ -2894,6 +2894,14 @@ export type KillResult = {
   errors: string[];
 };
 
+// Hard upper bound on every helper-internal spawnSync call. Caps tail-latency
+// when an external binary hangs (xdg-open waiting for an X11 session, lsof
+// stalling on /proc, taskkill blocking on an unresponsive process, etc.) so
+// the MCP tool surfaces a diagnostic instead of blocking the agent loop.
+// 5s is comfortably above the 99th-percentile completion of every command we
+// invoke; anything past that is hung.
+const HELPER_SPAWN_TIMEOUT_MS = 5000;
+
 // Returns the argv attempts for opening `url` on `platform`, in fall-back order.
 // Pure data — no I/O.
 export function browserOpenArgv(
@@ -2925,7 +2933,7 @@ export function openBrowserSync(
   const errors: string[] = [];
   for (const { cmd, args } of attempts) {
     try {
-      const r = runner(cmd, args, { stdio: "ignore" });
+      const r = runner(cmd, args, { stdio: "ignore", timeout: HELPER_SPAWN_TIMEOUT_MS });
       // Treat signal-kill (status === null) and any non-zero status as failure
       // so the next fallback fires.
       if (!r.error && r.status === 0) return { ok: true, method: cmd };
@@ -2942,10 +2950,15 @@ export function openBrowserSync(
 // the caller can distinguish between (a) port was free, (b) kill succeeded,
 // (c) kill failed (perms, missing binary, or per-pid failure mid-loop).
 //
-// On Windows the netstat parser is anchored on the LOCAL address column and
-// the LISTENING state — required to avoid cross-matching a remote-port column
-// and force-killing unrelated processes that happen to have an outbound
-// connection to the same port number.
+// On Windows the netstat parser is locale-independent: the STATE column
+// ("LISTENING" / "ESTABLISHED" / ...) is translated on non-English Windows
+// (Windows-FR shows "À l'écoute", Windows-DE "ABHÖREN", etc.), but the REMOTE
+// ADDRESS column is not. A listening TCP socket always has remote
+// "0.0.0.0:0" (IPv4) or "[::]:0" (IPv6); a connected one has a real
+// addr:port. We therefore key off the remote column instead of the state
+// string. This also rules out the pre-fix bug where matching only the local
+// port number cross-matched a remote :port from an outbound connection and
+// taskkill'd an unrelated process.
 export function killProcessOnPort(
   port: number,
   platform: NodeJS.Platform = process.platform,
@@ -2962,6 +2975,7 @@ export function killProcessOnPort(
       const r = runner("netstat", ["-ano"], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
+        timeout: HELPER_SPAWN_TIMEOUT_MS,
       });
       if (r.error) {
         result.errors.push(`netstat: ${r.error.message}`);
@@ -2975,19 +2989,32 @@ export function killProcessOnPort(
         const line = rawLine.trim();
         if (!line) continue;
         const tokens = line.split(/\s+/);
-        // netstat -ano LISTENING row: "TCP  0.0.0.0:4747  0.0.0.0:0  LISTENING  1234"
+        // netstat -ano LISTENING row (en-US): "TCP  0.0.0.0:4747  0.0.0.0:0  LISTENING  1234"
+        // The STATE column is locale-translated and may itself contain spaces
+        // (Windows-FR `À l'écoute` splits into two tokens), so we cannot index
+        // STATE by position. PID is always the trailing column; PROTO/LOCAL/
+        // REMOTE are the first three. We anchor on those + a remote-wildcard
+        // check that's locale-independent.
         if (tokens.length < 5) continue;
-        const [proto, local, , state, pid] = tokens;
+        const proto = tokens[0];
+        const local = tokens[1];
+        const remote = tokens[2];
+        const pid = tokens[tokens.length - 1];
         if (proto !== "TCP") continue;
-        if (state !== "LISTENING") continue;
         if (!local.endsWith(portSuffix)) continue;
+        // Listening sockets carry a wildcard remote; anything else is a
+        // connection (and matching it would kill an unrelated process).
+        if (remote !== "0.0.0.0:0" && remote !== "[::]:0") continue;
         if (!/^\d+$/.test(pid)) continue;
         pids.add(pid);
       }
       for (const pid of pids) {
         result.attemptedPids.push(pid);
         try {
-          const k = runner("taskkill", ["/F", "/PID", pid], { stdio: "ignore" });
+          const k = runner("taskkill", ["/F", "/PID", pid], {
+            stdio: "ignore",
+            timeout: HELPER_SPAWN_TIMEOUT_MS,
+          });
           if (k.error || k.status !== 0) {
             result.errors.push(
               `taskkill ${pid}: ${k.error?.message ?? `status=${k.status}`}`,
@@ -3003,6 +3030,7 @@ export function killProcessOnPort(
       const r = runner("lsof", ["-ti", `:${port}`], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
+        timeout: HELPER_SPAWN_TIMEOUT_MS,
       });
       if (r.error) {
         // ENOENT (lsof not installed) is a real diagnostic; surface it.
@@ -3016,7 +3044,10 @@ export function killProcessOnPort(
       for (const pid of pids) {
         result.attemptedPids.push(pid);
         try {
-          const k = runner("kill", [pid], { stdio: "ignore" });
+          const k = runner("kill", [pid], {
+            stdio: "ignore",
+            timeout: HELPER_SPAWN_TIMEOUT_MS,
+          });
           if (k.error || k.status !== 0) {
             result.errors.push(
               `kill ${pid}: ${k.error?.message ?? `status=${k.status}`}`,
