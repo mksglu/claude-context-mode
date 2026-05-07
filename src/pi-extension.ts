@@ -199,7 +199,7 @@ export default function piExtension(pi: any): void {
 
   // ── 1. session_start — Initialize session ──────────────
 
-  pi.on("session_start", (ctx: any) => {
+  pi.on("session_start", (_event: any, ctx: any) => {
     try {
       _sessionId = deriveSessionId(ctx ?? {});
       db.ensureSession(_sessionId, projectDir);

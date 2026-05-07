@@ -17,6 +17,7 @@ import "./setup-home";
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -295,6 +296,26 @@ describe("Pi Extension", () => {
       });
     });
 
+    it("session_start uses Pi context arg for stable session ID", async () => {
+      await registerPiExtension(api);
+      const sessionFile = join(tempDir, "stable-session.jsonl");
+      const expectedSessionId = createHash("sha256")
+        .update(sessionFile)
+        .digest("hex")
+        .slice(0, 8);
+
+      await api._trigger(
+        "session_start",
+        { type: "session_start", reason: "startup" },
+        { sessionManager: { getSessionFile: () => sessionFile } },
+      );
+
+      const result = await api._getCommand("ctx-stats")!.handler!({});
+      expect((result as { text: string }).text).toContain(
+        `Session: \`${expectedSessionId}`,
+      );
+    });
+
     it("session_before_compact builds resume snapshot", async () => {
       await registerPiExtension(api);
 
@@ -522,7 +543,7 @@ describe("Pi Extension", () => {
   describe("Slice 7: Routing block injection", () => {
     it("injects <context_window_protection> on first before_agent_start", async () => {
       await registerPiExtension(api);
-      await api._trigger("session_start", {
+      await api._trigger("session_start", {}, {
         sessionManager: { getSessionFile: () => `routing-1-${Date.now()}-${Math.random()}` },
       });
 
@@ -536,7 +557,7 @@ describe("Pi Extension", () => {
 
     it("does not re-inject the routing block on subsequent calls", async () => {
       await registerPiExtension(api);
-      await api._trigger("session_start", {
+      await api._trigger("session_start", {}, {
         sessionManager: { getSessionFile: () => `routing-2-${Date.now()}-${Math.random()}` },
       });
 
