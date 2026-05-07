@@ -132,13 +132,49 @@ function stripQuotedContent(cmd) {
 
 // Try to import security module — may not exist
 let security = null;
+let securityInitFailed = false;
 
+/**
+ * @returns {boolean} true if security module loaded successfully.
+ *
+ * Loud fail: if `build/security.js` is missing or fails to import, log a
+ * clear stderr warning instead of swallowing the error silently. Without
+ * this, user-configured `permissions.deny` patterns (#466) become no-ops
+ * with no indication that policy enforcement is disabled — a fail-open
+ * security regression.
+ */
 export async function initSecurity(buildDir) {
   try {
+    const { existsSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
     const { pathToFileURL } = await import("node:url");
-    const secPath = (await import("node:path")).resolve(buildDir, "security.js");
+    const secPath = resolve(buildDir, "security.js");
+    if (!existsSync(secPath)) {
+      if (!securityInitFailed && !process.env.CONTEXT_MODE_SUPPRESS_SECURITY_WARNING) {
+        process.stderr.write(
+          `[context-mode] WARNING: ${secPath} not found — security deny patterns will NOT be enforced. ` +
+            `Run \`npm run build\` to generate it. Set CONTEXT_MODE_SUPPRESS_SECURITY_WARNING=1 to silence.\n`,
+        );
+      }
+      securityInitFailed = true;
+      return false;
+    }
     security = await import(pathToFileURL(secPath).href);
-  } catch { /* not available */ }
+    return true;
+  } catch (err) {
+    if (!securityInitFailed && !process.env.CONTEXT_MODE_SUPPRESS_SECURITY_WARNING) {
+      process.stderr.write(
+        `[context-mode] WARNING: failed to load security module — deny patterns NOT enforced: ${err?.message ?? err}\n`,
+      );
+    }
+    securityInitFailed = true;
+    return false;
+  }
+}
+
+/** @returns {boolean} true if a previous initSecurity() call failed to load the module. */
+export function isSecurityInitFailed() {
+  return securityInitFailed;
 }
 
 /**

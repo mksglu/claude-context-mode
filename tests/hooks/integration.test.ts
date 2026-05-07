@@ -326,6 +326,53 @@ describe("Passthrough Tools", () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// initSecurity loud-failure regression (#466)
+// ═══════════════════════════════════════════════════════════════════════
+describe("initSecurity loud-failure (#466)", () => {
+  test("warns to stderr when build/security.js is missing", async () => {
+    const ROUTING_PATH = join(__dirname, "..", "..", "hooks", "core", "routing.mjs");
+    const missingBuildDir = join(tmpdir(), `ctx-no-build-${Date.now()}`);
+    // Subprocess so the warning isn't deduped by a prior call in this process.
+    const code = `
+      const { initSecurity } = await import(${JSON.stringify(pathToFileURL(ROUTING_PATH).href)});
+      const ok = await initSecurity(${JSON.stringify(missingBuildDir)});
+      process.stdout.write(JSON.stringify({ ok }));
+    `;
+    const r = spawnSync("node", ["--input-type=module", "-e", code], {
+      encoding: "utf-8",
+      timeout: 10000,
+      env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "" },
+    });
+    assert.equal(r.status, 0, `subprocess failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.equal(parsed.ok, false, "initSecurity should return false when security.js missing");
+    assert.ok(
+      r.stderr.includes("security deny patterns will NOT be enforced"),
+      `expected loud warning on stderr, got: ${r.stderr}`,
+    );
+  });
+
+  test("CONTEXT_MODE_SUPPRESS_SECURITY_WARNING silences the warning", async () => {
+    const ROUTING_PATH = join(__dirname, "..", "..", "hooks", "core", "routing.mjs");
+    const missingBuildDir = join(tmpdir(), `ctx-no-build-${Date.now()}-silent`);
+    const code = `
+      const { initSecurity } = await import(${JSON.stringify(pathToFileURL(ROUTING_PATH).href)});
+      await initSecurity(${JSON.stringify(missingBuildDir)});
+    `;
+    const r = spawnSync("node", ["--input-type=module", "-e", code], {
+      encoding: "utf-8",
+      timeout: 10000,
+      env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1" },
+    });
+    assert.equal(r.status, 0);
+    assert.ok(
+      !r.stderr.includes("security deny patterns will NOT be enforced"),
+      `expected suppressed warning, got: ${r.stderr}`,
+    );
+  });
+});
+
 describe("Security Policy Enforcement", () => {
   let ISOLATED_HOME: string;
   let MOCK_PROJECT_DIR: string;
