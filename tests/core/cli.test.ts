@@ -1168,7 +1168,7 @@ describe("Self-heal hook-path rewriting (#187 + #415 follow-up)", () => {
 // ── PR #183 fix: path traversal prevention in OpenClaw sessionKey ──
 
 describe("OpenClaw sessionKey safety (#183)", () => {
-  const WR_SOURCE = readFileSync(resolve(ROOT, "src/openclaw/workspace-router.ts"), "utf-8");
+  const WR_SOURCE = readFileSync(resolve(ROOT, "src/adapters/openclaw/workspace-router.ts"), "utf-8");
 
   test("workspace regex only allows safe characters (no path traversal)", () => {
     // Must use [a-zA-Z0-9_-]+ not [^:]+ to prevent ../../ in agent name

@@ -42,10 +42,10 @@ import type { HookInput } from "./session/extract.js";
 import { buildResumeSnapshot } from "./session/snapshot.js";
 import type { SessionEvent } from "./types.js";
 
-import { WorkspaceRouter } from "./openclaw/workspace-router.js";
+import { WorkspaceRouter } from "./adapters/openclaw/workspace-router.js";
 import { buildNodeCommand } from "./adapters/types.js";
-import { OPENCLAW_TOOL_DEFS } from "./openclaw/mcp-tools.js";
-import type { OpenClawToolDef } from "./openclaw/mcp-tools.js";
+import { OPENCLAW_TOOL_DEFS } from "./adapters/openclaw/mcp-tools.js";
+import type { OpenClawToolDef } from "./adapters/openclaw/mcp-tools.js";
 
 // ── System-reminder filter (CCv2 — SLICE OClaw-3) ─────────
 // Mirror hooks/userpromptsubmit.mjs:30-33: skip system-generated wrappers

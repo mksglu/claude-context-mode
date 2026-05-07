@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { describe, it, expect, test, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
 import { OpenClawSessionDB } from "../../src/adapters/openclaw/session-db.js";
-import { extractWorkspace, WorkspaceRouter } from "../../src/openclaw/workspace-router.js";
+import { extractWorkspace, WorkspaceRouter } from "../../src/adapters/openclaw/workspace-router.js";
 
 // MCP readiness sentinel — routing.mjs checks process.ppid in-process
 const _sentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
