@@ -194,11 +194,55 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
       "git status && cat huge.log",
       "git status || tail -F /var/log/syslog",
       "whoami; find /",
+      // Single `&` (background + sequence) — distinct from `&&` and easy to
+      // miss in the operator regex. `date & cat huge.log` runs date in the
+      // background and immediately tails the unbounded sink.
+      "date & cat /var/log/syslog",
+      "whoami & find /",
+      "pwd & tail -F huge.log",
     ];
     for (const command of cases) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
       expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+    }
+  });
+
+  it("cp / mv / rm with -v / --verbose → still nudged (verbose floods on big trees)", () => {
+    // The "silent on success" invariant of cp/mv/rm only holds without -v.
+    // Verbose flag prints one line per file, which can flood on big trees
+    // (recursive copy of /etc, mass rename, etc.).
+    const cases = [
+      "cp -v /a /b",
+      "cp -rv /a /b",
+      "cp -v -r /etc /tmp",
+      "cp --verbose /a /b",
+      "mv -v /a /b",
+      "mv --verbose /a /b",
+      "rm -v /tmp/foo",
+      "rm -rv /tmp/foo",
+      "rm --verbose /tmp/foo",
+    ];
+    for (const command of cases) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+    }
+  });
+
+  it("cp / mv / rm without -v → still allowlisted", () => {
+    // Sanity: the verbose carve-out must not regress the silent-success
+    // case, which is the whole reason these are in the allowlist.
+    for (const command of [
+      "cp /a /b",
+      "cp -r /a /b",
+      "mv /a /b",
+      "rm /tmp/foo",
+      "rm -rf /tmp/foo",
+    ]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
     }
   });
 

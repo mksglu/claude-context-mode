@@ -161,13 +161,17 @@ const SAFE_COMMAND_PATTERNS = [
   /^readlink(?:\s+.+)?$/,
   /^basename(?:\s+.+)?$/,
   /^dirname(?:\s+.+)?$/,
-  // Filesystem ops (silent on success, errors on stderr only)
+  // Filesystem ops (silent on success, errors on stderr only).
+  // For cp / mv / rm we explicitly refuse `-v` / `--verbose`: verbose
+  // mode prints one line per file and can flood on big trees
+  // (recursive copy of /etc, mass rename, etc.). The "silent on
+  // success" invariant only holds without -v.
   /^cd(?:\s+.+)?$/,
   /^mkdir(?:\s+.+)?$/,
   /^touch\s+.+$/,
-  /^mv\s+.+$/,
-  /^cp\s+.+$/,
-  /^rm\s+.+$/,
+  /^mv(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+.+$/,
+  /^cp(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+.+$/,
+  /^rm(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+.+$/,
   // ls — refuse recursive (-R / --recursive) to keep output bounded.
   /^ls(?!\s+-[a-zA-Z]*R)(?!\s+--recursive)(?:\s+.+)?$/,
   // git read-only / status subcommands
@@ -187,7 +191,14 @@ const SAFE_COMMAND_PATTERNS = [
   /^\S+\s+-V(?:\s|$)/,
 ];
 
-const SHELL_CONTROL_OPERATORS = /[|`]|\$\(|>>|>|<(?!<)|&&|\|\||;/;
+// Bash shell control operators that can compose a safe command with an
+// unbounded sink. Any match disqualifies the command from the allowlist.
+//
+// Note `&` (single — background + sequence): listed BEFORE `&&` in the
+// alternation so the regex engine doesn't accidentally short-match `&&`
+// when `&` is itself a separator (`date & cat huge.log`). Without this,
+// `^date(?:\s+.+)?$` would match the whole string and bypass the gate.
+const SHELL_CONTROL_OPERATORS = /[|`]|\$\(|>>|>|<(?!<)|&(?!&)|&&|\|\||;/;
 
 /**
  * @param {string} command Raw Bash command string from the hook payload.
