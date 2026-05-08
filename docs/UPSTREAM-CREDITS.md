@@ -2,8 +2,15 @@
 
 context-mode vendors a small set of operating-discipline skills authored
 by Matt Pocock. They are referenced as the operational backbone of the
-[`context-mode-ops`](context-mode-ops/SKILL.md) skill (`/diagnose`, `/tdd`,
-`/grill-me`, `/grill-with-docs`, `/improve-codebase-architecture`).
+[`context-mode-ops`](../.claude/skills/context-mode-ops/SKILL.md) skill
+(`/diagnose`, `/tdd`, `/grill-me`, `/grill-with-docs`,
+`/improve-codebase-architecture`).
+
+These skills live under `.claude/skills/` rather than `skills/` because
+`context-mode-ops` is a maintainer-only workflow; shipping them to every
+plugin install would pay description tokens for tools end users never
+invoke. Maintainers working inside this repo still get them auto-loaded
+via Claude Code's project-scoped skill discovery.
 
 ## Source
 
@@ -15,11 +22,11 @@ by Matt Pocock. They are referenced as the operational backbone of the
 
 | Skill | Upstream path | Local path |
 |-------|---------------|------------|
-| `/diagnose` | `skills/engineering/diagnose/` | `skills/diagnose/` |
-| `/tdd` | `skills/engineering/tdd/` | `skills/tdd/` |
-| `/grill-me` | `skills/productivity/grill-me/` | `skills/grill-me/` |
-| `/grill-with-docs` | `skills/engineering/grill-with-docs/` | `skills/grill-with-docs/` |
-| `/improve-codebase-architecture` | `skills/engineering/improve-codebase-architecture/` | `skills/improve-codebase-architecture/` |
+| `/diagnose` | `skills/engineering/diagnose/` | `.claude/skills/diagnose/` |
+| `/tdd` | `skills/engineering/tdd/` | `.claude/skills/tdd/` |
+| `/grill-me` | `skills/productivity/grill-me/` | `.claude/skills/grill-me/` |
+| `/grill-with-docs` | `skills/engineering/grill-with-docs/` | `.claude/skills/grill-with-docs/` |
+| `/improve-codebase-architecture` | `skills/engineering/improve-codebase-architecture/` | `.claude/skills/improve-codebase-architecture/` |
 
 ## Why vendor instead of just listing as docs?
 
@@ -38,7 +45,7 @@ To pull upstream changes:
 git clone --depth 1 https://github.com/mattpocock/skills /tmp/mattpocock-skills-update
 for d in diagnose tdd grill-me grill-with-docs improve-codebase-architecture; do
   src=$(find /tmp/mattpocock-skills-update/skills -maxdepth 3 -type d -name "$d" | head -1)
-  cp -R "$src/." "skills/$d/"
+  cp -R "$src/." ".claude/skills/$d/"
 done
 # Then update the commit SHA above and run the full test suite.
 ```

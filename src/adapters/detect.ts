@@ -67,6 +67,10 @@ export const PLATFORM_ENV_VARS = [
   // qwen-code — QWEN_PROJECT_DIR per QwenLM/qwen-code docs/users/features/hooks.md.
   // (QWEN_SESSION_ID removed — 0 hits in qwen-code repository.)
   ["qwen-code",          ["QWEN_PROJECT_DIR"]],
+  // omp (Pi-compatible harness — can1357/oh-my-pi). OMP_PROCESSING_AGENT_DIR
+  // is the published config root override (defaults to ~/.omp/agent). Listed
+  // BEFORE pi so OMP is not misclassified as Pi when both are installed.
+  ["omp",                ["OMP_PROCESSING_AGENT_DIR"]],
   // pi — PI_PROJECT_DIR consumed by src/adapters/pi/extension.ts:154 + src/server.ts:153
   // — implies the Pi runtime sets it before invoking the extension.
   ["pi",                 ["PI_PROJECT_DIR"]],
@@ -96,6 +100,7 @@ export function getSessionDirSegments(platform: string): string[] | null {
     case "vscode-copilot":   return [".vscode"];
     case "kiro":             return [".kiro"];
     case "pi":               return [".pi"];
+    case "omp":              return [".omp"];
     case "qwen-code":        return [".qwen"];
     case "kilo":             return [".config", "kilo"];
     case "opencode":         return [".config", "opencode"];
@@ -137,7 +142,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
+      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -201,6 +206,15 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
       platform: "kiro",
       confidence: "medium",
       reason: "~/.kiro/ directory exists",
+    };
+  }
+
+  // OMP listed BEFORE pi: shared ~/.pi history with OMP-only ~/.omp/ marker.
+  if (existsSync(resolve(home, ".omp"))) {
+    return {
+      platform: "omp",
+      confidence: "medium",
+      reason: "~/.omp/ directory exists",
     };
   }
 
@@ -336,6 +350,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "qwen-code": {
       const { QwenCodeAdapter } = await import("./qwen-code/index.js");
       return new QwenCodeAdapter();
+    }
+
+    case "omp": {
+      const { OMPAdapter } = await import("./omp/index.js");
+      return new OMPAdapter();
     }
 
     default: {

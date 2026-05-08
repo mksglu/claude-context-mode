@@ -807,6 +807,45 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 </details>
 
 <details>
+<summary><strong>OMP (Oh My Pi)</strong> — MCP-only, isolated storage under <code>~/.omp/</code></summary>
+
+**Prerequisites:** Node.js 18+, [Oh My Pi](https://github.com/can1357/oh-my-pi) installed.
+
+**Install:**
+
+1. Install context-mode globally:
+
+   ```bash
+   npm install -g context-mode
+   ```
+
+2. Add to `~/.omp/agent/mcp_config.json` (or `$OMP_PROCESSING_AGENT_DIR/mcp_config.json` if the env var is set):
+
+   ```json
+   {
+     "mcpServers": {
+       "context-mode": {
+         "command": "context-mode"
+       }
+     }
+   }
+   ```
+
+3. Copy routing instructions (OMP has no hook support):
+
+   ```bash
+   cp node_modules/context-mode/configs/omp/PI.md ./PI.md
+   ```
+
+4. Restart OMP.
+
+**Verify:** In an OMP session, type `ctx stats`. Context-mode tools should appear and respond.
+
+**Routing:** Manual. The `PI.md` file is the only enforcement method (~60% compliance). Auto-detected via `OMP_PROCESSING_AGENT_DIR` env var or presence of `~/.omp/` directory. Storage roots at `~/.omp/context-mode/` so OMP and Pi installs do not share session DBs, content indices, or stats files.
+
+</details>
+
+<details>
 <summary><strong>Build Prerequisites</strong> <sup>(CentOS, RHEL, Alpine)</sup></summary>
 
 Context Mode uses [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) on Node.js, which ships prebuilt native binaries for most platforms. On glibc >= 2.31 systems (Ubuntu 20.04+, Debian 11+, Fedora 34+, macOS, Windows), `npm install` works without any build tools.
@@ -927,16 +966,16 @@ Context Mode captures every meaningful event during your session and persists th
 
 Session continuity requires 5 hooks working together:
 
-| Hook | Role | Claude Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi |
-|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **PreToolUse** | Enforces sandbox routing before tool execution | Yes | -- | -- | -- | Yes | -- | -- | -- | Yes | -- | Yes | -- | ✓ (via tool_call event) |
-| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | ✓ (via tool_result event) |
-| **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | Plugin (via chat.message) | Plugin (via chat.message) | -- | Yes | -- | -- | -- | -- |
-| **PreCompact** | Builds snapshot before compaction | Yes | Yes | Yes | Yes | -- | Plugin | Plugin | Plugin | -- | -- | -- | -- | ✓ (via session_before_compact) |
-| **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | ✓ (via session_start event) |
-| | **Session completeness** | **Full** | **High** | **High** | **High** | **Partial** | **Full** | **Full** | **High** | **Partial** | **--** | **Partial** | **--** | **High** |
+| Hook | Role | Claude Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi | OMP |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **PreToolUse** | Enforces sandbox routing before tool execution | Yes | -- | -- | -- | Yes | -- | -- | -- | Yes | -- | Yes | -- | ✓ (via tool_call event) | -- |
+| **PostToolUse** | Captures events after each tool call | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | ✓ (via tool_result event) | -- |
+| **UserPromptSubmit** | Captures user decisions and corrections | Yes | -- | -- | -- | -- | Plugin (via chat.message) | Plugin (via chat.message) | -- | Yes | -- | -- | -- | -- | -- |
+| **PreCompact** | Builds snapshot before compaction | Yes | Yes | Yes | Yes | -- | Plugin | Plugin | Plugin | -- | -- | -- | -- | ✓ (via session_before_compact) | -- |
+| **SessionStart** | Restores state after compaction or resume | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | ✓ (via session_start event) | -- |
+| | **Session completeness** | **Full** | **High** | **High** | **High** | **Partial** | **Full** | **Full** | **High** | **Partial** | **--** | **Partial** | **--** | **High** | **--** |
 
-> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, **JetBrains Copilot**, **OpenCode**, and **KiloCode**. **OpenCode** and **KiloCode** use `experimental.chat.system.transform` as a SessionStart surrogate to inject the routing block and restore prior sessions, plus `chat.message` for user-prompt capture; full SessionStart hook support is not yet available ([#14808](https://github.com/sst/opencode/issues/14808), [#5409](https://github.com/sst/opencode/issues/5409)), but prior-session continuity and user-decision capture work fully. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Pi Coding Agent** provides high session continuity via extension hooks (`tool_call`, `tool_result`, `session_start`, `session_before_compact`). **Codex CLI** provides partial hook-based session tracking through PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, and Stop; MCP tools work. **Antigravity**, **Kiro**, and **Zed** have no hook support in the current release, so session tracking is not available.
+> **Note:** Full session continuity (capture + snapshot + restore) works on **Claude Code**, **Gemini CLI**, **VS Code Copilot**, **JetBrains Copilot**, **OpenCode**, and **KiloCode**. **OpenCode** and **KiloCode** use `experimental.chat.system.transform` as a SessionStart surrogate to inject the routing block and restore prior sessions, plus `chat.message` for user-prompt capture; full SessionStart hook support is not yet available ([#14808](https://github.com/sst/opencode/issues/14808), [#5409](https://github.com/sst/opencode/issues/5409)), but prior-session continuity and user-decision capture work fully. **Cursor** captures tool events via `preToolUse`/`postToolUse`, but `sessionStart` is currently rejected by Cursor's validator ([forum report](https://forum.cursor.com/t/unknown-hook-type-sessionstart/149566)), so session restore after compaction is not available yet. **OpenClaw** uses native gateway plugin hooks (`api.on()`) for full session continuity. **Pi Coding Agent** provides high session continuity via extension hooks (`tool_call`, `tool_result`, `session_start`, `session_before_compact`). **Codex CLI** provides partial hook-based session tracking through PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, and Stop; MCP tools work. **Antigravity**, **Kiro**, and **Zed** have no hook support in the current release, so session tracking is not available. **OMP** (Oh My Pi) is also MCP-only and has no hook support — its dedicated adapter exists to keep storage isolated under `~/.omp/context-mode/` rather than leaking into another platform's directory.
 
 <details>
 <summary><strong>What gets captured</strong></summary>
@@ -1045,22 +1084,24 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 
 **Pi Coding Agent** — High coverage. The extension registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). File edits, git ops, errors, and tasks are fully tracked. Session restore after compaction works via the extension's event hooks.
 
+**OMP (Oh My Pi)** — No session support. MCP-only paradigm; no hook integration. The dedicated adapter exists so OMP storage roots cleanly under `~/.omp/context-mode/` instead of leaking into another platform's directory (issue [#473](https://github.com/mksglu/context-mode/issues/473)). Auto-detected via `OMP_PROCESSING_AGENT_DIR` env var or presence of `~/.omp/`.
+
 </details>
 
 ## Platform Compatibility
 
-| Feature | Claude Code | Qwen Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| PreToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) |
-| PostToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) |
-| SessionStart Hook | Yes | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | Yes (extension) |
-| PreCompact Hook | Yes | Yes | Yes | Yes | Yes | -- | Plugin | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) |
-| Can Modify Args | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) |
-| Can Block Tools | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) |
-| Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (/ctx-stats, /ctx-doctor) |
-| Slash Commands | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
-| Plugin Marketplace | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| Feature | Claude Code | Qwen Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi | OMP |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| PreToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | -- |
+| PostToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | -- |
+| SessionStart Hook | Yes | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | Yes (extension) | -- |
+| PreCompact Hook | Yes | Yes | Yes | Yes | Yes | -- | Plugin | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) | -- |
+| Can Modify Args | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | -- | -- | -- | -- | Yes (extension) | -- |
+| Can Block Tools | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | -- |
+| Utility Commands (ctx) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (/ctx-stats, /ctx-doctor) | Yes |
+| Slash Commands | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
+| Plugin Marketplace | Yes | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- | -- |
 
 > **OpenCode** uses a TypeScript plugin paradigm — hooks run as in-process functions via `tool.execute.before`, `tool.execute.after`, `experimental.session.compacting`, `experimental.chat.system.transform`, and `chat.message`, providing full routing enforcement, session continuity, and user-prompt capture. The `experimental.chat.system.transform` hook acts as a SessionStart surrogate to inject the routing block and restore prior sessions. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 >
@@ -1073,12 +1114,14 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 > **Kiro** supports native `preToolUse` and `postToolUse` hooks for routing enforcement and tool event capture. `agentSpawn` (SessionStart equivalent) and `stop` are not yet wired. Requires manually copying `KIRO.md` to your project root. Kiro is auto-detected via MCP protocol handshake (`clientInfo.name`).
 >
 > **Pi Coding Agent** runs context-mode as an extension with full hook support. The extension registers `tool_call`, `tool_result`, `session_start`, and `session_before_compact` events, providing high session continuity coverage. The MCP server provides all 11 MCP tools.
+>
+> **OMP (Oh My Pi)** is MCP-only — no hook integration. The dedicated adapter exists to keep storage isolated under `~/.omp/context-mode/` rather than leaking into another harness's directory. Auto-detected via `OMP_PROCESSING_AGENT_DIR` (default `~/.omp/agent`) or `~/.omp/` directory. See [issue #473](https://github.com/mksglu/context-mode/issues/473).
 
 ### Routing Enforcement
 
 Hooks intercept tool calls programmatically — they can block dangerous commands and redirect them to the sandbox before execution. Instruction files guide the model via prompt instructions but cannot block anything. **Always enable hooks where supported.**
 
-> **Note:** Routing instruction files were previously auto-written to project directories on first session start. This was disabled to prevent git tree pollution ([#158](https://github.com/mksglu/context-mode/issues/158), [#164](https://github.com/mksglu/context-mode/issues/164)). Hook-capable platforms (Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, OpenCode, OpenClaw, Codex CLI) inject routing via hooks and need no file. Non-hook platforms (Zed, Kiro, Antigravity) require a one-time manual copy — see each platform's install section.
+> **Note:** Routing instruction files were previously auto-written to project directories on first session start. This was disabled to prevent git tree pollution ([#158](https://github.com/mksglu/context-mode/issues/158), [#164](https://github.com/mksglu/context-mode/issues/164)). Hook-capable platforms (Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, OpenCode, OpenClaw, Codex CLI) inject routing via hooks and need no file. Non-hook platforms (Zed, Kiro, Antigravity, OMP) require a one-time manual copy — see each platform's install section.
 
 | Platform | Hooks | Instruction File | With Hooks | Without Hooks |
 |---|:---:|---|:---:|:---:|
