@@ -1,0 +1,6 @@
+Index the README of this repository, then search the indexed corpus for the
+term "context-mode" and summarise the three top-ranked chunks. You MUST use
+the `ctx_index` tool to index the README, the `ctx_search` tool to retrieve
+the chunks, and `ctx_execute` to render the summary as JSON. Do not use any
+other tool for these steps. When done, print the result of `/ctx-stats` so
+the harness can verify token savings.
