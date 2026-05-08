@@ -67,6 +67,7 @@
     "cli.bundle.mjs",
     "bin",
     "skills",
+    "UPSTREAM-CREDITS.md",
     ".claude-plugin",
     ".openclaw-plugin",
     ".mcp.json",
