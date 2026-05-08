@@ -1,0 +1,128 @@
+{
+  "version": "0.4.0",
+  "date": "2026-02-23T05:46:39.774Z",
+  "results": [
+    {
+      "tool": "fetch_and_index",
+      "useCase": "example.com (simple HTML)",
+      "rawBytes": 529,
+      "contextBytes": 50,
+      "savingsPercent": 91,
+      "durationMs": 202,
+      "details": "1 chunks"
+    },
+    {
+      "tool": "fetch_and_index",
+      "useCase": "httpbin.org (API reference)",
+      "rawBytes": 9594,
+      "contextBytes": 50,
+      "savingsPercent": 99,
+      "durationMs": 656,
+      "details": "2 chunks"
+    },
+    {
+      "tool": "execute",
+      "useCase": "npm ls → dependency summary",
+      "rawBytes": 364,
+      "contextBytes": 33,
+      "savingsPercent": 91,
+      "durationMs": 485,
+      "details": "dep summary"
+    },
+    {
+      "tool": "execute",
+      "useCase": "System info → compact summary",
+      "rawBytes": 441,
+      "contextBytes": 33,
+      "savingsPercent": 93,
+      "durationMs": 60,
+      "details": "compact info"
+    },
+    {
+      "tool": "execute",
+      "useCase": "Git log (153 commits) → summary",
+      "rawBytes": 11895,
+      "contextBytes": 18,
+      "savingsPercent": 100,
+      "durationMs": 32,
+      "details": "git summary"
+    },
+    {
+      "tool": "execute_file",
+      "useCase": "Access log (500 req) → status breakdown",
+      "rawBytes": 46216,
+      "contextBytes": 71,
+      "savingsPercent": 100,
+      "durationMs": 31,
+      "details": ""
+    },
+    {
+      "tool": "execute_file",
+      "useCase": "Analytics CSV (500 rows) → metric summary",
+      "rawBytes": 87517,
+      "contextBytes": 11519,
+      "savingsPercent": 87,
+      "durationMs": 24,
+      "details": ""
+    },
+    {
+      "tool": "execute_file",
+      "useCase": "MCP tools.json (40 tools) → tool index",
+      "rawBytes": 17362,
+      "contextBytes": 78,
+      "savingsPercent": 100,
+      "durationMs": 19,
+      "details": ""
+    },
+    {
+      "tool": "execute_file",
+      "useCase": "Test output (30 suites) → pass/fail",
+      "rawBytes": 6185,
+      "contextBytes": 37,
+      "savingsPercent": 99,
+      "durationMs": 17,
+      "details": ""
+    },
+    {
+      "tool": "execute_file",
+      "useCase": "package.json (23 deps) → dep summary",
+      "rawBytes": 1513,
+      "contextBytes": 39,
+      "savingsPercent": 97,
+      "durationMs": 17,
+      "details": ""
+    },
+    {
+      "tool": "index+search",
+      "useCase": "Context7 React docs → search useEffect",
+      "rawBytes": 6075,
+      "contextBytes": 285,
+      "savingsPercent": 95,
+      "durationMs": 1,
+      "details": "2 results"
+    },
+    {
+      "tool": "index+search",
+      "useCase": "Context7 Supabase Edge → search RLS",
+      "rawBytes": 3988,
+      "contextBytes": 123,
+      "savingsPercent": 97,
+      "durationMs": 1,
+      "details": "1 results"
+    },
+    {
+      "tool": "index+search",
+      "useCase": "Context7 Next.js docs → search routing",
+      "rawBytes": 6658,
+      "contextBytes": 273,
+      "savingsPercent": 96,
+      "durationMs": 1,
+      "details": "2 results"
+    }
+  ],
+  "aggregate": {
+    "totalRaw": 198337,
+    "totalCtx": 12609,
+    "avgSavings": 94
+  }
+}

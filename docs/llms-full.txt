@@ -1,0 +1,813 @@
+# context-mode
+
+> An MCP (Model Context Protocol) server and Claude Code plugin that solves context window flooding. Version 0.9.22 achieves ~98% context reduction (315 KB to 5.4 KB) by keeping raw tool outputs in isolated subprocesses and indexing them into SQLite FTS5 with BM25 ranking. Large command outputs, log files, API responses, and documentation never enter the context window -- only concise summaries and search results do.
+
+## Architecture Overview
+
+context-mode operates as a Claude Code plugin that intercepts data-heavy tool calls (Bash, Read, WebFetch, Grep) and redirects them through sandboxed execution. Raw data stays in subprocesses; only printed summaries enter the LLM context. A persistent FTS5 knowledge base indexes all sandboxed output for on-demand retrieval via BM25-ranked search with three-tier fallback (Porter stemming, trigram substring, fuzzy Levenshtein correction).
+
+### Core Components
+
+| File | Lines | Responsibility |
+|------|-------|----------------|
+| `src/server.ts` | ~1358 | MCP server, 6 tool definitions, session stats, intent search |
+| `src/store.ts` | ~1075 | FTS5 knowledge base, chunking strategies, search with fallback |
+| `src/executor.ts` | ~437 | Polyglot subprocess execution, output truncation, sandbox |
+| `src/security.ts` | ~557 | Deny/allow policies, shell-escape detection, pattern matching |
+| `src/runtime.ts` | ~293 | Runtime detection, language dispatch, fallback chains |
+| `src/cli.ts` | ~898 | CLI setup, doctor diagnostics, upgrade |
+| `hooks/pretooluse.mjs` | PreToolUse hook -- intercepts tools, security checks, routing |
+| `hooks/sessionstart.mjs` | SessionStart hook -- injects routing rules at session start |
+| `hooks/routing-block.mjs` | Shared XML routing block for hooks |
+| `start.mjs` | Bootstrap -- version healing, dependency install, server launch |
+
+## MCP Tools
+
+context-mode exposes 6 MCP tools. All tool names are prefixed with `mcp__plugin_context-mode_context-mode__` when called from Claude Code.
+
+### execute
+
+Runs code in an isolated subprocess. Only stdout enters the context window.
+
+```
+execute({
+  language: "javascript" | "typescript" | "python" | "shell" | "ruby" |
+            "go" | "rust" | "php" | "perl" | "r" | "elixir",
+  code: string,
+  timeout?: number,   // default: 30000 ms
+  intent?: string     // semantic filter for large output
+})
+```
+
+**Parameters:**
+
+- `language` (required): One of 11 supported languages. Determines which runtime executes the code.
+- `code` (required): Source code to execute. For JS/TS, use `console.log()` to output. For Python, use `print()`. For Shell, use `echo`. Each language has its idiomatic output function.
+- `timeout` (optional): Maximum execution time in milliseconds. Default 30000. Process is killed via SIGTERM on timeout; partial stdout is returned.
+- `intent` (optional): Natural language description of what you are looking for. When provided and output exceeds 5000 bytes (~80-100 lines), the output is auto-indexed into FTS5 and only matching sections are returned via BM25 search instead of raw output.
+
+**Return behavior:**
+
+- Success: returns stdout as text.
+- Error (non-zero exit): returns stdout + stderr combined.
+- Timeout: returns partial stdout + timeout message.
+- Intent match: returns indexed sections matching the intent query, with section titles and content previews.
+- No intent match: returns source labels and searchable terms for follow-up queries.
+
+**Output limits:**
+
+- Auto-index threshold (`LARGE_OUTPUT_THRESHOLD`): 102,400 bytes (100 KB). Output exceeding this is fully indexed into FTS5 and a pointer is returned instead of raw content.
+- Hard cap (`hardCapBytes`): 104,857,600 bytes (100 MB). Process is killed at stream level if combined stdout+stderr exceeds this. Prevents memory exhaustion from commands like `yes` or `cat /dev/urandom`.
+- Intent search threshold (`INTENT_SEARCH_THRESHOLD`): 5000 bytes. Output below this is returned directly even when intent is provided.
+
+**Network I/O tracking (JS/TS only):**
+
+For JavaScript and TypeScript, the code is wrapped in an async IIFE with a fetch interceptor that tracks response body sizes. Total network bytes are reported via a `__CM_NET__` stderr marker, parsed by the server, and added to `sessionStats.bytesSandboxed`. The marker is stripped from stderr before returning results.
+
+### execute_file
+
+Reads a file into a subprocess variable and runs processing code against it. The file content never enters the LLM context.
+
+```
+execute_file({
+  path: string,       // absolute or relative file path
+  language: "javascript" | "typescript" | "python" | "shell" | "ruby" |
+            "go" | "rust" | "php" | "perl" | "r" | "elixir",
+  code: string,       // processing code -- FILE_CONTENT variable is available
+  timeout?: number,   // default: 30000 ms
+  intent?: string     // semantic filter for large output
+})
+```
+
+**FILE_CONTENT variable injection per language:**
+
+| Language | Variable | Loading mechanism |
+|----------|----------|-------------------|
+| JavaScript/TypeScript | `FILE_CONTENT` | `require("fs").readFileSync(path, "utf-8")` |
+| Python | `FILE_CONTENT` | `open(path, "r", encoding="utf-8").read()` |
+| Shell | `FILE_CONTENT` | `$(cat path)` |
+| Ruby | `FILE_CONTENT` | `File.read(path, encoding: "utf-8")` |
+| Go | `FILE_CONTENT` | `os.ReadFile(path)` converted to string |
+| Rust | `file_content` | `fs::read_to_string(path).unwrap()` |
+| PHP | `$FILE_CONTENT` | `file_get_contents(path)` |
+| Perl | `$FILE_CONTENT` | Filehandle with `<:encoding(UTF-8)` and `local $/` slurp |
+| R | `FILE_CONTENT` | `readLines(path, warn=FALSE, encoding="UTF-8")` joined with newlines |
+| Elixir | `file_content` | `File.read!(path)` |
+
+The `FILE_CONTENT_PATH` variable (or language-appropriate equivalent) is also set to the absolute file path.
+
+**Security:** File path is checked against Read deny patterns from settings. Shell code is checked against Bash deny patterns.
+
+### index
+
+Indexes content into the FTS5 knowledge base for later search retrieval.
+
+```
+index({
+  content?: string,   // raw text to index (mutually exclusive with path)
+  path?: string,      // file path to read and index (mutually exclusive with content)
+  source?: string     // label for retrieval, defaults to path or "untitled"
+})
+```
+
+**Returns:**
+
+```typescript
+{
+  sourceId: number,    // ID in the sources table
+  label: string,       // the source label
+  totalChunks: number, // number of chunks created
+  codeChunks: number   // number of chunks containing code blocks
+}
+```
+
+**Chunking strategy:** Uses markdown chunking (`#chunkMarkdown`). Splits on H1-H4 headings, preserves code blocks as atomic units, maintains heading breadcrumb hierarchy. See the Knowledge Base section for full chunking details.
+
+### search
+
+Queries the FTS5 knowledge base using three-tier fallback search.
+
+```
+search({
+  queries: string[],   // REQUIRED: array of search terms
+  limit?: number,      // results per query, default 3, max 2 in normal mode
+  source?: string      // filter to specific indexed source (partial LIKE match)
+})
+```
+
+**Search behavior:**
+
+1. Porter stemming FTS5 MATCH (Layer 1)
+2. Trigram substring matching (Layer 2)
+3. Fuzzy Levenshtein correction + re-search on both Porter and Trigram (Layer 3)
+
+**Progressive throttling (per 60-second window):**
+
+| Call count | Behavior |
+|------------|----------|
+| 1-3 | Normal: max 2 results per query |
+| 4-8 | Reduced: 1 result per query, warning emitted |
+| 9+ | Blocked: returns error, demands batch_execute usage |
+
+The throttle window resets every 60 seconds (`SEARCH_WINDOW_MS = 60_000`).
+
+**Output cap:** 40 KB total (`MAX_TOTAL = 40 * 1024`). Once reached, remaining queries return "(output cap reached)" messages.
+
+**Snippet extraction:** Each result includes a smart snippet (up to 1500 bytes) centered on match positions. Match positions are derived from FTS5 highlight markers (char(2)/char(3) delimiters) when available, with fallback to `indexOf` on raw query terms. Overlapping windows of 300 characters around each match are merged and collected until the 1500-byte limit.
+
+**Distinctive terms:** After returning results, the response includes searchable terms for each source computed via IDF scoring. Words are scored by `log(totalChunks / count) + lengthBonus + identifierBonus` where identifier bonus rewards words with underscores or camelCase patterns.
+
+### fetch_and_index
+
+Fetches a URL in a subprocess, converts content based on Content-Type, indexes into the knowledge base, and returns a preview.
+
+```
+fetch_and_index({
+  url: string,         // URL to fetch
+  source?: string      // label for indexed content, defaults to URL
+})
+```
+
+**Content-type routing:**
+
+| Content-Type | Processing | Index method |
+|--------------|-----------|--------------|
+| HTML (default) | Turndown markdown conversion (removes script, style, nav, header, footer elements) | `store.index()` (markdown chunking) |
+| JSON (`__CM_CT__:json`) | Direct indexing | `store.indexJSON()` (key-path chunking) |
+| Plain text (`__CM_CT__:text`) | Direct indexing | `store.indexPlainText()` (line-group chunking) |
+
+**Subprocess isolation:** The fetch is executed as JavaScript code inside a subprocess. Raw HTML never enters context. The subprocess uses Turndown with GFM plugin and domino for HTML-to-markdown conversion. The Content-Type header is communicated back via a `__CM_CT__:` prefix on the first line of stdout.
+
+**Preview:** Returns the first 3072 bytes (`PREVIEW_LIMIT`) of the converted markdown. Content beyond this is truncated with a `"...[truncated -- use search() for full content]"` message.
+
+**Timeout:** 30,000 ms for the fetch subprocess.
+
+### batch_execute
+
+Runs multiple shell commands, auto-indexes all output, and searches with multiple queries in a single call. This is the primary research tool.
+
+```
+batch_execute({
+  commands: Array<{
+    label: string,     // section header for this command's output
+    command: string    // shell command to execute
+  }>,
+  queries: string[],   // search queries to run against indexed output
+  timeout?: number     // default: 60000 ms (1 minute)
+})
+```
+
+**Execution flow:**
+
+1. All commands run sequentially in a single shell process. Each command's output is prefixed with a markdown heading (`## label`).
+2. Combined output is indexed into FTS5 via `store.index()` (markdown chunking).
+3. A section inventory is built showing all indexed sections with byte sizes.
+4. Each query is searched with three-tier fallback: scoped to the batch source label first, then global fallback if no results.
+5. Results are returned with section inventory + search results.
+
+**Output cap:** 80 KB total for search results (`MAX_OUTPUT = 80 * 1024`). Queries exceeding this cap return "(output cap reached)" messages with instructions to use `search()` for follow-up.
+
+**Security:** Each command in the batch is individually checked against Bash deny patterns.
+
+### stats
+
+Returns context consumption statistics for the current session.
+
+```
+stats({})   // no parameters
+```
+
+**Returns:**
+
+- Total bytes returned to context (per-tool breakdown)
+- Total call count (per-tool breakdown)
+- Bytes indexed (kept in FTS5, never entered context)
+- Bytes sandboxed (network I/O inside subprocesses)
+- Session uptime
+- Estimated token usage (`totalBytesReturned / 4`)
+- Context savings ratio (`totalProcessed / totalBytesReturned`)
+- Reduction percentage (`1 - totalBytesReturned / totalProcessed`)
+
+## Knowledge Base -- SQLite FTS5 + BM25
+
+### Database Schema
+
+```sql
+-- Pragma configuration
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+
+-- Sources table
+CREATE TABLE IF NOT EXISTS sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  label TEXT NOT NULL,
+  chunk_count INTEGER NOT NULL DEFAULT 0,
+  code_chunk_count INTEGER NOT NULL DEFAULT 0,
+  indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Porter stemming FTS5 table
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
+  title,
+  content,
+  source_id UNINDEXED,
+  content_type UNINDEXED,
+  tokenize='porter unicode61'
+);
+
+-- Trigram FTS5 table (for substring matching)
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
+  title,
+  content,
+  source_id UNINDEXED,
+  content_type UNINDEXED,
+  tokenize='trigram'
+);
+
+-- Vocabulary table (for fuzzy correction)
+CREATE TABLE IF NOT EXISTS vocabulary (
+  word TEXT PRIMARY KEY
+);
+```
+
+**Performance configuration:** WAL mode for concurrent reads, `synchronous=NORMAL` for write performance, Database constructor timeout 5000 ms, prepared statements cached for all queries.
+
+**Database file naming:** `context-mode-{PID}.db` in the OS temp directory. Cleaned on exit. Stale DB cleanup runs at startup: scans for `context-mode-*.db` files, extracts PID from filename, sends signal 0 to check if process is alive, deletes DB files (including `-wal` and `-shm` companions) for dead processes.
+
+### BM25 Ranking
+
+All search queries use BM25 ranking at the SQL level:
+
+```sql
+bm25(chunks, 2.0, 1.0) AS rank
+```
+
+- `k1 = 2.0`: term frequency saturation parameter. Higher value means term frequency matters more.
+- `b = 1.0`: document length normalization. Value of 1.0 means full length normalization (shorter documents are boosted).
+- Results are ordered by `rank` ascending (BM25 returns negative scores where more negative = better match).
+- Highlight markers use `char(2)` (start) and `char(3)` (end) for match position extraction.
+
+### Chunking Strategies
+
+#### Markdown Chunking (`#chunkMarkdown`)
+
+Used by `index()` and `fetch_and_index()` for HTML content.
+
+- Splits on H1-H4 heading boundaries (`/^(#{1,4})\s+(.+)$/`)
+- Maintains a heading stack for breadcrumb titles (e.g., "H1 > H2 > H3")
+- Preserves code blocks as atomic units (tracks code fence state with `` ``` `` markers)
+- Flushes accumulated content when a new heading is encountered or at horizontal rules (`/^[-_*]{3,}\s*$/`)
+- Detects code blocks within chunks via `` /```\w*\n[\s\S]*?```/ `` pattern
+- Maximum chunk size: 4096 bytes (`MAX_CHUNK_BYTES`). Oversized chunks are split at paragraph boundaries (double newlines) with numbered suffixes (e.g., "Section Title (1)", "Section Title (2)").
+
+#### Plain Text Chunking (`#chunkPlainText`)
+
+Used by `indexPlainText()` for logs, build output, test results.
+
+Two-phase strategy:
+
+1. **Blank-line splitting first:** Splits on `\n\s*\n`. Used when result has 3-200 sections and each section is under 5000 bytes. Section title is the first line (up to 80 chars) or "Section N".
+2. **Fixed-size line groups (fallback):** 20 lines per chunk (`linesPerChunk` parameter), 2-line overlap between consecutive chunks. Step size = `linesPerChunk - overlap`. Titles show line ranges ("Lines 1-20", "Lines 19-38", etc.).
+
+If input has fewer lines than `linesPerChunk`, emits a single chunk titled "Output".
+
+#### JSON Chunking (`#walkJSON`)
+
+Used by `indexJSON()` for JSON API responses and data files.
+
+- Recursively walks the object tree using key paths as chunk titles (analogous to heading hierarchy). Titles are joined with " > " separator, e.g., "data > users > 0".
+- **Small objects:** If serialized size is under `MAX_CHUNK_BYTES` (4096) and the object has no nested object/array values (flat), emit as a single chunk.
+- **Nested objects:** Always recurse even if the subtree fits in one chunk, so that key paths become searchable chunk titles.
+- **Arrays:** Items are batched by accumulated byte size up to `MAX_CHUNK_BYTES`. Identity fields (`id`, `name`, `title`, `slug`, `key`, `label`) are detected on array items to create meaningful chunk titles (e.g., "users > john-doe" instead of "users > [0]").
+- Falls back to `indexPlainText()` if JSON parsing fails.
+
+### Three-Tier Search Fallback (`searchWithFallback`)
+
+```
+Layer 1: Porter stemming FTS5 MATCH
+  |-- match found --> return results with matchLayer: "porter"
+  |-- no match --> fall through
+
+Layer 2: Trigram substring FTS5 MATCH
+  |-- match found --> return results with matchLayer: "trigram"
+  |-- no match --> fall through
+
+Layer 3: Fuzzy Levenshtein correction
+  |-- correct each query word against vocabulary
+  |-- re-search with corrected query on Porter, then Trigram
+  |-- match found --> return results with matchLayer: "fuzzy"
+  |-- no match --> return empty array
+```
+
+Each layer supports optional source filtering via `LIKE` match on `sources.label`.
+
+### Fuzzy Search
+
+**Levenshtein distance function:** Standard dynamic programming implementation. Operates on lowercase strings.
+
+**Adaptive edit distance thresholds (`maxEditDistance`):**
+
+| Word length | Max edit distance |
+|-------------|-------------------|
+| 1-4 chars | 1 |
+| 5-12 chars | 2 |
+| 13+ chars | 3 |
+
+**Vocabulary:** Built during indexing. Words extracted from content by splitting on whitespace, filtering to words with 3+ characters, excluding stopwords. Stored in the `vocabulary` table with `INSERT OR IGNORE`.
+
+**Fuzzy correction (`fuzzyCorrect`):** For each query word, retrieves candidate words from vocabulary where `length(word) BETWEEN wordLength-maxDist AND wordLength+maxDist`. Computes Levenshtein distance for each candidate. Returns the candidate with the smallest distance if it is within the threshold, or `null` if no close match exists.
+
+**Stopwords (88 words):**
+
+Common English: the, and, for, are, but, not, you, all, can, had, her, was, one, our, out, has, his, how, its, may, new, now, old, see, way, who, did, get, got, let, say, she, too, use, will, with, this, that, from, they, been, have, many, some, them, than, each, make, like, just, over, such, take, into, year, your, good, could, would, about, which, their, there, other, after, should, through, also, more, most, only, very, when, what, then, these, those, being, does, done, both, same, still, while, where, here, were, much.
+
+Code/changelog: update, updates, updated, deps, dev, tests, test, add, added, fix, fixed, run, running, using.
+
+### Distinctive Terms (IDF Scoring)
+
+`getDistinctiveTerms(sourceId, maxTerms = 40)` computes per-source term importance:
+
+```
+score = IDF + lengthBonus + identifierBonus
+```
+
+- **IDF:** `log(totalChunks / count)` where `count` is the number of chunks containing the word.
+- **Length bonus:** Rewards longer words (more specific terms).
+- **Identifier bonus:** Rewards words containing underscores or camelCase patterns (likely code identifiers).
+- Words must be 3+ characters and not in the stopword list.
+- Used to suggest follow-up search queries in tool responses.
+
+## Execution Engine -- Polyglot Sandbox
+
+### Supported Languages and Runtimes
+
+| Language | Primary Runtime | Fallback 1 | Fallback 2 |
+|----------|----------------|------------|------------|
+| JavaScript | bun | node | -- |
+| TypeScript | bun | tsx | ts-node |
+| Python | python3 | python | -- |
+| Shell | bash | sh | powershell (Windows) |
+| Ruby | ruby | -- | -- |
+| Go | go run | -- | -- |
+| Rust | rustc (compile + run) | -- | -- |
+| PHP | php | -- | -- |
+| Perl | perl | -- | -- |
+| R | Rscript | r | -- |
+| Elixir | elixir | -- | -- |
+
+Runtime detection uses `commandExists()` which checks `which` (Unix) or `where` (Windows) for each runtime. Bun is preferred over Node when available.
+
+### Auto-Wrapping
+
+- **Go:** If code does not contain `package `, wraps in `package main` with `import "fmt"` and `func main() { ... }`.
+- **PHP:** If code does not start with `<?`, prepends `<?php\n`.
+- **Elixir:** If a `mix.exs` exists in the project root, prepends `Path.wildcard` to add compiled BEAM paths (`*/ebin`) to the code path.
+- **Rust:** Source compiled with `rustc` to a temp binary, then executed. Not interpreted.
+
+### Output Handling
+
+**Full output preservation:**
+
+The executor returns complete, untruncated stdout and stderr. No data is discarded — the server auto-indexes large outputs (>100KB) into FTS5 and returns a pointer message instead of raw content. Small outputs are returned inline as-is.
+
+**Stream-level hard cap:**
+
+The subprocess spawn monitors combined stdout+stderr byte count. If `totalBytes > hardCapBytes` (100 MB), the process tree is immediately killed. This prevents memory exhaustion from infinite-output commands.
+
+### Environment Passthrough
+
+The following environment variables are passed through to sandboxed subprocesses:
+
+**Authentication:**
+- `GITHUB_TOKEN`, `GH_TOKEN` -- GitHub CLI and API
+- `ANTHROPIC_API_KEY` -- Anthropic API
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_DEFAULT_REGION`, `AWS_PROFILE` -- AWS
+- `GOOGLE_APPLICATION_CREDENTIALS` -- Google Cloud
+
+**Infrastructure:**
+- `DOCKER_HOST` -- Docker
+- `KUBECONFIG` -- Kubernetes
+- `NPM_TOKEN`, `NODE_AUTH_TOKEN` -- npm registries
+- `npm_config_registry` -- npm registry URL
+
+**Network:**
+- `SSH_AUTH_SOCK` -- SSH agent
+- `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY` -- proxies
+- `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` -- CA certificates
+
+**Configuration:**
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `XDG_STATE_HOME` -- XDG paths (used by gh, gcloud, etc.)
+- `GOROOT`, `GOPATH` -- Go paths
+
+**Python-specific:**
+- `PYTHONDONTWRITEBYTECODE=1`, `PYTHONUNBUFFERED=1`, `PYTHONUTF8=1` -- always set for consistent behavior
+
+**Windows-specific:**
+- `MSYS_NO_PATHCONV=1`, `MSYS2_ARG_CONV_EXCL=*` -- prevent MSYS2/Git Bash path mangling
+- Git Bash unix tools (cat, ls, head, etc.) are ensured on PATH
+
+### Windows Support
+
+- **Git Bash detection:** Skips WSL bash (`C:\Windows\System32\bash.exe`) and prefers Git Bash or MSYS2 bash. Checks well-known locations (`C:\Program Files\Git\usr\bin\bash.exe`) first, then falls back to `where bash` with WSL/WindowsApps filtering.
+- **Process tree killing:** On Windows, `proc.kill()` only kills the shell, not children. Uses `taskkill /F /T /PID` for full tree termination.
+- **Shell mode:** Only `.cmd`/`.bat` shims need `shell: true` on Windows (tsx, ts-node, elixir). Real executables do not. Using `shell: true` globally causes process-tree kill issues with MSYS2/Git Bash.
+- **Path handling:** On Windows with Git Bash, scripts are passed as `bash -c "source /posix/path"` to avoid MSYS2 path mangling.
+
+## Security Model
+
+### Deny/Allow Policy
+
+Three-tier settings hierarchy (highest priority first):
+
+1. `.claude/settings.local.json` -- project-local, not committed
+2. `.claude/settings.json` -- project-shared, committed
+3. `~/.claude/settings.json` -- global user settings
+
+Each settings file can contain `permissions.deny` and `permissions.allow` arrays with pattern strings.
+
+### Pattern Formats
+
+**Bash patterns:**
+
+```
+Bash(command:argsGlob)   -- colon format: "rm:*" matches "rm" with any args
+Bash(command argsGlob)   -- space format: "sudo *" matches "sudo" with any args
+Bash(glob)               -- plain glob: "* --force" matches any command with --force
+```
+
+Pattern conversion to regex:
+- Colon format `command:argsGlob`: command is literal, args use glob-to-regex conversion. Produces `/^command(\s+argsRegex)?$/`.
+- Space format `command argsGlob`: split at first space, command literal, rest glob. Produces `/^command\s+argsRegex$/`.
+- Plain glob: entire pattern converted via glob-to-regex. `*` becomes `[^\s]*`, `**` becomes `.*`.
+
+**Tool patterns:**
+
+```
+ToolName(glob)   -- e.g., Read(.env), Read(**/*.key)
+```
+
+Parsed via `/^(\w+)\((.+)\)$/`. The glob is evaluated against file paths using globstar matching.
+
+### Chained Command Splitting
+
+Shell commands are split on chain operators (`&&`, `||`, `;`, `|`) before evaluation. The splitter is quote-aware: respects single quotes, double quotes, and backticks. Each segment is individually checked against deny patterns.
+
+Example: `echo ok && sudo rm -rf /` is split into `["echo ok", "sudo rm -rf /"]` and each segment is evaluated independently.
+
+### Shell-Escape Detection
+
+Non-shell languages are scanned for embedded shell commands. Detected patterns per language:
+
+```typescript
+const SHELL_ESCAPE_PATTERNS: Record<string, RegExp[]> = {
+  python: [
+    /os\.system\(\s*(['"])(.*?)\1\s*\)/g,
+    /subprocess\.(?:run|call|Popen|check_output|check_call)\(\s*(['"])(.*?)\1/g,
+  ],
+  javascript: [
+    /exec(?:Sync|File|FileSync)?\(\s*(['"`])(.*?)\1/g,
+    /spawn(?:Sync)?\(\s*(['"`])(.*?)\1/g,
+  ],
+  typescript: [
+    /exec(?:Sync|File|FileSync)?\(\s*(['"`])(.*?)\1/g,
+    /spawn(?:Sync)?\(\s*(['"`])(.*?)\1/g,
+  ],
+  ruby: [
+    /system\(\s*(['"])(.*?)\1/g,
+    /`(.*?)`/g,
+  ],
+  go: [
+    /exec\.Command\(\s*(['"`])(.*?)\1/g,
+  ],
+  php: [
+    /shell_exec\(\s*(['"`])(.*?)\1/g,
+    /(?:^|[^.])exec\(\s*(['"`])(.*?)\1/g,
+    /(?:^|[^.])system\(\s*(['"`])(.*?)\1/g,
+    /passthru\(\s*(['"`])(.*?)\1/g,
+    /proc_open\(\s*(['"`])(.*?)\1/g,
+  ],
+  rust: [
+    /Command::new\(\s*(['"`])(.*?)\1/g,
+  ],
+};
+```
+
+**Python subprocess list form:** Additionally detects `subprocess.run(["rm", "-rf", "/"])` and extracts args to form `"rm -rf /"` for deny-pattern evaluation.
+
+**Extracted commands** are checked against the same Bash deny patterns used for direct shell commands.
+
+### Security in Hooks
+
+The PreToolUse hook applies security checks to:
+
+- **Bash tool:** Stage 1 security check (deny patterns), then Stage 2 routing (curl/wget blocking, inline HTTP blocking).
+- **execute tool (shell language):** Checks code against Bash deny patterns.
+- **execute_file tool:** Checks file path against Read deny patterns AND shell code against Bash deny patterns.
+- **batch_execute tool:** Checks each command individually against Bash deny patterns.
+
+Decisions: `deny` (blocked with reason), `ask` (escalate to user), `allow` (pass through).
+
+## Hook System
+
+### PreToolUse Hook (`pretooluse.mjs`)
+
+Intercepts tool calls before execution. Registered for: Bash, WebFetch, Read, Grep, Task, execute, execute_file, batch_execute.
+
+**Tool routing:**
+
+| Tool | Action |
+|------|--------|
+| Bash (curl/wget) | Replaces command with echo redirect to `fetch_and_index` |
+| Bash (inline HTTP: fetch(), requests.get(), http.get()) | Replaces command with echo redirect to `execute` |
+| Bash (other) | Security check, then pass through |
+| Read | Adds guidance: use `execute_file` for analysis, Read for editing |
+| Grep | Adds guidance: use `execute` with shell for searches |
+| WebFetch | Denies with redirect to `fetch_and_index` |
+| Task (subagent) | Injects routing block into prompt, upgrades `subagent_type` from "Bash" to "general-purpose" |
+| execute/execute_file/batch_execute | Security checks only |
+
+**Self-healing:** On every invocation, checks if the plugin directory name matches `package.json` version. If mismatched:
+1. Copies files to a correctly-named version directory
+2. Updates `installed_plugins.json` with correct `installPath` and `version`
+3. Updates hook command paths in `settings.json`
+4. Removes stale version directories (keeps only current and target)
+5. Writes a temp marker file to avoid repeating on subsequent calls
+
+**Cross-platform stdin reading:** Uses event-based flowing mode (`process.stdin.on("data/end/error")`) to avoid platform-specific bugs: macOS hangs with `for await`, Windows throws EOF/EISDIR with `readFileSync(0)`, Linux throws EAGAIN.
+
+### SessionStart Hook (`sessionstart.mjs`)
+
+Emits XML routing rules as `additionalContext` at session start. Registered with empty matcher (matches all sessions).
+
+**Routing block content:**
+
+```xml
+<context_window_protection>
+  <priority_instructions>
+    Raw tool output floods your context window. You MUST use context-mode
+    MCP tools to keep raw data in the sandbox.
+  </priority_instructions>
+
+  <tool_selection_hierarchy>
+    1. GATHER: batch_execute(commands, queries)
+    2. FOLLOW-UP: search(queries: ["q1", "q2", ...])
+    3. PROCESSING: execute(language, code) | execute_file(path, language, code)
+  </tool_selection_hierarchy>
+
+  <forbidden_actions>
+    - DO NOT use Bash for commands producing >20 lines of output.
+    - DO NOT use Read for analysis (use execute_file).
+    - DO NOT use WebFetch (use fetch_and_index instead).
+    - Bash is ONLY for git/mkdir/rm/mv/navigation.
+  </forbidden_actions>
+
+  <output_constraints>
+    Keep final response under 500 words.
+    Write artifacts to FILES, not inline text.
+  </output_constraints>
+</context_window_protection>
+```
+
+### Hook Registration (`hooks/hooks.json`)
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "WebFetch", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "Read", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "Grep", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "Task", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "mcp__plugin_context-mode_context-mode__execute", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "mcp__plugin_context-mode_context-mode__execute_file", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] },
+      { "matcher": "mcp__plugin_context-mode_context-mode__batch_execute", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs" }] }
+    ],
+    "SessionStart": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs" }] }
+    ]
+  }
+}
+```
+
+## Skills
+
+context-mode ships 4 skills:
+
+### context-mode (primary skill)
+
+The main skill providing workflow instructions for the execute/index/search pipeline. Contains tool selection hierarchy, usage patterns, and best practices for context-efficient workflows.
+
+### ctx-doctor
+
+Diagnostic skill that checks:
+- Runtime availability for all 11 languages
+- FTS5 SQLite extension availability
+- Hook registration and paths
+- Plugin registration in `installed_plugins.json`
+- npm/marketplace version comparison
+- Settings file existence and content
+
+### ctx-stats
+
+Reports session statistics:
+- Bytes returned to context (per-tool breakdown)
+- Bytes indexed in FTS5
+- Bytes sandboxed (network I/O)
+- Context savings ratio and reduction percentage
+- Call counts per tool
+- Estimated token usage
+
+### ctx-upgrade
+
+Self-update from GitHub:
+- Fetches latest version from npm registry or GitHub releases
+- Downloads and installs to the plugin cache directory
+- Rebuilds TypeScript if needed
+- Updates hooks and settings paths
+
+## Plugin Registration
+
+### `.claude-plugin/plugin.json`
+
+```json
+{
+  "name": "context-mode",
+  "version": "0.9.22",
+  "description": "Claude Code MCP plugin that saves 98% of your context window.",
+  "mcpServers": {
+    "context-mode": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/start.mjs"]
+    }
+  },
+  "skills": "./skills/"
+}
+```
+
+### Startup Sequence (`start.mjs`)
+
+1. Set `CLAUDE_PROJECT_DIR` environment variable if not already set
+2. **Version self-healing:** If running from a plugin cache directory with multiple version subdirectories, find the newest version, update `installed_plugins.json` to point to it
+3. **Dependency installation:** Check for `better-sqlite3`, `turndown`, `turndown-plugin-gfm`, `@mixmark-io/domino`. Install missing ones via `npm install --no-package-lock --no-save --silent`
+4. **Build selection:**
+   - If `server.bundle.mjs` exists (CI-built): import and start immediately
+   - Otherwise: ensure `node_modules` exists (run `npm install`), ensure `build/server.js` exists (run `npx tsc`), then import `build/server.js`
+5. MCP server starts on stdio transport
+
+## Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `@modelcontextprotocol/sdk` | ^1.26.0 | MCP server framework |
+| `better-sqlite3` | ^12.6.2 | SQLite with FTS5 support |
+| `turndown` | ^7.2.0 | HTML-to-markdown conversion |
+| `turndown-plugin-gfm` | ^1.0.2 | GFM tables/strikethrough in Turndown |
+| `@mixmark-io/domino` | ^2.2.0 | DOM implementation for Turndown (no browser needed) |
+| `zod` | ^3.25.0 | Input schema validation for MCP tools |
+| `@clack/prompts` | ^1.0.1 | CLI interactive prompts (setup/doctor) |
+| `picocolors` | ^1.1.1 | CLI colored output |
+
+## Performance Benchmarks
+
+### Session-Level Results
+
+| Scenario | Raw Size | Context Size | Savings |
+|----------|----------|-------------|---------|
+| Playwright snapshot | 56.2 KB | 299 B | 99% |
+| GitHub Issues (20) | 58.9 KB | 1.1 KB | 98% |
+| Access log (500 req) | 45.1 KB | 155 B | 100% |
+| Test output (30 suites) | 6.0 KB | 337 B | 95% |
+| Git log (153 commits) | 11.6 KB | 107 B | 99% |
+| Full session aggregate | 315 KB | 5.4 KB | 98% |
+
+### Knowledge Retrieval Benchmarks (index + search)
+
+| Scenario | Source | Raw Size | Search Result | Savings | Chunks |
+|----------|--------|----------|---------------|---------|--------|
+| Supabase Edge Functions | Context7 | 3.9 KB | 2,246 B | 44% | 5 |
+| React useEffect docs | Context7 | 5.9 KB | 1,494 B | 75% | 16 |
+| Next.js App Router docs | Context7 | 6.5 KB | 3,311 B | 50% | 5 |
+| Tailwind CSS docs | Context7 | 4.0 KB | 620 B | 85% | 5 |
+| Skill prompt (main) | context-mode | 4.4 KB | 932 B | 79% | 15 |
+| Skill references (4 files) | context-mode | 33.2 KB | 2,412 B | 93% | 51 |
+
+### Aggregate Metrics
+
+| Metric | Value |
+|--------|-------|
+| Total scenarios benchmarked | 21 |
+| Total raw data processed | 376 KB |
+| Total context consumed | 16.5 KB |
+| Overall context savings | 96% |
+| Code examples preserved | 100% |
+| Smart truncation strategy | Head 60% + tail 40% |
+
+## Edge Cases and Constraints
+
+### Output Handling
+
+- **Null/empty output:** Returns `"(no output)"` string.
+- **Binary output:** Decoded as UTF-8 (may produce replacement characters).
+- **Timeout:** Returns partial stdout collected before kill + timeout message with elapsed time.
+- **Hard cap exceeded (>100 MB):** Process tree killed immediately, stderr appended with `"[output capped at 100MB -- process killed]"`.
+- **Smart truncation message format:** `"... [N lines / X.XKB truncated -- showing first M + last K lines] ..."`.
+
+### Search Constraints
+
+- **Empty query array:** Returns error.
+- **No results found:** Returns list of all indexed sources with their labels and chunk counts.
+- **Throttle exceeded (>8 calls/minute):** Returns error demanding `batch_execute` usage.
+- **Output cap (40 KB for search, 80 KB for batch_execute):** Remaining queries get "(output cap reached)" placeholder.
+- **Non-FTS safe characters in trigram queries:** Sanitized by removing all characters except alphanumeric, spaces, underscores, and hyphens.
+
+### Chunking Constraints
+
+- **Code blocks:** Treated as atomic units. Never split across chunks.
+- **Heading breadcrumbs:** Built from heading stack: "H1 > H2 > H3" format. Deeper headings pop shallower ones from the stack.
+- **Oversized chunks (>4096 bytes):** Split at paragraph boundaries (double newlines). If no paragraph boundary found, split at the byte limit. Numbered suffixes appended: "Title (1)", "Title (2)".
+- **JSON arrays:** Items batched until accumulated serialized size exceeds 4096 bytes. Identity fields checked in order: `id`, `name`, `title`, `slug`, `key`, `label`.
+- **Plain text sections:** Blank-line splitting requires 3-200 sections with each under 5000 bytes, otherwise falls back to fixed 20-line groups with 2-line overlap.
+
+### Security Constraints
+
+- **Settings merge order:** project-local > project-shared > global. All three are checked.
+- **Glob matching:** Case-insensitive on Windows (`process.platform === "win32"`), case-sensitive elsewhere.
+- **Path normalization:** Forward slashes and backslashes normalized for cross-platform matching.
+- **Shell escape detection:** Only scans languages in the `SHELL_ESCAPE_PATTERNS` map (python, javascript, typescript, ruby, go, php, rust). Other languages pass through without shell-escape checking.
+
+## Intent-Driven Search Flow
+
+When `intent` is provided to `execute` or `execute_file` and output exceeds 5000 bytes:
+
+1. Output is indexed into FTS5 via `store.indexPlainText()` with source label `execute:{language}` or `file:{path}`.
+2. `searchWithFallback(intent, 5)` runs the three-tier search against the indexed content.
+3. If matches found: returns section count, total output size, matched sections with titles and content snippets.
+4. If no matches: returns total line count, total byte size, all source labels, and distinctive searchable terms computed via IDF scoring.
+5. The raw output bytes are tracked as `bytesIndexed` (kept out of context); only the search results enter context.
+
+## Session Statistics Tracking
+
+The server maintains per-session statistics:
+
+```typescript
+const sessionStats = {
+  sessionStart: Date.now(),
+  calls: {} as Record<string, number>,        // tool name -> call count
+  bytesReturned: {} as Record<string, number>, // tool name -> bytes returned to context
+  bytesIndexed: 0,                             // bytes stored in FTS5, never entered context
+  bytesSandboxed: 0,                           // network I/O consumed inside sandbox
+};
+```
+
+**Context savings calculation:**
+
+```
+keptOut = bytesIndexed + bytesSandboxed
+totalProcessed = keptOut + totalBytesReturned
+savingsRatio = totalProcessed / max(totalBytesReturned, 1)
+reductionPct = (1 - totalBytesReturned / totalProcessed) * 100
+estimatedTokens = totalBytesReturned / 4
+```
+
+Every tool response passes through `trackResponse(toolName, response)` which computes the byte size of the response content and records it in `sessionStats.bytesReturned`.

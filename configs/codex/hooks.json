@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex pretooluse" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex posttooluse" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex sessionstart" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex userpromptsubmit" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex stop" }
+        ]
+      }
+    ]
+  }
+}

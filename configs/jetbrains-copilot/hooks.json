@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "type": "command", "command": "context-mode hook jetbrains-copilot pretooluse" }
+    ],
+    "PostToolUse": [
+      { "type": "command", "command": "context-mode hook jetbrains-copilot posttooluse" }
+    ],
+    "PreCompact": [
+      { "type": "command", "command": "context-mode hook jetbrains-copilot precompact" }
+    ],
+    "SessionStart": [
+      { "type": "command", "command": "context-mode hook jetbrains-copilot sessionstart" }
+    ]
+  }
+}

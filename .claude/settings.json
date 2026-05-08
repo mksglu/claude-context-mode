@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(rm -rf /*)",
+      "Read(.env)",
+      "Read(**/.env*)"
+    ],
+    "allow": [
+      "Bash(git:*)",
+      "Bash(ls:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(cat:*)",
+      "Bash(echo:*)"
+    ]
+  }
+}

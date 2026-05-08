@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>context-mode — Save 98% of your AI coding agent's context window</title>
+<meta name="description" content="MCP plugin for Claude Code, Cursor, Copilot, and 14 platforms. Sandbox tool output, index it into FTS5, search on demand. 66,000+ developers. Open source.">
+<meta name="keywords" content="claude code context window, ai coding agent limit, context window optimization, mcp plugin, think in code, claude code limit fix, cursor context, copilot context">
+<link rel="canonical" href="https://context-mode.com">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="context-mode — The other half of the context problem">
+<meta property="og:description" content="Your AI coding agent burns through context in 20 minutes. context-mode keeps 98% of tool output out of the conversation. 66,000+ developers across 14 platforms.">
+<meta property="og:url" content="https://context-mode.com">
+<meta property="og:site_name" content="context-mode">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="context-mode — Save 98% of your AI coding agent's context window">
+<meta name="twitter:description" content="MCP plugin that sandboxes tool output and indexes it into FTS5. Your limit lasts 30x longer. Open source, 14 platforms.">
+<meta name="twitter:creator" content="@AcikAnaliz">
+
+<!-- Structured Data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "context-mode",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux, Windows",
+  "description": "MCP plugin that saves 98% of AI coding agent context window by sandboxing tool output and indexing it into FTS5 for on-demand search.",
+  "url": "https://github.com/mksglu/context-mode",
+  "author": {
+    "@type": "Person",
+    "name": "B. Mert Köseoğlu",
+    "url": "https://mksg.lu"
+  },
+  "license": "https://github.com/mksglu/context-mode/blob/main/LICENSE",
+  "downloadUrl": "https://www.npmjs.com/package/context-mode",
+  "softwareVersion": "1.0.89",
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "5",
+    "ratingCount": "6487"
+  }
+}
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fff;--bg-alt:#f7f8fa;--bg-code:#f1f3f5;--text:#0f1419;--text-2:#3d4854;--text-3:#6b7a8d;--text-4:#9ca8b6;--border:#e3e7ec;--border-light:#eef0f3;--accent:#1a56db;--accent-light:#e8effc;--accent-dark:#143faa;--green:#0d7c4a;--green-light:#e6f5ee;--orange:#b45309;--serif:'Instrument Serif',Georgia,serif;--sans:'IBM Plex Sans',-apple-system,sans-serif;--mono:'IBM Plex Mono','SF Mono',monospace}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--sans);color:var(--text-2);background:var(--bg);-webkit-font-smoothing:antialiased}
+::selection{background:var(--accent-light);color:var(--accent-dark)}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+code{font-family:var(--mono);font-size:.88em;background:var(--bg-code);color:var(--accent-dark);padding:2px 7px;border-radius:4px;font-weight:500}
+.wrap{max-width:680px;margin:0 auto;padding:0 24px}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent-dark);background:var(--accent-light);padding:4px 11px;border-radius:4px;letter-spacing:.03em;margin:0 3px 5px 0}
+.tag.g{color:var(--green);background:var(--green-light)}
+.rule{width:48px;height:2px;background:var(--accent);margin:.4rem 0 1.8rem;border-radius:1px}
+.rev{opacity:0;transform:translateY(14px);transition:opacity .5s,transform .5s}.rev.v{opacity:1;transform:none}
+
+/* ── Typography ── */
+.body-text{font-size:17px;line-height:1.85;margin-bottom:1.4rem;color:var(--text-2);font-weight:400}
+.body-text strong{color:var(--text);font-weight:600}
+.section-label{font-family:var(--sans);font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.12em;text-transform:uppercase;margin-bottom:.4rem}
+.section-title{font-family:var(--serif);font-size:clamp(1.5rem,4vw,2.2rem);font-weight:400;color:var(--text);line-height:1.2;letter-spacing:-.01em;margin-bottom:.3rem}
+.quote{border-left:3px solid var(--accent);padding:8px 0 8px 20px;margin:1.8rem 0;font-style:italic;color:var(--text-3);font-size:17px}
+.sep{border:none;border-top:1px solid var(--border-light);margin:0}
+
+/* ── Hero ── */
+.hero{padding:clamp(80px,15vw,160px) 0 60px;text-align:center}
+.hero-title{font-family:var(--serif);font-size:clamp(3rem,10vw,6rem);font-style:italic;font-weight:400;color:var(--text);line-height:1;letter-spacing:-.03em}
+.hero-sub{font-size:clamp(1rem,2.5vw,1.3rem);color:var(--text-3);font-weight:300;margin-top:.6rem}
+.hero-stats{display:flex;justify-content:center;gap:2.5rem;flex-wrap:wrap;margin-top:2.5rem}
+.hero-stat .val{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--text)}
+.hero-stat .lbl{font-size:12px;color:var(--text-4);margin-top:2px}
+.hero-cta{display:flex;justify-content:center;gap:10px;margin-top:2rem}
+.hero-cta a{font-size:14px;font-weight:600;padding:10px 22px;border-radius:6px;transition:.15s}
+.hero-cta .pri{background:var(--accent);color:#fff}.hero-cta .pri:hover{background:var(--accent-dark);text-decoration:none}
+.hero-cta .sec{color:var(--text-2);border:1px solid var(--border)}.hero-cta .sec:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+
+/* ── Proof ── */
+.proof{padding:36px 0;text-align:center}
+.proof-lbl{font-size:11px;color:var(--text-4);letter-spacing:.1em;text-transform:uppercase;font-weight:500;margin-bottom:1.2rem}
+.proof-grid{display:flex;justify-content:center;flex-wrap:wrap;gap:6px 22px}
+.proof-grid span{font-size:14px;font-weight:600;color:var(--text-3);transition:color .2s}
+.proof-grid span:hover{color:var(--text)}
+
+/* ── Bench ── */
+.bench{display:flex;gap:10px;margin:1.8rem 0;flex-wrap:wrap}
+.bench-item{flex:1;min-width:130px;text-align:center;padding:20px 12px}
+.bench-item .n{font-family:var(--serif);font-size:2.4rem;font-style:italic;color:var(--accent);line-height:1}
+.bench-item .d{font-family:var(--mono);font-size:11px;color:var(--text-4);margin:.3rem 0}
+.bench-item .l{font-size:13px;font-weight:600;color:var(--text)}
+
+/* ── Layer ── */
+.layer{display:flex;align-items:baseline;gap:14px;padding:8px 0 8px 14px;border-left:2px solid var(--accent);margin-bottom:6px}
+.layer .num{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--accent);min-width:18px}
+.layer .name{font-size:14px;font-weight:600;color:var(--text);min-width:115px}
+.layer .desc{font-size:13px;color:var(--text-3)}
+
+/* ── Code ── */
+.code-block{background:var(--bg-alt);border:1px solid var(--border-light);border-radius:6px;padding:18px 22px;font-family:var(--mono);font-size:13.5px;line-height:1.85;color:var(--text-2);margin:1.5rem 0;overflow-x:auto;white-space:pre}
+.code-block .c{color:var(--text-4)}.code-block .k{color:var(--accent-dark)}.code-block .s{color:var(--green)}
+
+/* ── Cont ── */
+.cont{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 18px;margin:1rem 0}
+.cont div{display:flex;align-items:center;gap:7px;font-size:13.5px}.cont .ck{color:var(--green);font-weight:700;font-size:12px}
+
+/* ── Install ── */
+.install{border:1px solid var(--border);border-radius:6px;padding:14px 18px;margin-bottom:8px}
+.install.pri{border-color:var(--accent);background:var(--accent-light)}
+.install .il{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:3px}
+.install code{display:block;font-size:14px;background:transparent;padding:0}
+
+/* ── Section spacing ── */
+.chapter{padding:72px 0 0}
+
+/* ── Availability ── */
+.avail{position:relative;display:inline-flex;align-items:center;gap:5px;cursor:default}
+.avail .dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;flex-shrink:0}
+.avail .dot::after{content:'';position:absolute;width:6px;height:6px;border-radius:50%;background:var(--green);animation:ping 1.5s cubic-bezier(0,0,.2,1) infinite}
+@keyframes ping{75%,100%{transform:scale(2);opacity:0}}
+.avail-tip{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);font-size:12px;line-height:1.5;padding:10px 14px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .15s}
+.avail-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--text)}
+.avail:hover .avail-tip{opacity:1}
+
+/* ── Responsive ── */
+@media(max-width:600px){.hero-stats{gap:1.5rem}.bench{flex-direction:column}.cont{grid-template-columns:1fr 1fr}.layer{flex-wrap:wrap}.avail-tip{white-space:normal;width:220px}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<!-- Hero -->
+<section class="hero rev">
+  <p style="font-size:13px;color:var(--text-4);margin-bottom:1rem">by <a href="https://mksg.lu" style="color:var(--text-3)">B. Mert Köseoğlu</a></p>
+  <h1 class="hero-title">context-mode</h1>
+  <p class="hero-sub">The other half of the context problem.</p>
+  <div class="hero-stats">
+    <div class="hero-stat"><div class="val" id="stat-users">—</div><div class="lbl">users</div></div>
+    <div class="hero-stat"><div class="val" id="stat-npm">—</div><div class="lbl">npm</div></div>
+    <div class="hero-stat"><div class="val" id="stat-marketplace">—</div><div class="lbl">marketplace</div></div>
+    <div class="hero-stat"><div class="val">14</div><div class="lbl">platforms</div></div>
+    <div class="hero-stat"><div class="val" id="stat-stars">—</div><div class="lbl">GitHub stars</div></div>
+  </div>
+  <div class="hero-cta">
+    <a href="https://github.com/mksglu/context-mode#install" class="pri">Get Started →</a>
+    <a href="https://github.com/mksglu/context-mode" class="sec">View Source</a>
+  </div>
+  <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:1.2rem">
+    <a href="https://github.com/mksglu/context-mode/blob/main/LICENSE" style="font-family:var(--mono);font-size:12px;font-weight:500;color:var(--accent-dark);background:var(--accent-light);padding:5px 12px;border-radius:4px;text-decoration:none;transition:.15s">ELv2</a>
+    <a href="https://news.ycombinator.com/item?id=47193064" style="font-family:var(--mono);font-size:12px;font-weight:500;color:#b45309;background:#fef3c7;padding:5px 12px;border-radius:4px;text-decoration:none;transition:.15s">HN #1 · 570+ pts</a>
+    <a href="https://discord.gg/DCN9jUgN5v" style="font-family:var(--mono);font-size:12px;font-weight:500;color:#4338ca;background:#e0e7ff;padding:5px 12px;border-radius:4px;text-decoration:none;transition:.15s">Discord</a>
+  </div>
+</section>
+
+<!-- Proof -->
+<div class="proof rev">
+  <p class="proof-lbl">Used across teams at</p>
+  <div class="proof-grid">
+    <span>Microsoft</span><span>Google</span><span>Meta</span><span>ByteDance</span><span>Red Hat</span><span>GitHub</span><span>Stripe</span><span>Datadog</span><span>IBM</span><span>NVIDIA</span><span>Supabase</span><span>Amazon</span><span>Canva</span><span>Notion</span><span>Salesforce</span><span>Hasura</span><span>Framer</span><span>Cursor</span>
+  </div>
+</div>
+
+<hr class="sep">
+
+<!-- Ch 1 -->
+<section class="chapter rev">
+  <p class="section-label">The problem</p>
+  <h2 class="section-title">The context window problem</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">Here's the thing about Claude Code, Cursor, Copilot, Codex, Gemini CLI. Under the hood, they all work the same way. The LLM has no memory. Every single turn, the full conversation gets re-sent to the API. Every file your agent reads, every command output, every grep result. It piles up, and it all ships back to the model on every turn that follows.</p>
+
+  <p class="body-text">Run <code>gh issue list</code> once. 59 KB of JSON comes back. About 15,000 tokens. Next turn, those 15,000 tokens get sent again. Turn after that, again. Fifty turns in, that one command has cost you <strong>750,000 input tokens</strong>.</p>
+
+  <p class="body-text">Now do that 20 times in a session. Average output per call: 30 KB. That's 600 KB sitting in your conversation, re-sent 50 times over. <strong>30 MB of input tokens on tool output alone.</strong></p>
+
+  <p class="quote">That's where your limit goes.</p>
+
+  <p class="body-text">Eventually the context window fills up and the agent compacts. It summarizes the conversation. Throws away the originals. The agent forgets what it read, what it decided, what it was in the middle of building. You start over. You re-explain your codebase to a model that just lost its memory.</p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:2rem 0">
+    <div style="padding:18px;border-left:2px solid var(--orange);background:var(--bg-alt);border-radius:0 6px 6px 0">
+      <div style="font-family:var(--serif);font-size:2rem;font-style:italic;color:var(--orange);line-height:1">50%</div>
+      <div style="font-size:13px;color:var(--text-2);margin-top:6px;line-height:1.5">accuracy drop at 32K tokens. 11 of 12 models tested. Your agent makes worse decisions as context fills up.</div>
+      <div style="font-size:11px;color:var(--text-4);margin-top:6px">NoLiMa, 2025</div>
+    </div>
+    <div style="padding:18px;border-left:2px solid var(--orange);background:var(--bg-alt);border-radius:0 6px 6px 0">
+      <div style="font-family:var(--serif);font-size:2rem;font-style:italic;color:var(--orange);line-height:1">15 min</div>
+      <div style="font-size:13px;color:var(--text-2);margin-top:6px;line-height:1.5">spent re-establishing context after each reset. Developers re-explain their codebase from scratch, every time.</div>
+    </div>
+    <div style="padding:18px;border-left:2px solid var(--orange);background:var(--bg-alt);border-radius:0 6px 6px 0">
+      <div style="font-family:var(--serif);font-size:2rem;font-style:italic;color:var(--orange);line-height:1">$60K</div>
+      <div style="font-size:13px;color:var(--text-2);margin-top:6px;line-height:1.5">/year for a 50-seat team on an agent that forgets everything every 20 minutes. $100/seat/month, burned.</div>
+    </div>
+  </div>
+
+  <div class="bench">
+    <div class="bench-item"><div class="n">56 KB</div><div class="d">per snapshot</div><div class="l">Playwright</div></div>
+    <div class="bench-item"><div class="n">59 KB</div><div class="d">per query</div><div class="l">GitHub Issues</div></div>
+    <div class="bench-item"><div class="n">45 KB</div><div class="d">per analysis</div><div class="l">Access Logs</div></div>
+    <div class="bench-item"><div class="n">30 MB</div><div class="d">re-sent / session</div><div class="l">Total Cost</div></div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- Ch 2 -->
+<section class="chapter rev">
+  <p class="section-label">The solution</p>
+  <h2 class="section-title">Intercept, sandbox, index</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">context-mode is an MCP server that sits between your agent and its tools. When a tool call would dump large output into the conversation, context-mode intercepts it and runs it in a sandboxed subprocess instead. The raw data never touches context. It goes into a local FTS5 database with BM25 ranking. The agent searches it when it needs to. Only a short summary enters the conversation.</p>
+
+  <p class="body-text">The plugin hooks into five points in the session lifecycle:</p>
+
+  <div style="margin:1.2rem 0 2rem">
+    <div class="layer"><span class="num">01</span><span class="name">PreToolUse</span><span class="desc">Route tool calls. Block curl/wget, redirect large output to sandbox.</span></div>
+    <div class="layer"><span class="num">02</span><span class="name">PostToolUse</span><span class="desc">Capture events. File ops, git, errors, decisions → SessionDB.</span></div>
+    <div class="layer"><span class="num">03</span><span class="name">SessionStart</span><span class="desc">Restore state. Inject resume snapshot, reload indexed knowledge.</span></div>
+    <div class="layer"><span class="num">04</span><span class="name">PreCompact</span><span class="desc">Preserve state. Build snapshot before context wipe.</span></div>
+    <div class="layer"><span class="num">05</span><span class="name">UserPromptSubmit</span><span class="desc">Capture intent. Track decisions, corrections, session mode.</span></div>
+  </div>
+
+  <p class="body-text">Every tool call passes through a routing engine. Calls to <code>curl</code>, <code>wget</code>, or inline HTTP get blocked and rerouted to the sandbox. Build tools, large file reads, web fetches, same thing. Small commands that won't cause problems pass through untouched.</p>
+</section>
+
+<hr class="sep">
+
+<!-- Ch 3 -->
+<section class="chapter rev">
+  <p class="section-label">Results</p>
+  <h2 class="section-title">Measured, not estimated</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">Real numbers from real sessions. Not projections.</p>
+
+  <div class="bench">
+    <div class="bench-item"><div class="n">99.5%</div><div class="d">56.2 KB → 299 B</div><div class="l">Playwright</div></div>
+    <div class="bench-item"><div class="n">98%</div><div class="d">58.9 KB → 1.1 KB</div><div class="l">GitHub Issues</div></div>
+    <div class="bench-item"><div class="n">99.7%</div><div class="d">45.1 KB → 155 B</div><div class="l">Access Logs</div></div>
+    <div class="bench-item"><div class="n">98%</div><div class="d">315 KB → 5.4 KB</div><div class="l">Full Session</div></div>
+  </div>
+
+  <p class="body-text">Without context-mode, those 20 tool calls put 600 KB into the conversation. Over 50 turns, 30 MB re-sent. With it, the same calls produce 20 KB. Over 50 turns, 1 MB. <strong>Same work. Same answers. 30 times fewer tokens.</strong></p>
+</section>
+
+<div style="margin:2rem 0">
+  <a href="https://www.youtube.com/watch?v=QUHrntlfPo4" target="_blank" style="display:block;position:relative;border-radius:8px;overflow:hidden">
+    <img src="https://img.youtube.com/vi/QUHrntlfPo4/maxresdefault.jpg" alt="Watch context-mode demo" style="width:100%;display:block">
+    <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.3)">
+      <div style="width:64px;height:64px;background:rgba(255,0,0,.9);border-radius:50%;display:flex;align-items:center;justify-content:center">
+        <div style="width:0;height:0;border-top:12px solid transparent;border-bottom:12px solid transparent;border-left:20px solid #fff;margin-left:4px"></div>
+      </div>
+    </div>
+  </a>
+  <p style="text-align:center;font-size:13px;color:var(--text-4);margin-top:8px">Watch the 3-minute demo →</p>
+</div>
+
+<hr class="sep">
+
+<!-- Ch 4 -->
+<section class="chapter rev">
+  <p class="section-label">Paradigm</p>
+  <h2 class="section-title">Think in Code</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">That handles the output side. Tool results stay in the sandbox. But there was still a problem with input. When the agent wants to analyze 47 files, it calls <code>Read()</code> on each one. Every file enters context. Every file stays there.</p>
+
+  <p class="body-text">v1.0.64 made this a rule, not a suggestion. We call it Think in Code. It's mandatory across all 14 platform configs. The idea fits in one sentence: <strong>if you need to analyze, count, filter, or process data, write code that does it.</strong> Stop pulling raw data into context to process mentally.</p>
+
+<div class="code-block"><span class="c">// Before: 47 files × Read() = 700 KB in context</span>
+<span class="c">// After: 1 ctx_execute() = 3.6 KB in context</span>
+
+<span class="k">ctx_execute</span>(<span class="s">"javascript"</span>, `
+  <span class="k">const</span> fs = require(<span class="s">'fs'</span>);
+  <span class="k">const</span> files = fs.readdirSync(<span class="s">'src'</span>).filter(f =&gt; f.endsWith(<span class="s">'.ts'</span>));
+  files.forEach(f =&gt; {
+    <span class="k">const</span> lines = fs.readFileSync(<span class="s">'src/'</span>+f,<span class="s">'utf8'</span>).split(<span class="s">'\\n'</span>).length;
+    console.log(f + <span class="s">': '</span> + lines + <span class="s">' lines'</span>);
+  });
+`);
+
+<span class="c">// 47 files analyzed. 15,314 LoC processed.</span>
+<span class="c">// Context used: 3.6 KB. Reduction: 200×.</span></div>
+
+  <p class="body-text">The LLM writes a script. The script runs in a sandbox. Only stdout enters context. Your CPU does the work for free. Tokens cost money.</p>
+</section>
+
+<hr class="sep">
+
+<!-- Ch 4b -->
+<section class="chapter rev">
+  <p class="section-label">Output</p>
+  <h2 class="section-title">Output compression</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">Context saving handles the input side. But the agent wastes output tokens too — filler words, pleasantries, verbose explanations, hedging. "Sure! I'd be happy to help you with that. Let me take a look at the file and see what we can do." That's 30 tokens of nothing.</p>
+
+  <p class="body-text">context-mode enforces output compression across all 14 platforms. Technical substance stays exact. Only fluff dies.</p>
+
+  <div style="background:var(--bg-alt);border:1px solid var(--border-light);border-radius:6px;padding:22px 24px;margin:1.5rem 0">
+    <p style="font-size:15px;color:var(--text);font-weight:600;margin-bottom:10px">The rules</p>
+    <p style="font-size:14px;color:var(--text-2);line-height:1.8;margin:0">Drop: articles, filler (just/really/basically), pleasantries, hedging.<br>Fragments OK. Short synonyms. Code unchanged.<br>Pattern: <code>[thing] [action] [reason]. [next step].</code><br>Auto-expand for: security warnings, irreversible actions, user confusion.</p>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:1.5rem 0">
+    <div style="padding:16px 18px;border:1px solid var(--border-light);border-radius:6px">
+      <p style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Before</p>
+      <p style="font-size:13.5px;color:var(--text-3);line-height:1.6;margin:0;font-style:italic">"Sure, I'd be happy to help! I've looked at the database connection pooling configuration and it appears that the issue is related to the maximum idle timeout setting being set too low for your workload. Let me walk you through the fix."</p>
+    </div>
+    <div style="padding:16px 18px;border:1px solid var(--accent);border-radius:6px;background:var(--accent-light)">
+      <p style="font-size:11px;font-weight:600;color:var(--accent-dark);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">After</p>
+      <p style="font-size:13.5px;color:var(--text);line-height:1.6;margin:0">"DB pool idle timeout too low for workload. Set <code>max_idle_ms: 30000</code> in config. Fix:"</p>
+    </div>
+  </div>
+
+  <p class="body-text">~65-75% output token reduction. Full technical accuracy. The agent says the same thing in fewer words. Your context window lasts longer from both sides.</p>
+</section>
+
+<hr class="sep">
+
+<!-- Ch 5 -->
+<section class="chapter rev">
+  <p class="section-label">Continuity</p>
+  <h2 class="section-title">Your AI never starts from scratch</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">Most tools lose everything when context compacts. context-mode doesn't. Every file operation, every decision, every error and its fix gets written to a local SQLite database. Next session, it loads back in.</p>
+
+  <p class="body-text">PostToolUse captures events across 15 categories as they happen. PreCompact builds a reference-based snapshot right before the wipe. SessionStart restores it on the next turn. The agent picks up mid-thought.</p>
+
+  <div class="cont">
+    <div><span class="ck">✓</span> Your prompts</div>
+    <div><span class="ck">✓</span> Files tracked</div>
+    <div><span class="ck">✓</span> Project rules</div>
+    <div><span class="ck">✓</span> Your decisions</div>
+    <div><span class="ck">✓</span> Git operations</div>
+    <div><span class="ck">✓</span> Errors & fixes</div>
+    <div><span class="ck">✓</span> Environment</div>
+    <div><span class="ck">✓</span> Session mode</div>
+    <div><span class="ck">✓</span> Tool patterns</div>
+  </div>
+
+  <p class="body-text">26 events carry over through each reset. Nothing lost. You don't explain your codebase twice.</p>
+</section>
+
+<hr class="sep">
+
+<!-- Insight -->
+<section class="chapter rev">
+  <p class="section-label">Analytics</p>
+  <h2 class="section-title">See how you actually use AI</h2>
+  <div class="rule"></div>
+
+  <p class="body-text"><code>/ctx-insight</code> opens a local analytics dashboard in your browser. 15+ metrics built from your session data. No cloud, no telemetry, everything stays on your machine.</p>
+
+  <div class="cont">
+    <div><span class="ck">✓</span> Tool usage breakdown</div>
+    <div><span class="ck">✓</span> Session activity timeline</div>
+    <div><span class="ck">✓</span> Error rate tracking</div>
+    <div><span class="ck">✓</span> Parallel work patterns</div>
+    <div><span class="ck">✓</span> Explore/execute ratio</div>
+    <div><span class="ck">✓</span> Mastery curve</div>
+  </div>
+
+  <p class="body-text">Available as MCP tool (<code>ctx_insight</code>), CLI command (<code>context-mode insight</code>), or slash command (<code>/ctx-insight</code>). Built with TanStack Router and shadcn/ui. Runs on 127.0.0.1, works with both Node.js and Bun.</p>
+</section>
+
+<hr class="sep">
+
+<!-- Ch 6 -->
+<section class="chapter rev">
+  <p class="section-label">Platforms</p>
+  <h2 class="section-title">14 platforms, one plugin</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">Works on Claude Code, Cursor, Copilot, Codex, Gemini CLI, and nine more. Platforms with hook support get automatic routing. The rest use instruction-based rules. Same plugin everywhere.</p>
+
+  <div style="display:flex;flex-wrap:wrap;gap:6px;margin:1.2rem 0">
+    <span class="tag">Claude Code</span><span class="tag">Cursor</span><span class="tag">Codex CLI</span><span class="tag">VS Code Copilot</span><span class="tag">JetBrains Copilot</span><span class="tag">Gemini CLI</span><span class="tag">Qwen Code</span><span class="tag">Kiro</span><span class="tag">OpenCode</span><span class="tag">KiloCode</span><span class="tag">Zed</span><span class="tag">OpenClaw</span><span class="tag">Pi</span><span class="tag">Antigravity</span>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- Security -->
+<section class="chapter rev">
+  <p class="section-label">Security</p>
+  <h2 class="section-title">Privacy-first. Your code never leaves your machine.</h2>
+  <div class="rule"></div>
+
+  <p class="body-text">context-mode runs entirely on your local machine. No cloud. No telemetry. No accounts. No tracking. No analytics. Your code, your prompts, your file paths, your session data stays on your disk. Nothing is sent anywhere, ever. The plugin is source-available under the Elastic License 2.0. You can read every line, audit every hook, verify every claim.</p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:1.5rem 0">
+    <div style="padding:14px 16px;border:1px solid var(--border-light);border-radius:6px;font-size:14px;line-height:1.6">
+      <span style="color:var(--green);font-weight:700;margin-right:6px">✓</span> <strong>Dangerous command blocking</strong><br>
+      <span style="color:var(--text-3);font-size:13px">curl, wget, inline HTTP, rm -rf blocked at PreToolUse. Redirected to sandbox or denied.</span>
+    </div>
+    <div style="padding:14px 16px;border:1px solid var(--border-light);border-radius:6px;font-size:14px;line-height:1.6">
+      <span style="color:var(--green);font-weight:700;margin-right:6px">✓</span> <strong>Environment variable denylist</strong><br>
+      <span style="color:var(--text-3);font-size:13px">60+ env vars stripped from sandbox execution. API keys, tokens, secrets never exposed to subprocess.</span>
+    </div>
+    <div style="padding:14px 16px;border:1px solid var(--border-light);border-radius:6px;font-size:14px;line-height:1.6">
+      <span style="color:var(--green);font-weight:700;margin-right:6px">✓</span> <strong>Zero network access</strong><br>
+      <span style="color:var(--text-3);font-size:13px">No data sent anywhere. No analytics. No heartbeat. No phone-home. Fully air-gapped operation.</span>
+    </div>
+    <div style="padding:14px 16px;border:1px solid var(--border-light);border-radius:6px;font-size:14px;line-height:1.6">
+      <span style="color:var(--green);font-weight:700;margin-right:6px">✓</span> <strong>Source-available</strong><br>
+      <span style="color:var(--text-3);font-size:13px">Elastic License 2.0. Full source on GitHub. Audit the code yourself. No compiled blobs.</span>
+    </div>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- Install -->
+<div class="chapter rev" style="padding-bottom:40px">
+  <p class="section-label">Install</p>
+  <h2 class="section-title">Two commands, two minutes</h2>
+  <div class="rule"></div>
+
+  <div class="install pri">
+    <div class="il">Claude Code <span class="tag g" style="font-size:10px;padding:2px 8px;vertical-align:middle">recommended</span></div>
+    <code>/plugin marketplace add mksglu/context-mode</code>
+  </div>
+  <div class="install">
+    <div class="il">All platforms</div>
+    <code>npm install -g context-mode</code>
+  </div>
+
+  <p class="body-text" style="font-size:14px;color:var(--text-4);margin-top:1.2rem">Open source · Elastic License 2.0 · Node.js 18+ · Works with Bun</p>
+</div>
+
+<hr class="sep">
+
+<!-- Blog -->
+<section class="chapter rev">
+  <p class="section-label">Blog</p>
+  <h2 class="section-title">Read the story</h2>
+  <div class="rule"></div>
+
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <a href="https://mksg.lu/blog/claude-code-limit-burn" target="_blank" style="display:block;padding:24px;border:1px solid var(--border);border-radius:8px;transition:.15s;text-decoration:none">
+      <p style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">mksg.lu</p>
+      <p style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:6px;line-height:1.3">Why Claude Code Burns Through Your Limit</p>
+      <p style="font-size:14px;color:var(--text-3);line-height:1.6;margin:0">The math behind context window consumption. How tool output accumulates, why compaction kills productivity, and what you can do about it.</p>
+    </a>
+    <a href="https://mksg.lu/blog/think-in-code" target="_blank" style="display:block;padding:24px;border:1px solid var(--border);border-radius:8px;transition:.15s;text-decoration:none">
+      <p style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">mksg.lu</p>
+      <p style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:6px;line-height:1.3">Think in Code</p>
+      <p style="font-size:14px;color:var(--text-3);line-height:1.6;margin:0">The paradigm shift: stop treating LLMs as data processors, start treating them as code generators. One script replaces ten tool calls.</p>
+    </a>
+    <a href="https://mksg.lu/blog/context-mode-v1-release" target="_blank" style="display:block;padding:24px;border:1px solid var(--border);border-radius:8px;transition:.15s;text-decoration:none">
+      <p style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">mksg.lu</p>
+      <p style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:6px;line-height:1.3">context-mode v1 Release</p>
+      <p style="font-size:14px;color:var(--text-3);line-height:1.6;margin:0">The story behind building an MCP server that saves 98% of your AI coding agent's context window. Architecture decisions, benchmarks, and lessons from 14 platform adapters.</p>
+    </a>
+  </div>
+</section>
+
+<hr class="sep">
+
+<!-- Enterprise -->
+<div class="rev" style="background:#0f1419;border-radius:12px;padding:48px 40px;margin-top:48px;margin-bottom:40px">
+  <p style="font-size:11px;font-weight:600;color:#4b7bec;letter-spacing:.12em;text-transform:uppercase;margin-bottom:.4rem">For teams</p>
+  <h2 style="font-family:var(--serif);font-size:clamp(1.4rem,3.5vw,2rem);font-weight:400;color:#fff;line-height:1.2;letter-spacing:-.01em;margin-bottom:.3rem">context-mode for Enterprise</h2>
+  <div style="width:48px;height:2px;background:#4b7bec;margin:.4rem 0 1.5rem;border-radius:1px"></div>
+
+  <p style="font-size:15px;color:#9ca8b6;line-height:1.7;margin-bottom:1.5rem">The open source plugin handles individual developers. For teams that need visibility, continuity across devices, and compliance, we're building a managed layer.</p>
+
+  <div style="margin-bottom:1.5rem">
+
+    <div style="padding:22px;border:1px solid #1e2a3a;border-radius:6px;background:#141c26;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:600;color:#4b7bec;letter-spacing:.06em;text-transform:uppercase">Context as a Service</div>
+        <span style="font-size:11px;color:#3d5a80;background:#1a2535;padding:3px 8px;border-radius:3px">API</span>
+      </div>
+      <p style="font-size:14px;color:#e0e4e8;line-height:1.5;margin:0 0 8px">Your AI tools produce session data that no other tool can see. We expose it as an API. CI/CD pipelines query it before deploy. Code review tools show AI decision trails. Compliance dashboards pull audit logs.</p>
+      <p style="font-size:12px;color:#6b7a8d;margin:0">The data layer for AI-assisted development. Twilio model: plugin free, API paid.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div style="padding:18px;border:1px solid #1e2a3a;border-radius:6px;background:#141c26">
+        <div style="font-size:11px;font-weight:600;color:#4b7bec;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">For your EM</div>
+        <p style="font-size:13.5px;color:#e0e4e8;line-height:1.5;margin:0 0 6px">"Which of my 10 engineers are struggling with AI tools? Who needs TDD coaching? Where are we wasting cycles?"</p>
+        <p style="font-size:12px;color:#6b7a8d;margin:0">56 metrics, 8 personas, 144 actionable insights.</p>
+      </div>
+      <div style="padding:18px;border:1px solid #1e2a3a;border-radius:6px;background:#141c26">
+        <div style="font-size:11px;font-weight:600;color:#4b7bec;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">For your CISO</div>
+        <p style="font-size:13.5px;color:#e0e4e8;line-height:1.5;margin:0 0 6px">"What did the AI do? Which files did it access? Did it run anything dangerous? Can we prove it for SOC2?"</p>
+        <p style="font-size:12px;color:#6b7a8d;margin:0">AI audit trail. Automated compliance reports.</p>
+      </div>
+      <div style="padding:18px;border:1px solid #1e2a3a;border-radius:6px;background:#141c26">
+        <div style="font-size:11px;font-weight:600;color:#4b7bec;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">For your DevOps</div>
+        <p style="font-size:13.5px;color:#e0e4e8;line-height:1.5;margin:0 0 6px">"AI edited 47 files in this PR, 3 have no tests, 4 edit-run-fix cycles on auth.ts. Should we merge?"</p>
+        <p style="font-size:12px;color:#6b7a8d;margin:0">GitHub Actions. AI risk scoring. Deploy gates.</p>
+      </div>
+      <div style="padding:18px;border:1px solid #1e2a3a;border-radius:6px;background:#141c26">
+        <div style="font-size:11px;font-weight:600;color:#4b7bec;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">For your developers</div>
+        <p style="font-size:13.5px;color:#e0e4e8;line-height:1.5;margin:0 0 6px">"I was debugging auth.ts yesterday on my laptop. Now I'm on my desktop. Where was I?"</p>
+        <p style="font-size:12px;color:#6b7a8d;margin:0">Cloud sessions. Any device, any time. Full history.</p>
+      </div>
+    </div>
+  </div>
+
+  <div style="border:1px solid #1e2a3a;border-radius:6px;padding:24px;text-align:center;background:#141c26">
+    <p style="font-size:16px;color:#fff;font-weight:500;margin:0 0 4px">We're onboarding design partners</p>
+    <p style="font-size:13px;color:#6b7a8d;margin:0 0 16px">5 spots for teams that want to shape the product. Free access during the design phase.</p>
+    <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap">
+      <a href="https://cal.com/mksglu" target="_blank" style="display:inline-block;font-size:14px;font-weight:600;color:#fff;background:#4b7bec;padding:10px 24px;border-radius:6px;transition:.15s;text-decoration:none">Book a 15-min call →</a>
+      <a href="mailto:bm.ksglu@gmail.com" style="display:inline-block;font-size:14px;font-weight:600;color:#9ca8b6;padding:10px 24px;border:1px solid #1e2a3a;border-radius:6px;transition:.15s;text-decoration:none">bm.ksglu@gmail.com</a>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<!-- Footer -->
+<footer style="padding:60px 0;text-align:center;border-top:1px solid var(--border-light)">
+  <p style="font-family:var(--serif);font-size:clamp(1.2rem,3vw,1.6rem);font-style:italic;color:var(--text);margin-bottom:1.2rem;padding:0 24px">Stop feeding your context window raw bytes.<br>Feed it answers.</p>
+  <p style="font-size:14px;color:var(--text-3)"><a href="https://github.com/mksglu/context-mode">github.com/mksglu/context-mode</a></p>
+  <p style="margin-top:1rem;font-size:13px;color:var(--text-4)">Built by <a href="https://mksg.lu" style="color:var(--text-3)">B. Mert Köseoğlu</a></p>
+  <!-- <p style="margin-top:.4rem;font-size:12px;color:var(--text-4)"><span class="avail"><span class="dot"></span><span style="color:var(--green);font-size:12px">open to new opportunities</span><span class="avail-tip"><strong>Founding Engineer · AI · Tech Lead</strong><br>Fully remote preferred.<br>UK &amp; NL: sponsorship + competitive comp.</span></span></p> -->
+  <p style="margin-top:.6rem"><a href="https://github.com/mksglu/context-mode/issues/134" style="color:var(--text-4);font-size:12px">Liked this? Help a solo dev out →</a></p>
+  <p style="margin-top:2rem;font-size:11px;color:var(--text-4);line-height:1.6">MKSF LTD · Suite 8805 5 Brayford Square · London, E1 0SG · United Kingdom</p>
+</footer>
+
+<script>
+// Reveal on scroll
+const o=new IntersectionObserver(e=>{e.forEach(x=>{if(x.isIntersecting){x.target.classList.add('v');o.unobserve(x.target)}})},{threshold:.06,rootMargin:'0px 0px -20px 0px'});
+document.querySelectorAll('.rev').forEach(e=>o.observe(e));
+
+// Dynamic stats from GitHub
+fetch('https://raw.githubusercontent.com/mksglu/context-mode/main/stats.json')
+  .then(r=>r.json())
+  .then(d=>{
+    document.getElementById('stat-users').textContent=d.message||'66.3k+';
+    document.getElementById('stat-npm').textContent=d.npm||'56.1k+';
+    document.getElementById('stat-marketplace').textContent=d.marketplace||'10.2k+';
+  })
+  .catch(()=>{
+    document.getElementById('stat-users').textContent='66.3k+';
+    document.getElementById('stat-npm').textContent='56.1k+';
+    document.getElementById('stat-marketplace').textContent='10.2k+';
+  });
+
+// GitHub stars
+fetch('https://api.github.com/repos/mksglu/context-mode')
+  .then(r=>r.json())
+  .then(d=>{
+    document.getElementById('stat-stars').textContent=
+      (d.stargazers_count>=1000?(d.stargazers_count/1000).toFixed(1)+'k':d.stargazers_count)||'—';
+  })
+  .catch(()=>{});
+</script>
+</body>
+</html>

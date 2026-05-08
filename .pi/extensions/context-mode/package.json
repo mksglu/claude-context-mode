@@ -1,0 +1,9 @@
+{
+  "name": "context-mode",
+  "version": "1.0.111",
+  "description": "Context-mode extension for Pi coding agent — session continuity and context window protection",
+  "main": "index.ts",
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openclaw.ai/config.json",
+  "plugins": {
+    "entries": {
+      "context-mode": {
+        "enabled": true
+      }
+    },
+    "slots": {
+      "contextEngine": "context-mode"
+    }
+  }
+}

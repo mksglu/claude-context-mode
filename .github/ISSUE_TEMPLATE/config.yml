@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Open a PR instead
+    url: https://github.com/mksglu/context-mode/blob/main/CONTRIBUTING.md
+    about: PRs with TDD (red-green-refactor) are strongly preferred over issues. See CONTRIBUTING.md.

@@ -1,0 +1,71 @@
+name: Update install stats
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch stats and update
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+        run: |
+          # npm total downloads
+          NPM_TOTAL=$(curl -sf "https://api.npmjs.org/downloads/point/2000-01-01:$(date +%Y-%m-%d)/context-mode" | jq -r '.downloads // 0')
+          NPM_TOTAL=${NPM_TOTAL:-0}
+
+          # GitHub unique clones (last 14 days) — needs push access, may 403
+          CLONES_RAW=$(gh api repos/${{ github.repository }}/traffic/clones 2>/dev/null || true)
+          CLONES=$(echo "$CLONES_RAW" | jq -r '.uniques // 0' 2>/dev/null || echo 0)
+          # Strip non-numeric
+          CLONES=$(echo "$CLONES" | grep -oE '^[0-9]+$' || echo 0)
+
+          # Ensure numeric
+          NPM_TOTAL=$((NPM_TOTAL + 0))
+          CLONES=$((CLONES + 0))
+          TOTAL=$((NPM_TOTAL + CLONES))
+
+          echo "npm=$NPM_TOTAL clones=$CLONES total=$TOTAL"
+
+          # Use jq for all formatting — no shell function quirks
+          jq -n \
+            --argjson npm "$NPM_TOTAL" \
+            --argjson clones "$CLONES" \
+            --argjson total "$TOTAL" \
+            '{
+              schemaVersion: 1,
+              label: "users",
+              message: (if $total >= 1000000 then "\($total / 1000000 * 10 | floor / 10)M+" elif $total >= 1000 then "\($total / 1000 * 10 | floor / 10)k+" else "\($total)" end),
+              color: "brightgreen",
+              npm: (if $npm >= 1000000 then "\($npm / 1000000 * 10 | floor / 10)M+" elif $npm >= 1000 then "\($npm / 1000 * 10 | floor / 10)k+" else "\($npm)" end),
+              marketplace: (if $clones >= 1000 then "\($clones / 1000 * 10 | floor / 10)k+" else "\($clones)" end)
+            }' > stats.json
+
+          cat stats.json
+
+          # Only commit if changed
+          if git diff --quiet stats.json; then
+            echo "No change"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add stats.json
+            git commit -m "ci: update install stats"
+            git push
+          fi
+
+          # Always purge CDN + badge caches
+          sleep 5
+          curl -sf "https://purge.jsdelivr.net/gh/mksglu/context-mode@main/stats.json" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.message&label=users&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.npm&label=npm&cacheSeconds=0" > /dev/null || true
+          curl -sf "https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcdn.jsdelivr.net%2Fgh%2Fmksglu%2Fcontext-mode%40main%2Fstats.json&query=%24.marketplace&label=marketplace&cacheSeconds=0" > /dev/null || true
+          echo "Caches purged"

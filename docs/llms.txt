@@ -1,0 +1,45 @@
+# context-mode
+
+> An MCP server plugin for Claude Code that saves ~98% of context window usage by sandboxing data processing into isolated subprocesses and indexing outputs into a searchable FTS5/BM25 knowledge base. Large command outputs, log files, and documentation never enter the context window — only your printed summaries do.
+
+## Getting Started
+
+- [README](https://raw.githubusercontent.com/mksglu/context-mode/main/README.md): Installation, quickstart, and feature overview
+- [CONTRIBUTING](https://raw.githubusercontent.com/mksglu/context-mode/main/CONTRIBUTING.md): Development setup, contribution guidelines, and PR process
+
+## Core Architecture
+
+- [server.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/server.ts): MCP server entrypoint — registers tools, handles requests, wires up subsystems
+- [store.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/store.ts): FTS5/BM25 knowledge base — indexes chunks, manages search, handles ephemeral storage
+- [executor.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/executor.ts): Sandbox subprocess runner — executes code in isolation, captures output, enforces limits
+- [security.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/security.ts): Security layer — validates inputs, enforces sandbox boundaries, blocks dangerous operations
+- [runtime.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/runtime.ts): Runtime detection and language dispatch — routes execution to the correct interpreter
+
+## Hook System
+
+- [pretooluse.mjs](https://raw.githubusercontent.com/mksglu/context-mode/main/hooks/pretooluse.mjs): Pre-tool-use hook — intercepts large tool outputs before they enter context
+- [sessionstart.mjs](https://raw.githubusercontent.com/mksglu/context-mode/main/hooks/sessionstart.mjs): Session start hook — initializes the knowledge base and registers the plugin on session open
+
+## Skills
+
+- [context-mode](https://raw.githubusercontent.com/mksglu/context-mode/main/skills/context-mode/SKILL.md): Primary skill — tool selection decision tree, routing rules, usage patterns
+- [ctx-doctor](https://raw.githubusercontent.com/mksglu/context-mode/main/skills/ctx-doctor/SKILL.md): Diagnose plugin health — runtimes, FTS5, hooks, plugin registration, versions
+- [ctx-stats](https://raw.githubusercontent.com/mksglu/context-mode/main/skills/ctx-stats/SKILL.md): Report context savings statistics and knowledge base utilization for the current session
+- [ctx-upgrade](https://raw.githubusercontent.com/mksglu/context-mode/main/skills/ctx-upgrade/SKILL.md): Upgrade the plugin to the latest version and migrate configuration if needed
+
+## Configuration
+
+- [plugin.json](https://raw.githubusercontent.com/mksglu/context-mode/main/.claude-plugin/plugin.json): Plugin manifest — declares tools, skills, hooks, and metadata
+- [hooks.json](https://raw.githubusercontent.com/mksglu/context-mode/main/hooks/hooks.json): Hook registration — maps lifecycle events to hook scripts
+- [.mcp.json](https://raw.githubusercontent.com/mksglu/context-mode/main/.mcp.json): MCP server configuration for Claude Code integration
+- [package.json](https://raw.githubusercontent.com/mksglu/context-mode/main/package.json): NPM package definition, dependencies, and build scripts
+
+## API Reference
+
+- [llms-full.txt](https://raw.githubusercontent.com/mksglu/context-mode/main/llms-full.txt): Full API reference — complete tool signatures, parameter schemas, and usage examples
+
+## Optional
+
+- [tests/](https://raw.githubusercontent.com/mksglu/context-mode/main/tests/): Test suite — unit and integration tests for executor, store, and security layers
+- [benchmarks/](https://raw.githubusercontent.com/mksglu/context-mode/main/benchmarks/): Context savings benchmarks — measured reduction across real Claude Code sessions
+- [CHANGELOG.md](https://raw.githubusercontent.com/mksglu/context-mode/main/CHANGELOG.md): Version history and release notes

@@ -1,0 +1,239 @@
+diff --git a/src/api/trpc/routers/user.ts b/src/api/trpc/routers/user.ts
+index a1b2c3d..e4f5g6h 100644
+--- a/src/api/trpc/routers/user.ts
++++ b/src/api/trpc/routers/user.ts
+@@ -1,6 +1,7 @@
+ import { z } from "zod";
+ import { router, protectedProcedure } from "../trpc";
+ import { TRPCError } from "@trpc/server";
++import { Prisma } from "@prisma/client";
+
+ const updateUserSchema = z.object({
+   id: z.string().uuid(),
+@@ -15,7 +16,12 @@ export const userRouter = router({
+   getById: protectedProcedure
+     .input(z.object({ id: z.string().uuid() }))
+     .query(async ({ ctx, input }) => {
+-      const user = await ctx.db.user.findUnique({ where: { id: input.id } });
++      const user = await ctx.db.user.findUnique({
++        where: { id: input.id },
++        include: {
++          profile: true,
++          subscription: true,
++        },
++      });
+       if (!user) {
+         throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+       }
+@@ -31,13 +37,22 @@ export const userRouter = router({
+   updateRole: protectedProcedure
+     .input(z.object({ userId: z.string().uuid(), role: z.enum(["user", "admin", "moderator"]) }))
+     .mutation(async ({ ctx, input }) => {
+-      if (ctx.session.user.role !== "admin") {
++      const currentUser = ctx.session.user;
++      if (currentUser.role !== "admin") {
+         throw new TRPCError({ code: "FORBIDDEN" });
+       }
+-      return ctx.db.user.update({
++      if (input.userId === currentUser.id) {
++        throw new TRPCError({
++          code: "BAD_REQUEST",
++          message: "Cannot change your own role",
++        });
++      }
++      const updated = await ctx.db.user.update({
+         where: { id: input.userId },
+-        data: { role: input.role },
++        data: { role: input.role, updatedAt: new Date() },
+       });
++      await ctx.audit.log("user.role.changed", { userId: input.userId, newRole: input.role, changedBy: currentUser.id });
++      return updated;
+     }),
+ });
+diff --git a/src/components/UserList.tsx b/src/components/UserList.tsx
+index b2c3d4e..f5g6h7i 100644
+--- a/src/components/UserList.tsx
++++ b/src/components/UserList.tsx
+@@ -1,7 +1,8 @@
+ import { useState } from "react";
+ import { trpc } from "@/utils/trpc";
+-import { Spinner } from "./Spinner";
++import { Skeleton } from "./Skeleton";
+ import { UserCard } from "./UserCard";
++import { EmptyState } from "./EmptyState";
+
+ interface UserListProps {
+   roleFilter?: string;
+@@ -12,20 +13,28 @@ export function UserList({ roleFilter, searchQuery }: UserListProps) {
+   const [page, setPage] = useState(1);
+   const { data, isLoading, error } = trpc.user.list.useQuery({
+     page,
+-    limit: 10,
++    limit: 20,
+     role: roleFilter,
++    search: searchQuery,
+   });
+
+-  if (isLoading) return <Spinner />;
+-  if (error) return <div>Error: {error.message}</div>;
++  if (isLoading) {
++    return (
++      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
++        {Array.from({ length: 6 }).map((_, i) => (
++          <Skeleton key={i} className="h-48 w-full rounded-lg" />
++        ))}
++      </div>
++    );
++  }
++
++  if (error) {
++    return <div className="rounded-lg bg-red-50 p-4 text-red-700">{error.message}</div>;
++  }
++
++  if (!data?.users.length) {
++    return <EmptyState title="No users found" description="Try adjusting your search or filter criteria." />;
++  }
+
+   return (
+-    <div>
+-      <div className="space-y-4">
+-        {data?.users.map((user) => (
+-          <UserCard key={user.id} user={user} />
+-        ))}
+-      </div>
++    <div className="space-y-6">
++      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
++        {data.users.map((user) => (
++          <UserCard key={user.id} user={user} />
++        ))}
++      </div>
+       {data?.totalPages > 1 && (
+-        <div className="mt-4 flex justify-center gap-2">
+-          <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}>
++        <div className="flex items-center justify-center gap-2">
++          <button
++            onClick={() => setPage((p) => Math.max(1, p - 1))}
++            disabled={page === 1}
++            className="rounded-md bg-gray-100 px-3 py-2 text-sm font-medium hover:bg-gray-200 disabled:opacity-50"
++          >
+             Previous
+           </button>
+-          <span>Page {page} of {data.totalPages}</span>
+-          <button onClick={() => setPage(p => Math.min(data.totalPages, p + 1))} disabled={page === data.totalPages}>
++          <span className="text-sm text-gray-600">
++            Page {page} of {data.totalPages}
++          </span>
++          <button
++            onClick={() => setPage((p) => Math.min(data.totalPages, p + 1))}
++            disabled={page === data.totalPages}
++            className="rounded-md bg-gray-100 px-3 py-2 text-sm font-medium hover:bg-gray-200 disabled:opacity-50"
++          >
+             Next
+           </button>
+         </div>
+diff --git a/src/lib/auth.ts b/src/lib/auth.ts
+index c3d4e5f..g6h7i8j 100644
+--- a/src/lib/auth.ts
++++ b/src/lib/auth.ts
+@@ -1,6 +1,7 @@
+ import NextAuth from "next-auth";
+ import GitHub from "next-auth/providers/github";
+ import Google from "next-auth/providers/google";
++import Resend from "next-auth/providers/resend";
+ import { PrismaAdapter } from "@auth/prisma-adapter";
+ import { prisma } from "./database";
+
+@@ -8,7 +9,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
+   adapter: PrismaAdapter(prisma),
+-  providers: [GitHub, Google],
++  providers: [GitHub, Google, Resend({ from: "noreply@my-saas-app.com" })],
+   callbacks: {
+     session({ session, user }) {
+       session.user.id = user.id;
+@@ -18,6 +19,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
+       return session;
+     },
++    async signIn({ user, account }) {
++      if (account?.provider === "resend") {
++        const existingUser = await prisma.user.findUnique({ where: { email: user.email! } });
++        if (existingUser?.emailVerified) {
++          return true;
++        }
++      }
++      return true;
++    },
+   },
+   pages: {
+     signIn: "/auth/signin",
+diff --git a/src/lib/database.ts b/src/lib/database.ts
+index d4e5f6g..h7i8j9k 100644
+--- a/src/lib/database.ts
++++ b/src/lib/database.ts
+@@ -1,10 +1,18 @@
+-import { PrismaClient } from "@prisma/client";
++import { PrismaClient, Prisma } from "@prisma/client";
+
+-const globalForPrisma = global as unknown as { prisma: PrismaClient | undefined };
++const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined };
+
+-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
++export const prisma =
++  globalForPrisma.prisma ??
++  new PrismaClient({
++    log: process.env.NODE_ENV === "development" ? ["query", "warn", "error"] : ["error"],
++  });
+
+ if (process.env.NODE_ENV !== "production") {
+   globalForPrisma.prisma = prisma;
+ }
++
++export async function withTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
++  return prisma.$transaction(fn, { maxWait: 5000, timeout: 10000 });
++}
+diff --git a/src/middleware.ts b/src/middleware.ts
+index e5f6g7h..i8j9k0l 100644
+--- a/src/middleware.ts
++++ b/src/middleware.ts
+@@ -1,13 +1,29 @@
+ import { auth } from "@/lib/auth";
++import { NextResponse } from "next/server";
+
+-export default auth;
++const publicPaths = ["/", "/auth/signin", "/auth/signup", "/pricing", "/docs"];
++const apiPublicPaths = ["/api/webhooks/stripe", "/api/health"];
+
+-export const config = {
+-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+-};
++export default auth((req) => {
++  const { pathname } = req.nextUrl;
++
++  if (publicPaths.some((p) => pathname === p) || apiPublicPaths.some((p) => pathname.startsWith(p))) {
++    return NextResponse.next();
++  }
++
++  if (!req.auth && pathname.startsWith("/dashboard")) {
++    const signInUrl = new URL("/auth/signin", req.url);
++    signInUrl.searchParams.set("callbackUrl", pathname);
++    return NextResponse.redirect(signInUrl);
++  }
++
++  return NextResponse.next();
++});
++
++export const config = {
++  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|ico)$).*)"],
++};
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index f6g7h8i..j9k0l1m 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -22,6 +22,8 @@ model User {
+   emailVerified DateTime?
+   image         String?
+   role          String    @default("user")
++  lastLoginAt   DateTime?
++  onboardedAt   DateTime?
+   accounts      Account[]
+   sessions      Session[]
+   projects      Project[]

@@ -1,0 +1,17 @@
+src/
+tests/
+*.ts
+!insight/**/*.ts
+!insight/**/*.tsx
+!build/**/*.js
+!build/**/*.d.ts
+tsconfig.json
+!insight/tsconfig.json
+bun.lock
+BENCHMARK.md
+PRD*.md
+skills/context-mode-ops/
+tasks/
+.github/
+.DS_Store
+*.db

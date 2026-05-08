@@ -1,0 +1,18 @@
+{
+  "tool_name": "MCP:ctx_execute",
+  "tool_input": {
+    "language": "shell",
+    "code": "gh pr list --limit 5"
+  },
+  "tool_output": "#12 Fix tests\n#11 Add docs",
+  "duration_ms": 54,
+  "tool_use_id": "cursor-tool-ctx-002",
+  "cwd": "/tmp/cursor-project",
+  "conversation_id": "cursor-conv-001",
+  "generation_id": "cursor-gen-003",
+  "model": "gpt-5",
+  "hook_event_name": "postToolUse",
+  "cursor_version": "1.105.1",
+  "workspace_roots": ["/tmp/cursor-project"],
+  "transcript_path": "/tmp/cursor-transcripts/cursor-conv-001.jsonl"
+}

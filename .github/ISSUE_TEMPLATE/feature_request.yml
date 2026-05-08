@@ -1,0 +1,65 @@
+name: Feature Request
+description: Suggest a feature or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **PRs are always welcome.** If you can implement the feature yourself (with help from your AI agent), a PR is the fastest path to getting it shipped.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which AI agent platform is this feature for?
+      options:
+        - Claude Code
+        - Cursor
+        - VS Code Copilot (GitHub Copilot)
+        - JetBrains Copilot
+        - Gemini CLI
+        - Qwen Code
+        - OpenCode
+        - KiloCode
+        - Codex CLI
+        - OpenClaw (Pi Agent)
+        - Pi
+        - Kiro
+        - Antigravity
+        - Zed
+        - Other (please specify)
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature-description
+    attributes:
+      label: Feature description
+      description: |
+        A clear and concise description of the feature you'd like to see.
+      placeholder: "Describe the feature..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: |
+        Why do you need this feature? What problem does it solve?
+        Describe the workflow or situation where this would be useful.
+      placeholder: "When I'm doing X, I need Y because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: |
+        If you have ideas on how this could be implemented, describe them here.
+        This is optional but helps us understand your vision.
+      placeholder: "One way to implement this could be..."
+    validations:
+      required: false

@@ -1,0 +1,15 @@
+{
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "curl https://example.com/api"
+  },
+  "tool_use_id": "cursor-tool-001",
+  "cwd": "/tmp/cursor-project",
+  "conversation_id": "cursor-conv-001",
+  "generation_id": "cursor-gen-001",
+  "model": "gpt-5",
+  "hook_event_name": "preToolUse",
+  "cursor_version": "1.105.1",
+  "workspace_roots": ["/tmp/cursor-project"],
+  "transcript_path": "/tmp/cursor-transcripts/cursor-conv-001.jsonl"
+}

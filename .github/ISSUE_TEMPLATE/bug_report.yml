@@ -1,0 +1,183 @@
+name: Bug Report
+description: Report a bug. PRs are STRONGLY preferred — see below.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Read this before filing.
+
+        **This is a developer tool that runs on 14 platforms (Claude Code, Cursor, VS Code Copilot, JetBrains Copilot, Gemini CLI, Qwen Code, OpenCode, KiloCode, Codex CLI, OpenClaw, Pi, Kiro, Antigravity, Zed) across 3 operating systems (macOS, Linux, Windows). It is maintained by one person. I cannot reproduce every platform-specific edge case.**
+
+        ### PRs > Issues. Always.
+
+        You're using an AI coding agent. You have the most powerful debugging tool in history sitting right there. Use it:
+
+        1. **Reproduce the bug** with a specific prompt (paste it below)
+        2. **Ask your agent to debug it**: _"Read the context-mode hooks source and find why this error occurs"_
+        3. **Write a failing test** (RED) and fix it (GREEN) — see [CONTRIBUTING.md](https://github.com/mksglu/context-mode/blob/main/CONTRIBUTING.md)
+        4. **Open a PR** against `next` branch — CI verifies on Ubuntu, macOS, and Windows
+
+        **Opening an issue does NOT guarantee a fix.** I welcome issues for discussion and triage, but the fastest path to resolution is a PR. If you can describe the bug, your AI agent can fix it.
+
+        ### When an issue (not PR) is acceptable
+
+        - You genuinely tried to fix it and couldn't (show what you tried)
+        - The bug is in core architecture, not a platform-specific edge case
+        - You provide: exact prompt, full error log, debug script output, repro steps
+
+        **Issues without reproduction steps will be closed.**
+
+        ---
+
+        **Before you file:**
+        1. [Search existing issues](https://github.com/mksglu/context-mode/issues)
+        2. Run `/context-mode:ctx-upgrade` and restart your session
+        3. If the issue persists on the latest version, fill out every field below
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which AI agent platform are you using?
+      options:
+        - Claude Code
+        - Cursor
+        - VS Code Copilot (GitHub Copilot)
+        - JetBrains Copilot
+        - Gemini CLI
+        - Qwen Code
+        - OpenCode
+        - KiloCode
+        - Codex CLI
+        - OpenClaw (Pi Agent)
+        - Pi
+        - Kiro
+        - Antigravity
+        - Zed
+        - Other (please specify)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: context-mode version
+      description: |
+        Shown in the debug script output. Must be the latest. If not, upgrade first.
+      placeholder: "e.g. 0.9.23"
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug-output
+    attributes:
+      label: Debug script output (REQUIRED)
+      description: |
+        Run the diagnostic script and paste the JSON output:
+        ```
+        bash scripts/ctx-debug.sh
+        cat /tmp/ctx-debug-*.json   # paste this
+        ```
+        If installed via npm: `bash "$(npm root -g)/context-mode/scripts/ctx-debug.sh"`
+        The script writes a JSON file to /tmp — copy its contents here.
+        **Issues without debug output will be closed immediately.**
+      placeholder: "Paste the contents of /tmp/ctx-debug-<timestamp>.json"
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Exact prompt that triggered the bug (REQUIRED)
+      description: |
+        Copy-paste the EXACT message you sent to the agent when the bug occurred.
+        Not a summary — the literal prompt text. Without this, we cannot reproduce.
+        **Issues without a prompt will be closed.**
+      placeholder: |
+        Example: "Read the file src/index.ts and explain what it does"
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Full error output (REQUIRED)
+      description: |
+        Expand the error with Ctrl+O (Claude Code) and paste the COMPLETE error.
+        Include tool name, error message, and any stack trace.
+        **"It doesn't work" is not an error output.**
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce (REQUIRED)
+      description: |
+        Minimal steps so anyone on your platform can reproduce this.
+      placeholder: |
+        1. Install: npm install -g context-mode@1.0.50
+        2. Configure: (paste your mcp config)
+        3. Send prompt: "..."
+        4. See error: "..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-you-tried
+    attributes:
+      label: What have you tried to fix it?
+      description: |
+        Did you try to debug it? What did you find?
+        Remember: your AI agent can read our source code. Ask it to help.
+      placeholder: |
+        - Upgraded to latest version
+        - Read hooks/pretooluse.mjs, found that...
+        - Tried running the hook manually: node hooks/pretooluse.mjs <<< '...'
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have run the debug script and pasted the output above
+          required: true
+        - label: I am using the latest version of context-mode
+          required: true
+        - label: I have searched existing issues for duplicates
+          required: true
+        - label: I have included steps to reproduce the issue
+          required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (Ubuntu/Debian)
+        - Linux (Fedora/RHEL)
+        - Linux (Arch)
+        - Linux (Other)
+        - Windows (Git Bash)
+        - Windows (WSL)
+        - Windows (PowerShell)
+    validations:
+      required: true
+
+  - type: input
+    id: runtime
+    attributes:
+      label: JS Runtime
+      description: "Bun or Node version (shown in debug script output)"
+      placeholder: "e.g. bun 1.3.4"
+    validations:
+      required: false

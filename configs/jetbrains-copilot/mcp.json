@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "context-mode": {
+      "command": "npx",
+      "args": ["-y", "context-mode"]
+    }
+  }
+}

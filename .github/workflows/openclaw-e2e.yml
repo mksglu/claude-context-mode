@@ -1,0 +1,126 @@
+name: OpenClaw E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, next]
+  pull_request:
+    branches: [main, next]
+
+concurrency:
+  group: openclaw-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENCLAW_VERSION: "2026.3.2"
+  NODE_VERSION: "22"
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    name: openclaw-e2e (${{ matrix.os }})
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache better-sqlite3 native addon
+        uses: actions/cache@v4
+        with:
+          path: node_modules/better-sqlite3/build
+          key: better-sqlite3-${{ runner.os }}-node${{ env.NODE_VERSION }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Cache OpenClaw binary
+        id: cache-openclaw
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm-global
+          key: openclaw-${{ runner.os }}-v${{ env.OPENCLAW_VERSION }}
+
+      - name: Install dependencies and build
+        run: |
+          npm install
+          npm run build
+          npm rebuild better-sqlite3
+
+      - name: Install OpenClaw
+        if: steps.cache-openclaw.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.npm-global
+          npm config set prefix ~/.npm-global
+          npm install -g openclaw@${{ env.OPENCLAW_VERSION }}
+
+      - name: Add OpenClaw to PATH
+        run: echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
+
+      - name: Setup OpenClaw state directory
+        run: |
+          export OPENCLAW_STATE_DIR="$RUNNER_TEMP/openclaw-state"
+          mkdir -p "$OPENCLAW_STATE_DIR/extensions"
+          mkdir -p "$OPENCLAW_STATE_DIR/logs"
+          echo '{"plugins":{"allow":[],"entries":{}}}' > "$OPENCLAW_STATE_DIR/openclaw.json"
+          echo "OPENCLAW_STATE_DIR=$OPENCLAW_STATE_DIR" >> $GITHUB_ENV
+
+      - name: Install plugin into OpenClaw
+        run: bash scripts/install-openclaw-plugin.sh "$OPENCLAW_STATE_DIR"
+
+      - name: Verify plugin discovery
+        run: |
+          python3 -c "
+          import json, os
+          state_dir = os.environ['OPENCLAW_STATE_DIR']
+          with open(f'{state_dir}/openclaw.json') as f:
+              cfg = json.load(f)
+          plugins = cfg.get('plugins', {})
+          allow = plugins.get('allow', [])
+          entries = plugins.get('entries', {})
+          assert 'context-mode' in allow, f'context-mode not in plugins.allow: {allow}'
+          assert 'context-mode' in entries, f'context-mode not in plugins.entries: {entries}'
+          assert entries['context-mode'].get('enabled') is True, 'plugin not enabled'
+          print('PASS: openclaw.json contains context-mode plugin entry')
+          "
+          test -f "$OPENCLAW_STATE_DIR/extensions/context-mode/openclaw.plugin.json" \
+            && echo "PASS: openclaw.plugin.json exists" \
+            || (echo "FAIL: openclaw.plugin.json missing" && exit 1)
+
+      - name: Run E2E hook lifecycle test
+        run: bash scripts/test-openclaw-e2e.sh
+        env:
+          OPENCLAW_HOME: ${{ github.workspace }}
+          CONTEXT_MODE_SESSION_SUFFIX: ""
+
+      - name: Upload session DBs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-dbs-${{ matrix.os }}
+          path: ~/.openclaw/context-mode/sessions/
+          if-no-files-found: ignore
+
+      - name: Upload OpenClaw logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-logs-${{ matrix.os }}
+          path: ${{ env.OPENCLAW_STATE_DIR }}/logs/
+          if-no-files-found: ignore
+
+      - name: Upload test output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e-output.log
+          if-no-files-found: ignore

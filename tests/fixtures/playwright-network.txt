@@ -1,0 +1,7 @@
+[GET] https://news.ycombinator.com/ => [200]
+[GET] https://news.ycombinator.com/news.css?u2KnqsTjKhcQjbDNi8PU => [200]
+[GET] https://news.ycombinator.com/y18.svg => [200]
+[GET] https://news.ycombinator.com/s.gif => [200]
+[GET] https://news.ycombinator.com/hn.js?u2KnqsTjKhcQjbDNi8PU => [200]
+[GET] https://news.ycombinator.com/triangle.svg => [200]
+[GET] https://news.ycombinator.com/y18.svg => [200]

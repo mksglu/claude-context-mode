@@ -1,0 +1,17 @@
+{
+  "tool_name": "Shell",
+  "tool_input": {
+    "command": "git status --short"
+  },
+  "tool_output": " M src/app.ts\n?? tests/new.spec.ts",
+  "duration_ms": 31,
+  "tool_use_id": "cursor-tool-002",
+  "cwd": "/tmp/cursor-project",
+  "conversation_id": "cursor-conv-001",
+  "generation_id": "cursor-gen-002",
+  "model": "gpt-5",
+  "hook_event_name": "postToolUse",
+  "cursor_version": "1.105.1",
+  "workspace_roots": ["/tmp/cursor-project"],
+  "transcript_path": "/tmp/cursor-transcripts/cursor-conv-001.jsonl"
+}
