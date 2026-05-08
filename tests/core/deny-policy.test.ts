@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test, expect } from "vitest";
+import { evaluateFilePath } from "../../src/security.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverSrc = readFileSync(
@@ -61,5 +62,35 @@ describe("checkFilePathDenyPolicy: project-dir resolution", () => {
     expect(body).not.toContain("PI_PROJECT_DIR");
     expect(body).not.toContain("CONTEXT_MODE_PROJECT_DIR");
     expect(body).not.toContain("IDEA_INITIAL_DIRECTORY");
+  });
+});
+
+describe("evaluateFilePath: cross-platform separator normalization", () => {
+  // On Windows the absolute deny rule arrives as `Read(C:\Users\...\secret.env)`,
+  // which `parseToolPattern` returns with literal backslashes. The candidate
+  // path is normalized to forward slashes before regex compile; the glob must
+  // be normalized the same way or the regex never matches its own input.
+  test("Windows-style backslash glob matches backslash candidate", () => {
+    const candidate = "C:\\Users\\runner\\proj\\secret.env";
+    const glob = "C:\\Users\\runner\\proj\\secret.env";
+    const result = evaluateFilePath(candidate, [[glob]], true);
+    expect(result.denied).toBe(true);
+    expect(result.matchedPattern).toBe(glob);
+  });
+
+  test("Windows-style backslash glob matches forward-slash candidate", () => {
+    // belt-and-braces: even if the candidate already arrived normalized, the
+    // glob's separators must not block the match.
+    const candidate = "C:/Users/runner/proj/secret.env";
+    const glob = "C:\\Users\\runner\\proj\\secret.env";
+    const result = evaluateFilePath(candidate, [[glob]], true);
+    expect(result.denied).toBe(true);
+  });
+
+  test("Mixed-separator glob still matches", () => {
+    const candidate = "C:\\Users\\runner\\proj\\secret.env";
+    const glob = "C:/Users\\runner/proj\\secret.env";
+    const result = evaluateFilePath(candidate, [[glob]], true);
+    expect(result.denied).toBe(true);
   });
 });

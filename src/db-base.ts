@@ -183,10 +183,35 @@ export class NodeSQLiteAdapter {
 let _Database: typeof DatabaseConstructor | null = null;
 
 /**
+ * Probe whether the supplied node:sqlite DatabaseSync constructor links a
+ * SQLite build that includes the FTS5 module. Some Node.js Linux builds
+ * (e.g. v22.14.0 on Ubuntu) ship node:sqlite without FTS5 even though the
+ * import succeeds, which silently breaks ctx_search/ctx_batch_execute and
+ * the doctor's FTS5 check (issue #461).
+ *
+ * Returns true only when a `CREATE VIRTUAL TABLE … USING fts5(x)` statement
+ * succeeds. Always returns false on any failure (constructor throw, missing
+ * module, etc.) so the caller can fall through to better-sqlite3, whose
+ * bundled SQLite always ships with FTS5.
+ */
+export function nodeSqliteHasFts5(DatabaseSync: any): boolean {
+  let probe: any = null;
+  try {
+    probe = new DatabaseSync(":memory:");
+    probe.exec("CREATE VIRTUAL TABLE __fts5_probe USING fts5(x)");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { probe?.close(); } catch { /* probe never opened or already closed */ }
+  }
+}
+
+/**
  * Lazy-load the SQLite driver for the current runtime.
  * Bun → bun:sqlite via BunSQLiteAdapter (issue #45).
- * Linux Node → node:sqlite via NodeSQLiteAdapter (issue #228).
- * Other Node → better-sqlite3 (native addon).
+ * Linux Node → node:sqlite via NodeSQLiteAdapter when it ships FTS5 (#228, #461).
+ * Other Node (or Linux Node without FTS5) → better-sqlite3 (native addon).
  */
 export function loadDatabase(): typeof DatabaseConstructor {
   if (!_Database) {
@@ -212,16 +237,31 @@ export function loadDatabase(): typeof DatabaseConstructor {
     } else if (process.platform === "linux") {
       // Linux — try node:sqlite to avoid native addon SIGSEGV (nodejs/node#62515).
       // node:sqlite is built into Node >= 22.5, no flag needed since 22.13.
+      // Probe FTS5 support before committing — some Linux Node builds ship
+      // node:sqlite without FTS5, which would silently break ctx_search (#461).
+      // The probe runs at most once per process (cached via _Database below),
+      // so the cost of opening an in-memory DatabaseSync is negligible.
+      let DatabaseSync: any = null;
       try {
-        const { DatabaseSync } = require(["node", "sqlite"].join(":"));
+        // Array.join() prevents esbuild from resolving the specifier at bundle time
+        // (mirrors the bun:sqlite branch above).
+        ({ DatabaseSync } = require(["node", "sqlite"].join(":")));
+      } catch {
+        DatabaseSync = null;
+      }
+      if (DatabaseSync && nodeSqliteHasFts5(DatabaseSync)) {
         _Database = function NodeDatabaseFactory(path: string, opts?: any) {
           const raw = new DatabaseSync(path, {
             readOnly: opts?.readonly ?? false,
           });
           return new NodeSQLiteAdapter(raw);
         } as any;
-      } catch {
-        // node:sqlite not available — fall through to better-sqlite3
+      } else {
+        // node:sqlite missing or built without FTS5 — fall through to better-sqlite3.
+        // Trade-off: this reintroduces the native-addon path that #228 routed
+        // around (Linux SIGSEGV per nodejs/node#62515). Deliberate — a visible
+        // crash on the rare unstable build is preferable to a silent
+        // "no such module: fts5" on every ctx_search call.
         _Database = require("better-sqlite3") as typeof DatabaseConstructor;
       }
     } else {

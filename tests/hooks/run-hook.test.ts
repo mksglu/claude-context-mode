@@ -26,9 +26,14 @@ const RUN_HOOK_PATH = resolve(REPO_ROOT, "hooks", "run-hook.mjs");
 const RUN_HOOK_URL = pathToFileURL(RUN_HOOK_PATH).href;
 
 function runScript(script: string, env: Record<string, string>) {
+  // Strip CLAUDE_CONFIG_DIR from the parent env by default so legacy-path
+  // assertions don't get hijacked by the developer's shell setting (#453).
+  // Tests that want to exercise CLAUDE_CONFIG_DIR pass it via `env`.
+  const parentEnv = { ...process.env };
+  delete parentEnv.CLAUDE_CONFIG_DIR;
   return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf-8",
-    env: { ...process.env, ...env },
+    env: { ...parentEnv, ...env },
     cwd: REPO_ROOT,
     timeout: 15_000,
   });
@@ -133,5 +138,28 @@ describe("runHook wrapper", () => {
     expect(existsSync(logPath)).toBe(true);
     const log = readFileSync(logPath, "utf-8");
     expect(log).toContain("late-uncaught");
+  });
+
+  it("logs to $CLAUDE_CONFIG_DIR/context-mode/hook-errors.log when env var is set (#453)", () => {
+    const customCfg = join(tmpHome, "custom-claude-cfg");
+    const script = `
+      import { runHook } from ${JSON.stringify(RUN_HOOK_URL)};
+      await runHook(async () => { throw new Error("boom-cfgdir"); });
+    `;
+    const r = runScript(script, {
+      HOME: tmpHome,
+      USERPROFILE: tmpHome,
+      CLAUDE_CONFIG_DIR: customCfg,
+    });
+    expect(r.status).toBe(0);
+
+    // New location honored
+    const newLogPath = join(customCfg, "context-mode", "hook-errors.log");
+    expect(existsSync(newLogPath)).toBe(true);
+    expect(readFileSync(newLogPath, "utf-8")).toContain("boom-cfgdir");
+
+    // Legacy location NOT written
+    const legacyLogPath = join(tmpHome, ".claude", "context-mode", "hook-errors.log");
+    expect(existsSync(legacyLogPath)).toBe(false);
   });
 });

@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { routePreToolUse } from "../../hooks/core/routing.mjs";
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  routePreToolUse,
+  resetGuidanceThrottle,
+  isStructurallyBounded,
+} from "../../hooks/core/routing.mjs";
 import { createRoutingBlock } from "../../hooks/routing-block.mjs";
 import { createToolNamer } from "../../hooks/core/tool-naming.mjs";
 
@@ -78,5 +82,181 @@ describe("Routing: Subagents (Agent only — Task removed per #241)", () => {
   it("TaskUpdate is NOT routed — returns null (passthrough)", () => {
     const decision = routePreToolUse("TaskUpdate", { id: "123", status: "done" }, "/test");
     expect(decision).toBeNull();
+  });
+});
+
+describe("Bash structurally-bounded allowlist (#463)", () => {
+  // Each test resets the guidance throttle so the per-session marker doesn't
+  // bleed across tests. The throttle is global to the routing module — without
+  // the reset, only the first bash test in the file would observe the nudge.
+  const SID = "issue-463-tests";
+  beforeEach(() => resetGuidanceThrottle(SID));
+
+  it("pwd / whoami / hostname / date — no nudge", () => {
+    for (const command of ["pwd", "whoami", "hostname", "hostname -f", "date", "date -Iseconds"]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("echo / printf / which / type / command -v — no nudge", () => {
+    for (const command of [
+      "echo hello",
+      "printf '%s' x",
+      "which node",
+      "type git",
+      "command -v gh",
+    ]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("git read-only subcommands — no nudge", () => {
+    for (const command of [
+      "git status",
+      "git status --short",
+      "git rev-parse HEAD",
+      "git remote -v",
+      "git remote show origin",
+      "git branch",
+      "git branch -vv",
+      "git config --get user.email",
+      "git diff --stat",
+      "git diff --name-only",
+      "git stash list",
+      "git tag",
+      "git tag -l 'v1.*'",
+      "git log -5",
+      "git log -10 --oneline",
+    ]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("--version / -V probes — no nudge", () => {
+    for (const command of [
+      "node --version",
+      "npm --version",
+      "git --version",
+      "node -V",
+    ]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("ls without -R is bounded; ls -R is unbounded", () => {
+    resetGuidanceThrottle(SID);
+    expect(routePreToolUse("Bash", { command: "ls" }, "/test", "claude-code", SID)).toBeNull();
+    resetGuidanceThrottle(SID);
+    expect(routePreToolUse("Bash", { command: "ls -la /etc" }, "/test", "claude-code", SID)).toBeNull();
+    resetGuidanceThrottle(SID);
+    // ls -R could flood — must still nudge
+    const lsR = routePreToolUse("Bash", { command: "ls -R /" }, "/test", "claude-code", SID);
+    expect(lsR?.action).toBe("context");
+    resetGuidanceThrottle(SID);
+    const lsLong = routePreToolUse("Bash", { command: "ls --recursive" }, "/test", "claude-code", SID);
+    expect(lsLong?.action).toBe("context");
+  });
+
+  it("unbounded commands still get the nudge", () => {
+    for (const command of [
+      "find /",
+      "cat /var/log/syslog",
+      "grep -r foo /etc",
+      "ps aux",
+      "git log",      // no -<N> bound
+      "git diff",     // raw diff can be huge
+    ]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+    }
+  });
+
+  it("safe command + shell control operator → still nudged (composition risk)", () => {
+    // A pipe, redirect, command substitution, or chain can attach an
+    // unbounded sink to an otherwise-safe command. The allowlist must
+    // refuse to short-circuit these — otherwise users can wrap floods
+    // behind a `pwd && cat huge`.
+    const cases = [
+      "pwd | xargs cat",
+      "pwd > /tmp/out",
+      "pwd >> /tmp/out",
+      "echo $(find /)",
+      "echo `find /`",
+      "git status && cat huge.log",
+      "git status || tail -F /var/log/syslog",
+      "whoami; find /",
+      // Single `&` (background + sequence) — distinct from `&&` and easy to
+      // miss in the operator regex. `date & cat huge.log` runs date in the
+      // background and immediately tails the unbounded sink.
+      "date & cat /var/log/syslog",
+      "whoami & find /",
+      "pwd & tail -F huge.log",
+    ];
+    for (const command of cases) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+    }
+  });
+
+  it("cp / mv / rm with -v / --verbose → still nudged (verbose floods on big trees)", () => {
+    // The "silent on success" invariant of cp/mv/rm only holds without -v.
+    // Verbose flag prints one line per file, which can flood on big trees
+    // (recursive copy of /etc, mass rename, etc.).
+    const cases = [
+      "cp -v /a /b",
+      "cp -rv /a /b",
+      "cp -v -r /etc /tmp",
+      "cp --verbose /a /b",
+      "mv -v /a /b",
+      "mv --verbose /a /b",
+      "rm -v /tmp/foo",
+      "rm -rv /tmp/foo",
+      "rm --verbose /tmp/foo",
+    ];
+    for (const command of cases) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+    }
+  });
+
+  it("cp / mv / rm without -v → still allowlisted", () => {
+    // Sanity: the verbose carve-out must not regress the silent-success
+    // case, which is the whole reason these are in the allowlist.
+    for (const command of [
+      "cp /a /b",
+      "cp -r /a /b",
+      "mv /a /b",
+      "rm /tmp/foo",
+      "rm -rf /tmp/foo",
+    ]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("isStructurallyBounded — direct unit checks", () => {
+    expect(isStructurallyBounded("pwd")).toBe(true);
+    expect(isStructurallyBounded("git status")).toBe(true);
+    expect(isStructurallyBounded("node --version")).toBe(true);
+    expect(isStructurallyBounded("ls")).toBe(true);
+    expect(isStructurallyBounded("ls -R")).toBe(false);
+    expect(isStructurallyBounded("find /")).toBe(false);
+    expect(isStructurallyBounded("git log")).toBe(false);
+    expect(isStructurallyBounded("git log -5")).toBe(true);
+    expect(isStructurallyBounded("pwd | cat")).toBe(false);
+    expect(isStructurallyBounded("")).toBe(false);
+    expect(isStructurallyBounded(undefined as unknown as string)).toBe(false);
   });
 });

@@ -25,13 +25,13 @@ import { dirname, resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 
-import { SessionDB } from "./session/db.js";
-import { extractEvents, extractUserEvents } from "./session/extract.js";
-import type { HookInput } from "./session/extract.js";
-import { buildResumeSnapshot } from "./session/snapshot.js";
-import type { SessionEvent } from "./types.js";
-import { AdapterPlatformType, OpenCodeAdapter } from "./adapters/opencode/index.js";
-import { PLATFORM_ENV_VARS } from "./adapters/detect.js";
+import { SessionDB } from "../../session/db.js";
+import { extractEvents, extractUserEvents } from "../../session/extract.js";
+import type { HookInput } from "../../session/extract.js";
+import { buildResumeSnapshot } from "../../session/snapshot.js";
+import type { SessionEvent } from "../../types.js";
+import { AdapterPlatformType, OpenCodeAdapter } from "./index.js";
+import { PLATFORM_ENV_VARS } from "../detect.js";
 
 // Read package.json version once at module load (not on every hook call).
 // Used in the resume-injection visible signal so users can confirm in
@@ -39,7 +39,11 @@ import { PLATFORM_ENV_VARS } from "./adapters/detect.js";
 const VERSION: string = (() => {
   try {
     const pkgRoot = dirname(fileURLToPath(import.meta.url));
-    for (const rel of ["../package.json", "./package.json"]) {
+    // Search both the legacy depths (when bundled flat under build/) and
+    // the post-refactor depths (when compiled to build/adapters/opencode/).
+    // `../../../package.json` is the canonical location after the
+    // `src/opencode-plugin.ts → src/adapters/opencode/plugin.ts` move.
+    for (const rel of ["../../../package.json", "../package.json", "./package.json"]) {
       const p = resolve(pkgRoot, rel);
       if (existsSync(p)) return JSON.parse(readFileSync(p, "utf8")).version ?? "unknown";
     }
@@ -223,19 +227,22 @@ async function createContextModePlugin(ctx: PluginContext) {
   const platform = getPlatform();
   const adapter = new OpenCodeAdapter(platform);
   const buildDir = dirname(fileURLToPath(import.meta.url));
+  // initSecurity() looks for `<dir>/security.js`, which lives at the
+  // top of build/ — two levels up from this adapter directory.
+  const buildRoot = resolve(buildDir, "..", "..");
 
   // Load routing module (ESM .mjs, lives outside build/ in hooks/)
-  const routingPath = resolve(buildDir, "..", "hooks", "core", "routing.mjs");
+  const routingPath = resolve(buildDir, "..", "..", "..", "hooks", "core", "routing.mjs");
   const routing = await import(pathToFileURL(routingPath).href);
-  await routing.initSecurity(buildDir);
+  await routing.initSecurity(buildRoot);
 
   // OC-1 / OC-3: Load hook helpers once at plugin init. Dynamic import keeps
   // the .mjs ESM islands isolated from the .ts compile graph.
-  const routingBlockPath = resolve(buildDir, "..", "hooks", "routing-block.mjs");
+  const routingBlockPath = resolve(buildDir, "..", "..", "..", "hooks", "routing-block.mjs");
   const routingBlockMod = await import(pathToFileURL(routingBlockPath).href);
-  const toolNamingPath = resolve(buildDir, "..", "hooks", "core", "tool-naming.mjs");
+  const toolNamingPath = resolve(buildDir, "..", "..", "..", "hooks", "core", "tool-naming.mjs");
   const toolNamingMod = await import(pathToFileURL(toolNamingPath).href);
-  const autoInjectionPath = resolve(buildDir, "..", "hooks", "auto-injection.mjs");
+  const autoInjectionPath = resolve(buildDir, "..", "..", "..", "hooks", "auto-injection.mjs");
   const autoInjectionMod = await import(pathToFileURL(autoInjectionPath).href);
 
   // Pre-build the routing block once per process — it is platform-specific
