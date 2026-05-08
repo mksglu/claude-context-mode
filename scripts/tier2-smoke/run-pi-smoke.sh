@@ -24,10 +24,15 @@ PI_HEADLESS_FLAGS="${PI_HEADLESS_FLAGS:---headless}"
 FIXTURE="${FIXTURE:-$SMOKE_DIR/fixtures/search-corpus.txt}"
 STATS_OUT="$LOG_DIR/ctx-stats.json"
 PI_LOG="$LOG_DIR/pi.log"
+# Model is pinned in the workflow env (claude-haiku-4-5) and forwarded here
+# via PI_MODEL / ANTHROPIC_MODEL. We surface it in the log so a flaky run is
+# auditable against the exact model that produced it.
+PI_MODEL="${PI_MODEL:-${ANTHROPIC_MODEL:-}}"
 
 echo "=== Tier-2 smoke (Pi) ==="
 echo "Repo:    $REPO_ROOT"
 echo "Pi bin:  ${PI_BIN:-<not found>}"
+echo "Model:   ${PI_MODEL:-<provider default>}"
 echo "Fixture: $FIXTURE"
 echo "Logs:    $LOG_DIR"
 echo
@@ -57,7 +62,12 @@ echo
 # accidental over-spending if the model misbehaves.
 echo "--- Running fixture prompt ---"
 PROMPT="$(cat "$FIXTURE")"
+PI_MODEL_ARGS=()
+if [ -n "$PI_MODEL" ]; then
+  PI_MODEL_ARGS=(--model "$PI_MODEL")
+fi
 "$PI_BIN" $PI_HEADLESS_FLAGS \
+  "${PI_MODEL_ARGS[@]}" \
   --max-tokens "${PI_MAX_TOKENS:-2000}" \
   --prompt "$PROMPT" \
   2>&1 | tee -a "$PI_LOG"
@@ -68,12 +78,20 @@ echo
 # callable via the same `--prompt` channel with a `/ctx-stats --json` hint,
 # but we also fall back to invoking the bundled CLI directly if Pi cannot
 # emit JSON.
+#
+# IMPORTANT — the fallback is only valid because Pi and the bundled CLI both
+# read the same on-disk SQLite store under $HOME/.context-mode/. If a future
+# Pi release sandboxes its state to a per-extension directory, this fallback
+# will silently return an empty/zero payload and the assertion will fail in
+# a confusing way. If you change the Pi state path, either keep the bundled
+# CLI pointed at it via $CTX_STATE_DIR, or delete this fallback and fail
+# hard with "Pi /ctx-stats unsupported, skip" instead of masking.
 echo "--- Capturing ctx-stats ---"
 if "$PI_BIN" $PI_HEADLESS_FLAGS --prompt "/ctx-stats --json" \
    > "$STATS_OUT" 2>>"$PI_LOG"; then
   echo "ctx-stats captured via Pi /ctx-stats command"
 else
-  echo "Pi /ctx-stats failed — falling back to bundled CLI"
+  echo "Pi /ctx-stats failed — falling back to bundled CLI (shared state assumed)"
   node "$REPO_ROOT/cli.bundle.mjs" stats --json > "$STATS_OUT"
 fi
 echo

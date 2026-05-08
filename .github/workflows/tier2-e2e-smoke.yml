@@ -12,6 +12,10 @@
 #   - workflow_dispatch only for now (no cron until all hosts are stable)
 #   - ANTHROPIC_API_KEY must have a monthly spend cap configured at
 #     https://console.anthropic.com/settings/limits
+#   - Pinned to claude-haiku-4-5 — same family as Sonnet/Opus so tool-calling
+#     behavior tracks what real users hit, but ~5-10x cheaper per smoke run.
+#     Do NOT swap for Gemini/DeepSeek: tier-2 must test the model that ships,
+#     otherwise a passing smoke can hide a tool-routing regression in Claude.
 #   - max-tokens is capped per fixture run
 #   - concurrency cancels in-progress runs so reruns don't double-bill
 #   - 15 minute timeout per host
@@ -38,6 +42,10 @@ concurrency:
 
 env:
   NODE_VERSION: "22"
+  # Pin Haiku 4.5 for tier-2: cheap enough for weekly cron without changing
+  # tool-call behavior vs. Sonnet/Opus. Override via workflow_dispatch input
+  # if a regression needs to be reproduced on a larger model.
+  ANTHROPIC_MODEL: "claude-haiku-4-5-20251001"
 
 jobs:
   pi:
@@ -84,6 +92,8 @@ jobs:
       - name: Run tier-2 smoke
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ env.ANTHROPIC_MODEL }}
+          PI_MODEL: ${{ env.ANTHROPIC_MODEL }}
           PI_MAX_TOKENS: "2000"
         run: bash scripts/tier2-smoke/run-pi-smoke.sh
 
