@@ -16,6 +16,10 @@
 
 import {
   readFileSync,
+  writeFileSync,
+  accessSync,
+  copyFileSync,
+  constants,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +28,6 @@ import { homedir } from "node:os";
 import { BaseAdapter } from "../base.js";
 
 import {
-  buildNodeCommand,
   type HookAdapter,
   type HookParadigm,
   type PlatformCapabilities,
@@ -37,6 +40,7 @@ import {
   type PostToolUseResponse,
   type PreCompactResponse,
   type SessionStartResponse,
+  type HookEntry,
   type HookRegistration,
 } from "../types.js";
 
@@ -58,6 +62,29 @@ interface CodexHookInput {
   turn_id?: string;
   source?: string;
 }
+
+interface CodexHooksFile {
+  hooks?: HookRegistration;
+}
+
+const PRE_TOOL_USE_MATCHER_PATTERN =
+  "local_shell|shell|shell_command|exec_command|container.exec|Bash|Shell|grep_files|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute";
+
+const CODEX_HOOK_COMMANDS = {
+  PreToolUse: "context-mode hook codex pretooluse",
+  PostToolUse: "context-mode hook codex posttooluse",
+  SessionStart: "context-mode hook codex sessionstart",
+  UserPromptSubmit: "context-mode hook codex userpromptsubmit",
+  Stop: "context-mode hook codex stop",
+} as const;
+
+const LEGACY_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, string[]> = {
+  PreToolUse: ["hooks/pretooluse.mjs", "hooks/codex/pretooluse.mjs"],
+  PostToolUse: ["hooks/posttooluse.mjs", "hooks/codex/posttooluse.mjs"],
+  SessionStart: ["hooks/sessionstart.mjs", "hooks/codex/sessionstart.mjs"],
+  UserPromptSubmit: ["hooks/userpromptsubmit.mjs", "hooks/codex/userpromptsubmit.mjs"],
+  Stop: ["hooks/stop.mjs", "hooks/codex/stop.mjs"],
+};
 
 // ─────────────────────────────────────────────────────────
 // Adapter implementation
@@ -217,15 +244,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return resolve(homedir(), ".codex", "memories");
   }
 
-  generateHookConfig(pluginRoot: string): HookRegistration {
+  generateHookConfig(_pluginRoot: string): HookRegistration {
     return {
       PreToolUse: [
         {
-          matcher: "local_shell|shell|shell_command|exec_command|container.exec|Bash|Shell|grep_files|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+          matcher: PRE_TOOL_USE_MATCHER_PATTERN,
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/pretooluse.mjs`),
+              command: CODEX_HOOK_COMMANDS.PreToolUse,
             },
           ],
         },
@@ -236,7 +263,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/posttooluse.mjs`),
+              command: CODEX_HOOK_COMMANDS.PostToolUse,
             },
           ],
         },
@@ -247,7 +274,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/sessionstart.mjs`),
+              command: CODEX_HOOK_COMMANDS.SessionStart,
             },
           ],
         },
@@ -258,7 +285,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/codex/userpromptsubmit.mjs`),
+              command: CODEX_HOOK_COMMANDS.UserPromptSubmit,
             },
           ],
         },
@@ -269,7 +296,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/codex/stop.mjs`),
+              command: CODEX_HOOK_COMMANDS.Stop,
             },
           ],
         },
@@ -299,14 +326,32 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   // ── Diagnostics (doctor) ─────────────────────────────────
 
   validateHooks(_pluginRoot: string): DiagnosticResult[] {
-    return [
-      {
-        check: "Hook support",
-        status: "pass",
-        message:
-          "Codex CLI hooks are stable. Configure ~/.codex/hooks.json for PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, and Stop.",
-      },
-    ];
+    const hookConfig = this.readHooksConfig();
+    if (!hookConfig?.hooks) {
+      return [{
+        check: "Hooks config",
+        status: "fail",
+        message: "No readable ~/.codex/hooks.json found",
+        fix: "Copy configs/codex/hooks.json to ~/.codex/hooks.json or run context-mode upgrade",
+      }];
+    }
+
+    const expected = this.generateHookConfig("");
+    return Object.entries(expected).map(([hookName, entries]) => {
+      const actualEntries = hookConfig.hooks?.[hookName];
+      const expectedEntry = entries[0];
+      const ok = Array.isArray(actualEntries)
+        && actualEntries.some((entry) => this.isExpectedHookEntry(hookName, entry, expectedEntry));
+
+      return {
+        check: `${hookName} hook`,
+        status: ok ? "pass" : "fail",
+        message: ok
+          ? `${hookName} hook configured in ~/.codex/hooks.json`
+          : `${hookName} hook missing or not pointing to context-mode`,
+        fix: ok ? undefined : "Update ~/.codex/hooks.json to match configs/codex/hooks.json",
+      };
+    });
   }
 
   checkPluginRegistration(): DiagnosticResult {
@@ -357,9 +402,37 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   // ── Upgrade ────────────────────────────────────────────
 
-  configureAllHooks(_pluginRoot: string): string[] {
-    // Codex CLI hook configuration is done via hooks.json, not config.toml
-    return [];
+  configureAllHooks(pluginRoot: string): string[] {
+    const hookFile = this.readHooksConfig() ?? { hooks: {} };
+    const hooks = hookFile.hooks ?? {};
+    const desiredHooks = this.generateHookConfig(pluginRoot);
+    const changes: string[] = [];
+
+    for (const [hookName, entries] of Object.entries(desiredHooks)) {
+      this.upsertManagedHookEntry(hooks, hookName, entries[0], changes);
+    }
+
+    if (changes.length > 0) {
+      hookFile.hooks = hooks;
+      this.writeHooksConfig(hookFile);
+      changes.push(`Wrote native Codex hooks to ${this.getHooksPath()}`);
+    }
+
+    return changes;
+  }
+
+  backupSettings(): string | null {
+    for (const settingsPath of [this.getHooksPath(), this.getSettingsPath()]) {
+      try {
+        accessSync(settingsPath, constants.R_OK);
+        const backupPath = settingsPath + ".bak";
+        copyFileSync(settingsPath, backupPath);
+        return backupPath;
+      } catch {
+        continue;
+      }
+    }
+    return null;
   }
 
 
@@ -402,6 +475,88 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
    */
   private getProjectDir(input: CodexHookInput): string {
     return input.cwd ?? process.env.CODEX_PROJECT_DIR ?? process.cwd();
+  }
+
+  private getHooksPath(): string {
+    return resolve(homedir(), ".codex", "hooks.json");
+  }
+
+  private readHooksConfig(): CodexHooksFile | null {
+    try {
+      return JSON.parse(readFileSync(this.getHooksPath(), "utf-8")) as CodexHooksFile;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeHooksConfig(config: CodexHooksFile): void {
+    writeFileSync(this.getHooksPath(), JSON.stringify(config, null, 2) + "\n", "utf-8");
+  }
+
+  private upsertManagedHookEntry(
+    hooks: HookRegistration,
+    hookName: string,
+    expectedEntry: HookEntry,
+    changes: string[],
+  ): void {
+    const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
+    const managedIndices = currentEntries
+      .map((entry, index) => this.isManagedContextModeEntry(hookName, entry) ? index : -1)
+      .filter((index) => index >= 0);
+
+    if (managedIndices.length === 0) {
+      currentEntries.push(expectedEntry);
+      hooks[hookName] = currentEntries;
+      changes.push(`Added ${hookName} hook`);
+      return;
+    }
+
+    const primaryIndex = managedIndices[0];
+    if (JSON.stringify(currentEntries[primaryIndex]) !== JSON.stringify(expectedEntry)) {
+      currentEntries[primaryIndex] = expectedEntry;
+      changes.push(`Updated ${hookName} hook`);
+    }
+
+    for (const duplicateIndex of managedIndices.slice(1).reverse()) {
+      currentEntries.splice(duplicateIndex, 1);
+      changes.push(`Removed duplicate ${hookName} context-mode hook`);
+    }
+
+    hooks[hookName] = currentEntries;
+  }
+
+  private isExpectedHookEntry(
+    hookName: string,
+    entry: HookEntry,
+    expectedEntry: HookEntry,
+  ): boolean {
+    if (hookName === "PreToolUse" && entry.matcher !== expectedEntry.matcher) {
+      return false;
+    }
+    return this.entryContainsManagedCommand(hookName, entry);
+  }
+
+  private isManagedContextModeEntry(hookName: string, entry: HookEntry): boolean {
+    return this.entryContainsManagedCommand(hookName, entry);
+  }
+
+  private entryContainsManagedCommand(hookName: string, entry: HookEntry): boolean {
+    const normalizedCommands = entry.hooks
+      .map((hook) => this.normalizeCommand(hook.command))
+      .filter((command) => command.length > 0);
+    const expectedCliCommand = this.normalizeCommand(
+      CODEX_HOOK_COMMANDS[hookName as keyof typeof CODEX_HOOK_COMMANDS] ?? "",
+    );
+    const legacySuffixes = LEGACY_HOOK_PATH_SUFFIXES[hookName as keyof typeof LEGACY_HOOK_PATH_SUFFIXES] ?? [];
+
+    return normalizedCommands.some((command) =>
+      command.includes(expectedCliCommand)
+      || legacySuffixes.some((suffix) => command.includes(suffix)),
+    );
+  }
+
+  private normalizeCommand(command: string | undefined): string {
+    return (command ?? "").replace(/\\/g, "/");
   }
 
   /**
