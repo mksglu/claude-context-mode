@@ -11,6 +11,7 @@ import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
 import { KiroAdapter } from "../../src/adapters/kiro/index.js";
 import { QwenCodeAdapter } from "../../src/adapters/qwen-code/index.js";
 import { JetBrainsCopilotAdapter } from "../../src/adapters/jetbrains-copilot/index.js";
+import { OMPAdapter } from "../../src/adapters/omp/index.js";
 
 // ─────────────────────────────────────────────────────────
 // detectPlatform — env var detection
@@ -40,6 +41,7 @@ describe("detectPlatform", () => {
     delete process.env.VSCODE_PID;
     delete process.env.VSCODE_CWD;
     delete process.env.QWEN_PROJECT_DIR;
+    delete process.env.OMP_PROCESSING_AGENT_DIR;
     delete process.env.IDEA_INITIAL_DIRECTORY;
     delete process.env.IDEA_HOME;
     delete process.env.JETBRAINS_CLIENT_ID;
@@ -158,6 +160,26 @@ describe("detectPlatform", () => {
     process.env.PI_PROJECT_DIR = "/some/project";
     const signal = detectPlatform();
     expect(signal.platform).toBe("pi");
+    expect(signal.confidence).toBe("high");
+  });
+
+  // ── OMP (Oh My Pi) ──────────────────────────────────────
+  // OMP_PROCESSING_AGENT_DIR is the published OMP config root override
+  // (defaults to ~/.omp/agent). Listed BEFORE pi in PLATFORM_ENV_VARS so an
+  // OMP-running harness is not misclassified as Pi when both are installed.
+
+  it("detects omp via OMP_PROCESSING_AGENT_DIR env var", () => {
+    process.env.OMP_PROCESSING_AGENT_DIR = "/home/user/.omp/agent";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("omp");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("prefers omp over pi when both OMP_PROCESSING_AGENT_DIR and PI_PROJECT_DIR are set", () => {
+    process.env.OMP_PROCESSING_AGENT_DIR = "/home/user/.omp/agent";
+    process.env.PI_PROJECT_DIR = "/some/project";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("omp");
     expect(signal.confidence).toBe("high");
   });
 
@@ -329,7 +351,7 @@ describe("detectPlatform", () => {
   it("returns a valid platform as default when no env vars are set", () => {
     // No env vars set — result depends on which config dirs exist on this machine.
     const signal = detectPlatform();
-    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "kilo", "openclaw", "vscode-copilot", "antigravity", "kiro", "pi", "zed", "qwen-code", "jetbrains-copilot"]).toContain(signal.platform);
+    expect(["claude-code", "gemini-cli", "codex", "cursor", "opencode", "kilo", "openclaw", "vscode-copilot", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code", "jetbrains-copilot"]).toContain(signal.platform);
   });
 });
 
@@ -397,6 +419,11 @@ describe("getAdapter", () => {
   it("returns JetBrainsCopilotAdapter for jetbrains-copilot", async () => {
     const adapter = await getAdapter("jetbrains-copilot");
     expect(adapter).toBeInstanceOf(JetBrainsCopilotAdapter);
+  });
+
+  it("returns OMPAdapter for omp", async () => {
+    const adapter = await getAdapter("omp");
+    expect(adapter).toBeInstanceOf(OMPAdapter);
   });
 
   it("returns ClaudeCodeAdapter for unknown platform", async () => {
