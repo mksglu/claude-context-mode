@@ -3,7 +3,12 @@ import { strict as assert } from "node:assert";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { PolyglotExecutor, buildScriptFilename, buildSpawnOptions } from "../src/executor.js";
+import {
+  PolyglotExecutor,
+  buildScriptFilename,
+  buildShellScriptContent,
+  buildSpawnOptions,
+} from "../src/executor.js";
 import {
   detectRuntimes,
   buildCommand,
@@ -122,6 +127,21 @@ describe("Runtime Detection", () => {
       () => buildCommand(noRuntimes, "elixir", "/tmp/t.exs"),
       /Elixir not available/,
     );
+  });
+
+  test("buildShellScriptContent restores inherited PATH on Unix", () => {
+    const script = buildShellScriptContent("echo ok", "/parent/bin:/usr/bin", "linux");
+    assert.equal(script, "export PATH='/parent/bin:/usr/bin'\necho ok");
+  });
+
+  test("buildShellScriptContent escapes single quotes in inherited PATH", () => {
+    const script = buildShellScriptContent("echo ok", "/parent/it'works/bin", "darwin");
+    assert.equal(script, "export PATH='/parent/it'\\''works/bin'\necho ok");
+  });
+
+  test("buildShellScriptContent leaves Windows shell scripts unchanged", () => {
+    const script = buildShellScriptContent("echo ok", "C:\\parent\\bin", "win32");
+    assert.equal(script, "echo ok");
   });
 });
 
@@ -376,6 +396,45 @@ describe("Shell Execution", () => {
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.includes("sum: 30"));
   });
+
+  test.runIf(process.platform !== "win32")(
+    "shell restores inherited PATH after startup clobbers it",
+    async () => {
+      const originalPath = process.env.PATH;
+      const testDir = join(tmpdir(), `ctx-path-${process.pid}-${Date.now()}`);
+      const binDir = join(testDir, "bin");
+      const fakeBin = join(binDir, "ctx-path-probe");
+      const fakeShell = join(testDir, "sh");
+
+      try {
+        mkdirSync(binDir, { recursive: true });
+        writeFileSync(fakeBin, "#!/bin/sh\nprintf 'probe-ok\\n'\n", { mode: 0o755 });
+        writeFileSync(
+          fakeShell,
+          "#!/bin/sh\nPATH=/usr/bin:/bin\nexport PATH\nexec /bin/sh \"$@\"\n",
+          { mode: 0o755 },
+        );
+        process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+
+        const pathClobberingShell = new PolyglotExecutor({
+          runtimes: { ...runtimes, shell: fakeShell },
+        });
+        const r = await pathClobberingShell.execute({
+          language: "shell",
+          code: "command -v ctx-path-probe\nctx-path-probe",
+          timeout: 5_000,
+        });
+
+        assert.equal(r.exitCode, 0, r.stderr);
+        assert.ok(r.stdout.includes(fakeBin), `Expected ${fakeBin}, got: ${r.stdout}`);
+        assert.ok(r.stdout.includes("probe-ok"), `Got: ${r.stdout}`);
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+        rmSync(testDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("shell TMPDIR points to sandbox temp dir, not project root", async () => {
     const r = await executor.execute({
@@ -1637,4 +1696,3 @@ describe("Windows Shell Support", () => {
     assert.equal(buildScriptFilename("javascript", "darwin"), "script.js");
   });
 });
-

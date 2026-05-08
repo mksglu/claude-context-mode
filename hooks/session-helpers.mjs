@@ -26,22 +26,51 @@ import { homedir, tmpdir } from "node:os";
  *      pays 12-50ms for `git worktree list` on Linux/macOS, 50-150ms on
  *      Windows where fork+exec is heavier.
  *
- * Marker filename uses sha256(cwd) so it is alphanumeric — safe across
+ * Marker filename uses sha256(projectDir) so it is alphanumeric — safe across
  * Windows path/filename rules. tmpdir() resolves correctly on all 3 OS.
  */
 let _wtCacheInProcess;
-function workTreeMarkerPath(cwd) {
-  const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+function normalizeWorktreePath(path) {
+  const normalized = path.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
+}
+
+function gitOutput(projectDir, args) {
+  return execFileSync(
+    "git",
+    ["-C", projectDir, ...args],
+    { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
+  ).trim();
+}
+
+function getCurrentWorktreeRoot(projectDir) {
+  const root = gitOutput(projectDir, ["rev-parse", "--show-toplevel"]);
+  return root.length > 0 ? normalizeWorktreePath(root) : null;
+}
+
+function getMainWorktreeRoot(projectDir) {
+  const root = gitOutput(projectDir, ["worktree", "list", "--porcelain"])
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("worktree "))
+    ?.replace("worktree ", "")
+    ?.trim();
+  return root ? normalizeWorktreePath(root) : null;
+}
+
+function workTreeMarkerPath(projectDir) {
+  const hash = createHash("sha256").update(normalizeWorktreePath(projectDir)).digest("hex").slice(0, 16);
   return join(tmpdir(), `cm-wt-${hash}.txt`);
 }
 
-function getWorktreeSuffix() {
+function getWorktreeSuffix(projectDir = process.cwd()) {
   const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
-  const cwd = process.cwd();
+  const normalizedProjectDir = normalizeWorktreePath(projectDir);
 
   if (
     _wtCacheInProcess &&
-    _wtCacheInProcess.cwd === cwd &&
+    _wtCacheInProcess.projectDir === normalizedProjectDir &&
     _wtCacheInProcess.envSuffix === envSuffix
   ) {
     return _wtCacheInProcess.suffix;
@@ -52,10 +81,10 @@ function getWorktreeSuffix() {
     suffix = envSuffix ? `__${envSuffix}` : "";
   } else {
     // Try cross-process marker first.
-    const markerPath = workTreeMarkerPath(cwd);
+    const markerPath = workTreeMarkerPath(projectDir);
     try {
       suffix = readFileSync(markerPath, "utf-8");
-      _wtCacheInProcess = { cwd, envSuffix, suffix };
+      _wtCacheInProcess = { projectDir: normalizedProjectDir, envSuffix, suffix };
       return suffix;
     } catch {
       // marker missing → compute below
@@ -63,17 +92,10 @@ function getWorktreeSuffix() {
 
     suffix = "";
     try {
-      const mainWorktree = execFileSync(
-        "git",
-        ["worktree", "list", "--porcelain"],
-        { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
-      )
-        .split(/\r?\n/)
-        .find((l) => l.startsWith("worktree "))
-        ?.replace("worktree ", "")
-        ?.trim();
-      if (mainWorktree && cwd !== mainWorktree) {
-        suffix = `__${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+      const currentRoot = getCurrentWorktreeRoot(projectDir);
+      const mainRoot = getMainWorktreeRoot(projectDir);
+      if (currentRoot && mainRoot && currentRoot !== mainRoot) {
+        suffix = `__${createHash("sha256").update(currentRoot).digest("hex").slice(0, 8)}`;
       }
     } catch {
       // git not available or not a git repo — no suffix
@@ -87,7 +109,7 @@ function getWorktreeSuffix() {
     }
   }
 
-  _wtCacheInProcess = { cwd, envSuffix, suffix };
+  _wtCacheInProcess = { projectDir: normalizedProjectDir, envSuffix, suffix };
   return suffix;
 }
 
@@ -233,12 +255,12 @@ export function getSessionId(input, opts = CLAUDE_OPTS) {
  * Creates the directory if it doesn't exist.
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>.db
  */
-export function getSessionDBPath(opts = CLAUDE_OPTS) {
-  const projectDir = getProjectDir(opts);
+export function getSessionDBPath(opts = CLAUDE_OPTS, projectDirOverride) {
+  const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}${getWorktreeSuffix()}.db`);
+  return join(dir, `${hash}${getWorktreeSuffix(projectDir)}.db`);
 }
 
 /**
@@ -246,12 +268,12 @@ export function getSessionDBPath(opts = CLAUDE_OPTS) {
  * Used by sessionstart hook (write) and MCP server (read + auto-index).
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>-events.md
  */
-export function getSessionEventsPath(opts = CLAUDE_OPTS) {
-  const projectDir = getProjectDir(opts);
+export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride) {
+  const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}${getWorktreeSuffix()}-events.md`);
+  return join(dir, `${hash}${getWorktreeSuffix(projectDir)}-events.md`);
 }
 
 /**
@@ -259,11 +281,10 @@ export function getSessionEventsPath(opts = CLAUDE_OPTS) {
  * Used to detect true fresh starts vs --continue (which fires startup+resume).
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>.cleanup
  */
-export function getCleanupFlagPath(opts = CLAUDE_OPTS) {
-  const projectDir = getProjectDir(opts);
+export function getCleanupFlagPath(opts = CLAUDE_OPTS, projectDirOverride) {
+  const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}${getWorktreeSuffix()}.cleanup`);
+  return join(dir, `${hash}${getWorktreeSuffix(projectDir)}.cleanup`);
 }
-

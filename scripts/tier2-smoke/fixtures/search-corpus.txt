@@ -1,0 +1,54 @@
+You are running inside a tier-2 E2E smoke test for the context-mode plugin.
+The harness will read /ctx-stats afterwards and assert that ctx_index,
+ctx_search, and ctx_execute were each invoked at least once and that
+tokens_saved is strictly positive. The corpus below is intentionally large
+enough that a real indexing + search round-trip produces a measurable saving;
+do not skip steps and do not paraphrase the corpus from memory.
+
+Step 1 — Index the following project files in this exact order using the
+ctx_index tool. Each file MUST go through ctx_index, not Read:
+  - README.md
+  - CLAUDE.md
+  - package.json
+  - src/ (every TypeScript file under src/, recursive)
+  - tests/ (every test file under tests/, recursive)
+  - .github/workflows/ci.yml
+  - .github/workflows/tier2-e2e-smoke.yml
+
+Step 2 — Run the ctx_search tool with ALL of the following queries in a
+single batched call (queries array). Do not run them one-by-one:
+  1. "MCP tool registration for ctx_search ctx_execute ctx_index"
+  2. "tier-2 smoke workflow guard rails and spend cap"
+  3. "session-start hook context-mode initialization"
+  4. "tokens_saved calculation in ctx-stats payload"
+  5. "fixture corpus and assert-stats gating logic"
+  6. "Pi extension headless mode and prompt channel"
+  7. "concurrency cancel-in-progress and double-billing"
+
+Step 3 — Use the ctx_execute tool (language: javascript) to compute and
+print, as a single JSON object on stdout, the following fields derived from
+the search results above:
+  {
+    "queries_run": <integer count of distinct queries from step 2>,
+    "files_indexed": <integer count of distinct sources cited across results>,
+    "top_chunk_titles": <array of the top 5 chunk titles, deduplicated>,
+    "mentions_tier2": <boolean — true iff at least one result mentions tier-2>,
+    "mentions_ctx_search": <boolean — true iff ctx_search appears in any chunk>
+  }
+The JSON must be valid and parseable; do not wrap it in prose.
+
+Step 4 — Briefly summarise (max 3 sentences) what context-mode does, citing
+which indexed source each claim came from. Use only the search results, not
+prior knowledge of the codebase.
+
+Step 5 — Print the result of /ctx-stats so the harness can verify token
+savings. Do not modify, filter, or paraphrase the JSON payload — emit it
+verbatim on stdout.
+
+Hard constraints for this run:
+  - Do NOT use Read, Bash, WebFetch, or any non-ctx_* tool to satisfy
+    steps 1–3. Every file access MUST go through ctx_index/ctx_search.
+  - Do NOT shortcut step 2 by running fewer than 7 queries; the assertion
+    on tokens_saved depends on the indexed corpus being exercised.
+  - Do NOT skip step 3 even if step 2 returned the answer directly; the
+    smoke must observe a real ctx_execute call.

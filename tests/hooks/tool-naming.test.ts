@@ -308,7 +308,10 @@ describe("routePreToolUse with platform parameter", () => {
   });
 
   it("Bash guidance uses openclaw bare names when platform=openclaw", () => {
-    const result = routePreToolUse("Bash", { command: "ls" }, "/tmp", "openclaw");
+    // Use an unbounded command so the #463 structurally-bounded allowlist
+    // does not short-circuit the guidance — this test is about platform
+    // tool-naming inside the guidance, not allowlist behavior.
+    const result = routePreToolUse("Bash", { command: "npm install" }, "/tmp", "openclaw");
     expect(result).not.toBeNull();
     expect(result!.action).toBe("context");
     expect(result!.additionalContext).toContain("ctx_batch_execute");
@@ -317,7 +320,7 @@ describe("routePreToolUse with platform parameter", () => {
   });
 
   it("OpenClaw lowercase native tools route through canonical aliases", () => {
-    const exec = routePreToolUse("exec", { command: "ls" }, "/tmp", "openclaw");
+    const exec = routePreToolUse("exec", { command: "npm install" }, "/tmp", "openclaw");
     expect(exec).not.toBeNull();
     expect(exec!.action).toBe("context");
     expect(exec!.additionalContext).toContain("ctx_batch_execute");

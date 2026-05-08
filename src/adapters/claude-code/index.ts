@@ -6,9 +6,10 @@
  *
  * Claude Code hook specifics:
  *   - Session ID: transcript_path UUID > session_id > CLAUDE_SESSION_ID > ppid
- *   - Config: ~/.claude/settings.json
- *   - Session dir: ~/.claude/context-mode/sessions/
- *   - Plugin registry: ~/.claude/plugins/installed_plugins.json
+ *   - Config root: $CLAUDE_CONFIG_DIR (when set) or ~/.claude
+ *   - Settings: <configDir>/settings.json
+ *   - Session dir: <configDir>/context-mode/sessions/
+ *   - Plugin registry: <configDir>/plugins/installed_plugins.json
  */
 
 import {
@@ -18,6 +19,7 @@ import {
   readdirSync,
   chmodSync,
   accessSync,
+  mkdirSync,
   constants,
 } from "node:fs";
 import { resolve, join } from "node:path";
@@ -69,8 +71,39 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
 
   // ── Configuration ──────────────────────────────────────
 
+  /**
+   * Honor `CLAUDE_CONFIG_DIR` (the canonical Claude Code config root) before
+   * falling back to `~/.claude`. Mirrors the contract that
+   * `hooks/session-helpers.mjs::resolveConfigDir` already follows — including
+   * tilde expansion for shells that pass `~/foo` through unchanged — so server
+   * and hooks agree on where session-scoped state lives. See issue #453.
+   *
+   * Tilde regex `/^~[/\\]?/` only handles the current-user form (`~`, `~/`,
+   * `~\`); `~user/` is NOT expanded to a per-user homedir (matches
+   * `resolveConfigDir`). Non-tilde values are run through `resolve()` to
+   * normalize relative paths to absolute against cwd; the hook helper
+   * intentionally leaves them raw, but the adapter contract guarantees an
+   * absolute path (BaseAdapter.getConfigDir docstring).
+   */
+  getConfigDir(_projectDir?: string): string {
+    const envVal = process.env.CLAUDE_CONFIG_DIR;
+    if (envVal) {
+      if (envVal.startsWith("~")) {
+        return resolve(homedir(), envVal.replace(/^~[/\\]?/, ""));
+      }
+      return resolve(envVal);
+    }
+    return resolve(homedir(), ".claude");
+  }
+
+  getSessionDir(): string {
+    const dir = join(this.getConfigDir(), "context-mode", "sessions");
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   getSettingsPath(): string {
-    return resolve(homedir(), ".claude", "settings.json");
+    return join(this.getConfigDir(), "settings.json");
   }
 
   generateHookConfig(pluginRoot: string): HookRegistration {
@@ -165,7 +198,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
       results.push({
         check: "PreToolUse hook",
         status: "fail",
-        message: "Could not read ~/.claude/settings.json",
+        message: `Could not read ${this.getSettingsPath()}`,
         fix: "context-mode upgrade",
       });
       return results;
@@ -290,9 +323,8 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
   getInstalledVersion(): string {
     // Primary: read from installed_plugins.json
     try {
-      const ipPath = resolve(
-        homedir(),
-        ".claude",
+      const ipPath = join(
+        this.getConfigDir(),
         "plugins",
         "installed_plugins.json",
       );
@@ -310,10 +342,13 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
     }
 
     // Fallback: scan common plugin cache locations
-    const bases = [
-      resolve(homedir(), ".claude"),
-      resolve(homedir(), ".config", "claude"),
-    ];
+    const bases = Array.from(
+      new Set([
+        this.getConfigDir(),
+        resolve(homedir(), ".claude"),
+        resolve(homedir(), ".config", "claude"),
+      ]),
+    );
     for (const base of bases) {
       const cacheDir = resolve(
         base,
@@ -510,9 +545,8 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
 
   updatePluginRegistry(pluginRoot: string, version: string): void {
     try {
-      const ipPath = resolve(
-        homedir(),
-        ".claude",
+      const ipPath = join(
+        this.getConfigDir(),
         "plugins",
         "installed_plugins.json",
       );

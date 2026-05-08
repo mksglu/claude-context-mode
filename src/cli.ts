@@ -26,6 +26,22 @@ import {
   hasBunRuntime,
   getAvailableLanguages,
 } from "./runtime.js";
+// Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
+// duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
+// Keep in sync — pure data, no I/O.
+function browserOpenArgv(
+  url: string,
+  platform: NodeJS.Platform,
+): readonly { cmd: string; args: readonly string[] }[] {
+  if (platform === "darwin") return [{ cmd: "open", args: [url] }];
+  if (platform === "win32") {
+    return [{ cmd: "cmd", args: ["/c", "start", "", url] }];
+  }
+  return [
+    { cmd: "xdg-open", args: [url] },
+    { cmd: "sensible-browser", args: [url] },
+  ];
+}
 
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
@@ -191,28 +207,18 @@ export function openInBrowser(
   const hint = () =>
     console.error(`\nCould not auto-open browser. Open manually: ${url}`);
 
-  try {
-    if (platform === "darwin") {
-      runner("open", [url], opts);
-    } else if (platform === "win32") {
-      // `start` is a cmd.exe builtin; first arg after `start` is the
-      // window title — pass empty so the URL isn't consumed as a title.
-      runner("cmd", ["/c", "start", "", url], opts);
-    } else {
-      // linux/bsd: try xdg-open, fall back to sensible-browser.
-      try {
-        runner("xdg-open", [url], opts);
-      } catch {
-        try {
-          runner("sensible-browser", [url], opts);
-        } catch {
-          hint();
-        }
-      }
-    }
-  } catch {
-    hint();
+  // Platform→argv mapping is canonical in src/server.ts; mirrored privately
+  // above to avoid pulling server boot side effects into the cli bundle.
+  const attempts = browserOpenArgv(url, platform);
+  let opened = false;
+  for (const { cmd, args } of attempts) {
+    try {
+      runner(cmd, args as string[], opts);
+      opened = true;
+      break;
+    } catch { /* try next fallback */ }
   }
+  if (!opened) hint();
 }
 
 function defaultPluginRoot(): string {
@@ -802,52 +808,41 @@ async function upgrade() {
     s.stop("Dependencies ready");
 
     if (detection.platform !== 'opencode' && detection.platform !== 'kilo') {
-      // Rebuild native addons for current Node.js ABI (fixes #131)
-      s.start("Rebuilding native addons");
-      const bsqBindingPath = resolve(
-        pluginRoot, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node",
+      // Verify native addons through the same bootstrap start.mjs imports.
+      // On modern Node, the ABI-specific cache file is the compatibility marker;
+      // the active binding alone may be stale from a previous Node ABI.
+      s.start("Verifying native addon ABI");
+      const bsqAbiCachePath = resolve(
+        pluginRoot,
+        "node_modules",
+        "better-sqlite3",
+        "build",
+        "Release",
+        `better_sqlite3.abi${process.versions.modules}.node`,
       );
-      // Skip rebuild when the binding from `npm install --production` is
-      // already present. Earlier code ran `npm rebuild better-sqlite3`
-      // unconditionally — its internal prebuild-install spawn raced with
-      // the prior install's tree-prune, intermittently failing to resolve
-      // `rc/index.js` and printing a scary "rebuild warning" even though
-      // the binding was healthy. Pre-check eliminates the race for the
-      // 99% case (binding survived install).
-      if (existsSync(bsqBindingPath)) {
-        s.stop(color.green("Native addons OK") + color.dim(" — binding present"));
-        changes.push("better-sqlite3 binding already present (no rebuild needed)");
-      } else {
-        // Binding actually missing — delegate to the shared 3-layer heal
-        // (scripts/heal-better-sqlite3.mjs, PR #410) instead of raw
-        // `npm rebuild`. Single source of truth across postinstall +
-        // ensure-deps + cli upgrade. Layer A spawns prebuild-install
-        // directly via process.execPath, bypassing PATH/MSVC and the
-        // npm-internal rc-resolution race that bit `npm rebuild`.
-        try {
-          const healUrl = pathToFileURL(
-            resolve(pluginRoot, "scripts", "heal-better-sqlite3.mjs"),
-          ).href;
-          const { healBetterSqlite3Binding } = await import(healUrl);
-          const result = healBetterSqlite3Binding(pluginRoot);
-          if (result?.healed) {
-            s.stop(color.green("Native addons healed") + color.dim(` (${result.reason})`));
-            changes.push(`Healed better-sqlite3 binding via ${result.reason}`);
-          } else {
-            s.stop(color.yellow("Native addon heal needs manual step"));
-            p.log.warn(
-              color.dim(`  Run: cd "${pluginRoot}" && npm install better-sqlite3`),
-            );
-          }
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          s.stop(color.yellow("Native addon heal unavailable"));
+      try {
+        const ensureDepsPath = resolve(pluginRoot, "hooks", "ensure-deps.mjs");
+        if (!existsSync(ensureDepsPath)) {
+          throw new Error(`missing ${ensureDepsPath}`);
+        }
+        await import(`${pathToFileURL(ensureDepsPath).href}?upgrade=${Date.now()}`);
+        if (existsSync(bsqAbiCachePath)) {
+          s.stop(color.green("Native addons OK") + color.dim(" — ABI cache present"));
+          changes.push(`better-sqlite3 ABI ${process.versions.modules} cache ready`);
+        } else {
+          s.stop(color.yellow("Native addon ABI cache missing"));
           p.log.warn(
-            color.yellow("better-sqlite3 heal helper missing") +
-              ` — ${message}` +
-              color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
+            color.dim(`  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
           );
         }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        s.stop(color.yellow("Native addon ABI bootstrap unavailable"));
+        p.log.warn(
+          color.yellow("better-sqlite3 ABI repair did not run") +
+            ` — ${message}` +
+            color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
+        );
       }
     }
     
@@ -1042,4 +1037,3 @@ function statuslineForward(): void {
     process.exit(0);
   });
 }
-

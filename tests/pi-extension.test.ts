@@ -2,7 +2,7 @@ import "./setup-home";
 /**
  * Pi Extension Tests — TDD vertical slices.
  *
- * The Pi extension (src/pi-extension.ts) is a default-exported function that
+ * The Pi extension (src/adapters/pi/extension.ts) is a default-exported function that
  * receives a Pi API object and registers event handlers. Since we cannot test
  * against a real Pi runtime, we mock the Pi API to capture registered handlers
  * and invoke them with simulated events.
@@ -17,6 +17,7 @@ import "./setup-home";
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -76,7 +77,7 @@ async function registerPiExtension(
   process.env.PI_PROJECT_DIR = projectDir;
   process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-  const mod = await import("../src/pi-extension.js");
+  const mod = await import("../src/adapters/pi/extension.js");
   const register = mod.default;
   await register(mockApi);
 
@@ -293,6 +294,26 @@ describe("Pi Extension", () => {
         session_id: "test-session-abc123",
         project_dir: tempDir,
       });
+    });
+
+    it("session_start uses Pi context arg for stable session ID", async () => {
+      await registerPiExtension(api);
+      const sessionFile = join(tempDir, "stable-session.jsonl");
+      const expectedSessionId = createHash("sha256")
+        .update(sessionFile)
+        .digest("hex")
+        .slice(0, 8);
+
+      await api._trigger(
+        "session_start",
+        { type: "session_start", reason: "startup" },
+        { sessionManager: { getSessionFile: () => sessionFile } },
+      );
+
+      const result = await api._getCommand("ctx-stats")!.handler!({});
+      expect((result as { text: string }).text).toContain(
+        `Session: \`${expectedSessionId}`,
+      );
     });
 
     it("session_before_compact builds resume snapshot", async () => {
@@ -522,7 +543,7 @@ describe("Pi Extension", () => {
   describe("Slice 7: Routing block injection", () => {
     it("injects <context_window_protection> on first before_agent_start", async () => {
       await registerPiExtension(api);
-      await api._trigger("session_start", {
+      await api._trigger("session_start", {}, {
         sessionManager: { getSessionFile: () => `routing-1-${Date.now()}-${Math.random()}` },
       });
 
@@ -536,7 +557,7 @@ describe("Pi Extension", () => {
 
     it("does not re-inject the routing block on subsequent calls", async () => {
       await registerPiExtension(api);
-      await api._trigger("session_start", {
+      await api._trigger("session_start", {}, {
         sessionManager: { getSessionFile: () => `routing-2-${Date.now()}-${Math.random()}` },
       });
 
@@ -692,5 +713,298 @@ describe("Pi Extension", () => {
       await registerPiExtension(api1, { projectDir: join(tempDir, "reg1") });
       await registerPiExtension(api2, { projectDir: join(tempDir, "reg2") });
     });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// MCP bridge — bridges context-mode MCP tools into Pi's pi.registerTool()
+// surface so the LLM can actually reach ctx_execute / ctx_search / etc.
+// (#426). Pi 0.73.x has no native MCP support; without this bridge the
+// routing block tells the LLM about tools it cannot call.
+// ────────────────────────────────────────────────────────────────────────
+
+describe("Pi MCP bridge (#426)", () => {
+  let mcpScratch: string;
+
+  beforeEach(() => {
+    mcpScratch = mkdtempSync(join(tmpdir(), "ctx-pi-bridge-"));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(mcpScratch, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+
+  function writeFakeServer(source: string): string {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const path = join(mcpScratch, `fake-mcp-${Date.now()}-${Math.random()}.mjs`);
+    fs.writeFileSync(path, source, "utf-8");
+    return path;
+  }
+
+  // ── Unit: MCPStdioClient framing & lifecycle ──────────────────────
+
+  describe("MCPStdioClient", () => {
+    it("matches request id to response result over newline-delimited JSON", async () => {
+      const fakePath = writeFakeServer(`
+        let buf = "";
+        process.stdin.on("data", (chunk) => {
+          buf += chunk.toString("utf-8");
+          let idx;
+          while ((idx = buf.indexOf("\\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg; try { msg = JSON.parse(line); } catch { continue; }
+            if (msg.id == null) continue;
+            process.stdout.write(JSON.stringify({
+              jsonrpc: "2.0", id: msg.id,
+              result: { echoed: msg.method, params: msg.params },
+            }) + "\\n");
+          }
+        });
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        const r1 = await client.request("tools/list", { foo: 1 });
+        expect(r1).toEqual({ echoed: "tools/list", params: { foo: 1 } });
+        const r2 = await client.request("tools/call", { bar: 2 });
+        expect(r2).toEqual({ echoed: "tools/call", params: { bar: 2 } });
+      } finally {
+        client.shutdown();
+      }
+    });
+
+    it("matches concurrent in-flight requests by id (out-of-order responses)", async () => {
+      // Reverse delays so the slowest goes first — exercises the id-map
+      // dispatch, not just FIFO ordering.
+      const fakePath = writeFakeServer(`
+        let buf = "";
+        process.stdin.on("data", (chunk) => {
+          buf += chunk.toString("utf-8");
+          let idx;
+          while ((idx = buf.indexOf("\\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg; try { msg = JSON.parse(line); } catch { continue; }
+            if (msg.id == null) continue;
+            const delay = msg.params?.delay ?? 0;
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                jsonrpc: "2.0", id: msg.id, result: { id: msg.id },
+              }) + "\\n");
+            }, delay);
+          }
+        });
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        const promises = [50, 40, 30, 20, 10].map((delay, i) =>
+          client.request<{ id: number }>("probe", { delay, idx: i }),
+        );
+        const results = await Promise.all(promises);
+        expect(results).toHaveLength(5);
+        for (const r of results) expect(typeof r.id).toBe("number");
+      } finally {
+        client.shutdown();
+      }
+    });
+
+    it("rejects in-flight requests when the child exits", async () => {
+      const fakePath = writeFakeServer(`
+        process.stdin.once("data", () => process.exit(0));
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      const promise = client.request("tools/list", {});
+      await expect(promise).rejects.toThrow(/exited|MCP/);
+      client.shutdown();
+    });
+
+    it("times out instead of hanging on a silent server", async () => {
+      const fakePath = writeFakeServer(`
+        process.stdin.on("data", () => {});
+        setInterval(() => {}, 1000);
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        await expect(
+          client.request("tools/list", {}, 200),
+        ).rejects.toThrow(/timeout/);
+      } finally {
+        client.shutdown();
+      }
+    });
+
+    it("ignores non-JSON stdout lines without crashing the parser", async () => {
+      const fakePath = writeFakeServer(`
+        process.stdout.write("[some startup banner]\\n");
+        process.stdout.write("not valid json {{{\\n");
+        let buf = "";
+        process.stdin.on("data", (chunk) => {
+          buf += chunk.toString("utf-8");
+          let idx;
+          while ((idx = buf.indexOf("\\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg; try { msg = JSON.parse(line); } catch { continue; }
+            if (msg.id == null) continue;
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { ok: true } }) + "\\n");
+          }
+        });
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        const r = await client.request<{ ok: boolean }>("ping", {});
+        expect(r.ok).toBe(true);
+      } finally {
+        client.shutdown();
+      }
+    });
+  });
+
+  // ── Integration: bootstrapMCPTools + real MCP server ──────────────
+
+  describe("bootstrapMCPTools — registers every ctx_* tool with Pi", () => {
+    // Lifted out of each `it` so the path resolution lives in one place
+    // and a future MCP-entrypoint move only has to change one line.
+    const path = require("node:path") as typeof import("node:path");
+    const url = require("node:url") as typeof import("node:url");
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const mcpEntry = path.resolve(here, "..", "start.mjs");
+    const mcpEnv = { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" };
+
+    let bridge: { tools: string[]; shutdown: () => void } | null = null;
+
+    afterEach(() => {
+      if (bridge) {
+        bridge.shutdown();
+        bridge = null;
+      }
+    });
+
+    it("registers the canonical ctx_* tool set", async () => {
+      const registered: Array<{ name: string; label: string; description: string; parameters: unknown; execute: Function }> = [];
+      const fakePi = {
+        registerTool: (tool: any) => {
+          registered.push(tool);
+        },
+      };
+
+      const { bootstrapMCPTools } = await import("../src/adapters/pi/mcp-bridge.js");
+      bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
+
+      // Pin the canonical names — adding new MCP tools is fine
+      // (arrayContaining), but losing one of these is the bug regression.
+      expect(bridge.tools).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_execute_file",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+          "ctx_doctor",
+          "ctx_stats",
+          "ctx_purge",
+        ]),
+      );
+
+      // Each registration must satisfy the Pi contract.
+      for (const reg of registered) {
+        expect(reg.name).toMatch(/^ctx_/);
+        expect(reg.label).toBe(reg.name);
+        expect(typeof reg.description).toBe("string");
+        expect(reg.parameters).toBeTruthy();
+        expect(typeof reg.execute).toBe("function");
+      }
+    }, 30_000);
+
+    it("execute() round-trips through tools/call to the MCP server", async () => {
+      const registered: any[] = [];
+      const fakePi = {
+        registerTool: (tool: any) => registered.push(tool),
+      };
+
+      const { bootstrapMCPTools } = await import("../src/adapters/pi/mcp-bridge.js");
+      bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
+
+      const indexTool = registered.find((t) => t.name === "ctx_index");
+      expect(indexTool).toBeDefined();
+
+      const marker = `pi-bridge-marker-${process.pid}-${Date.now()}`;
+      const result = await indexTool.execute("test-call-1", {
+        content: `# heading\n\n${marker}\n`,
+        source: "pi-bridge-smoke",
+      });
+
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe("text");
+      // Server returns "Indexed N sections … from: pi-bridge-smoke" on
+      // success — pin the source label so a regression in tools/call
+      // arg-passing also fails this test.
+      expect(result.content[0].text).toMatch(/pi-bridge-smoke/);
+      expect(result.isError).toBeFalsy();
+    }, 30_000);
+  });
+
+  // ── Wiring: pi-extension.ts default export must call bootstrapMCPTools
+  //
+  // This is the regression that the rest of the suite does NOT catch: if
+  // a future refactor drops the `bootstrapMCPTools(pi, …)` call from
+  // src/adapters/pi/extension.ts but keeps the bridge module intact, every other
+  // bridge test stays green and the bug silently re-enters. We assert
+  // here that the extension's default export, after `_mcpBridgeReady`
+  // settles, has actually called `pi.registerTool` for at least the
+  // canonical ctx_* set.
+
+  describe("pi-extension.ts wiring (#426 regression guard)", () => {
+    it("registerPiExtension awaits bridge bootstrap and registers ctx_* via pi.registerTool", async () => {
+      const wireApi = createMockPiApi();
+      // PI_PROJECT_DIR / CLAUDE_PROJECT_DIR set inside registerPiExtension.
+      await registerPiExtension(wireApi, { projectDir: tempDir });
+
+      // Bootstrap is fire-and-forget on extension load — wait on the
+      // exported promise so the test does not race the spawn.
+      const mod = await import("../src/adapters/pi/extension.js");
+      await mod._mcpBridgeReady;
+
+      const calls = (wireApi.registerTool as any).mock.calls as Array<[any]>;
+      const registeredNames = calls.map(([t]) => t?.name).filter(Boolean);
+
+      // Same canonical pin as the bridge integration test — but reached
+      // through registerPiExtension instead of bootstrapMCPTools, so
+      // dropping the wiring fails this test even when the bridge module
+      // still works.
+      expect(registeredNames).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+        ]),
+      );
+
+      // Cleanup: SIGTERM the bridge child the wiring spawned so it does
+      // not leak past this test.
+      const sd = mod.default as any;
+      void sd; // silence unused
+      await wireApi._trigger("session_shutdown");
+    }, 30_000);
   });
 });

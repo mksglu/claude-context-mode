@@ -51,7 +51,7 @@ try {
 
   if (source === "compact" || source === "resume") {
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath(OPTS);
+    const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
 
     if (source === "compact") {
@@ -61,22 +61,22 @@ try {
         db.markResumeConsumed(sessionId);
       }
     } else {
-      try { unlinkSync(getCleanupFlagPath(OPTS)); } catch { /* no flag */ }
+      try { unlinkSync(getCleanupFlagPath(OPTS, projectDir)); } catch { /* no flag */ }
     }
 
     const sessionId = getSessionId(input, OPTS);
     const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
-      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS));
+      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
       additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
     }
 
     db.close();
   } else if (source === "startup") {
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath(OPTS);
+    const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
-    try { unlinkSync(getSessionEventsPath(OPTS)); } catch { /* no stale file */ }
+    try { unlinkSync(getSessionEventsPath(OPTS, projectDir)); } catch { /* no stale file */ }
 
     db.cleanupOldSessions(7);
     db.db.exec(`DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`);

@@ -16,11 +16,12 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { SessionDB } from "./session/db.js";
-import { extractEvents, extractUserEvents } from "./session/extract.js";
-import type { HookInput } from "./session/extract.js";
-import { buildResumeSnapshot } from "./session/snapshot.js";
-import type { SessionEvent } from "./types.js";
+import { SessionDB } from "../../session/db.js";
+import { extractEvents, extractUserEvents } from "../../session/extract.js";
+import type { HookInput } from "../../session/extract.js";
+import { buildResumeSnapshot } from "../../session/snapshot.js";
+import type { SessionEvent } from "../../types.js";
+import { bootstrapMCPTools, type BridgeHandle } from "./mcp-bridge.js";
 
 // ── Pi Tool Name Mapping ─────────────────────────────────
 // Pi uses lowercase; shared extractors expect PascalCase (Claude Code convention).
@@ -52,6 +53,26 @@ const BLOCKED_BASH_PATTERNS: RegExp[] = [
 
 let _db: SessionDB | null = null;
 let _sessionId = "";
+
+// MCP bridge handle. The bridge spawns server.bundle.mjs once and
+// registers each MCP tool through pi.registerTool() so the Pi LLM can
+// actually call ctx_execute / ctx_search / etc. (#426). Pi 0.73.x has
+// no native MCP support, so without this bridge the tools are
+// invisible to the LLM and the routing block is dead weight.
+let _mcpBridge: BridgeHandle | null = null;
+
+/**
+ * Settles when the MCP bridge bootstrap has finished — resolves on
+ * success AND on failure (the bootstrap is best-effort; failures are
+ * logged to stderr but never propagated). Exposed for tests so they
+ * can `await` the wiring deterministically without relying on internal
+ * timing or `setImmediate` polling.
+ *
+ * Reset to a fresh promise on every `piExtension(pi)` call so repeated
+ * registrations in one test process don't see a stale resolution from
+ * a prior load.
+ */
+export let _mcpBridgeReady: Promise<void> = Promise.resolve();
 
 // Per-session gate: routing block injected at most once per session_id.
 const _routingInjected: Set<string> = new Set();
@@ -192,14 +213,14 @@ function handleCommandText(
 /** Pi extension default export. Called once by Pi runtime with the extension API. */
 export default function piExtension(pi: any): void {
   const buildDir = dirname(fileURLToPath(import.meta.url));
-  const pluginRoot = resolve(buildDir, "..");
+  const pluginRoot = resolve(buildDir, "..", "..", "..");
   const projectDir = process.env.PI_PROJECT_DIR || process.cwd();
 
   const db = getOrCreateDB();
 
   // ── 1. session_start — Initialize session ──────────────
 
-  pi.on("session_start", (ctx: any) => {
+  pi.on("session_start", (_event: any, ctx: any) => {
     try {
       _sessionId = deriveSessionId(ctx ?? {});
       db.ensureSession(_sessionId, projectDir);
@@ -465,6 +486,14 @@ export default function piExtension(pi: any): void {
     } catch {
       // best effort — never throw during shutdown
     }
+    if (_mcpBridge) {
+      try {
+        _mcpBridge.shutdown();
+      } catch {
+        // best effort — never throw during shutdown
+      }
+      _mcpBridge = null;
+    }
   });
 
   // ── 8. Slash commands ──────────────────────────────────
@@ -517,4 +546,40 @@ export default function piExtension(pi: any): void {
       return handleCommandText(text, ctx);
     },
   });
+
+  // ── 9. MCP tool bridge (#426) ───────────────────────────
+  //
+  // Pi 0.73.x has no native MCP support. Without bridging here, the
+  // routing block tells the LLM to call ctx_execute / ctx_search / etc.
+  // but those tools never appear in Pi's tool list and the LLM cannot
+  // reach them — context-mode becomes a pure cost (~2.5K tokens of
+  // system-prompt overhead, 0 actual ctx_* calls).
+  //
+  // Spawn server.bundle.mjs as a long-lived MCP child and register
+  // each of its tools via pi.registerTool() so they enter the Pi
+  // tool list under their bare names — same names the routing block
+  // emits for the Pi platform (per hooks/core/tool-naming.mjs).
+  //
+  // Best-effort: a missing bundle or a spawn failure must NOT prevent
+  // the rest of the extension (session capture, hooks, slash commands)
+  // from initializing. We log to stderr and continue.
+  const serverBundle = resolve(pluginRoot, "server.bundle.mjs");
+  if (existsSync(serverBundle)) {
+    _mcpBridgeReady = bootstrapMCPTools(pi, serverBundle).then(
+      (handle) => {
+        _mcpBridge = handle;
+      },
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(
+          `[context-mode] WARNING: failed to bridge MCP tools to Pi (${msg}). ` +
+            `ctx_* tools will not be callable from this session.\n`,
+        );
+      },
+    );
+  } else {
+    // No bundle on disk → nothing to await. Tests can still rely on
+    // _mcpBridgeReady being a settled promise.
+    _mcpBridgeReady = Promise.resolve();
+  }
 }
