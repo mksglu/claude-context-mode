@@ -13,7 +13,9 @@
  *     wrapper, where the handler is guaranteed to be live.
  *
  * Contract:
- *   - logs every failure to ~/.claude/context-mode/hook-errors.log
+ *   - logs every failure to <configDir>/context-mode/hook-errors.log,
+ *     where configDir honors $CLAUDE_CONFIG_DIR (incl. leading ~) and
+ *     falls back to ~/.claude — same contract as session-helpers.mjs (#453)
  *   - never propagates a non-zero exit (Claude Code surfaces non-zero as a
  *     "non-blocking hook error" on every tool call, which spams the user)
  *   - one-liner adoption for new hooks:
@@ -22,12 +24,23 @@
  */
 
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { existsSync, mkdirSync, appendFileSync } from "node:fs";
+
+// Inlined to keep this wrapper dependency-free (parse-time imports must be
+// failure-proof). Mirrors session-helpers.mjs::resolveConfigDir for #453.
+function resolveClaudeConfigDir() {
+  const envVal = process.env.CLAUDE_CONFIG_DIR;
+  if (envVal) {
+    if (envVal.startsWith("~")) return join(homedir(), envVal.replace(/^~[/\\]?/, ""));
+    return envVal;
+  }
+  return resolve(homedir(), ".claude");
+}
 
 function logError(err) {
   try {
-    const dir = resolve(homedir(), ".claude", "context-mode");
+    const dir = resolve(resolveClaudeConfigDir(), "context-mode");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const line = `[${new Date().toISOString()}] pid=${process.pid} ${err?.stack || err?.message || String(err)}\n`;
     appendFileSync(resolve(dir, "hook-errors.log"), line);

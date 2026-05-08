@@ -141,19 +141,18 @@ export function ensureNativeCompat(pluginRoot) {
     }
 
     if (skipProbe) {
-      // On modern Node: if binary exists, trust it; if missing, rebuild without probing
-      if (!existsSync(binaryPath)) {
-        execSync(`${process.platform === "win32" ? "npm.cmd" : "npm"} rebuild better-sqlite3 --ignore-scripts=false`, {
-          cwd: pluginRoot,
-          stdio: "pipe",
-          timeout: 60000,
-          shell: true,
-        });
-        codesignBinary(binaryPath);
-        // Cache the rebuilt binary for this ABI
-        if (existsSync(binaryPath)) {
-          copyFileSync(binaryPath, abiCachePath);
-        }
+      // On modern Node, the current ABI cache is the compatibility marker.
+      // Without it, rebuild even when the active binary exists: it may be stale
+      // from a previous Node ABI and cannot be probed safely here.
+      execSync(`${process.platform === "win32" ? "npm.cmd" : "npm"} rebuild better-sqlite3 --ignore-scripts=false`, {
+        cwd: pluginRoot,
+        stdio: "pipe",
+        timeout: 60000,
+        shell: true,
+      });
+      codesignBinary(binaryPath);
+      if (existsSync(binaryPath)) {
+        copyFileSync(binaryPath, abiCachePath);
       }
       return;
     }

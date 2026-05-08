@@ -187,16 +187,41 @@ describe("ClaudeCodeAdapter", () => {
   // ── Config paths ──────────────────────────────────────
 
   describe("config paths", () => {
-    it("settings path is ~/.claude/settings.json", () => {
+    const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    beforeEach(() => {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    });
+    afterEach(() => {
+      if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    });
+
+    it("settings path is ~/.claude/settings.json by default", () => {
       expect(adapter.getSettingsPath()).toBe(
         resolve(homedir(), ".claude", "settings.json"),
       );
     });
 
-    it("session dir is under ~/.claude/context-mode/sessions/", () => {
+    it("settings path honors CLAUDE_CONFIG_DIR (issue #453)", () => {
+      process.env.CLAUDE_CONFIG_DIR = join(fakeHome, ".config", "claude-code");
+      expect(adapter.getSettingsPath()).toBe(
+        join(fakeHome, ".config", "claude-code", "settings.json"),
+      );
+    });
+
+    it("session dir is under ~/.claude/context-mode/sessions/ by default", () => {
       const sessionDir = adapter.getSessionDir();
       expect(sessionDir).toBe(
         join(homedir(), ".claude", "context-mode", "sessions"),
+      );
+    });
+
+    it("session dir honors CLAUDE_CONFIG_DIR (issue #453)", () => {
+      const customRoot = join(fakeHome, ".config", "claude-code");
+      process.env.CLAUDE_CONFIG_DIR = customRoot;
+      const sessionDir = adapter.getSessionDir();
+      expect(sessionDir).toBe(
+        join(customRoot, "context-mode", "sessions"),
       );
     });
 
@@ -216,6 +241,63 @@ describe("ClaudeCodeAdapter", () => {
       expect(dbPath).toBe(
         join(homedir(), ".claude", "context-mode", "sessions", `${hash}.db`),
       );
+    });
+  });
+
+  // ── CLAUDE_CONFIG_DIR — additional coverage (issue #453 follow-up) ──
+  //
+  // PR #460 added override smoke tests for getSettingsPath / getSessionDir.
+  // These cover the two remaining surfaces that also resolve under the
+  // config root: the per-project session DB path and the validateHooks
+  // diagnostic message. Both would silently regress to ~/.claude if a
+  // future refactor inlined the path instead of routing through
+  // getConfigDir() / getSettingsPath().
+  describe("CLAUDE_CONFIG_DIR — DB path & diagnostic regression pins", () => {
+    let savedEnv: string | undefined;
+    let customDir: string;
+
+    beforeEach(() => {
+      savedEnv = process.env.CLAUDE_CONFIG_DIR;
+      customDir = mkdtempSync(join(tmpdir(), "claude-config-dir-test-"));
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = savedEnv;
+      rmSync(customDir, { recursive: true, force: true });
+    });
+
+    it("getSessionDBPath lands the DB under $CLAUDE_CONFIG_DIR (not ~/.claude)", () => {
+      process.env.CLAUDE_CONFIG_DIR = customDir;
+      const projectDir = "/test/project";
+      const hash = createHash("sha256")
+        .update(projectDir)
+        .digest("hex")
+        .slice(0, 16);
+      const dbPath = adapter.getSessionDBPath(projectDir);
+      expect(dbPath).toBe(
+        join(customDir, "context-mode", "sessions", `${hash}.db`),
+      );
+      // Regression pin: session DB must NOT land under ~/.claude when
+      // CLAUDE_CONFIG_DIR is set.
+      expect(dbPath.startsWith(join(homedir(), ".claude") + "/")).toBe(false);
+    });
+
+    it("validateHooks failure message references the resolved settings path", () => {
+      process.env.CLAUDE_CONFIG_DIR = customDir;
+      // No settings.json exists under customDir → readSettings() returns null
+      // → validateHooks emits the failure entry. Pin: the message must surface
+      // the resolved settings path so users see where context-mode is
+      // actually looking, not a stale "~/.claude/settings.json" string.
+      const pluginRoot = mkdtempSync(join(tmpdir(), "plugin-root-validate-"));
+      try {
+        const results = adapter.validateHooks(pluginRoot);
+        const failed = results.find((r) => r.status === "fail");
+        expect(failed?.message).toContain(customDir);
+        expect(failed?.message).not.toMatch(/^Could not read .*\/\.claude\/settings\.json$/);
+      } finally {
+        rmSync(pluginRoot, { recursive: true, force: true });
+      }
     });
   });
 

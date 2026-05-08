@@ -27,7 +27,7 @@ describe("ctx_search timeline mode wiring (server.ts)", () => {
     // write to ${hash}${getWorktreeSuffix()}.db — they never matched in
     // worktree sessions.
     expect(SERVER_SRC).toMatch(
-      /join\(\s*sessionsDir\s*,\s*`\$\{hashProjectDir\(\)\}\$\{getWorktreeSuffix\(\)\}\.db`/,
+      /join\(\s*sessionsDir\s*,\s*`\$\{hashProjectDir\(projectDir\)\}\$\{getWorktreeSuffix\(projectDir\)\}\.db`/,
     );
   });
 

@@ -27,6 +27,11 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(pkg.files).toContain("cli.bundle.mjs");
   });
 
+  it("package.json files field includes statusline bin", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.files).toContain("bin");
+  });
+
   it("package.json bundle script builds cli.bundle.mjs", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts.bundle).toContain("cli.bundle.mjs");
@@ -84,17 +89,10 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(upgradeStart).toBeGreaterThan(-1);
     const upgradeSrc = src.slice(upgradeStart);
     // Must refresh native addons between production deps and global install.
-    // v1.0.110 replaced raw `npm rebuild better-sqlite3` with an existsSync
-    // pre-check + delegation to the shared `healBetterSqlite3Binding` helper
-    // (the helper-missing fallback still mentions npm rebuild as a hint).
-    // Either path is valid — what matters is SOMETHING refreshes the binding
-    // and it sits between the deps install and the global install steps.
+    // Compatibility must be delegated to hooks/ensure-deps.mjs so stale ABI
+    // binaries are repaired before upgrade declares native addons healthy.
     const depsIdx = upgradeSrc.indexOf('"install", "--production"');
-    const rebuildIdx = upgradeSrc.indexOf('"rebuild", "better-sqlite3"');
-    const healIdx = upgradeSrc.indexOf('healBetterSqlite3Binding');
-    const refreshIdx = healIdx > -1
-      ? (rebuildIdx > -1 ? Math.min(healIdx, rebuildIdx) : healIdx)
-      : rebuildIdx;
+    const refreshIdx = upgradeSrc.indexOf('"ensure-deps.mjs"');
     const globalIdx = upgradeSrc.indexOf('"install", "-g"');
     expect(depsIdx).toBeGreaterThan(-1);
     expect(refreshIdx).toBeGreaterThan(-1);
@@ -825,7 +823,7 @@ describe("Bin entry uses cli.bundle.mjs", () => {
   });
 
   it("openclaw-plugin.ts doctor/upgrade use cli.bundle.mjs with fallback", () => {
-    const src = readFileSync(resolve(ROOT, "src", "openclaw-plugin.ts"), "utf-8");
+    const src = readFileSync(resolve(ROOT, "src", "adapters", "openclaw", "plugin.ts"), "utf-8");
     expect(src).toContain("cli.bundle.mjs");
     // Find the registerCommand blocks, not comments
     const doctorIdx = src.indexOf('name: "ctx-doctor"');
@@ -936,19 +934,19 @@ describe("SKILL.md prefers MCP tool over Bash", () => {
 
 describe("Package exports", () => {
   test("named export exposes ContextModePlugin factory", async () => {
-    const mod = await import("../../src/opencode-plugin.js");
+    const mod = await import("../../src/adapters/opencode/plugin.js");
     expect(mod.ContextModePlugin).toBeDefined();
     expect(typeof mod.ContextModePlugin).toBe("function");
   });
 
   test("default export has KiloCode PluginModule shape { server }", async () => {
-    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    const mod = (await import("../../src/adapters/opencode/plugin.js")) as any;
     expect(mod.default).toBeDefined();
     expect(typeof mod.default.server).toBe("function");
   });
 
   test("default export does not leak CLI internals", async () => {
-    const mod = (await import("../../src/opencode-plugin.js")) as any;
+    const mod = (await import("../../src/adapters/opencode/plugin.js")) as any;
     expect(mod.toUnixPath).toBeUndefined();
     expect(mod.doctor).toBeUndefined();
     expect(mod.upgrade).toBeUndefined();
@@ -1117,6 +1115,21 @@ describe("Shell-free upgrade (#185)", () => {
     expect(inlineSection).toContain("execFileSync");
     expect(inlineSection).not.toMatch(/(?<!File)execSync/);
   });
+
+  test("server.ts inline fallback copies package files including bin", () => {
+    const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");
+    expect(inlineStart).toBeGreaterThan(-1);
+    const inlineSection = SERVER_SOURCE.slice(inlineStart, SERVER_SOURCE.indexOf("cmd =", inlineStart + 500));
+
+    expect(inlineSection).toContain('readFileSync(join(T,"package.json"),"utf8")');
+    expect(inlineSection).toContain("pkg.files");
+    expect(inlineSection).toContain("Array.isArray(pkg.files)");
+    expect(inlineSection).toContain("for(const item of items)");
+    expect(inlineSection).toContain('writeFileSync(join(P,".mcp.json")');
+    expect(inlineSection).toContain("\\${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    expect(inlineSection).not.toContain("copyDirs");
+    expect(inlineSection).not.toContain("copyFiles");
+  });
 });
 
 // ── Issue #186: temp dirs must be dot-prefixed to hide from VS Code ──
@@ -1155,7 +1168,7 @@ describe("Self-heal hook-path rewriting (#187 + #415 follow-up)", () => {
 // ── PR #183 fix: path traversal prevention in OpenClaw sessionKey ──
 
 describe("OpenClaw sessionKey safety (#183)", () => {
-  const WR_SOURCE = readFileSync(resolve(ROOT, "src/openclaw/workspace-router.ts"), "utf-8");
+  const WR_SOURCE = readFileSync(resolve(ROOT, "src/adapters/openclaw/workspace-router.ts"), "utf-8");
 
   test("workspace regex only allows safe characters (no path traversal)", () => {
     // Must use [a-zA-Z0-9_-]+ not [^:]+ to prevent ../../ in agent name
@@ -1500,46 +1513,35 @@ describe("better-sqlite3 binding self-heal (#408)", () => {
   });
 });
 
-// ── Upgrade flow: skip npm rebuild when binding present (v1.0.110 fix) ──
-//
-// `/ctx-upgrade` previously ran `npm rebuild better-sqlite3` unconditionally
-// after `npm install --production`. That rebuild's internal prebuild-install
-// spawn raced with the npm install tree-prune and intermittently failed
-// resolving `rc/index` — printing a scary "Native addon rebuild warning"
-// even though the binding from npm install was already healthy. Fix: pre-
-// check `existsSync(better_sqlite3.node)` and skip the rebuild when present;
-// otherwise delegate to the same `healBetterSqlite3Binding` helper used by
-// postinstall + ensure-deps so all three sites share one battle-tested path.
-//
-// Repro context: macOS upgrade 2026-05-04 (Mert), zero binding-functional
-// regression but cosmetic stderr noise + yellow warning that erodes trust.
-
-describe("Upgrade rebuild guard (v1.0.110 — skip npm rebuild when binding present)", () => {
+// ── Upgrade flow: stale ABI guard ─────────────────────────────────────
+// `/ctx-upgrade` must not declare success just because better_sqlite3.node
+// exists. On modern Node the startup probe is skipped, so the ABI-specific
+// cache file is the no-probe compatibility marker and hooks/ensure-deps.mjs
+// owns the repair decision.
+describe("Upgrade native ABI bootstrap", () => {
   const CLI_SOURCE = readFileSync(resolve(ROOT, "src/cli.ts"), "utf-8");
   const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
   const upgradeBody = CLI_SOURCE.slice(upgradeStart);
 
-  it("guards npm rebuild with existsSync check on better_sqlite3.node", () => {
-    // A guard must sit on the same code path that calls `npm rebuild
-    // better-sqlite3` so the rebuild is skipped when the binding already
-    // works. Look for an existsSync call referencing the binding within
-    // the rebuild block.
-    const rebuildStartIdx = upgradeBody.indexOf("Rebuilding native addons");
+  it("delegates native compatibility to hooks/ensure-deps.mjs", () => {
+    const rebuildStartIdx = upgradeBody.indexOf("Verifying native addon ABI");
     expect(rebuildStartIdx).toBeGreaterThan(-1);
     const region = upgradeBody.slice(
       Math.max(0, rebuildStartIdx - 600),
       rebuildStartIdx + 800,
     );
-    expect(region).toMatch(/better_sqlite3\.node/);
-    expect(region).toMatch(/existsSync\(/);
+    expect(region).toContain('"hooks", "ensure-deps.mjs"');
+    expect(region).toContain("pathToFileURL");
+    expect(region).toContain("await import");
+    expect(region).not.toContain("binding present");
   });
 
-  it("delegates to healBetterSqlite3Binding when binding is missing", () => {
-    // Single source of truth — when a heal IS needed, use the shared
-    // helper (PR #410) instead of raw `npm rebuild`. Eliminates the
-    // npm-internal prebuild-install / rc resolution race.
-    const rebuildStartIdx = upgradeBody.indexOf("Rebuilding native addons");
+  it("uses the current ABI cache as the native-addon success marker", () => {
+    const rebuildStartIdx = upgradeBody.indexOf("Verifying native addon ABI");
+    expect(rebuildStartIdx).toBeGreaterThan(-1);
     const region = upgradeBody.slice(rebuildStartIdx, rebuildStartIdx + 1500);
-    expect(region).toContain("healBetterSqlite3Binding");
+    expect(region).toContain("better_sqlite3.abi${process.versions.modules}.node");
+    expect(region).toContain("existsSync(bsqAbiCachePath)");
+    expect(region).toContain("ABI cache present");
   });
 });

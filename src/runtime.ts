@@ -67,6 +67,42 @@ function commandExists(cmd: string): boolean {
   }
 }
 
+/**
+ * Stricter probe than commandExists() — also verifies the resolved binary
+ * actually runs. On Windows, `where python3` matches the Microsoft Store
+ * App Execution Alias stub at C:\Users\<u>\AppData\Local\Microsoft\WindowsApps\
+ * even when no real Python is installed; the stub exits non-zero (9009) and
+ * pops the Store. Filter those entries out and require `<cmd> --version` to
+ * exit 0 before declaring the runtime available (#455).
+ */
+function runnableExists(cmd: string): boolean {
+  if (isWindows) {
+    // Reject if every `where` hit lives under Microsoft\WindowsApps (Store stubs).
+    try {
+      const out = execSync(`where ${cmd}`, { encoding: "utf-8", stdio: "pipe" });
+      const hits = out.trim().split(/\r?\n/).map(p => p.trim()).filter(Boolean);
+      if (hits.length === 0) return false;
+      const realHits = hits.filter(p => !/\\Microsoft\\WindowsApps\\/i.test(p));
+      if (realHits.length === 0) return false;
+    } catch {
+      return false;
+    }
+  } else if (!commandExists(cmd)) {
+    return false;
+  }
+  // Probe with --version (5s timeout). Exit 0 means it really runs.
+  try {
+    execFileSync(cmd, ["--version"], {
+      shell: isWindows,
+      stdio: "pipe",
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function bunExists(): boolean {
   if (commandExists("bun")) return true;
   for (const p of bunFallbackPaths()) {
@@ -171,11 +207,13 @@ export function detectRuntimes(): RuntimeMap {
         : commandExists("ts-node")
           ? "ts-node"
           : null,
-    python: commandExists("python3")
+    python: runnableExists("python3")
       ? "python3"
-      : commandExists("python")
+      : runnableExists("python")
         ? "python"
-        : null,
+        : runnableExists("py")
+          ? "py"
+          : null,
     shell: shellOverride ?? (isWin
       ? (resolveWindowsBash() ?? (commandExists("sh") ? "sh" : commandExists("powershell") ? "powershell" : "cmd.exe"))
       : commandExists("bash") ? "bash" : "sh"),

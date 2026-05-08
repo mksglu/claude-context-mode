@@ -119,4 +119,4 @@ Required before declaring done:
 
 ---
 
-_Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) @ `b843cb5` — MIT License. See [skills/UPSTREAM-CREDITS.md](../UPSTREAM-CREDITS.md) for refresh instructions._
+_Vendored from [mattpocock/skills](https://github.com/mattpocock/skills) @ `b843cb5` — MIT License. See [docs/UPSTREAM-CREDITS.md](../../docs/UPSTREAM-CREDITS.md) for refresh instructions._

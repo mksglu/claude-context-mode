@@ -8,7 +8,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { join, dirname, resolve } from "node:path";
+import { basename, join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   mkdirSync,
@@ -16,9 +16,24 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
+  rmdirSync,
+  readdirSync,
   existsSync,
   unlinkSync,
 } from "node:fs";
+
+// Robust recursive delete — fs.rmSync silently no-ops on Windows when the
+// target path lives under a tmpdir whose name contains non-ASCII chars (#454).
+function rmSyncRobust(dir: string) {
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  if (!existsSync(dir)) return;
+  try {
+    for (const name of readdirSync(dir)) {
+      try { unlinkSync(resolve(dir, name)); } catch {}
+    }
+    rmdirSync(dir);
+  } catch {}
+}
 import { tmpdir } from "node:os";
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -47,8 +62,8 @@ const mcpSentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
 const mcpSentinel = resolve(mcpSentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
 beforeEach(() => {
-  try { rmSync(_guidanceDir, { recursive: true, force: true }); } catch {}
-  try { rmSync(_sessionGuidanceDir, { recursive: true, force: true }); } catch {}
+  rmSyncRobust(_guidanceDir);
+  rmSyncRobust(_sessionGuidanceDir);
   writeFileSync(mcpSentinel, String(process.pid));
 });
 
@@ -169,10 +184,14 @@ describe("Bash: Redirected Commands", () => {
 });
 
 describe("Bash: Allowed Commands", () => {
-  test("Bash + git status: additionalContext with BASH_GUIDANCE", () => {
+  // After #463 the Bash routing nudge is short-circuited for structurally-
+  // bounded commands (pwd, whoami, git status, mkdir, --version probes,
+  // etc.) — those return null. Use unbounded commands here so we still pin
+  // the "normal Bash command → context guidance" path end-to-end.
+  test("Bash + npm install: additionalContext with BASH_GUIDANCE", () => {
     const result = runHook({
       tool_name: "Bash",
-      tool_input: { command: "git status" },
+      tool_input: { command: "npm install" },
     });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
@@ -183,10 +202,10 @@ describe("Bash: Allowed Commands", () => {
     );
   });
 
-  test("Bash + mkdir /tmp/test: additionalContext with BASH_GUIDANCE", () => {
+  test("Bash + find /: additionalContext with BASH_GUIDANCE", () => {
     const result = runHook({
       tool_name: "Bash",
-      tool_input: { command: "mkdir /tmp/test" },
+      tool_input: { command: "find /etc -name '*.conf'" },
     });
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
@@ -195,6 +214,17 @@ describe("Bash: Allowed Commands", () => {
       parsed.hookSpecificOutput.additionalContext.includes("<context_guidance>"),
       "Expected <context_guidance> in Bash additionalContext",
     );
+  });
+
+  test("Bash + git status: short-circuited by #463 allowlist (no nudge)", () => {
+    // Pre-#463 this returned BASH_GUIDANCE context. Now it short-circuits
+    // before the throttle: result is null and the hook emits nothing.
+    const result = runHook({
+      tool_name: "Bash",
+      tool_input: { command: "git status" },
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.trim(), "", "Expected empty stdout — null decision should not emit a hook payload");
   });
 });
 
@@ -311,6 +341,53 @@ describe("Passthrough Tools", () => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// initSecurity loud-failure regression (#466)
+// ═══════════════════════════════════════════════════════════════════════
+describe("initSecurity loud-failure (#466)", () => {
+  test("warns to stderr when build/security.js is missing", async () => {
+    const ROUTING_PATH = join(__dirname, "..", "..", "hooks", "core", "routing.mjs");
+    const missingBuildDir = join(tmpdir(), `ctx-no-build-${Date.now()}`);
+    // Subprocess so the warning isn't deduped by a prior call in this process.
+    const code = `
+      const { initSecurity } = await import(${JSON.stringify(pathToFileURL(ROUTING_PATH).href)});
+      const ok = await initSecurity(${JSON.stringify(missingBuildDir)});
+      process.stdout.write(JSON.stringify({ ok }));
+    `;
+    const r = spawnSync("node", ["--input-type=module", "-e", code], {
+      encoding: "utf-8",
+      timeout: 10000,
+      env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "" },
+    });
+    assert.equal(r.status, 0, `subprocess failed: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.equal(parsed.ok, false, "initSecurity should return false when security.js missing");
+    assert.ok(
+      r.stderr.includes("security deny patterns will NOT be enforced"),
+      `expected loud warning on stderr, got: ${r.stderr}`,
+    );
+  });
+
+  test("CONTEXT_MODE_SUPPRESS_SECURITY_WARNING silences the warning", async () => {
+    const ROUTING_PATH = join(__dirname, "..", "..", "hooks", "core", "routing.mjs");
+    const missingBuildDir = join(tmpdir(), `ctx-no-build-${Date.now()}-silent`);
+    const code = `
+      const { initSecurity } = await import(${JSON.stringify(pathToFileURL(ROUTING_PATH).href)});
+      await initSecurity(${JSON.stringify(missingBuildDir)});
+    `;
+    const r = spawnSync("node", ["--input-type=module", "-e", code], {
+      encoding: "utf-8",
+      timeout: 10000,
+      env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1" },
+    });
+    assert.equal(r.status, 0);
+    assert.ok(
+      !r.stderr.includes("security deny patterns will NOT be enforced"),
+      `expected suppressed warning, got: ${r.stderr}`,
+    );
+  });
+});
+
 describe("Security Policy Enforcement", () => {
   let ISOLATED_HOME: string;
   let MOCK_PROJECT_DIR: string;
@@ -355,12 +432,16 @@ describe("Security Policy Enforcement", () => {
   });
 
   test("Security: Bash + git allowed, falls through to Stage 2", () => {
+    // Use an unbounded command — `git status` now short-circuits via the
+    // #463 allowlist before reaching the guidance branch, so it would no
+    // longer exercise "falls through to Stage 2 routing → context guidance".
     const result = runHook(
-      { tool_name: "Bash", tool_input: { command: "git status" } },
+      { tool_name: "Bash", tool_input: { command: "git diff" } },
       secEnv,
     );
     // git is in allow list -> falls through to Stage 2 routing
-    // Stage 2: git is not curl/wget/fetch -> additionalContext with BASH_GUIDANCE
+    // Stage 2: git diff is not in the structurally-bounded allowlist
+    // (raw diff can be huge) -> additionalContext with BASH_GUIDANCE
     assert.equal(result.exitCode, 0);
     const parsed = JSON.parse(result.stdout);
     assert.ok(parsed.hookSpecificOutput.additionalContext, "Allowed Bash command should get additionalContext");
@@ -681,6 +762,44 @@ describe("resolveConfigDir (#289)", () => {
       expect(r.stdout).toContain("context-mode");
       expect(r.stdout).toContain("sessions");
       expect(r.stdout).toMatch(/\.db$/);
+    } finally {
+      rmSync(customDir, { recursive: true, force: true });
+    }
+  });
+
+  test("session path helpers normalize Windows separators and trailing slashes before hashing", async () => {
+    const customDir = mkdtempSync(join(tmpdir(), "ctx-config-dir-test-"));
+    try {
+      const code = `
+        process.env.CLAUDE_CONFIG_DIR = ${JSON.stringify(customDir)};
+        process.env.CONTEXT_MODE_SESSION_SUFFIX = "";
+        const {
+          getSessionDBPath,
+          getSessionEventsPath,
+          getCleanupFlagPath,
+        } = await import(${JSON.stringify(pathToFileURL(HELPERS_PATH).href)});
+        const opts = { configDir: ".claude", configDirEnv: "CLAUDE_CONFIG_DIR", projectDirEnv: "CLAUDE_PROJECT_DIR" };
+        const backslashProject = "C:\\\\Users\\\\me\\\\repo\\\\";
+        const slashProject = "C:/Users/me/repo";
+        process.stdout.write(JSON.stringify({
+          dbA: getSessionDBPath(opts, backslashProject),
+          dbB: getSessionDBPath(opts, slashProject),
+          eventsA: getSessionEventsPath(opts, backslashProject),
+          eventsB: getSessionEventsPath(opts, slashProject),
+          cleanupA: getCleanupFlagPath(opts, backslashProject),
+          cleanupB: getCleanupFlagPath(opts, slashProject),
+        }));
+      `;
+      const r = spawnSync("node", ["--input-type=module", "-e", code], {
+        encoding: "utf-8",
+        env: { ...process.env, CLAUDE_CONFIG_DIR: customDir, CONTEXT_MODE_SESSION_SUFFIX: "" },
+        timeout: 10000,
+      });
+      expect(r.status).toBe(0);
+      const result = JSON.parse(r.stdout);
+      expect(basename(result.dbA)).toBe(basename(result.dbB));
+      expect(basename(result.eventsA)).toBe(basename(result.eventsB));
+      expect(basename(result.cleanupA)).toBe(basename(result.cleanupB));
     } finally {
       rmSync(customDir, { recursive: true, force: true });
     }

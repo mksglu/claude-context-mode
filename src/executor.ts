@@ -58,6 +58,20 @@ export function buildSpawnOptions(platform: NodeJS.Platform): { windowsHide: boo
   return { windowsHide: platform === "win32" };
 }
 
+function quoteForPosixShell(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Pure helper — exported for unit testing. Restores parent PATH after shell startup. */
+export function buildShellScriptContent(
+  code: string,
+  inheritedPath: string | undefined,
+  platform: NodeJS.Platform,
+): string {
+  if (platform === "win32" || !inheritedPath) return code;
+  return `export PATH=${quoteForPosixShell(inheritedPath)}\n${code}`;
+}
+
 /**
  * Resolve the real OS temp directory, bypassing any TMPDIR env override.
  * os.tmpdir() reads TMPDIR from the environment, which some shells/tools
@@ -226,7 +240,11 @@ export class PolyglotExecutor {
       ),
     );
     if (language === "shell") {
-      writeFileSync(fp, code, { encoding: "utf-8", mode: 0o700 });
+      writeFileSync(
+        fp,
+        buildShellScriptContent(code, process.env.PATH, process.platform),
+        { encoding: "utf-8", mode: 0o700 },
+      );
     } else {
       writeFileSync(fp, code, "utf-8");
     }
