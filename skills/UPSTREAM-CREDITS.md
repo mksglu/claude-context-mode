@@ -1,3 +1,8 @@
+---
+description: |
+  Documentation about upstream skills vendored from mattpocock/skills. Lists source repo, license, vendored skill paths, and refresh instructions.
+---
+
 # Upstream Skill Credits
 
 context-mode vendors a small set of operating-discipline skills authored
