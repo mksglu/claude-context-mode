@@ -346,6 +346,7 @@ export type PlatformId =
   | "antigravity"
   | "kiro"
   | "pi"
+  | "omp"
   | "zed"
   | "qwen-code"
   | "unknown";

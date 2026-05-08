@@ -137,6 +137,7 @@ import { resolve } from "node:path";
 
 const pluginRoot = process.argv[2];
 const abi = "137"; // arbitrary ABI value for testing — not tied to any real Node version
+const skipProbe = process.argv.includes("--skip-probe");
 const captured = [];
 
 const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
@@ -149,6 +150,13 @@ function probeNative() {
   return buf.length >= 5 && buf.toString("utf-8", 0, 5) === "VALID";
 }
 
+function rebuildAndCache() {
+  writeFileSync(binaryPath, "VALID-rebuilt-binary");
+  captured.push("rebuilt");
+  copyFileSync(binaryPath, abiCachePath);
+  captured.push("cached");
+}
+
 if (!existsSync(nativeDir)) {
   console.log(JSON.stringify(captured));
   process.exit(0);
@@ -157,6 +165,11 @@ if (!existsSync(nativeDir)) {
 if (existsSync(abiCachePath)) {
   copyFileSync(abiCachePath, binaryPath);
   captured.push("cache-swap");
+  if (skipProbe) {
+    captured.push("cache-valid");
+    console.log(JSON.stringify(captured));
+    process.exit(0);
+  }
   if (probeNative()) {
     captured.push("cache-valid");
     console.log(JSON.stringify(captured));
@@ -165,28 +178,30 @@ if (existsSync(abiCachePath)) {
   captured.push("cache-invalid");
 }
 
+if (skipProbe) {
+  captured.push(existsSync(binaryPath) ? "abi-cache-missing" : "binary-missing");
+  rebuildAndCache();
+  console.log(JSON.stringify(captured));
+  process.exit(0);
+}
+
 if (existsSync(binaryPath) && probeNative()) {
   captured.push("probe-ok");
   copyFileSync(binaryPath, abiCachePath);
   captured.push("cached");
 } else {
   captured.push(existsSync(binaryPath) ? "probe-fail" : "binary-missing");
-  writeFileSync(binaryPath, "VALID-rebuilt-binary");
-  captured.push("rebuilt");
-  if (probeNative()) {
-    copyFileSync(binaryPath, abiCachePath);
-    captured.push("cached");
-  }
+  rebuildAndCache();
 }
 
 console.log(JSON.stringify(captured));
 `;
 
 describe("ensure-deps: ABI cache validation (#148 follow-up)", () => {
-  function runAbiHarness(root: string): string[] {
+  function runAbiHarness(root: string, args: string[] = []): string[] {
     const harnessPath = join(root, "_abi-harness.mjs");
     writeFileSync(harnessPath, ABI_HARNESS, "utf-8");
-    const result = spawnSync("node", [harnessPath, root], {
+    const result = spawnSync("node", [harnessPath, root, ...args], {
       encoding: "utf-8",
       timeout: 30_000,
     });
@@ -227,6 +242,17 @@ describe("ensure-deps: ABI cache validation (#148 follow-up)", () => {
 
     const actions = runAbiHarness(root);
     expect(actions).toEqual(["probe-ok", "cached"]);
+  });
+
+  test("modern skip-probe path rebuilds when current ABI cache is missing", () => {
+    const root = createTempRoot();
+    const releaseDir = join(root, "node_modules", "better-sqlite3", "build", "Release");
+    mkdirSync(releaseDir, { recursive: true });
+    writeFileSync(join(releaseDir, "better_sqlite3.node"), "WRONG-stale-active-binary");
+    // No abi137.node cache file: active binary alone is not proof on skip-probe runtimes.
+
+    const actions = runAbiHarness(root, ["--skip-probe"]);
+    expect(actions).toEqual(["abi-cache-missing", "rebuilt", "cached"]);
   });
 
   test("missing native binary in existing native dir: rebuilds and caches", () => {
@@ -537,5 +563,18 @@ describe("ensure-deps: better-sqlite3 binding self-heal (#408)", () => {
       /\brebuild\s+better-sqlite3\s+--ignore-scripts=false/g,
     ) || []).length;
     expect(rebuildCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("modern skip-probe branch treats missing ABI cache as rebuild-required", () => {
+    const branchStart = ENSURE_DEPS_SRC.indexOf("if (skipProbe) {");
+    expect(branchStart).toBeGreaterThan(-1);
+    const probeStart = ENSURE_DEPS_SRC.indexOf("// Probe: try loading better-sqlite3", branchStart);
+    expect(probeStart).toBeGreaterThan(branchStart);
+    const branch = ENSURE_DEPS_SRC.slice(branchStart, probeStart);
+
+    expect(branch).toContain("rebuild better-sqlite3 --ignore-scripts=false");
+    expect(branch).toContain("copyFileSync(binaryPath, abiCachePath)");
+    expect(branch).not.toMatch(/if\s*\(\s*!\s*existsSync\(binaryPath\)\s*\)/);
+    expect(branch).not.toContain("binding present");
   });
 });

@@ -1,0 +1,130 @@
+# Tier-2 E2E smoke for context-mode hosts (Pi / Claude Code / OpenCode).
+#
+# Tier-1 (mock harness, no LLM, free) lives in tests/pi-extension.test.ts and
+# runs on every PR via ci.yml. It catches "tools not registered", schema
+# regressions, MCP bridge framing bugs, and the #426 wiring gap.
+#
+# Tier-2 (this workflow) runs a REAL host binary against a REAL LLM with the
+# context-mode plugin installed, then asserts that ctx_* tools are actually
+# invoked and that ctx-stats reports a positive token saving.
+#
+# Costs money. Strict guard rails:
+#   - workflow_dispatch only for now (no cron until all hosts are stable)
+#   - ANTHROPIC_API_KEY must have a monthly spend cap configured at
+#     https://console.anthropic.com/settings/limits
+#   - Pinned to claude-haiku-4-5 — same family as Sonnet/Opus so tool-calling
+#     behavior tracks what real users hit, but ~5-10x cheaper per smoke run.
+#     Do NOT swap for Gemini/DeepSeek: tier-2 must test the model that ships,
+#     otherwise a passing smoke can hide a tool-routing regression in Claude.
+#   - max-tokens is capped per fixture run
+#   - concurrency cancels in-progress runs so reruns don't double-bill
+#   - 15 minute timeout per host
+#
+# See issue #477 for the full design.
+
+name: Tier-2 E2E Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "Which host(s) to smoke (comma-separated: pi, claude-code, opencode, all)"
+        required: false
+        default: "pi"
+  # Weekly cron will be enabled once all hosts are stable for two consecutive
+  # workflow_dispatch runs. Tracked in #477.
+  # schedule:
+  #   - cron: "0 6 * * 1"
+
+concurrency:
+  group: tier2-e2e-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  # Pin Haiku 4.5 for tier-2: cheap enough for weekly cron without changing
+  # tool-call behavior vs. Sonnet/Opus. Override via workflow_dispatch input
+  # if a regression needs to be reproduced on a larger model.
+  ANTHROPIC_MODEL: "claude-haiku-4-5-20251001"
+
+jobs:
+  pi:
+    if: contains(github.event.inputs.host, 'pi') || github.event.inputs.host == 'all' || github.event.inputs.host == ''
+    runs-on: ubuntu-latest
+    name: tier2-smoke (pi)
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies and build
+        run: |
+          npm ci
+          npm run build
+          npm rebuild better-sqlite3
+
+      - name: Install Pi
+        run: |
+          # TODO(#477): pin a Pi version via env (e.g. PI_VERSION) once Pi
+          # publishes a stable installer matrix. For now we install latest
+          # and capture the version into the run log.
+          npm install -g pi-cli || true
+          if ! command -v pi >/dev/null 2>&1; then
+            echo "FATAL  Pi binary not on PATH after install" >&2
+            exit 2
+          fi
+          pi --version
+
+      - name: Install context-mode plugin into Pi
+        run: |
+          # Pi loads extensions from a per-user dir. The exact path depends
+          # on Pi's install layout; we follow the same pattern as the
+          # OpenClaw E2E (scripts/install-openclaw-plugin.sh). When Pi
+          # ships a documented install command this step becomes a one-liner.
+          PI_EXT_DIR="${HOME}/.pi/extensions/context-mode"
+          mkdir -p "$PI_EXT_DIR"
+          cp -r build/pi-extension.* "$PI_EXT_DIR/"
+
+      - name: Run tier-2 smoke
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ env.ANTHROPIC_MODEL }}
+          PI_MODEL: ${{ env.ANTHROPIC_MODEL }}
+          PI_MAX_TOKENS: "2000"
+        run: bash scripts/tier2-smoke/run-pi-smoke.sh
+
+      - name: Upload Pi logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier2-pi-logs
+          path: ${{ runner.temp }}/tier2-smoke-pi/
+          if-no-files-found: ignore
+
+  claude-code:
+    if: contains(github.event.inputs.host, 'claude-code') || github.event.inputs.host == 'all'
+    runs-on: ubuntu-latest
+    name: tier2-smoke (claude-code)
+    timeout-minutes: 15
+    steps:
+      - name: Placeholder
+        run: |
+          echo "Claude Code tier-2 smoke not yet implemented." >&2
+          echo "Tracked in #477. Land Pi first." >&2
+          exit 0
+
+  opencode:
+    if: contains(github.event.inputs.host, 'opencode') || github.event.inputs.host == 'all'
+    runs-on: ubuntu-latest
+    name: tier2-smoke (opencode)
+    timeout-minutes: 15
+    steps:
+      - name: Placeholder
+        run: |
+          echo "OpenCode tier-2 smoke not yet implemented." >&2
+          echo "Tracked in #477. Land Pi first." >&2
+          exit 0

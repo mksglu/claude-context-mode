@@ -4,14 +4,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
-import { execSync, type ChildProcess } from "node:child_process";
+import { execSync, spawnSync, type ChildProcess, type SpawnSyncOptions, type SpawnSyncReturns } from "node:child_process";
 import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir, cpus } from "node:os";
 import { request as httpsRequest } from "node:https";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { runPool, type PoolJob } from "./concurrency/runPool.js";
+import { runPool, type PoolJob } from "./runPool.js";
 import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
 import { composeFetchCacheKey } from "./fetch-cache.js";
 import {
@@ -126,25 +126,47 @@ let _detectedAdapter: HookAdapter | null = null;
 let _insightChild: ChildProcess | null = null;
 
 /**
+ * Resolve the Claude Code config root, honoring `CLAUDE_CONFIG_DIR` (incl.
+ * leading `~`) before falling back to `~/.claude`. Mirrors
+ * `hooks/session-helpers.mjs::resolveConfigDir` and
+ * `ClaudeCodeAdapter.getConfigDir` so the pre-detection path agrees with
+ * hooks/adapter on where Claude Code session data lives. See issue #453.
+ */
+function resolveClaudeConfigRoot(): string {
+  const envVal = process.env.CLAUDE_CONFIG_DIR;
+  if (envVal) {
+    if (envVal.startsWith("~")) return join(homedir(), envVal.replace(/^~[/\\]?/, ""));
+    return envVal;
+  }
+  return join(homedir(), ".claude");
+}
+
+/**
  * Get the platform-specific sessions directory from the detected adapter.
- * Falls back to ~/.claude/context-mode/sessions/ before adapter detection.
+ * Falls back to <CLAUDE_CONFIG_DIR>/context-mode/sessions/ (or
+ * ~/.claude/context-mode/sessions/) before adapter detection.
  */
 function getSessionDir(): string {
   if (_detectedAdapter) return _detectedAdapter.getSessionDir();
   // Pre-detection path (race window before MCP `initialize` completes):
   // call detectPlatform() (sync, env-var-based) and look up segments via
   // getSessionDirSegments() (sync map, no adapter instantiation). This keeps
-  // non-Claude platforms from spilling sessions into ~/.claude/.
+  // non-Claude platforms from spilling sessions into ~/.claude/. For Claude
+  // Code (segments=[".claude"]), reroute through the CLAUDE_CONFIG_DIR
+  // contract so the pre-detection window does not split-state with hooks.
   try {
     const signal = detectPlatform();
     const segments = getSessionDirSegments(signal.platform);
     if (segments) {
-      const dir = join(homedir(), ...segments, "context-mode", "sessions");
+      const root = segments.length === 1 && segments[0] === ".claude"
+        ? resolveClaudeConfigRoot()
+        : join(homedir(), ...segments);
+      const dir = join(root, "context-mode", "sessions");
       mkdirSync(dir, { recursive: true });
       return dir;
     }
-  } catch { /* fall through to .claude fallback */ }
-  const dir = join(homedir(), ".claude", "context-mode", "sessions");
+  } catch { /* fall through to claude fallback */ }
+  const dir = join(resolveClaudeConfigRoot(), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -185,9 +207,15 @@ function resolveProjectPath(filePath: string): string {
  * Normalizes Windows backslashes before hashing so the same project
  * always produces the same hash regardless of path separator.
  */
-function hashProjectDir(): string {
-  const projectDir = getProjectDir();
+function normalizeProjectDirForHash(projectDir: string): string {
   const normalized = projectDir.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
+}
+
+function hashProjectDir(projectDir = getProjectDir()): string {
+  const normalized = normalizeProjectDirForHash(projectDir);
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
 
@@ -198,9 +226,10 @@ function hashProjectDir(): string {
  * same file under worktree isolation.
  */
 function getSessionDbPath(): string {
+  const projectDir = getProjectDir();
   return join(
     getSessionDir(),
-    `${hashProjectDir()}${getWorktreeSuffix()}.db`,
+    `${hashProjectDir(projectDir)}${getWorktreeSuffix(projectDir)}.db`,
   );
 }
 
@@ -1310,7 +1339,7 @@ server.registerTool(
   },
   async ({ path, language, code, timeout, intent }) => {
     // Security: check file path against Read deny patterns
-    const pathDenied = checkFilePathDenyPolicy(path, "execute_file");
+    const pathDenied = checkFilePathDenyPolicy(path, "ctx_execute_file");
     if (pathDenied) return pathDenied;
 
     // Security: check code parameter against Bash deny patterns
@@ -1460,6 +1489,15 @@ server.registerTool(
         ],
         isError: true,
       });
+    }
+
+    // Apply Read deny-policy to prevent indexing sensitive files into the
+    // FTS5 store, which would otherwise be queryable via ctx_search and
+    // exfiltrate content into the model's context (issue #442). Mirrors the
+    // check ctx_execute_file already performs.
+    if (path) {
+      const pathDenied = checkFilePathDenyPolicy(path, "ctx_index");
+      if (pathDenied) return pathDenied;
     }
 
     try {
@@ -1652,14 +1690,15 @@ server.registerTool(
       if (sort === "timeline") {
         try {
           const sessionsDir = getSessionDir();
-          const dbFile = join(sessionsDir, `${hashProjectDir()}${getWorktreeSuffix()}.db`);
+          const projectDir = getProjectDir();
+          const dbFile = join(sessionsDir, `${hashProjectDir(projectDir)}${getWorktreeSuffix(projectDir)}.db`);
           if (existsSync(dbFile)) {
             timelineDB = new SessionDB({ dbPath: dbFile });
           }
         } catch { /* SessionDB unavailable — search ContentStore + auto-memory only */ }
       }
 
-      const configDir = _detectedAdapter?.getConfigDir() ?? (process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"));
+      const configDir = _detectedAdapter?.getConfigDir() ?? resolveClaudeConfigRoot();
 
       try {
       for (const q of queryList) {
@@ -2493,8 +2532,9 @@ server.registerTool(
     // ONE call, ONE source — AnalyticsEngine.queryAll()
     let text: string;
     try {
-      const dbHash = hashProjectDir();
-      const worktreeSuffix = getWorktreeSuffix();
+      const projectDir = getProjectDir();
+      const dbHash = hashProjectDir(projectDir);
+      const worktreeSuffix = getWorktreeSuffix(projectDir);
       const sessionDbPath = join(
         getSessionDir(),
         `${dbHash}${worktreeSuffix}.db`
@@ -2675,14 +2715,11 @@ server.registerTool(
       // Inline fallback: neither CLI file exists (e.g. marketplace installs).
       // Generate a self-contained node -e script that performs the upgrade.
       const repoUrl = "https://github.com/mksglu/context-mode.git";
-      const copyDirs = ["build", "hooks", "skills", "scripts", ".claude-plugin"];
-      const copyFiles = ["start.mjs", "server.bundle.mjs", "cli.bundle.mjs", "package.json"];
-
       // Write inline script to a temp .mjs file — avoids quote-escaping issues
       // across cmd.exe, PowerShell, and bash (node -e '...' breaks on Windows).
       const scriptLines = [
         `import{execFileSync}from"node:child_process";`,
-        `import{cpSync,rmSync,existsSync,mkdtempSync}from"node:fs";`,
+        `import{cpSync,rmSync,existsSync,mkdtempSync,readFileSync,writeFileSync}from"node:fs";`,
         `import{join}from"node:path";`,
         `import{tmpdir}from"node:os";`,
         `const P=${JSON.stringify(pluginRoot)};`,
@@ -2694,15 +2731,11 @@ server.registerTool(
         `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["install"],{cwd:T,stdio:"inherit",shell:process.platform==="win32"});`,
         `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["run","build"],{cwd:T,stdio:"inherit",shell:process.platform==="win32"});`,
         `console.log("- [x] Built from source");`,
-        ...copyDirs.map(
-          (d) =>
-            `if(existsSync(join(T,${JSON.stringify(d)})))cpSync(join(T,${JSON.stringify(d)}),join(P,${JSON.stringify(d)}),{recursive:true,force:true});`,
-        ),
-        ...copyFiles.map(
-          (f) =>
-            `if(existsSync(join(T,${JSON.stringify(f)})))cpSync(join(T,${JSON.stringify(f)}),join(P,${JSON.stringify(f)}),{force:true});`,
-        ),
-        `console.log("- [x] Copied build artifacts");`,
+        `const pkg=JSON.parse(readFileSync(join(T,"package.json"),"utf8"));`,
+        `const items=[...(Array.isArray(pkg.files)?pkg.files:[]),"src","package.json"];`,
+        `for(const item of items){const from=join(T,item);const to=join(P,item);if(existsSync(from)){rmSync(to,{recursive:true,force:true});cpSync(from,to,{recursive:true,force:true});}}`,
+        `writeFileSync(join(P,".mcp.json"),JSON.stringify({mcpServers:{"context-mode":{command:"node",args:["\${CLAUDE_PLUGIN_ROOT}/start.mjs"]}}},null,2)+"\\n");`,
+        `console.log("- [x] Copied package files");`,
         `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["install","--production"],{cwd:P,stdio:"inherit",shell:process.platform==="win32"});`,
         `console.log("- [x] Installed production dependencies");`,
         `console.log("## context-mode upgrade complete");`,
@@ -2801,8 +2834,9 @@ server.registerTool(
 
     // 3. Wipe session events DB (analytics, metadata, resume snapshots)
     try {
-      const dbHash = hashProjectDir();
-      const worktreeSuffix = getWorktreeSuffix();
+      const projectDir = getProjectDir();
+      const dbHash = hashProjectDir(projectDir);
+      const worktreeSuffix = getWorktreeSuffix(projectDir);
       const sessDir = getSessionDir();
       const sessDbPath = join(sessDir, `${dbHash}${worktreeSuffix}.db`);
       const eventsPath = join(sessDir, `${dbHash}${worktreeSuffix}-events.md`);
@@ -2846,6 +2880,202 @@ server.registerTool(
   },
 );
 
+// ── ctx_insight process helpers ──────────────────────────────────────────────
+// Cross-platform process helpers used by ctx_insight (below) and the dashboard
+// launcher in cli.ts. All entry points use argv arrays — never `sh -c <string>`
+// — so caller-derived values cannot escape into shell context. See issue #441.
+//
+// `browserOpenArgv` is duplicated as a private 16-LOC copy in cli.ts to avoid
+// pulling server.ts top-level boot side effects into the cli bundle.
+
+export type SpawnSyncFn = (
+  cmd: string,
+  args: readonly string[],
+  opts?: SpawnSyncOptions,
+) => SpawnSyncReturns<string | Buffer>;
+
+export type BrowserOpenResult =
+  | { ok: true; method: string }
+  | { ok: false; method: "none"; reason: string };
+
+export type KillResult = {
+  killedPids: string[];
+  attemptedPids: string[];
+  errors: string[];
+};
+
+// Hard upper bound on every helper-internal spawnSync call. Caps tail-latency
+// when an external binary hangs (xdg-open waiting for an X11 session, lsof
+// stalling on /proc, taskkill blocking on an unresponsive process, etc.) so
+// the MCP tool surfaces a diagnostic instead of blocking the agent loop.
+// 5s is comfortably above the 99th-percentile completion of every command we
+// invoke; anything past that is hung.
+const HELPER_SPAWN_TIMEOUT_MS = 5000;
+
+// Returns the argv attempts for opening `url` on `platform`, in fall-back order.
+// Pure data — no I/O.
+export function browserOpenArgv(
+  url: string,
+  platform: NodeJS.Platform,
+): readonly { cmd: string; args: readonly string[] }[] {
+  if (platform === "darwin") return [{ cmd: "open", args: [url] }];
+  if (platform === "win32") {
+    // `start` is a cmd.exe builtin; the empty title arg ("") prevents the URL
+    // from being consumed as the window title.
+    return [{ cmd: "cmd", args: ["/c", "start", "", url] }];
+  }
+  // linux/bsd: try xdg-open, then sensible-browser (Debian/Ubuntu).
+  return [
+    { cmd: "xdg-open", args: [url] },
+    { cmd: "sensible-browser", args: [url] },
+  ];
+}
+
+// Opens a browser synchronously, waiting for each attempt to complete.
+// Returns a structured result so callers can surface auto-open failures
+// to the user instead of falsely reporting success.
+export function openBrowserSync(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  runner: SpawnSyncFn = spawnSync,
+): BrowserOpenResult {
+  const attempts = browserOpenArgv(url, platform);
+  const errors: string[] = [];
+  for (const { cmd, args } of attempts) {
+    try {
+      const r = runner(cmd, args, { stdio: "ignore", timeout: HELPER_SPAWN_TIMEOUT_MS });
+      // Treat signal-kill (status === null) and any non-zero status as failure
+      // so the next fallback fires.
+      if (!r.error && r.status === 0) return { ok: true, method: cmd };
+      const reason = r.error?.message ?? `status=${r.status === null ? "signaled" : r.status}`;
+      errors.push(`${cmd}: ${reason}`);
+    } catch (e) {
+      errors.push(`${cmd}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { ok: false, method: "none", reason: errors.join("; ") };
+}
+
+// Kills any process listening on `port`. Returns a structured result so
+// the caller can distinguish between (a) port was free, (b) kill succeeded,
+// (c) kill failed (perms, missing binary, or per-pid failure mid-loop).
+//
+// On Windows the netstat parser is locale-independent: the STATE column
+// ("LISTENING" / "ESTABLISHED" / ...) is translated on non-English Windows
+// (Windows-FR shows "À l'écoute", Windows-DE "ABHÖREN", etc.), but the REMOTE
+// ADDRESS column is not. A listening TCP socket always has remote
+// "0.0.0.0:0" (IPv4) or "[::]:0" (IPv6); a connected one has a real
+// addr:port. We therefore key off the remote column instead of the state
+// string. This also rules out the pre-fix bug where matching only the local
+// port number cross-matched a remote :port from an outbound connection and
+// taskkill'd an unrelated process.
+export function killProcessOnPort(
+  port: number,
+  platform: NodeJS.Platform = process.platform,
+  runner: SpawnSyncFn = spawnSync,
+): KillResult {
+  const result: KillResult = { killedPids: [], attemptedPids: [], errors: [] };
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    result.errors.push(`invalid port: ${port}`);
+    return result;
+  }
+
+  try {
+    if (platform === "win32") {
+      const r = runner("netstat", ["-ano"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: HELPER_SPAWN_TIMEOUT_MS,
+      });
+      if (r.error) {
+        result.errors.push(`netstat: ${r.error.message}`);
+        return result;
+      }
+      if (r.status !== 0 || typeof r.stdout !== "string") return result;
+
+      const portSuffix = `:${port}`;
+      const pids = new Set<string>();
+      for (const rawLine of r.stdout.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const tokens = line.split(/\s+/);
+        // netstat -ano LISTENING row (en-US): "TCP  0.0.0.0:4747  0.0.0.0:0  LISTENING  1234"
+        // The STATE column is locale-translated and may itself contain spaces
+        // (Windows-FR `À l'écoute` splits into two tokens), so we cannot index
+        // STATE by position. PID is always the trailing column; PROTO/LOCAL/
+        // REMOTE are the first three. We anchor on those + a remote-wildcard
+        // check that's locale-independent.
+        if (tokens.length < 5) continue;
+        const proto = tokens[0];
+        const local = tokens[1];
+        const remote = tokens[2];
+        const pid = tokens[tokens.length - 1];
+        if (proto !== "TCP") continue;
+        if (!local.endsWith(portSuffix)) continue;
+        // Listening sockets carry a wildcard remote; anything else is a
+        // connection (and matching it would kill an unrelated process).
+        if (remote !== "0.0.0.0:0" && remote !== "[::]:0") continue;
+        if (!/^\d+$/.test(pid)) continue;
+        pids.add(pid);
+      }
+      for (const pid of pids) {
+        result.attemptedPids.push(pid);
+        try {
+          const k = runner("taskkill", ["/F", "/PID", pid], {
+            stdio: "ignore",
+            timeout: HELPER_SPAWN_TIMEOUT_MS,
+          });
+          if (k.error || k.status !== 0) {
+            result.errors.push(
+              `taskkill ${pid}: ${k.error?.message ?? `status=${k.status}`}`,
+            );
+          } else {
+            result.killedPids.push(pid);
+          }
+        } catch (e) {
+          result.errors.push(`taskkill ${pid}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    } else {
+      const r = runner("lsof", ["-ti", `:${port}`], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: HELPER_SPAWN_TIMEOUT_MS,
+      });
+      if (r.error) {
+        // ENOENT (lsof not installed) is a real diagnostic; surface it.
+        result.errors.push(`lsof: ${r.error.message}`);
+        return result;
+      }
+      // lsof exits 1 with empty stdout when the port is free — not an error.
+      if (r.status !== 0 || typeof r.stdout !== "string") return result;
+
+      const pids = r.stdout.split(/\r?\n/).filter(p => /^\d+$/.test(p));
+      for (const pid of pids) {
+        result.attemptedPids.push(pid);
+        try {
+          const k = runner("kill", [pid], {
+            stdio: "ignore",
+            timeout: HELPER_SPAWN_TIMEOUT_MS,
+          });
+          if (k.error || k.status !== 0) {
+            result.errors.push(
+              `kill ${pid}: ${k.error?.message ?? `status=${k.status}`}`,
+            );
+          } else {
+            result.killedPids.push(pid);
+          }
+        } catch (e) {
+          result.errors.push(`kill ${pid}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+  } catch (e) {
+    result.errors.push(e instanceof Error ? e.message : String(e));
+  }
+  return result;
+}
+
 // ── ctx-insight: analytics dashboard ──────────────────────────────────────────
 server.registerTool(
   "ctx_insight",
@@ -2857,7 +3087,7 @@ server.registerTool(
       "parallel work patterns, project focus, and actionable insights. " +
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
-      port: z.coerce.number().optional().describe("Port to serve on (default: 4747)"),
+      port: z.coerce.number().int().min(1).max(65535).optional().describe("Port to serve on (default: 4747)"),
       sessionDir: z.string().optional().describe("Override INSIGHT_SESSION_DIR: directory containing context-mode session .db files"),
       contentDir: z.string().optional().describe("Override INSIGHT_CONTENT_DIR: directory containing context-mode content/index .db files"),
       insightSessionDir: z.string().optional().describe("Alias for sessionDir / INSIGHT_SESSION_DIR"),
@@ -2956,27 +3186,38 @@ server.registerTool(
       if (portOccupied && sourceUpdated) {
         // Source was updated but stale server is running on port — kill it so fresh code runs
         steps.push("Killing stale dashboard server (source updated)...");
-        try {
-          if (process.platform === "win32") {
-            execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port}') do taskkill /F /PID %a`, { stdio: "pipe" });
-          } else {
-            execSync(`lsof -ti:${port} | xargs kill 2>/dev/null`, { stdio: "pipe" });
-          }
-          await new Promise(r => setTimeout(r, 500)); // Wait for port to free
-        } catch { /* no process to kill — proceed anyway */ }
-        steps.push("Stale server killed.");
+        const kill = killProcessOnPort(port);
+        if (kill.attemptedPids.length > 0 && kill.killedPids.length === 0) {
+          // Tried to kill, every attempt failed (perms, race, missing binary).
+          // Surface so the agent doesn't loop on the same port forever.
+          return trackResponse("ctx_insight", {
+            content: [{
+              type: "text" as const,
+              text: `Could not free port ${port} (kill failed for ${kill.attemptedPids.join(", ")}: ${kill.errors.join("; ")}). Try ctx_insight({ port: ${port + 1} }) or stop the process manually.`,
+            }],
+          });
+        }
+        if (kill.errors.length > 0 && kill.attemptedPids.length === 0) {
+          // Couldn't even probe the port (e.g. lsof not installed).
+          return trackResponse("ctx_insight", {
+            content: [{
+              type: "text" as const,
+              text: `Cannot reclaim port ${port}: ${kill.errors.join("; ")}. Stop the process manually or pick another port.`,
+            }],
+          });
+        }
+        await new Promise(r => setTimeout(r, 500)); // Wait for port to free
+        steps.push(`Stale server killed (${kill.killedPids.length} pid${kill.killedPids.length === 1 ? "" : "s"}).`);
       } else if (portOccupied) {
         // Source unchanged, server is running fine — just open browser
         steps.push("Dashboard already running.");
         const url = `http://localhost:${port}`;
-        const platform = process.platform;
-        try {
-          if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-          else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-          else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-        } catch { /* browser open is best-effort */ }
+        const open = openBrowserSync(url);
+        const tail = open.ok
+          ? ""
+          : ` (auto-open failed: ${open.reason}; navigate manually)`;
         return trackResponse("ctx_insight", {
-          content: [{ type: "text" as const, text: `Dashboard already running at http://localhost:${port}` }],
+          content: [{ type: "text" as const, text: `Dashboard already running at ${url}${tail}` }],
         });
       }
 
@@ -3033,14 +3274,10 @@ server.registerTool(
 
       // Open browser (cross-platform)
       const url = `http://localhost:${port}`;
-      const platform = process.platform;
-      try {
-        if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-        else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-        else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-      } catch { /* browser open is best-effort */ }
+      const open = openBrowserSync(url);
+      const openTail = open.ok ? "" : ` (auto-open failed: ${open.reason}; navigate manually)`;
 
-      steps.push(`Dashboard running at ${url}`);
+      steps.push(`Dashboard running at ${url}${openTail}`);
 
       return trackResponse("ctx_insight", {
         content: [{

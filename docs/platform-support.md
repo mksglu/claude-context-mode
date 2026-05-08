@@ -4,13 +4,13 @@ This document provides a comprehensive comparison of all platforms supported by 
 
 ## Overview
 
-context-mode supports twelve platforms across three hook paradigms:
+context-mode supports thirteen platforms across three hook paradigms:
 
 | Paradigm | Platforms |
 |----------|-----------|
 | **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, Codex CLI, Qwen Code |
 | **TS Plugin** | OpenCode, OpenClaw |
-| **MCP-only** | Antigravity, Kiro, Zed |
+| **MCP-only** | Antigravity, Kiro, Zed, OMP (Oh My Pi) |
 
 The MCP server layer is 100% portable and needs no adapter. Only the hook layer requires platform-specific adapters.
 
@@ -32,22 +32,22 @@ This puts the `context-mode` binary in PATH, which is required for:
 
 ## Main Comparison Table
 
-| Feature | Claude Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | Codex CLI | Antigravity | Kiro |
-|---------|-------------|------------|-----------------|-------------------|--------|----------|-----------|-------------|------|
-| **Paradigm** | json-stdio | json-stdio | json-stdio | json-stdio | json-stdio | ts-plugin | json-stdio | mcp-only | mcp-only |
-| **PreToolUse equivalent** | `PreToolUse` | `BeforeTool` | `PreToolUse` | `PreToolUse` | `preToolUse` | `tool.execute.before` | `PreToolUse` | -- | -- |
-| **PostToolUse equivalent** | `PostToolUse` | `AfterTool` | `PostToolUse` | `PostToolUse` | `postToolUse` | `tool.execute.after` | `PostToolUse` | -- | -- |
-| **PreCompact equivalent** | `PreCompact` | `PreCompress` | `PreCompact` | `PreCompact` | -- | `experimental.session.compacting` | -- | -- | -- |
-| **SessionStart** | `SessionStart` | `SessionStart` | `SessionStart` | `SessionStart` | -- (buggy in Cursor) | -- | `SessionStart` | -- | -- |
-| **Stop equivalent** | -- | -- | `Stop` | `Stop` | `stop` | -- | `Stop` | -- | -- |
-| **Can modify args** | Yes | Yes | Yes | Yes | Yes | Yes | No | -- | -- |
-| **Can modify output** | Yes | Yes | Yes | Yes | No | Yes (caveat) | No | -- | -- |
-| **Can inject session context** | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- |
-| **Can block tools** | Yes | Yes | Yes | Yes | Yes | Yes (throw) | Yes | -- | -- |
-| **Config location** | `~/.claude/settings.json` | `~/.gemini/settings.json` | `.github/hooks/*.json` | `.github/hooks/*.json` | `.cursor/hooks.json` or `~/.cursor/hooks.json` | `opencode.json` | `~/.codex/hooks.json` + `~/.codex/config.toml` | `~/.gemini/antigravity/mcp_config.json` | `~/.kiro/settings/mcp.json` |
-| **Session ID field** | `session_id` | `session_id` | `sessionId` (camelCase) | `sessionId` (camelCase) | `conversation_id` | `sessionID` (camelCase) | N/A | N/A | N/A |
-| **Project dir env** | `CLAUDE_PROJECT_DIR` | `GEMINI_PROJECT_DIR` | `CLAUDE_PROJECT_DIR` | `CLAUDE_PROJECT_DIR` | stdin `workspace_roots` | `ctx.directory` (plugin init) | N/A | N/A | N/A |
-| **MCP tool naming** | `mcp__server__tool` | `mcp__server__tool` | `f1e_` prefix | `f1e_` prefix | `MCP:<tool>` in hook payloads | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` |
+| Feature | Claude Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | Codex CLI | Antigravity | Kiro | OMP |
+|---------|-------------|------------|-----------------|-------------------|--------|----------|-----------|-------------|------|-----|
+| **Paradigm** | json-stdio | json-stdio | json-stdio | json-stdio | json-stdio | ts-plugin | json-stdio | mcp-only | mcp-only | mcp-only |
+| **PreToolUse equivalent** | `PreToolUse` | `BeforeTool` | `PreToolUse` | `PreToolUse` | `preToolUse` | `tool.execute.before` | `PreToolUse` | -- | -- | -- |
+| **PostToolUse equivalent** | `PostToolUse` | `AfterTool` | `PostToolUse` | `PostToolUse` | `postToolUse` | `tool.execute.after` | `PostToolUse` | -- | -- | -- |
+| **PreCompact equivalent** | `PreCompact` | `PreCompress` | `PreCompact` | `PreCompact` | -- | `experimental.session.compacting` | -- | -- | -- | -- |
+| **SessionStart** | `SessionStart` | `SessionStart` | `SessionStart` | `SessionStart` | -- (buggy in Cursor) | -- | `SessionStart` | -- | -- | -- |
+| **Stop equivalent** | -- | -- | `Stop` | `Stop` | `stop` | -- | `Stop` | -- | -- | -- |
+| **Can modify args** | Yes | Yes | Yes | Yes | Yes | Yes | No | -- | -- | -- |
+| **Can modify output** | Yes | Yes | Yes | Yes | No | Yes (caveat) | No | -- | -- | -- |
+| **Can inject session context** | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
+| **Can block tools** | Yes | Yes | Yes | Yes | Yes | Yes (throw) | Yes | -- | -- | -- |
+| **Config location** | `~/.claude/settings.json` | `~/.gemini/settings.json` | `.github/hooks/*.json` | `.github/hooks/*.json` | `.cursor/hooks.json` or `~/.cursor/hooks.json` | `opencode.json` | `~/.codex/hooks.json` + `~/.codex/config.toml` | `~/.gemini/antigravity/mcp_config.json` | `~/.kiro/settings/mcp.json` | `~/.omp/agent/mcp_config.json` |
+| **Session ID field** | `session_id` | `session_id` | `sessionId` (camelCase) | `sessionId` (camelCase) | `conversation_id` | `sessionID` (camelCase) | N/A | N/A | N/A | N/A |
+| **Project dir env** | `CLAUDE_PROJECT_DIR` | `GEMINI_PROJECT_DIR` | `CLAUDE_PROJECT_DIR` | `CLAUDE_PROJECT_DIR` | stdin `workspace_roots` | `ctx.directory` (plugin init) | N/A | N/A | N/A | `OMP_PROCESSING_AGENT_DIR` |
+| **MCP tool naming** | `mcp__server__tool` | `mcp__server__tool` | `f1e_` prefix | `f1e_` prefix | `MCP:<tool>` in hook payloads | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` |
 | **Hook command format** | `context-mode hook claude-code <event>` | `context-mode hook gemini-cli <event>` | `context-mode hook vscode-copilot <event>` | `context-mode hook jetbrains-copilot <event>` | `context-mode hook cursor <event>` | TS plugin (no command) | `context-mode hook codex <event>` | N/A | N/A |
 | **Hook registration** | settings.json hooks object | settings.json hooks object | `.github/hooks/*.json` | `.github/hooks/*.json` | `hooks.json` native hook arrays | opencode.json plugin array | `~/.codex/hooks.json` | N/A | N/A |
 | **MCP server command** | `context-mode` (or plugin auto) | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` |
@@ -600,20 +600,60 @@ The hook adapter exists only to satisfy the interface contract — every parser 
 
 ---
 
+### OMP (Oh My Pi)
+
+**Status:** MCP-only (no hooks)
+
+**Hook Paradigm:** MCP-only
+
+[Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) is a Pi-compatible harness that stores its agent state under `~/.omp/agent/` (overridable via `OMP_PROCESSING_AGENT_DIR`). Before the dedicated adapter, OMP detection fell through to `pi` and storage rooted under another harness's directory (typically `~/.claude/`), per [issue #473](https://github.com/mksglu/context-mode/issues/473). The OMP adapter exists primarily to keep `~/.omp/context-mode/` isolated, not to provide hook integration — OMP, like Antigravity/Kiro/Zed, runs context-mode purely as an MCP server.
+
+**Hook Support:**
+- PreToolUse: --
+- PostToolUse: --
+- PreCompact: --
+- SessionStart: --
+- Stop: --
+- Can modify args: --
+- Can modify output: --
+- Can inject session context: --
+
+The hook adapter exists only to satisfy the interface contract — every parser throws `Error("OMP does not support hooks")` and every formatter returns `undefined`.
+
+**Path Resolution:**
+- Agent root: `$OMP_PROCESSING_AGENT_DIR` if set, else `~/.omp/agent/`
+- Settings file: `<agent root>/mcp_config.json`
+- MCP registration: `mcpServers` object inside `mcp_config.json`
+- Session dir: `~/.omp/context-mode/sessions/` (intentionally rooted at `~/.omp/`, not the agent dir, so multiple OMP instances on one host share an index without colliding session DBs)
+- Routing instructions: `PI.md` (Pi-compatible filename — OMP shares the Pi instruction surface)
+
+**Detection (priority order, listed BEFORE `pi` so OMP is never misclassified):**
+- `OMP_PROCESSING_AGENT_DIR` env var (high confidence)
+- `~/.omp/` directory presence (medium confidence)
+- `CONTEXT_MODE_PLATFORM=omp` override
+
+**Notes / Caveats:**
+- No hook adapter implies no automatic routing — the model must follow `PI.md` voluntarily (~60% compliance)
+- No marketplace or plugin registry for OMP; `getInstalledVersion()` reports `not installed` unless an `extensions/context-mode/package.json` exists under the agent dir
+- `validateHooks` always returns a single `warn` row reminding the user that OMP exposes only MCP integration
+- `configureAllHooks`, `setHookPermissions`, and `updatePluginRegistry` are intentional no-ops
+
+---
+
 ## Capability Matrix (Quick Reference)
 
-| Capability | Claude Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | Codex CLI | Antigravity | Kiro |
-|-----------|:-----------:|:----------:|:---------------:|:-----------------:|:------:|:--------:|:---------:|:-----------:|:----:|
-| PreToolUse | Yes | Yes | Yes | Yes | Yes | Yes | Yes*** | -- | -- |
-| PostToolUse | Yes | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- |
-| PreCompact | Yes | Yes | Yes | Yes | -- | Yes* | -- | -- | -- |
-| SessionStart | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- |
-| Stop | -- | -- | Yes | Yes | Yes | -- | Yes | -- | -- |
-| Modify Args | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- |
-| Modify Output | Yes | Yes | Yes | Yes | No | Yes** | -- | -- | -- |
-| Inject Context | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- |
-| Block Tools | Yes | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- |
-| MCP Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Capability | Claude Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | Codex CLI | Antigravity | Kiro | OMP |
+|-----------|:-----------:|:----------:|:---------------:|:-----------------:|:------:|:--------:|:---------:|:-----------:|:----:|:---:|
+| PreToolUse | Yes | Yes | Yes | Yes | Yes | Yes | Yes*** | -- | -- | -- |
+| PostToolUse | Yes | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- |
+| PreCompact | Yes | Yes | Yes | Yes | -- | Yes* | -- | -- | -- | -- |
+| SessionStart | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
+| Stop | -- | -- | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
+| Modify Args | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- | -- |
+| Modify Output | Yes | Yes | Yes | Yes | No | Yes** | -- | -- | -- | -- |
+| Inject Context | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
+| Block Tools | Yes | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- |
+| MCP Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 
 \* OpenCode `experimental.session.compacting` is experimental
 \*\* OpenCode has a TUI rendering bug for bash tool output (#13575)

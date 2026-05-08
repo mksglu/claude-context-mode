@@ -25,16 +25,48 @@ import { execFileSync } from "node:child_process";
  * (useful in CI environments or when git is unavailable).
  * Set to empty string to disable isolation entirely.
  */
-// Memoized per (cwd, env override) — recomputing on every tool call cost
+// Memoized per (projectDir, env override) — recomputing on every tool call cost
 // ~12ms (git worktree list subprocess fork) on macOS, 50ms+ on Windows.
-// Key by cwd so a defensive `process.chdir()` invalidates rather than
-// returning stale data.
-let _wtCache: { cwd: string; envSuffix: string | undefined; suffix: string } | undefined;
+// Key by projectDir so callers can pass the actual workspace even when the
+// MCP server has chdir'd into the installed package directory.
+let _wtCache: { projectDir: string; envSuffix: string | undefined; suffix: string } | undefined;
 
-export function getWorktreeSuffix(): string {
+function normalizeWorktreePath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
+}
+
+function gitOutput(projectDir: string, args: string[]): string {
+  return execFileSync(
+    "git",
+    ["-C", projectDir, ...args],
+    {
+      encoding: "utf-8",
+      timeout: 2000,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  ).trim();
+}
+
+function getCurrentWorktreeRoot(projectDir: string): string | null {
+  const root = gitOutput(projectDir, ["rev-parse", "--show-toplevel"]);
+  return root.length > 0 ? normalizeWorktreePath(root) : null;
+}
+
+function getMainWorktreeRoot(projectDir: string): string | null {
+  const root = gitOutput(projectDir, ["worktree", "list", "--porcelain"])
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("worktree "))
+    ?.replace("worktree ", "")
+    ?.trim();
+  return root ? normalizeWorktreePath(root) : null;
+}
+
+export function getWorktreeSuffix(projectDir = process.cwd()): string {
   const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
-  const cwd = process.cwd();
-  if (_wtCache && _wtCache.cwd === cwd && _wtCache.envSuffix === envSuffix) {
+  if (_wtCache && _wtCache.projectDir === projectDir && _wtCache.envSuffix === envSuffix) {
     return _wtCache.suffix;
   }
 
@@ -43,29 +75,17 @@ export function getWorktreeSuffix(): string {
     suffix = envSuffix ? `__${envSuffix}` : "";
   } else {
     try {
-      const mainWorktree = execFileSync(
-        "git",
-        ["worktree", "list", "--porcelain"],
-        {
-          encoding: "utf-8",
-          timeout: 2000,
-          stdio: ["ignore", "pipe", "ignore"],
-        },
-      )
-        .split(/\r?\n/)
-        .find((l) => l.startsWith("worktree "))
-        ?.replace("worktree ", "")
-        ?.trim();
-
-      if (mainWorktree && cwd !== mainWorktree) {
-        suffix = `__${createHash("sha256").update(cwd).digest("hex").slice(0, 8)}`;
+      const currentRoot = getCurrentWorktreeRoot(projectDir);
+      const mainRoot = getMainWorktreeRoot(projectDir);
+      if (currentRoot && mainRoot && currentRoot !== mainRoot) {
+        suffix = `__${createHash("sha256").update(currentRoot).digest("hex").slice(0, 8)}`;
       }
     } catch {
       // git not available or not a git repo — no suffix
     }
   }
 
-  _wtCache = { cwd, envSuffix, suffix };
+  _wtCache = { projectDir, envSuffix, suffix };
   return suffix;
 }
 

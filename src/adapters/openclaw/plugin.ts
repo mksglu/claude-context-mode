@@ -35,17 +35,17 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { SessionDB } from "./session/db.js";
-import { OpenClawSessionDB } from "./adapters/openclaw/session-db.js";
-import { extractEvents, extractUserEvents } from "./session/extract.js";
-import type { HookInput } from "./session/extract.js";
-import { buildResumeSnapshot } from "./session/snapshot.js";
-import type { SessionEvent } from "./types.js";
+import { SessionDB } from "../../session/db.js";
+import { OpenClawSessionDB } from "./session-db.js";
+import { extractEvents, extractUserEvents } from "../../session/extract.js";
+import type { HookInput } from "../../session/extract.js";
+import { buildResumeSnapshot } from "../../session/snapshot.js";
+import type { SessionEvent } from "../../types.js";
 
-import { WorkspaceRouter } from "./openclaw/workspace-router.js";
-import { buildNodeCommand } from "./adapters/types.js";
-import { OPENCLAW_TOOL_DEFS } from "./openclaw/mcp-tools.js";
-import type { OpenClawToolDef } from "./openclaw/mcp-tools.js";
+import { WorkspaceRouter } from "./workspace-router.js";
+import { buildNodeCommand } from "../types.js";
+import { OPENCLAW_TOOL_DEFS } from "./mcp-tools.js";
+import type { OpenClawToolDef } from "./mcp-tools.js";
 
 // ── System-reminder filter (CCv2 — SLICE OClaw-3) ─────────
 // Mirror hooks/userpromptsubmit.mjs:30-33: skip system-generated wrappers
@@ -244,7 +244,7 @@ export default {
     // Resolve build dir from compiled JS location
     const buildDir = dirname(fileURLToPath(import.meta.url));
     const projectDir = process.cwd();
-    const pluginRoot = resolve(buildDir, "..");
+    const pluginRoot = resolve(buildDir, "..", "..", "..");
 
     // Structured logger — wraps api.logger, falls back to no-op.
     // info/error always emit; debug only when api.logger.debug is present
@@ -280,17 +280,20 @@ export default {
     // MCP-prefix substitution stays in lockstep with hooks/routing-block.mjs.
     let routingInstructions = "";
     const initPromise = (async () => {
-      const routingPath = resolve(buildDir, "..", "hooks", "core", "routing.mjs");
+      const routingPath = resolve(buildDir, "..", "..", "..", "hooks", "core", "routing.mjs");
       const routing = await import(pathToFileURL(routingPath).href);
-      await routing.initSecurity(buildDir);
+      // initSecurity() looks for `<dir>/security.js`, which lives at the
+      // top of build/ — two levels up from this adapter directory.
+      const buildRoot = resolve(buildDir, "..", "..");
+      await routing.initSecurity(buildRoot);
 
       try {
         const blockMod = await import(
-          pathToFileURL(resolve(buildDir, "..", "hooks", "routing-block.mjs")).href
+          pathToFileURL(resolve(buildDir, "..", "..", "..", "hooks", "routing-block.mjs")).href
         );
         const namingMod = await import(
           pathToFileURL(
-            resolve(buildDir, "..", "hooks", "core", "tool-naming.mjs"),
+            resolve(buildDir, "..", "..", "..", "hooks", "core", "tool-naming.mjs"),
           ).href
         );
         const toolNamer = namingMod.createToolNamer("openclaw");
@@ -599,7 +602,7 @@ export default {
           }
           const events = extractUserEvents(messageText);
           for (const ev of events) {
-            db.insertEvent(sid, ev as import("./types.js").SessionEvent, "PostToolUse");
+            db.insertEvent(sid, ev as import("../../types.js").SessionEvent, "PostToolUse");
           }
         } catch {
           // best effort — never break model resolution
