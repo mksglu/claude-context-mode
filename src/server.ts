@@ -1780,12 +1780,56 @@ function buildFetchCode(url: string, outputPath: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
   const escapedOutputPath = JSON.stringify(outputPath);
+  // Embed classifyIp into the subprocess so the connect-time DNS lookup is
+  // re-validated with the same policy as ssrfGuard. Without this, an attacker
+  // can serve a public IP for the parent's pre-flight ssrfGuard lookup and
+  // then a blocked IP (e.g. 169.254.169.254 IMDS) for the subprocess fetch's
+  // own lookup — classic DNS rebinding across the parent/child boundary.
+  const classifyIpSrc = classifyIp.toString();
+  const strictMode = process.env.CTX_FETCH_STRICT === "1";
   return `
 const TurndownService = require(${turndownPath});
 const { gfm } = require(${gfmPath});
 const fs = require('fs');
+const dns = require('node:dns');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
+
+${classifyIpSrc}
+
+const STRICT = ${JSON.stringify(strictMode)};
+
+// SSRF rebinding defense: every dns.lookup call inside this subprocess
+// (including the one undici performs to connect the fetch socket) is
+// re-validated against the same policy ssrfGuard runs in the parent.
+// Even if a hostname rebinds between the parent's pre-flight check and
+// the subprocess's actual connect, the connect-time lookup re-classifies
+// every returned record and aborts before TCP if any verdict is "block".
+const _origLookup = dns.lookup;
+dns.lookup = function patchedLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  if (typeof options === 'number') { options = { family: options }; }
+  const wantAll = options && options.all;
+  const opts = Object.assign({}, options || {}, { all: true, verbatim: true });
+  _origLookup(hostname, opts, function(err, records) {
+    if (err) return callback(err);
+    if (!Array.isArray(records)) {
+      records = [{ address: records, family: (options && options.family) || 4 }];
+    }
+    for (var i = 0; i < records.length; i++) {
+      var verdict = classifyIp(records[i].address);
+      if (verdict === 'block' || (STRICT && verdict === 'private')) {
+        return callback(new Error(
+          'SSRF blocked at connect-time: ' + hostname +
+          ' resolves to ' + records[i].address +
+          ' (' + verdict + ')'
+        ));
+      }
+    }
+    if (wantAll) callback(null, records);
+    else callback(null, records[0].address, records[0].family);
+  });
+};
 
 function emit(ct, content) {
   // Write content to file to bypass executor stdout truncation (100KB limit).
