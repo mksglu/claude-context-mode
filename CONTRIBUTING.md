@@ -40,6 +40,7 @@ src/
     opencode/      → OpenCode adapter
     codex/         → Codex CLI adapter
     vscode-copilot/ → VS Code Copilot adapter
+    omp/           → OMP (Oh My Pi) adapter — MCP-only, isolated ~/.omp/ storage (#473)
   openclaw/
     workspace-router.ts → Workspace path resolution for Pi Agent sessions
   openclaw-plugin.ts   → OpenClaw gateway plugin entry (sync register)
