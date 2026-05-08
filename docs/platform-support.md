@@ -206,6 +206,8 @@ Codex CLI's Rust backend (codex-rs) includes a full hook system with 5 events, u
 **Configuration:**
 - Hook config: `~/.codex/hooks.json` (JSON format, same structure as Claude Code)
 - MCP config: `~/.codex/config.toml` (TOML format, `[mcp_servers]` section)
+- Feature flags: use `[features].hooks` (or `codex --enable hooks`) if you need
+  to force hooks on. The legacy `[features].codex_hooks` name is deprecated.
 
 **Hook Commands:**
 ```
