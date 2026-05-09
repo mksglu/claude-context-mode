@@ -22,6 +22,34 @@ npm i -g context-mode
 
 The plugin manifest will pick up the global binary automatically.
 
+## Try it locally before Marketplace acceptance
+
+While the plugin is awaiting Marketplace review, you can install it
+directly from the repo. Cursor does **not** follow Windows
+symlinks/junctions for plugin folders, so use a mirror copy on Windows
+and a symlink elsewhere.
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/mksglu/context-mode.git
+cd context-mode
+robocopy . "$env:USERPROFILE\.cursor\plugins\local\context-mode" /MIR `
+  /XD node_modules .git build insight web tests scripts .vscode `
+  /XF *.log .gitignore *.bundle.mjs.map
+```
+
+**macOS / Linux:**
+
+```bash
+git clone https://github.com/mksglu/context-mode.git
+ln -s "$PWD/context-mode" ~/.cursor/plugins/local/context-mode
+```
+
+Restart Cursor and open **Settings → Plugins**. "Context Mode (Local)"
+appears with 1 MCP server, 7 skills, and 5 hooks. To pull new commits,
+re-run the same `robocopy` / `ln -s` line (`/MIR` handles updates).
+
 ## Verify
 
 Run from a project shell:
