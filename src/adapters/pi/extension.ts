@@ -151,6 +151,22 @@ function deriveSessionId(ctx: Record<string, unknown>): string {
   return `pi-${Date.now()}`;
 }
 
+/**
+ * Parse SessionDB timestamps as UTC. SQLite datetime('now') returns
+ * "YYYY-MM-DD HH:MM:SS" in UTC without a timezone suffix; JavaScript parses
+ * that shape as local time, which skews ages by the local UTC offset.
+ */
+function parseSessionTimestampMs(value: string): number {
+  const trimmed = value.trim();
+  const sqliteUtc = trimmed.match(
+    /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$/,
+  );
+  const normalized = sqliteUtc
+    ? `${sqliteUtc[1]}T${sqliteUtc[2]}${sqliteUtc[3] ?? ""}Z`
+    : trimmed;
+  return Date.parse(normalized);
+}
+
 /** Build stats text for the /ctx-stats command. */
 function buildStatsText(db: SessionDB, sessionId: string): string {
   try {
@@ -179,9 +195,11 @@ function buildStatsText(db: SessionDB, sessionId: string): string {
 
     // Session age
     if (stats?.started_at) {
-      const startedMs = new Date(stats.started_at).getTime();
-      const ageMinutes = Math.round((Date.now() - startedMs) / 60_000);
-      lines.push(`- Session age: ${ageMinutes}m`);
+      const startedMs = parseSessionTimestampMs(stats.started_at);
+      if (Number.isFinite(startedMs)) {
+        const ageMinutes = Math.round((Date.now() - startedMs) / 60_000);
+        lines.push(`- Session age: ${ageMinutes}m`);
+      }
     }
 
     return lines.join("\n");
@@ -323,6 +341,19 @@ export default function piExtension(pi: any): void {
 
   pi.on("before_agent_start", async (event: any) => {
     try {
+      // Block first agent start until the MCP bridge bootstrap has
+      // settled so the LLM call dispatched right after this handler
+      // sees the ctx_* tools in Pi's registry. Each subagent starts
+      // a fresh `pi --mode json -p --no-session` process whose only
+      // window to register tools is the gap between piExtension(pi)
+      // returning and the first before_agent_start firing — that gap
+      // is too small for the spawn → initialize → tools/list →
+      // pi.registerTool round-trip, so without this await the first
+      // (and often only) prompt of a subagent goes out with an empty
+      // ctx_* registry and the routing block becomes dead weight.
+      // Resolves on bootstrap failure too — the bridge is best-effort.
+      await _mcpBridgeReady;
+
       if (!_sessionId) return;
 
       const prompt = String(event?.prompt ?? "");

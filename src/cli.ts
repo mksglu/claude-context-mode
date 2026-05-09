@@ -133,7 +133,11 @@ const args = process.argv.slice(2);
 if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
-  upgrade();
+  upgrade().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    p.log.error(color.red(message));
+    process.exit(1);
+  });
 } else if (args[0] === "hook") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
@@ -732,168 +736,162 @@ async function upgrade() {
     if (newVersion === localVersion) {
       p.log.success(color.green("Already on latest") + ` — v${localVersion}`);
       rmSync(tmpDir, { recursive: true, force: true });
-      return;
     } else {
       p.log.info(
         `Update available: ${color.yellow("v" + localVersion)} → ${color.green("v" + newVersion)}`,
       );
-    }
+      // Step 2: Install dependencies + build
+      s.start("Installing dependencies & building");
+      npmExecFile(["install", "--no-audit", "--no-fund"], {
+        cwd: srcDir,
+        stdio: "pipe",
+        timeout: 120000,
+      });
+      npmExecFile(["run", "build"], {
+        cwd: srcDir,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+      s.stop("Built successfully");
 
-    // Step 2: Install dependencies + build
-    s.start("Installing dependencies & building");
-    npmExecFile(["install", "--no-audit", "--no-fund"], {
-      cwd: srcDir,
-      stdio: "pipe",
-      timeout: 120000,
-    });
-    npmExecFile(["run", "build"], {
-      cwd: srcDir,
-      stdio: "pipe",
-      timeout: 60000,
-    });
-    s.stop("Built successfully");
+      // Step 3: Update in-place
+      s.start("Updating files in-place");
 
-    // Step 3: Update in-place
-    s.start("Updating files in-place");
+      // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
+      // to avoid breaking active sessions that still reference them (#181).
 
-    // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
-    // to avoid breaking active sessions that still reference them (#181).
+      // Read files list from cloned repo's package.json so new directories
+      // (like insight/) are automatically included without chicken-and-egg issues
+      // where the old CLI doesn't know about new directories.
+      const clonedPkg = JSON.parse(readFileSync(resolve(srcDir, "package.json"), "utf-8"));
+      const items = [
+        ...(clonedPkg.files || []),
+        "src", "package.json",
+      ];
+      for (const item of items) {
+        try {
+          rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
+          cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
+        } catch { /* some files may not exist in source */ }
+      }
 
-    // Read files list from cloned repo's package.json so new directories
-    // (like insight/) are automatically included without chicken-and-egg issues
-    // where the old CLI doesn't know about new directories.
-    const clonedPkg = JSON.parse(readFileSync(resolve(srcDir, "package.json"), "utf-8"));
-    const items = [
-      ...(clonedPkg.files || []),
-      "src", "package.json",
-    ];
-    for (const item of items) {
-      try {
-        rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
-        cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
-      } catch { /* some files may not exist in source */ }
-    }
-
-    // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
-    // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
-    // (#181) deletes after upgrade — breaking MCP server resolution. The literal
-    // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
-    // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
-    const mcpConfig = {
-      mcpServers: {
-        "context-mode": {
-          command: "node",
-          args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
+      // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
+      // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
+      // (#181) deletes after upgrade — breaking MCP server resolution. The literal
+      // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
+      // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
+      const mcpConfig = {
+        mcpServers: {
+          "context-mode": {
+            command: "node",
+            args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
+          },
         },
-      },
-    };
-    writeFileSync(
-      resolve(pluginRoot, ".mcp.json"),
-      JSON.stringify(mcpConfig, null, 2) + "\n",
-    );
-
-    s.stop(color.green(`Updated in-place to v${newVersion}`));
-
-    // Fix registry — adapter-aware
-    adapter.updatePluginRegistry(pluginRoot, newVersion);
-    p.log.info(color.dim("  Registry synced to " + pluginRoot));
-
-    // Install production deps
-    s.start("Installing production dependencies");
-    npmExecFile(["install", "--production", "--no-audit", "--no-fund"], {
-      cwd: pluginRoot,
-      stdio: "pipe",
-      timeout: 60000,
-    });
-    s.stop("Dependencies ready");
-
-    if (detection.platform !== 'opencode' && detection.platform !== 'kilo') {
-      // Verify native addons through the same bootstrap start.mjs imports.
-      // On modern Node, the ABI-specific cache file is the compatibility marker;
-      // the active binding alone may be stale from a previous Node ABI.
-      s.start("Verifying native addon ABI");
-      const bsqAbiCachePath = resolve(
-        pluginRoot,
-        "node_modules",
-        "better-sqlite3",
-        "build",
-        "Release",
-        `better_sqlite3.abi${process.versions.modules}.node`,
+      };
+      writeFileSync(
+        resolve(pluginRoot, ".mcp.json"),
+        JSON.stringify(mcpConfig, null, 2) + "\n",
       );
-      try {
-        const ensureDepsPath = resolve(pluginRoot, "hooks", "ensure-deps.mjs");
-        if (!existsSync(ensureDepsPath)) {
-          throw new Error(`missing ${ensureDepsPath}`);
-        }
-        await import(`${pathToFileURL(ensureDepsPath).href}?upgrade=${Date.now()}`);
-        if (existsSync(bsqAbiCachePath)) {
-          s.stop(color.green("Native addons OK") + color.dim(" — ABI cache present"));
-          changes.push(`better-sqlite3 ABI ${process.versions.modules} cache ready`);
-        } else {
-          s.stop(color.yellow("Native addon ABI cache missing"));
+
+      s.stop(color.green(`Updated in-place to v${newVersion}`));
+
+      // Fix registry — adapter-aware
+      adapter.updatePluginRegistry(pluginRoot, newVersion);
+      p.log.info(color.dim("  Registry synced to " + pluginRoot));
+
+      // Install production deps
+      s.start("Installing production dependencies");
+      npmExecFile(["install", "--production", "--no-audit", "--no-fund"], {
+        cwd: pluginRoot,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+      s.stop("Dependencies ready");
+
+      if (detection.platform !== 'opencode' && detection.platform !== 'kilo') {
+        // Verify native addons through the same bootstrap start.mjs imports.
+        // On modern Node, the ABI-specific cache file is the compatibility marker;
+        // the active binding alone may be stale from a previous Node ABI.
+        s.start("Verifying native addon ABI");
+        const bsqAbiCachePath = resolve(
+          pluginRoot,
+          "node_modules",
+          "better-sqlite3",
+          "build",
+          "Release",
+          `better_sqlite3.abi${process.versions.modules}.node`,
+        );
+        try {
+          const ensureDepsPath = resolve(pluginRoot, "hooks", "ensure-deps.mjs");
+          if (!existsSync(ensureDepsPath)) {
+            throw new Error(`missing ${ensureDepsPath}`);
+          }
+          await import(`${pathToFileURL(ensureDepsPath).href}?upgrade=${Date.now()}`);
+          if (existsSync(bsqAbiCachePath)) {
+            s.stop(color.green("Native addons OK") + color.dim(" — ABI cache present"));
+            changes.push(`better-sqlite3 ABI ${process.versions.modules} cache ready`);
+          } else {
+            s.stop(color.yellow("Native addon ABI cache missing"));
+            p.log.warn(
+              color.dim(`  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
+            );
+          }
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          s.stop(color.yellow("Native addon ABI bootstrap unavailable"));
           p.log.warn(
-            color.dim(`  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
+            color.yellow("better-sqlite3 ABI repair did not run") +
+              ` — ${message}` +
+              color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
           );
         }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        s.stop(color.yellow("Native addon ABI bootstrap unavailable"));
-        p.log.warn(
-          color.yellow("better-sqlite3 ABI repair did not run") +
-            ` — ${message}` +
-            color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
-        );
       }
-    }
-    
-    // Update global npm
-    s.start("Updating npm global package");
-    try {
-      npmExecFile(["install", "-g", pluginRoot, "--no-audit", "--no-fund"], {
-        stdio: "pipe",
-        timeout: 30000,
-      });
-      s.stop(color.green("npm global updated"));
-      changes.push("Updated npm global package");
-    } catch {
-      s.stop(color.yellow("npm global update skipped"));
-      p.log.info(color.dim("  Could not update global npm — may need sudo or standalone install"));
-    }
+      
+      // Update global npm
+      s.start("Updating npm global package");
+      try {
+        npmExecFile(["install", "-g", pluginRoot, "--no-audit", "--no-fund"], {
+          stdio: "pipe",
+          timeout: 30000,
+        });
+        s.stop(color.green("npm global updated"));
+        changes.push("Updated npm global package");
+      } catch {
+        s.stop(color.yellow("npm global update skipped"));
+        p.log.info(color.dim("  Could not update global npm — may need sudo or standalone install"));
+      }
 
-    // Cleanup
-    rmSync(tmpDir, { recursive: true, force: true });
+      // Cleanup
+      rmSync(tmpDir, { recursive: true, force: true });
 
-    // Sync skills to the active install path from installed_plugins.json (#228).
-    // Only targets the ACTUAL directory Claude Code reads from — not spraying everywhere.
-    try {
-      const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-      if (existsSync(registryPath)) {
-        const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-        const entries = registry?.plugins?.["context-mode@context-mode"];
-        if (Array.isArray(entries)) {
-          for (const entry of entries) {
-            const installPath = entry.installPath;
-            if (installPath && installPath !== pluginRoot && existsSync(installPath)) {
-              const srcSkills = resolve(srcDir, "skills");
-              if (existsSync(srcSkills)) {
-                cpSync(srcSkills, resolve(installPath, "skills"), { recursive: true });
-                changes.push(`Synced skills to active install path`);
+      // Sync skills to the active install path from installed_plugins.json (#228).
+      // Only targets the ACTUAL directory Claude Code reads from — not spraying everywhere.
+      try {
+        const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+        if (existsSync(registryPath)) {
+          const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+          const entries = registry?.plugins?.["context-mode@context-mode"];
+          if (Array.isArray(entries)) {
+            for (const entry of entries) {
+              const installPath = entry.installPath;
+              if (installPath && installPath !== pluginRoot && existsSync(installPath)) {
+                const srcSkills = resolve(srcDir, "skills");
+                if (existsSync(srcSkills)) {
+                  cpSync(srcSkills, resolve(installPath, "skills"), { recursive: true });
+                  changes.push(`Synced skills to active install path`);
+                }
               }
             }
           }
         }
-      }
-    } catch { /* best effort — registry may not exist or be malformed */ }
+      } catch { /* best effort — registry may not exist or be malformed */ }
 
-    changes.push(
-      newVersion !== localVersion
-        ? `Updated v${localVersion} → v${newVersion}`
-        : `Reinstalled v${localVersion} from GitHub`,
-    );
-    p.log.success(
-      color.green("Plugin reinstalled from GitHub!") +
-        color.dim(` — v${newVersion}`),
-    );
+      changes.push(`Updated v${localVersion} → v${newVersion}`);
+      p.log.success(
+        color.green("Plugin reinstalled from GitHub!") +
+          color.dim(` — v${newVersion}`),
+      );
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     s.stop(color.red("Update failed"));
@@ -919,12 +917,17 @@ async function upgrade() {
 
   // Step 4: Configure hooks — adapter-aware
   p.log.step(`Configuring ${adapter.name} hooks...`);
-  const hookChanges = adapter.configureAllHooks(pluginRoot);
-  for (const change of hookChanges) {
-    p.log.info(color.dim(`  ${change}`));
-    changes.push(change);
+  try {
+    const hookChanges = adapter.configureAllHooks(pluginRoot);
+    for (const change of hookChanges) {
+      p.log.info(color.dim(`  ${change}`));
+      changes.push(change);
+    }
+    p.log.success(color.green("Hooks configured") + color.dim(` — ${adapter.name}`));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Hook configuration failed: ${message}`);
   }
-  p.log.success(color.green("Hooks configured") + color.dim(` — ${adapter.name}`));
 
   // Step 5: Set hook script permissions — adapter-aware
   p.log.step("Setting hook script permissions...");

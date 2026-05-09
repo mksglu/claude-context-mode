@@ -1,6 +1,7 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
@@ -271,6 +272,184 @@ describe("CodexAdapter", () => {
       expect(config).toHaveProperty("SessionStart");
       expect(config).toHaveProperty("UserPromptSubmit");
       expect(config).toHaveProperty("Stop");
+      expect(config.PreToolUse[0]?.matcher).toContain("mcp__plugin_context-mode_context-mode__ctx_batch_execute");
+      expect(config.UserPromptSubmit[0]?.hooks[0]?.command).toBe("context-mode hook codex userpromptsubmit");
+    });
+  });
+
+  describe("configureAllHooks", () => {
+    const hooksPath = join(homedir(), ".codex", "hooks.json");
+    const codexDir = join(homedir(), ".codex");
+
+    beforeEach(() => {
+      rmSync(codexDir, { recursive: true, force: true });
+      mkdirSync(codexDir, { recursive: true });
+    });
+
+    it("writes the native Codex hooks file with the scoped PreToolUse matcher", () => {
+      const changes = adapter.configureAllHooks("/ignored/plugin/root");
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+      };
+
+      expect(changes.some((change) => change.includes("Added PreToolUse hook"))).toBe(true);
+      expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
+      expect(written.hooks.PreToolUse[0]?.matcher).toContain("mcp__plugin_context-mode_context-mode__ctx_execute");
+      expect(written.hooks.Stop[0]?.hooks[0]?.command).toBe("context-mode hook codex stop");
+    });
+
+    it("preserves unrelated hook entries while updating context-mode hooks", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: [{ type: "command", command: "node /tmp/context-mode/hooks/pretooluse.mjs" }] },
+          ],
+          SessionStart: [
+            { hooks: [{ type: "command", command: "context-mode hook codex sessionstart" }] },
+            { matcher: "startup|resume", hooks: [{ type: "command", command: "node C:/tools/extra-hook.js" }] },
+          ],
+        },
+      }, null, 2));
+
+      adapter.configureAllHooks("/ignored/plugin/root");
+
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
+      };
+      expect(written.hooks.PreToolUse[0]?.matcher).toContain("local_shell|shell|shell_command");
+      expect(written.hooks.SessionStart).toHaveLength(2);
+      expect(written.hooks.SessionStart[1]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
+    });
+
+    it("creates ~/.codex/hooks.json when the parent directory is missing", () => {
+      rmSync(codexDir, { recursive: true, force: true });
+
+      adapter.configureAllHooks("/ignored/plugin/root");
+
+      expect(existsSync(hooksPath)).toBe(true);
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+
+      expect(Object.keys(written.hooks).sort()).toEqual([
+        "PostToolUse",
+        "PreToolUse",
+        "SessionStart",
+        "Stop",
+        "UserPromptSubmit",
+      ]);
+    });
+
+    it("does not overwrite malformed hooks.json", () => {
+      const malformed = "{ invalid json";
+      writeFileSync(hooksPath, malformed, "utf-8");
+
+      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).toThrow(
+        "Failed to update ~/.codex/hooks.json",
+      );
+      expect(readFileSync(hooksPath, "utf-8")).toBe(malformed);
+    });
+
+    it("does not crash on schema-invalid entries with non-array hooks", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: "not-an-array" },
+            null,
+          ],
+        },
+      }, null, 2), "utf-8");
+
+      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).not.toThrow();
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: unknown }>>;
+      };
+      expect(Array.isArray(written.hooks.PreToolUse)).toBe(true);
+    });
+
+    it("does not crash when top-level hooks is not an object", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: [],
+      }, null, 2), "utf-8");
+
+      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).not.toThrow();
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, unknown>;
+      };
+      expect(typeof written.hooks).toBe("object");
+      expect(Array.isArray(written.hooks.PreToolUse)).toBe(true);
+    });
+  });
+
+  describe("validateHooks", () => {
+    const hooksPath = join(homedir(), ".codex", "hooks.json");
+    const codexDir = join(homedir(), ".codex");
+
+    beforeEach(() => {
+      rmSync(codexDir, { recursive: true, force: true });
+      mkdirSync(codexDir, { recursive: true });
+    });
+
+    it("fails when hooks.json is missing", () => {
+      const results = adapter.validateHooks("/ignored/plugin/root");
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("fail");
+      expect(results[0]?.check).toBe("Hooks config");
+    });
+
+    it("passes when all required Codex hooks are configured", () => {
+      adapter.configureAllHooks("/ignored/plugin/root");
+      const results = adapter.validateHooks("/ignored/plugin/root");
+      expect(results.every((result) => result.status === "pass")).toBe(true);
+      expect(results.map((result) => result.check)).toContain("UserPromptSubmit hook");
+      expect(results.map((result) => result.check)).toContain("Stop hook");
+    });
+
+    it("fails when hooks.json is malformed JSON", () => {
+      writeFileSync(hooksPath, "{ invalid json", "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("fail");
+      expect(results[0]?.message).toContain("not valid JSON");
+    });
+
+    it("fails with a read error message when hooks.json cannot be read", () => {
+      mkdirSync(hooksPath, { recursive: true });
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("fail");
+      expect(results[0]?.message).toContain("Could not read ~/.codex/hooks.json");
+    });
+
+    it("fails when hooks.json entries use an invalid schema", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: "not-an-array" },
+            null,
+          ],
+        },
+      }, null, 2), "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results.some((result) => result.status === "fail")).toBe(true);
+      expect(results[0]?.check).toBe("PreToolUse hook");
+    });
+
+    it("fails when top-level hooks uses an invalid schema", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: [],
+      }, null, 2), "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results.some((result) => result.status === "fail")).toBe(true);
+      expect(results[0]?.check).toBe("PreToolUse hook");
     });
   });
 });
