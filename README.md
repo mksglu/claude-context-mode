@@ -307,7 +307,22 @@ Full setup guide: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md)
 
 **Prerequisites:** Node.js 18+, Cursor with agent mode.
 
-**Install:**
+### Option A — Marketplace plugin (recommended)
+
+Once published to the [Cursor Marketplace](https://cursor.com/marketplace), install with one click. The plugin auto-registers MCP, hooks (`preToolUse`, `postToolUse`, `sessionStart`, `stop`, `afterAgentResponse`), rules, and skills. No manual config required.
+
+For local testing before publication:
+
+```bash
+# Symlink this repo into Cursor's local plugin directory
+mkdir -p ~/.cursor/plugins/local
+ln -s "$(pwd)" ~/.cursor/plugins/local/context-mode
+# Restart Cursor
+```
+
+> **Note:** if `.cursor/hooks.json` already contains context-mode entries from a prior `Option B` install, `context-mode doctor` will warn about duplicate hook firings. Remove one configuration to keep events single-fire.
+
+### Option B — Manual install (existing path)
 
 1. Install context-mode globally:
 
