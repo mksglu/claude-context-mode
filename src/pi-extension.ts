@@ -53,9 +53,6 @@ const BLOCKED_BASH_PATTERNS: RegExp[] = [
 let _db: SessionDB | null = null;
 let _sessionId = "";
 
-// Per-session gate: routing block injected at most once per session_id.
-const _routingInjected: Set<string> = new Set();
-
 // Cached routing-block string (built once per process from hooks/routing-block.mjs).
 let _routingBlock: string | null = null;
 async function getRoutingBlock(pluginRoot: string): Promise<string> {
@@ -199,7 +196,7 @@ export default function piExtension(pi: any): void {
 
   // ── 1. session_start — Initialize session ──────────────
 
-  pi.on("session_start", (ctx: any) => {
+  pi.on("session_start", (event: any, ctx: any) => {
     try {
       _sessionId = deriveSessionId(ctx ?? {});
       db.ensureSession(_sessionId, projectDir);
@@ -318,16 +315,13 @@ export default function piExtension(pi: any): void {
       const parts: string[] = [];
       if (existingPrompt) parts.push(existingPrompt);
 
-      // Pi-1: Inject routing block once per session (gated by _routingInjected).
-      // v1.0.107 — visible marker so Pi users can verify the routing block
-      // reached the model (Mickey-class verification path; mirrors OpenCode).
-      if (!_routingInjected.has(_sessionId)) {
-        const routingBlock = await getRoutingBlock(pluginRoot);
-        if (routingBlock) {
-          const marker = `<!-- context-mode: routing block injected (sessionID=${String(_sessionId).slice(0, 8)}) -->`;
-          parts.push(marker + "\n" + routingBlock);
-          _routingInjected.add(_sessionId);
-        }
+      // Pi-1: Inject routing block every turn.
+      // Unlike Claude Code where the SessionStart hook injects once into a persistent
+      // context, Pi rebuilds the system prompt fresh on every before_agent_start call.
+      // The routing block must be re-injected each turn or it disappears after turn 1.
+      const routingBlock = await getRoutingBlock(pluginRoot);
+      if (routingBlock) {
+        parts.push(routingBlock);
       }
 
       // Pi-3 + Pi-4: Always build active_memory (not just post-compact),
@@ -460,7 +454,6 @@ export default function piExtension(pi: any): void {
         _db.cleanupOldSessions(7);
       }
       _db = null;
-      _routingInjected.clear();
       _sessionId = "";
     } catch {
       // best effort — never throw during shutdown
