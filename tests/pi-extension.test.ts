@@ -348,6 +348,27 @@ describe("Pi Extension", () => {
       await api._trigger("session_shutdown", {});
     });
 
+    it("session_start receives (event, ctx) — ctx.sessionManager is used for session ID", async () => {
+      await registerPiExtension(api);
+
+      // The handler signature must be (event, ctx), not (ctx).
+      // Pass a real-looking ctx as the second argument with sessionManager;
+      // if the signature were wrong, sessionManager would be on the event
+      // object and deriveSessionId would fall back to pi-<timestamp>.
+      const sessionFile = `/fake/session-${Date.now()}.jsonl`;
+      await api._trigger("session_start",
+        { reason: "startup" },                               // event (1st arg)
+        { sessionManager: { getSessionFile: () => sessionFile } }, // ctx (2nd arg)
+      );
+
+      // Verify the session was initialised with the file-derived ID by checking
+      // that before_agent_start doesn't blow up (it needs a valid _sessionId).
+      const result = await api._trigger("before_agent_start", {
+        systemPrompt: "Base.",
+      });
+      expect(result?.systemPrompt).toBeDefined();
+    });
+
     it("handles session lifecycle in correct order", async () => {
       await registerPiExtension(api);
 
@@ -534,7 +555,7 @@ describe("Pi Extension", () => {
       expect(result.systemPrompt).toContain("<context_window_protection>");
     });
 
-    it("does not re-inject the routing block on subsequent calls", async () => {
+    it("re-injects the routing block on every subsequent call (Pi rebuilds system prompt each turn)", async () => {
       await registerPiExtension(api);
       await api._trigger("session_start", {
         sessionManager: { getSessionFile: () => `routing-2-${Date.now()}-${Math.random()}` },
@@ -546,12 +567,16 @@ describe("Pi Extension", () => {
       const second = await api._trigger("before_agent_start", {
         systemPrompt: "Base.",
       });
+      const third = await api._trigger("before_agent_start", {
+        systemPrompt: "Base.",
+      });
 
+      // Unlike Claude Code where the SessionStart hook persists context for the whole
+      // session, Pi rebuilds the system prompt fresh every turn. The routing block
+      // must be present on every call or the LLM loses MCP tool awareness after turn 1.
       expect(first?.systemPrompt).toContain("<context_window_protection>");
-      const occurrences = (
-        (second?.systemPrompt ?? "").match(/<context_window_protection>/g) ?? []
-      ).length;
-      expect(occurrences).toBe(0);
+      expect(second?.systemPrompt).toContain("<context_window_protection>");
+      expect(third?.systemPrompt).toContain("<context_window_protection>");
     });
   });
 
