@@ -5,8 +5,6 @@ packages/*/dist/
 .DS_Store
 /tmp/
 *.db
-server.bundle.mjs
-cli.bundle.mjs
 package-lock.json
 hooks/session-extract.bundle.mjs
 hooks/session-snapshot.bundle.mjs
