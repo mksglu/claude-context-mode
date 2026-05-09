@@ -804,6 +804,45 @@ describe("Bin entry uses cli.bundle.mjs", () => {
     expect(doctorSection).toContain("FTS5");
   });
 
+  it("doctor hook script discovery supports flat and nested hook config entries", () => {
+    const helperSrc = readFileSync(resolve(ROOT, "src", "util", "hook-config.ts"), "utf-8");
+    expect(helperSrc).toContain("export function getCommandsFromHookEntry");
+    expect(helperSrc).toContain("(entry as { command?: unknown }).command");
+    expect(helperSrc).toContain("Array.isArray(hooks)");
+    expect(helperSrc).toContain("getCommandsFromHookEntry(entry)");
+    expect(helperSrc).not.toContain("entry.hooks");
+
+    for (const rel of ["src/cli.ts", "src/server.ts"]) {
+      const src = readFileSync(resolve(ROOT, rel), "utf-8");
+      expect(src).toContain('import { getHookScriptPaths } from "./util/hook-config.js";');
+      expect(src).not.toContain("function getCommandsFromHookEntry");
+      expect(src).not.toContain("function getHookScriptPaths");
+    }
+  });
+
+  it("cli doctor renders hook warnings as WARN instead of FAIL", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const loopStart = src.indexOf("for (const result of hookResults)");
+    const loopEnd = src.indexOf("// Hook scripts exist", loopStart);
+    const loop = src.slice(loopStart, loopEnd);
+
+    expect(loop).toContain('result.status === "warn"');
+    expect(loop).toContain("p.log.warn");
+    expect(loop).toContain(": WARN");
+  });
+
+  it("upgrade still reaches hook configuration when already on latest", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const alreadyLatestIdx = src.indexOf("Already on latest");
+    const configureIdx = src.indexOf("Configuring ${adapter.name} hooks");
+
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+
+    const alreadyLatestBlock = src.slice(alreadyLatestIdx, configureIdx);
+    expect(alreadyLatestBlock).not.toContain("return;");
+  });
+
   it("server.ts ctx_upgrade uses cli.bundle.mjs with fallback", () => {
     const src = readFileSync(resolve(ROOT, "src", "server.ts"), "utf-8");
     // ctx_upgrade handler must prefer cli.bundle.mjs
@@ -1105,6 +1144,38 @@ describe("Shell-free upgrade (#185)", () => {
     expect(upgradeBody).toContain("chmodSync");
   });
 
+  test("cli.ts upgrade aborts when hook configuration fails instead of reporting success", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    expect(upgradeBody).toContain("Hook configuration failed");
+    expect(upgradeBody).toMatch(/try\s*\{\s*const hookChanges = adapter\.configureAllHooks\(pluginRoot\)/s);
+    expect(upgradeBody).toMatch(/\}\s*catch\s*\(err: unknown\)\s*\{[\s\S]*throw new Error\(`Hook configuration failed: \$\{message\}`\);/s);
+  });
+
+  test("cli.ts entrypoint catches upgrade() rejection and exits non-zero", () => {
+    const entryStart = CLI_SOURCE.indexOf("const args = process.argv.slice(2);");
+    expect(entryStart).toBeGreaterThan(-1);
+    const entryBody = CLI_SOURCE.slice(entryStart, CLI_SOURCE.indexOf("/* -------------------------------------------------------", entryStart + 20));
+
+    expect(entryBody).toContain('} else if (args[0] === "upgrade") {');
+    expect(entryBody).toContain("upgrade().catch((err: unknown) => {");
+    expect(entryBody).toContain("process.exit(1);");
+  });
+
+  test("cli.ts already-latest path still configures hooks", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    const alreadyLatestIdx = upgradeBody.indexOf('p.log.success(color.green("Already on latest")');
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    const configureIdx = upgradeBody.indexOf("adapter.configureAllHooks(pluginRoot)");
+    expect(configureIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+  });
+
   test("server.ts inline fallback uses execFileSync, not execSync", () => {
     // The inline script template must use execFileSync
     const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");
@@ -1243,7 +1314,7 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(hookMap).toContain('"codex"');
   });
 
-  test("codex HOOK_MAP has pretooluse, posttooluse, sessionstart", () => {
+  test("codex HOOK_MAP has all Codex hook dispatches", () => {
     const mapStart = CLI_SOURCE.indexOf("const HOOK_MAP");
     const mapEnd = CLI_SOURCE.indexOf("};", mapStart) + 2;
     const hookMap = CLI_SOURCE.slice(mapStart, mapEnd);
@@ -1253,7 +1324,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("pretooluse");
     expect(codexBlock).toContain("posttooluse");
+    expect(codexBlock).toContain("precompact");
     expect(codexBlock).toContain("sessionstart");
+    expect(codexBlock).toContain("userpromptsubmit");
+    expect(codexBlock).toContain("stop");
   });
 
   test("codex hooks point to dedicated hooks/codex/ directory", () => {
@@ -1265,7 +1339,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("hooks/codex/pretooluse.mjs");
     expect(codexBlock).toContain("hooks/codex/posttooluse.mjs");
+    expect(codexBlock).toContain("hooks/codex/precompact.mjs");
     expect(codexBlock).toContain("hooks/codex/sessionstart.mjs");
+    expect(codexBlock).toContain("hooks/codex/userpromptsubmit.mjs");
+    expect(codexBlock).toContain("hooks/codex/stop.mjs");
   });
 
   test("hooks/codex/pretooluse.mjs exists", () => {
@@ -1278,6 +1355,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
 
   test("hooks/codex/sessionstart.mjs exists", () => {
     expect(existsSync(resolve(ROOT, "hooks/codex/sessionstart.mjs"))).toBe(true);
+  });
+
+  test("hooks/codex/precompact.mjs exists", () => {
+    expect(existsSync(resolve(ROOT, "hooks/codex/precompact.mjs"))).toBe(true);
   });
 
   test("session-helpers.mjs exports CODEX_OPTS", () => {

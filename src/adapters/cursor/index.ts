@@ -13,6 +13,7 @@ import {
   chmodSync,
   constants,
   existsSync,
+  readdirSync,
 } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, join } from "node:path";
@@ -361,7 +362,76 @@ export class CursorAdapter extends BaseAdapter implements HookAdapter {
       });
     }
 
+    const pluginInstalls = this.detectPluginInstalls();
+    if (pluginInstalls.length > 0) {
+      const nativeHasContextMode = loaded
+        ? Object.entries(loaded.config.hooks ?? {}).some(([type, entries]) =>
+            Array.isArray(entries) && (entries as CursorHookCommandEntry[]).some(
+              (entry) => isContextModeHook(entry, type as HookType),
+            ),
+          )
+        : false;
+      if (nativeHasContextMode && loaded) {
+        results.push({
+          check: "Plugin/native hook duplication",
+          status: "warn",
+          message:
+            `context-mode plugin detected at ${pluginInstalls[0]} alongside native hooks in ${loaded.path} — ` +
+            `each event will fire twice. Remove one configuration to avoid duplicate routing.`,
+          fix: "Remove the native .cursor/hooks.json entries OR uninstall the plugin",
+        });
+      } else {
+        results.push({
+          check: "Plugin install",
+          status: "pass",
+          message: `context-mode plugin installed at ${pluginInstalls[0]}`,
+        });
+      }
+    }
+
     return results;
+  }
+
+  /**
+   * Detects context-mode plugin installations under Cursor's plugin directories.
+   * Returns absolute paths to any `.cursor-plugin/plugin.json` files whose
+   * `name` matches `context-mode`.
+   */
+  private detectPluginInstalls(): string[] {
+    const roots = [
+      join(homedir(), ".cursor", "plugins", "local"),
+      join(homedir(), ".cursor", "plugins", "cache"),
+    ];
+    const found: string[] = [];
+
+    for (const root of roots) {
+      try {
+        accessSync(root, constants.F_OK);
+      } catch {
+        continue;
+      }
+      // Plugins live one directory deep: <root>/<name>/.cursor-plugin/plugin.json
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(root);
+      } catch {
+        continue;
+      }
+      for (const name of entries) {
+        const manifestPath = join(root, name, ".cursor-plugin", "plugin.json");
+        try {
+          const raw = readFileSync(manifestPath, "utf-8");
+          const parsed = JSON.parse(raw) as { name?: string };
+          if (parsed?.name === "context-mode") {
+            found.push(manifestPath);
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    return found;
   }
 
   checkPluginRegistration(): DiagnosticResult {

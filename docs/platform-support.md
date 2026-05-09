@@ -185,15 +185,16 @@ When OpenCode triggers `experimental.session.compacting` (auto on context overfl
 
 ### Codex CLI
 
-**Status:** Supported (MCP active, hooks stable)
+**Status:** Supported (MCP active, hooks require `[features].hooks = true`)
 
 **Hook Paradigm:** JSON stdin/stdout
 
-Codex CLI's Rust backend (codex-rs) includes a full hook system with 5 events, using the same JSON stdin/stdout wire protocol as Claude Code. Hooks are configured via `hooks.json`.
+Codex CLI's Rust backend (codex-rs) includes a hook system using the same JSON stdin/stdout wire protocol as Claude Code. Hooks are configured via `hooks.json`.
 
 **Hook Names:**
 - `PreToolUse` -- fires before a tool is executed
 - `PostToolUse` -- fires after a tool completes
+- `PreCompact` -- fires before context compaction on Codex builds that emit it
 - `SessionStart` -- fires when a session starts, resumes, or clears
 - `UserPromptSubmit` -- fires when user submits a prompt
 - `Stop` -- fires when agent turn ends (can continue with followup)
@@ -204,13 +205,17 @@ Codex CLI's Rust backend (codex-rs) includes a full hook system with 5 events, u
 **Context Injection:** `additionalContext` in hookSpecificOutput (PostToolUse, SessionStart only). PreToolUse does NOT support `additionalContext` — the codex formatter handles this automatically (deny works, context/modify/ask responses are dropped).
 
 **Configuration:**
-- Hook config: `~/.codex/hooks.json` (JSON format, same structure as Claude Code)
-- MCP config: `~/.codex/config.toml` (TOML format, `[mcp_servers]` section)
+- Hook config: `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json` (JSON format, same structure as Claude Code)
+- MCP config: `$CODEX_HOME/config.toml` or `~/.codex/config.toml` (TOML format, `[mcp_servers]` section)
+- Feature flags: use `[features].hooks` (or `codex --enable hooks`) if you need
+  to force hooks on. Prefer `[features].hooks`; `[features].codex_hooks` remains
+  accepted as a legacy alias in current Codex builds.
 
 **Hook Commands:**
 ```
 context-mode hook codex pretooluse
 context-mode hook codex posttooluse
+context-mode hook codex precompact
 context-mode hook codex sessionstart
 context-mode hook codex userpromptsubmit
 context-mode hook codex stop
@@ -219,7 +224,8 @@ context-mode hook codex stop
 **Known Issues / Caveats:**
 - PreToolUse `additionalContext` is unsupported — context injection works via PostToolUse and SessionStart instead. The codex formatter handles this automatically (deny works, context is dropped). Source: `codex-rs/hooks/src/engine/output_parser.rs:267`.
 - PreToolUse input rewriting still needs upstream `updatedInput` support. Track: [openai/codex#18491](https://github.com/openai/codex/issues/18491).
-- `tool_name` is always "Bash" (Codex only has one tool type)
+- PreCompact support is runtime-gated: context-mode configures it and treats a missing registration as a warning, because older Codex builds may not emit the event. The hook stores the resume snapshot out-of-band and SessionStart restores it.
+- Codex emits structured tool names such as `Bash` and `apply_patch`; context-mode only normalizes legacy shell aliases.
 - updatedInput and updatedMCPToolOutput are in the schema but NOT implemented
 - Default hook timeout: 600 seconds
 
@@ -497,6 +503,9 @@ Cursor uses native lower-camel hook names and flat hook entries in `.cursor/hook
 - Project: `.cursor/hooks.json`
 - User: `~/.cursor/hooks.json`
 - MCP config: `.cursor/mcp.json` or `~/.cursor/mcp.json`
+- **Marketplace plugin (recommended):** `.cursor-plugin/plugin.json` at the repo root auto-registers MCP, hooks, rules, and skills. Manifest explicitly points `hooks` at `./hooks/cursor/hooks.json` to avoid colliding with the Claude-format `./hooks/hooks.json`. Local install: `ln -s <repo> ~/.cursor/plugins/local/context-mode`. Plugin hook commands use `npx -y context-mode hook cursor <event>` so no global install is required.
+
+**Plugin/native duplication:** `context-mode doctor` warns when both the plugin and `.cursor/hooks.json` register context-mode hooks (each event would otherwise fire twice). Remove one configuration to keep events single-fire.
 
 **Hook Commands:**
 ```
@@ -646,7 +655,7 @@ The hook adapter exists only to satisfy the interface contract — every parser 
 |-----------|:-----------:|:----------:|:---------------:|:-----------------:|:------:|:--------:|:---------:|:-----------:|:----:|:---:|
 | PreToolUse | Yes | Yes | Yes | Yes | Yes | Yes | Yes*** | -- | -- | -- |
 | PostToolUse | Yes | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- |
-| PreCompact | Yes | Yes | Yes | Yes | -- | Yes* | -- | -- | -- | -- |
+| PreCompact | Yes | Yes | Yes | Yes | -- | Yes* | Yes**** | -- | -- | -- |
 | SessionStart | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
 | Stop | -- | -- | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
 | Modify Args | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- | -- |
@@ -658,6 +667,7 @@ The hook adapter exists only to satisfy the interface contract — every parser 
 \* OpenCode `experimental.session.compacting` is experimental
 \*\* OpenCode has a TUI rendering bug for bash tool output (#13575)
 \*\*\* Codex CLI PreToolUse supports deny only (no `additionalContext`); context injection works via PostToolUse and SessionStart
+\*\*\*\* Codex CLI PreCompact is runtime-gated on builds that emit the event
 
 ---
 
@@ -726,7 +736,7 @@ The dispatcher resolves the hook script relative to the installed package and dy
 | `vscode-copilot` | `pretooluse`, `posttooluse`, `precompact`, `sessionstart` |
 | `jetbrains-copilot` | `pretooluse`, `posttooluse`, `precompact`, `sessionstart` |
 | `cursor` | `pretooluse`, `posttooluse`, `stop` |
-| `codex` | `pretooluse`, `posttooluse`, `sessionstart` |
+| `codex` | `pretooluse`, `posttooluse`, `precompact`, `sessionstart`, `userpromptsubmit`, `stop` |
 
 OpenCode uses a TS plugin paradigm (no command dispatcher). Antigravity and Kiro have no hook support.
 

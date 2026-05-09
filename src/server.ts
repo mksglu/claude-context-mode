@@ -34,6 +34,8 @@ import { persistToolCallCounter, restoreSessionStats } from "./session/persist-t
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
+import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
+import { getHookScriptPaths } from "./util/hook-config.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
@@ -141,10 +143,20 @@ function resolveClaudeConfigRoot(): string {
   return join(homedir(), ".claude");
 }
 
+async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
+  if (_detectedAdapter) return _detectedAdapter;
+  try {
+    const { getAdapter } = await import("./adapters/detect.js");
+    const signal = detectPlatform();
+    return await getAdapter(signal.platform);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get the platform-specific sessions directory from the detected adapter.
- * Falls back to <CLAUDE_CONFIG_DIR>/context-mode/sessions/ (or
- * ~/.claude/context-mode/sessions/) before adapter detection.
+ * Falls back to the detected platform config root before adapter detection.
  */
 function getSessionDir(): string {
   if (_detectedAdapter) return _detectedAdapter.getSessionDir();
@@ -152,15 +164,18 @@ function getSessionDir(): string {
   // call detectPlatform() (sync, env-var-based) and look up segments via
   // getSessionDirSegments() (sync map, no adapter instantiation). This keeps
   // non-Claude platforms from spilling sessions into ~/.claude/. For Claude
-  // Code (segments=[".claude"]), reroute through the CLAUDE_CONFIG_DIR
-  // contract so the pre-detection window does not split-state with hooks.
+  // Code/Codex (single-segment roots), reroute through their config-dir
+  // contracts so the pre-detection window does not split-state with hooks.
   try {
     const signal = detectPlatform();
     const segments = getSessionDirSegments(signal.platform);
     if (segments) {
-      const root = segments.length === 1 && segments[0] === ".claude"
-        ? resolveClaudeConfigRoot()
-        : join(homedir(), ...segments);
+      let root = join(homedir(), ...segments);
+      if (segments.length === 1 && segments[0] === ".claude") {
+        root = resolveClaudeConfigRoot();
+      } else if (segments.length === 1 && segments[0] === ".codex") {
+        root = resolveCodexConfigDir();
+      }
       const dir = join(root, "context-mode", "sessions");
       mkdirSync(dir, { recursive: true });
       return dir;
@@ -2653,12 +2668,29 @@ server.registerTool(
       }
     }
 
-    // Hook script
-    const hookPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
-    if (existsSync(hookPath)) {
-      lines.push(`[OK] Hook script: PASS — ${hookPath}`);
+    // Hooks
+    const diagnosticAdapter = await getDiagnosticAdapter();
+    if (diagnosticAdapter) {
+      for (const result of diagnosticAdapter.validateHooks(pluginRoot)) {
+        const prefix = result.status === "pass" ? "[OK]" : result.status === "warn" ? "[WARN]" : "[FAIL]";
+        const fix = result.fix ? ` — fix: ${result.fix}` : "";
+        lines.push(`${prefix} ${result.check}: ${result.message}${fix}`);
+      }
+
+      const hookScriptPaths = getHookScriptPaths(diagnosticAdapter, pluginRoot);
+      if (hookScriptPaths.length === 0) {
+        lines.push("[OK] Hook scripts: no direct .mjs script paths to verify");
+      }
+      for (const scriptPath of hookScriptPaths) {
+        const hookPath = resolve(pluginRoot, scriptPath);
+        if (existsSync(hookPath)) {
+          lines.push(`[OK] Hook script: PASS — ${hookPath}`);
+        } else {
+          lines.push(`[FAIL] Hook script: FAIL — not found at ${hookPath}`);
+        }
+      }
     } else {
-      lines.push(`[FAIL] Hook script: FAIL — not found at ${hookPath}`);
+      lines.push("[WARN] Hooks: adapter detection unavailable");
     }
 
     // Version

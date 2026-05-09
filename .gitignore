@@ -4,6 +4,7 @@ packages/*/dist/
 *.tsbuildinfo
 .DS_Store
 /tmp/
+tmp.*/
 *.db
 server.bundle.mjs
 cli.bundle.mjs

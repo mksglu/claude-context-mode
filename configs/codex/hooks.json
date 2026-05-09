@@ -2,6 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "local_shell|shell|shell_command|exec_command|container.exec|functions\\.exec_command|Bash|Shell|apply_patch|functions\\.apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__.*__ctx_execute|mcp__.*__ctx_execute_file|mcp__.*__ctx_batch_execute|mcp__.*__ctx_fetch_and_index|mcp__.*__ctx_search|mcp__.*__ctx_index",
         "hooks": [
           { "type": "command", "command": "context-mode hook codex pretooluse" }
         ]
@@ -18,6 +19,13 @@
       {
         "hooks": [
           { "type": "command", "command": "context-mode hook codex sessionstart" }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          { "type": "command", "command": "context-mode hook codex precompact" }
         ]
       }
     ],

@@ -15,7 +15,8 @@ const { loadSessionDB, loadExtract, loadProjectAttribution } = createSessionLoad
 const OPTS = CODEX_OPTS;
 
 function normalizeToolName(toolName) {
-  // Codex CLI tool_name is always "Bash" (single tool type)
+  // Keep Codex-native tool names like apply_patch intact; only normalize
+  // legacy shell aliases that should route through the Bash extractors.
   if (toolName === "Shell") return "Bash";
   return toolName;
 }
@@ -41,6 +42,12 @@ try {
     tool_response: typeof input.tool_response === "string"
       ? input.tool_response
       : JSON.stringify(input.tool_response ?? ""),
+    tool_output: input.tool_output
+      ? {
+        ...input.tool_output,
+        isError: input.tool_output.isError === true || input.tool_output.is_error === true,
+      }
+      : undefined,
   };
 
   const events = extractEvents(normalizedInput);

@@ -319,6 +319,21 @@ const TOOL_ALIASES = {
   "execute_bash": "Bash",
 };
 
+function toolLeafName(toolName) {
+  const raw = String(toolName ?? "");
+  const withoutMcpPrefix = raw.startsWith("MCP:") ? raw.slice(4) : raw;
+  const parts = withoutMcpPrefix.split(/__|\//).filter(Boolean);
+  return parts.at(-1) ?? withoutMcpPrefix;
+}
+
+function matchesContextModeTool(toolName, ctxName, legacyName) {
+  const raw = String(toolName ?? "");
+  const leaf = toolLeafName(raw);
+  if (leaf === ctxName) return true;
+  if (raw.startsWith("MCP:") && leaf === legacyName) return true;
+  return raw.includes("context-mode") && leaf === legacyName;
+}
+
 /**
  * Route a PreToolUse event. Returns normalized decision object or null for passthrough.
  *
@@ -501,12 +516,8 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP execute: security check for shell commands ───
-  // Match both __execute and __ctx_execute (prefixed tool names)
-  // Cursor can also surface the tool as MCP:ctx_execute_file.
-  if (
-    (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?execute$/.test(toolName)) ||
-    /^MCP:(ctx_)?execute$/.test(toolName)
-  ) {
+  // Match bare, generic MCP, and legacy context-mode execute tool names.
+  if (matchesContextModeTool(toolName, "ctx_execute", "execute")) {
     if (security && toolInput.language === "shell") {
       const code = toolInput.code ?? "";
       const policies = security.readBashPolicies(projectDir);
@@ -524,11 +535,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP execute_file: check file path + code against deny patterns ───
-  // Cursor can also surface the tool as MCP:ctx_execute_file.
-  if (
-    (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?execute_file$/.test(toolName)) ||
-    /^MCP:(ctx_)?execute_file$/.test(toolName)
-  ) {
+  if (matchesContextModeTool(toolName, "ctx_execute_file", "execute_file")) {
     if (security) {
       // Check file path against Read deny patterns
       const filePath = toolInput.path ?? "";
@@ -558,7 +565,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP batch_execute: check each command individually ───
-  if (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?batch_execute$/.test(toolName)) {
+  if (matchesContextModeTool(toolName, "ctx_batch_execute", "batch_execute")) {
     if (security) {
       const commands = toolInput.commands ?? [];
       const policies = security.readBashPolicies(projectDir);

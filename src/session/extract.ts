@@ -36,7 +36,7 @@ export interface HookInput {
   tool_input: Record<string, unknown>;
   tool_response?: string;
   /** Optional structured output from the tool (may carry isError) */
-  tool_output?: { isError?: boolean };
+  tool_output?: { isError?: boolean; is_error?: boolean };
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -51,6 +51,56 @@ function safeString(value: string | null | undefined): string {
 function safeStringAny(value: unknown): string {
   if (value == null) return "";
   return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function isToolError(input: HookInput): boolean {
+  const response = String(input.tool_response ?? "");
+  const isErrorFlag = input.tool_output?.isError === true || input.tool_output?.is_error === true;
+  const isBashError =
+    input.tool_name === "Bash" &&
+    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
+  return isBashError || isErrorFlag;
+}
+
+interface ApplyPatchTarget {
+  path: string;
+  type: "file_write" | "file_edit";
+}
+
+function extractApplyPatchTargets(command: string): ApplyPatchTarget[] {
+  if (!command) return [];
+
+  const targets: ApplyPatchTarget[] = [];
+  for (const line of command.split(/\r?\n/)) {
+    if (line.startsWith("*** Add File: ")) {
+      targets.push({ path: line.slice(14).trim(), type: "file_write" });
+      continue;
+    }
+    if (line.startsWith("*** Update File: ")) {
+      targets.push({ path: line.slice(17).trim(), type: "file_edit" });
+      continue;
+    }
+    if (line.startsWith("*** Delete File: ")) {
+      targets.push({ path: line.slice(17).trim(), type: "file_edit" });
+      continue;
+    }
+    if (line.startsWith("*** Move to: ")) {
+      targets.push({ path: line.slice(13).trim(), type: "file_edit" });
+    }
+  }
+
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    if (!target.path) return false;
+    const key = `${target.type}:${target.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isPlanFilePath(filePath: string): boolean {
+  return /(?:^|[/\\])\.claude[/\\]plans[/\\]/.test(filePath);
 }
 
 // ── Category extractors ────────────────────────────────────────────────────
@@ -152,6 +202,22 @@ function extractFileAndRule(input: HookInput): SessionEvent[] {
     return events;
   }
 
+  if (tool_name === "apply_patch") {
+    if (isToolError(input)) return [];
+    const patchTargets = extractApplyPatchTargets(
+      String(tool_input["command"] ?? tool_input["patch"] ?? ""),
+    );
+    for (const target of patchTargets) {
+      events.push({
+        type: target.type,
+        category: "file",
+        data: safeString(target.path),
+        priority: 1,
+      });
+    }
+    return events;
+  }
+
   // Glob — file pattern exploration
   if (tool_name === "Glob") {
     const pattern = String(tool_input["pattern"] ?? "");
@@ -207,16 +273,9 @@ function extractCwd(input: HookInput): SessionEvent[] {
  * isError flag in tool_output.
  */
 function extractError(input: HookInput): SessionEvent[] {
-  const { tool_name, tool_input, tool_response, tool_output } = input;
-
+  const { tool_response } = input;
   const response = String(tool_response ?? "");
-  const isErrorFlag = tool_output?.isError === true;
-
-  const isBashError =
-    tool_name === "Bash" &&
-    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
-
-  if (!isBashError && !isErrorFlag) return [];
+  if (!isToolError(input)) return [];
 
   return [{
     type: "error_tool",
@@ -351,7 +410,7 @@ function extractPlan(input: HookInput): SessionEvent[] {
   // Detect plan file writes (Write/Edit to ~/.claude/plans/)
   if (input.tool_name === "Write" || input.tool_name === "Edit") {
     const filePath = String(input.tool_input["file_path"] ?? "");
-    if (/[/\\]\.claude[/\\]plans[/\\]/.test(filePath)) {
+    if (isPlanFilePath(filePath)) {
       return [{
         type: "plan_file_write",
         category: "plan",
@@ -359,6 +418,21 @@ function extractPlan(input: HookInput): SessionEvent[] {
         priority: 2,
       }];
     }
+  }
+
+  if (input.tool_name === "apply_patch") {
+    if (isToolError(input)) return [];
+    const patchTargets = extractApplyPatchTargets(
+      String(input.tool_input["command"] ?? input.tool_input["patch"] ?? ""),
+    );
+    return patchTargets
+      .filter((target) => isPlanFilePath(target.path))
+      .map((target) => ({
+        type: "plan_file_write",
+        category: "plan",
+        data: safeString(`plan file: ${target.path.split(/[/\\]/).pop() ?? target.path}`),
+        priority: 2,
+      }));
   }
 
   return [];
@@ -881,15 +955,11 @@ function extractData(message: string): SessionEvent[] {
 let lastError: { tool: string; error: string; callsSince: number } | null = null;
 
 function extractErrorResolution(input: HookInput): SessionEvent[] {
-  const { tool_name, tool_response, tool_output } = input;
+  const { tool_name, tool_response } = input;
   const response = String(tool_response ?? "");
-  const isErrorFlag = tool_output?.isError === true;
-  const isBashError =
-    tool_name === "Bash" &&
-    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
 
   // If this call is an error, store it and return
-  if (isBashError || isErrorFlag) {
+  if (isToolError(input)) {
     lastError = { tool: tool_name, error: response.slice(0, 200), callsSince: 0 };
     return [];
   }
@@ -906,10 +976,14 @@ function extractErrorResolution(input: HookInput): SessionEvent[] {
     return [];
   }
 
+  const callSucceeded = !isToolError(input);
+  if (!callSucceeded) return [];
+
   // Check if this is a resolution: same tool, or Edit/Write after a Read error
   const sameTool = tool_name === lastError.tool;
   const editAfterReadError =
-    lastError.tool === "Read" && (tool_name === "Edit" || tool_name === "Write");
+    lastError.tool === "Read"
+    && (tool_name === "Edit" || tool_name === "Write" || tool_name === "apply_patch");
 
   if (sameTool || editAfterReadError) {
     const event: SessionEvent = {

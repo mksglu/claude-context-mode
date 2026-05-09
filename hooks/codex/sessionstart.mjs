@@ -45,12 +45,13 @@ try {
     const { SessionDB } = await loadSessionDB();
     const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
+    const sessionId = getSessionId(input, OPTS);
+    let resumeSnapshot = null;
 
     if (source === "compact") {
-      const sessionId = getSessionId(input, OPTS);
-      const resume = db.getResume(sessionId);
+      const resume = sessionId ? db.getResume(sessionId) : null;
       if (resume && !resume.consumed) {
-        db.markResumeConsumed(sessionId);
+        resumeSnapshot = resume.snapshot;
       }
     } else {
       try { unlinkSync(getCleanupFlagPath(OPTS, projectDir)); } catch { /* no flag */ }
@@ -61,11 +62,14 @@ try {
     // session whose session_meta.started_at is more recent — observed
     // cross-session bleed when a different session started after this one
     // and before the resume.
-    const sessionId = getSessionId(input, OPTS);
     const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
       additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
+    }
+    if (resumeSnapshot) {
+      additionalContext += `\n\n${resumeSnapshot}`;
+      db.markResumeConsumed(sessionId);
     }
 
     db.close();
