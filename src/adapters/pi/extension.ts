@@ -151,6 +151,22 @@ function deriveSessionId(ctx: Record<string, unknown>): string {
   return `pi-${Date.now()}`;
 }
 
+/**
+ * Parse SessionDB timestamps as UTC. SQLite datetime('now') returns
+ * "YYYY-MM-DD HH:MM:SS" in UTC without a timezone suffix; JavaScript parses
+ * that shape as local time, which skews ages by the local UTC offset.
+ */
+function parseSessionTimestampMs(value: string): number {
+  const trimmed = value.trim();
+  const sqliteUtc = trimmed.match(
+    /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$/,
+  );
+  const normalized = sqliteUtc
+    ? `${sqliteUtc[1]}T${sqliteUtc[2]}${sqliteUtc[3] ?? ""}Z`
+    : trimmed;
+  return Date.parse(normalized);
+}
+
 /** Build stats text for the /ctx-stats command. */
 function buildStatsText(db: SessionDB, sessionId: string): string {
   try {
@@ -179,9 +195,11 @@ function buildStatsText(db: SessionDB, sessionId: string): string {
 
     // Session age
     if (stats?.started_at) {
-      const startedMs = new Date(stats.started_at).getTime();
-      const ageMinutes = Math.round((Date.now() - startedMs) / 60_000);
-      lines.push(`- Session age: ${ageMinutes}m`);
+      const startedMs = parseSessionTimestampMs(stats.started_at);
+      if (Number.isFinite(startedMs)) {
+        const ageMinutes = Math.round((Date.now() - startedMs) / 60_000);
+        lines.push(`- Session age: ${ageMinutes}m`);
+      }
     }
 
     return lines.join("\n");

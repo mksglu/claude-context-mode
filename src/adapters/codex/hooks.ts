@@ -1,7 +1,9 @@
 /**
  * adapters/codex/hooks — Codex CLI hook definitions.
  *
- * Codex CLI hooks are stable (codex_hooks Stage::Stable, default_enabled: true).
+ * Codex CLI hooks are stable through the current `hooks` feature surface.
+ * If a user forces the flag manually, prefer `[features].hooks`; the legacy
+ * `[features].codex_hooks` alias is still accepted in current Codex builds.
  * 5 hook events: PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop.
  * Same JSON stdin/stdout wire protocol as Claude Code.
  *

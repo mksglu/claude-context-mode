@@ -206,6 +206,9 @@ Codex CLI's Rust backend (codex-rs) includes a full hook system with 5 events, u
 **Configuration:**
 - Hook config: `~/.codex/hooks.json` (JSON format, same structure as Claude Code)
 - MCP config: `~/.codex/config.toml` (TOML format, `[mcp_servers]` section)
+- Feature flags: use `[features].hooks` (or `codex --enable hooks`) if you need
+  to force hooks on. Prefer `[features].hooks`; `[features].codex_hooks` remains
+  accepted as a legacy alias in current Codex builds.
 
 **Hook Commands:**
 ```
@@ -219,7 +222,7 @@ context-mode hook codex stop
 **Known Issues / Caveats:**
 - PreToolUse `additionalContext` is unsupported — context injection works via PostToolUse and SessionStart instead. The codex formatter handles this automatically (deny works, context is dropped). Source: `codex-rs/hooks/src/engine/output_parser.rs:267`.
 - PreToolUse input rewriting still needs upstream `updatedInput` support. Track: [openai/codex#18491](https://github.com/openai/codex/issues/18491).
-- `tool_name` is always "Bash" (Codex only has one tool type)
+- Codex emits structured tool names such as `Bash` and `apply_patch`; context-mode only normalizes legacy shell aliases.
 - updatedInput and updatedMCPToolOutput are in the schema but NOT implemented
 - Default hook timeout: 600 seconds
 

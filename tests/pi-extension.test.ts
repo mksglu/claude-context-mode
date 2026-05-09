@@ -21,6 +21,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { SessionDB } from "../src/session/db.js";
 
 // ── Mock Pi API ──────────────────────────────────────────────
 
@@ -533,6 +534,63 @@ describe("Pi Extension", () => {
       // Should not throw even with no events
       const result = await cmd!.handler!({});
       expect(result).toBeDefined();
+    });
+
+    it("/ctx-stats treats SQLite started_at as UTC", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-09T12:30:00Z"));
+
+      const originalTZ = process.env.TZ;
+      process.env.TZ = "America/Los_Angeles";
+
+      const sessionFile = join(tempDir, "stats-utc-session.jsonl");
+      const sessionId = createHash("sha256")
+        .update(sessionFile)
+        .digest("hex")
+        .slice(0, 16);
+
+      try {
+        await registerPiExtension(api);
+        await api._trigger(
+          "session_start",
+          { type: "session_start", reason: "startup" },
+          { sessionManager: { getSessionFile: () => sessionFile } },
+        );
+
+        const dbPath = join(
+          process.env.HOME!,
+          ".pi",
+          "context-mode",
+          "sessions",
+          "context-mode.db",
+        );
+        const db = new SessionDB({ dbPath });
+        try {
+          // SQLite datetime('now') stores UTC as "YYYY-MM-DD HH:MM:SS".
+          // If parsed as local time in America/Los_Angeles, this would be
+          // 2026-05-09T19:00:00Z and the age would not be 30 minutes.
+          db.db
+            .prepare(
+              "UPDATE session_meta SET started_at = ? WHERE session_id = ?",
+            )
+            .run("2026-05-09 12:00:00", sessionId);
+        } finally {
+          db.close();
+        }
+
+        const result = await api._getCommand("ctx-stats")!.handler!({});
+
+        expect((result as { text: string }).text).toContain(
+          "- Session age: 30m",
+        );
+      } finally {
+        if (originalTZ === undefined) {
+          delete process.env.TZ;
+        } else {
+          process.env.TZ = originalTZ;
+        }
+        vi.useRealTimers();
+      }
     });
   });
 

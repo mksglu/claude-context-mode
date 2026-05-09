@@ -529,6 +529,12 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
    command = "context-mode"
    ```
 
+   > **Feature flag note:** Current Codex builds expose hooks under `[features].hooks`
+   > (or `codex --enable hooks`). Prefer `[features].hooks`; `[features].codex_hooks`
+   > remains accepted as a legacy alias in current Codex builds.
+   > In normal interactive Codex sessions you usually do not need to set either flag
+   > manually because hooks are already stable.
+
 3. Add hooks for routing enforcement and session tracking. Create `~/.codex/hooks.json`:
 
    ```json

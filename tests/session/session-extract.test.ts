@@ -55,6 +55,56 @@ describe("File Events", () => {
     assert.equal(events[0].category, "file");
     assert.equal(events[0].priority, 1);
   });
+
+  test("extracts file_write and file_edit from Codex apply_patch hunks", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/new-file.ts",
+          "+export const created = true;",
+          "*** Update File: src/existing.ts",
+          "@@",
+          "-export const before = true;",
+          "+export const after = true;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+
+    const events = extractEvents(input);
+    const fileWrites = events.filter(e => e.type === "file_write");
+    const fileEdits = events.filter(e => e.type === "file_edit");
+    assert.equal(fileWrites.length, 1);
+    assert.equal(fileWrites[0].data, "src/new-file.ts");
+    assert.equal(fileEdits.length, 1);
+    assert.equal(fileEdits[0].data, "src/existing.ts");
+  });
+
+  test("extracts moved target path from Codex apply_patch", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: src/old-name.ts",
+          "*** Move to: src/new-name.ts",
+          "@@",
+          "-export const value = 1;",
+          "+export const value = 2;",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+
+    const events = extractEvents(input);
+    const fileEdits = events.filter(e => e.type === "file_edit").map(e => e.data);
+    assert.ok(fileEdits.includes("src/old-name.ts"));
+    assert.ok(fileEdits.includes("src/new-name.ts"));
+  });
 });
 
 // ════════════════════════════════════════════
@@ -418,6 +468,53 @@ describe("Plan Mode Events", () => {
     const planEvents = events.filter(e => e.category === "plan");
     assert.equal(planEvents.length, 1);
     assert.equal(planEvents[0].type, "plan_file_write");
+  });
+
+  test("extracts plan_file_write from relative apply_patch updates to .claude/plans/", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: .claude/plans/my-plan.md",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+
+    const events = extractEvents(input);
+    const planEvents = events.filter(e => e.category === "plan");
+    assert.equal(planEvents.length, 1);
+    assert.equal(planEvents[0].type, "plan_file_write");
+    assert.ok(planEvents[0].data.includes("my-plan.md"));
+  });
+
+  test("does not extract file continuity events from failed apply_patch", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/failed.ts",
+          "+export const failed = true;",
+          "*** Update File: src/existing.ts",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.filter(e => e.type === "file_write").length, 0);
+    assert.equal(events.filter(e => e.type === "file_edit").length, 0);
   });
 
   test("does not extract plan event from Write to non-plan path", () => {
@@ -2061,6 +2158,87 @@ describe("Error Resolution Events", () => {
     const fixEvents = extractEvents(writeFix);
     const resolved = fixEvents.filter(e => e.type === "error_resolved");
     assert.equal(resolved.length, 1, "Write after Read error should resolve");
+  });
+
+  test("emits error_resolved when apply_patch follows Read error", () => {
+    resetErrorResolutionState();
+
+    const readError = {
+      tool_name: "Read",
+      tool_input: { file_path: "/project/src/missing.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    };
+    extractEvents(readError);
+
+    const patchFix = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/missing.ts",
+          "+export {};",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch applied successfully",
+    };
+    const fixEvents = extractEvents(patchFix);
+    const resolved = fixEvents.filter(e => e.type === "error_resolved");
+    assert.equal(resolved.length, 1, "apply_patch after Read error should resolve");
+  });
+
+  test("does not emit error_resolved when apply_patch fails after Read error", () => {
+    resetErrorResolutionState();
+
+    extractEvents({
+      tool_name: "Read",
+      tool_input: { file_path: "/project/src/missing.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    });
+
+    const fixEvents = extractEvents({
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/missing.ts",
+          "+export {};",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    });
+
+    assert.equal(
+      fixEvents.filter(e => e.type === "error_resolved").length,
+      0,
+      "failed apply_patch should not resolve a prior Read error",
+    );
+  });
+
+  test("does not emit plan_file_write when apply_patch fails after Read error", () => {
+    resetErrorResolutionState();
+
+    const events = extractEvents({
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: .claude/plans/bad-plan.md",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    });
+
+    assert.equal(events.filter(e => e.type === "plan_file_write").length, 0);
   });
 
   test("does not emit error_resolved for unrelated tool after error", () => {

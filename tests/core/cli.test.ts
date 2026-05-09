@@ -1105,6 +1105,38 @@ describe("Shell-free upgrade (#185)", () => {
     expect(upgradeBody).toContain("chmodSync");
   });
 
+  test("cli.ts upgrade aborts when hook configuration fails instead of reporting success", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    expect(upgradeBody).toContain("Hook configuration failed");
+    expect(upgradeBody).toMatch(/try\s*\{\s*const hookChanges = adapter\.configureAllHooks\(pluginRoot\)/s);
+    expect(upgradeBody).toMatch(/\}\s*catch\s*\(err: unknown\)\s*\{[\s\S]*throw new Error\(`Hook configuration failed: \$\{message\}`\);/s);
+  });
+
+  test("cli.ts entrypoint catches upgrade() rejection and exits non-zero", () => {
+    const entryStart = CLI_SOURCE.indexOf("const args = process.argv.slice(2);");
+    expect(entryStart).toBeGreaterThan(-1);
+    const entryBody = CLI_SOURCE.slice(entryStart, CLI_SOURCE.indexOf("/* -------------------------------------------------------", entryStart + 20));
+
+    expect(entryBody).toContain('} else if (args[0] === "upgrade") {');
+    expect(entryBody).toContain("upgrade().catch((err: unknown) => {");
+    expect(entryBody).toContain("process.exit(1);");
+  });
+
+  test("cli.ts already-latest path still configures hooks", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    const alreadyLatestIdx = upgradeBody.indexOf('p.log.success(color.green("Already on latest")');
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    const configureIdx = upgradeBody.indexOf("adapter.configureAllHooks(pluginRoot)");
+    expect(configureIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+  });
+
   test("server.ts inline fallback uses execFileSync, not execSync", () => {
     // The inline script template must use execFileSync
     const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");

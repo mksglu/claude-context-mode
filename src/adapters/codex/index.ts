@@ -16,6 +16,11 @@
 
 import {
   readFileSync,
+  writeFileSync,
+  accessSync,
+  copyFileSync,
+  constants,
+  mkdirSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +29,6 @@ import { homedir } from "node:os";
 import { BaseAdapter } from "../base.js";
 
 import {
-  buildNodeCommand,
   type HookAdapter,
   type HookParadigm,
   type PlatformCapabilities,
@@ -37,6 +41,7 @@ import {
   type PostToolUseResponse,
   type PreCompactResponse,
   type SessionStartResponse,
+  type HookEntry,
   type HookRegistration,
 } from "../types.js";
 
@@ -58,6 +63,35 @@ interface CodexHookInput {
   turn_id?: string;
   source?: string;
 }
+
+interface CodexHooksFile {
+  hooks?: HookRegistration;
+}
+
+type HooksConfigReadResult =
+  | { ok: true; config: CodexHooksFile }
+  | { ok: false; reason: "missing" }
+  | { ok: false; reason: "invalid_json"; error: string }
+  | { ok: false; reason: "read_error"; error: string };
+
+const PRE_TOOL_USE_MATCHER_PATTERN =
+  "local_shell|shell|shell_command|exec_command|container.exec|Bash|Shell|grep_files|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute";
+
+const CODEX_HOOK_COMMANDS = {
+  PreToolUse: "context-mode hook codex pretooluse",
+  PostToolUse: "context-mode hook codex posttooluse",
+  SessionStart: "context-mode hook codex sessionstart",
+  UserPromptSubmit: "context-mode hook codex userpromptsubmit",
+  Stop: "context-mode hook codex stop",
+} as const;
+
+const LEGACY_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, string[]> = {
+  PreToolUse: ["hooks/pretooluse.mjs", "hooks/codex/pretooluse.mjs"],
+  PostToolUse: ["hooks/posttooluse.mjs", "hooks/codex/posttooluse.mjs"],
+  SessionStart: ["hooks/sessionstart.mjs", "hooks/codex/sessionstart.mjs"],
+  UserPromptSubmit: ["hooks/userpromptsubmit.mjs", "hooks/codex/userpromptsubmit.mjs"],
+  Stop: ["hooks/stop.mjs", "hooks/codex/stop.mjs"],
+};
 
 // ─────────────────────────────────────────────────────────
 // Adapter implementation
@@ -217,15 +251,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return resolve(homedir(), ".codex", "memories");
   }
 
-  generateHookConfig(pluginRoot: string): HookRegistration {
+  generateHookConfig(_pluginRoot: string): HookRegistration {
     return {
       PreToolUse: [
         {
-          matcher: "local_shell|shell|shell_command|exec_command|container.exec|Bash|Shell|grep_files|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+          matcher: PRE_TOOL_USE_MATCHER_PATTERN,
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/pretooluse.mjs`),
+              command: CODEX_HOOK_COMMANDS.PreToolUse,
             },
           ],
         },
@@ -236,7 +270,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/posttooluse.mjs`),
+              command: CODEX_HOOK_COMMANDS.PostToolUse,
             },
           ],
         },
@@ -247,7 +281,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/sessionstart.mjs`),
+              command: CODEX_HOOK_COMMANDS.SessionStart,
             },
           ],
         },
@@ -258,7 +292,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/codex/userpromptsubmit.mjs`),
+              command: CODEX_HOOK_COMMANDS.UserPromptSubmit,
             },
           ],
         },
@@ -269,7 +303,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           hooks: [
             {
               type: "command",
-              command: buildNodeCommand(`${pluginRoot}/hooks/codex/stop.mjs`),
+              command: CODEX_HOOK_COMMANDS.Stop,
             },
           ],
         },
@@ -299,14 +333,58 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   // ── Diagnostics (doctor) ─────────────────────────────────
 
   validateHooks(_pluginRoot: string): DiagnosticResult[] {
-    return [
-      {
-        check: "Hook support",
-        status: "pass",
-        message:
-          "Codex CLI hooks are stable. Configure ~/.codex/hooks.json for PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, and Stop.",
-      },
-    ];
+    const hookConfig = this.readHooksConfig();
+    if (!hookConfig.ok) {
+      if (hookConfig.reason === "missing") {
+        return [{
+          check: "Hooks config",
+          status: "fail",
+          message: "No readable ~/.codex/hooks.json found",
+          fix: "Copy configs/codex/hooks.json to ~/.codex/hooks.json or run context-mode upgrade",
+        }];
+      }
+      if (hookConfig.reason === "invalid_json") {
+        return [{
+          check: "Hooks config",
+          status: "fail",
+          message: `~/.codex/hooks.json is not valid JSON: ${hookConfig.error}`,
+          fix: "Repair ~/.codex/hooks.json so it contains valid JSON, then rerun context-mode upgrade if needed",
+        }];
+      }
+
+      return [{
+        check: "Hooks config",
+        status: "fail",
+        message: `Could not read ~/.codex/hooks.json: ${hookConfig.error}`,
+        fix: "Check permissions and file accessibility for ~/.codex/hooks.json, then rerun context-mode upgrade if needed",
+      }];
+    }
+
+    if (!hookConfig.config.hooks) {
+      return [{
+        check: "Hooks config",
+        status: "fail",
+        message: "~/.codex/hooks.json is missing the top-level hooks object",
+        fix: "Update ~/.codex/hooks.json to match configs/codex/hooks.json",
+      }];
+    }
+
+    const expected = this.generateHookConfig("");
+    return Object.entries(expected).map(([hookName, entries]) => {
+      const actualEntries = hookConfig.config.hooks?.[hookName];
+      const expectedEntry = entries[0];
+      const ok = Array.isArray(actualEntries)
+        && actualEntries.some((entry) => this.isExpectedHookEntry(hookName, entry, expectedEntry));
+
+      return {
+        check: `${hookName} hook`,
+        status: ok ? "pass" : "fail",
+        message: ok
+          ? `${hookName} hook configured in ~/.codex/hooks.json`
+          : `${hookName} hook missing or not pointing to context-mode`,
+        fix: ok ? undefined : "Update ~/.codex/hooks.json to match configs/codex/hooks.json",
+      };
+    });
   }
 
   checkPluginRegistration(): DiagnosticResult {
@@ -357,9 +435,44 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   // ── Upgrade ────────────────────────────────────────────
 
-  configureAllHooks(_pluginRoot: string): string[] {
-    // Codex CLI hook configuration is done via hooks.json, not config.toml
-    return [];
+  configureAllHooks(pluginRoot: string): string[] {
+    const hookConfig = this.readHooksConfig();
+    if (!hookConfig.ok && hookConfig.reason !== "missing") {
+      throw new Error(`Failed to update ~/.codex/hooks.json: ${hookConfig.error}`);
+    }
+
+    const hookFile = hookConfig.ok ? hookConfig.config : { hooks: {} };
+    const hooks = hookFile.hooks && typeof hookFile.hooks === "object" && !Array.isArray(hookFile.hooks)
+      ? hookFile.hooks
+      : {};
+    const desiredHooks = this.generateHookConfig(pluginRoot);
+    const changes: string[] = [];
+
+    for (const [hookName, entries] of Object.entries(desiredHooks)) {
+      this.upsertManagedHookEntry(hooks, hookName, entries[0], changes);
+    }
+
+    if (changes.length > 0) {
+      hookFile.hooks = hooks;
+      this.writeHooksConfig(hookFile);
+      changes.push(`Wrote native Codex hooks to ${this.getHooksPath()}`);
+    }
+
+    return changes;
+  }
+
+  backupSettings(): string | null {
+    for (const settingsPath of [this.getHooksPath(), this.getSettingsPath()]) {
+      try {
+        accessSync(settingsPath, constants.R_OK);
+        const backupPath = settingsPath + ".bak";
+        copyFileSync(settingsPath, backupPath);
+        return backupPath;
+      } catch {
+        continue;
+      }
+    }
+    return null;
   }
 
 
@@ -402,6 +515,104 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
    */
   private getProjectDir(input: CodexHookInput): string {
     return input.cwd ?? process.env.CODEX_PROJECT_DIR ?? process.cwd();
+  }
+
+  private getHooksPath(): string {
+    return resolve(homedir(), ".codex", "hooks.json");
+  }
+
+  private readHooksConfig(): HooksConfigReadResult {
+    const hooksPath = this.getHooksPath();
+    try {
+      return { ok: true, config: JSON.parse(readFileSync(hooksPath, "utf-8")) as CodexHooksFile };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+
+      if (code === "ENOENT") {
+        return { ok: false, reason: "missing" };
+      }
+      if (error instanceof SyntaxError) {
+        return { ok: false, reason: "invalid_json", error: message };
+      }
+      return { ok: false, reason: "read_error", error: message };
+    }
+  }
+
+  private writeHooksConfig(config: CodexHooksFile): void {
+    const hooksPath = this.getHooksPath();
+    mkdirSync(dirname(hooksPath), { recursive: true });
+    writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  }
+
+  private upsertManagedHookEntry(
+    hooks: HookRegistration,
+    hookName: string,
+    expectedEntry: HookEntry,
+    changes: string[],
+  ): void {
+    const currentEntries = Array.isArray(hooks[hookName]) ? [...hooks[hookName]] : [];
+    const managedIndices = currentEntries
+      .map((entry, index) => this.isManagedContextModeEntry(hookName, entry) ? index : -1)
+      .filter((index) => index >= 0);
+
+    if (managedIndices.length === 0) {
+      currentEntries.push(expectedEntry);
+      hooks[hookName] = currentEntries;
+      changes.push(`Added ${hookName} hook`);
+      return;
+    }
+
+    const primaryIndex = managedIndices[0];
+    if (JSON.stringify(currentEntries[primaryIndex]) !== JSON.stringify(expectedEntry)) {
+      currentEntries[primaryIndex] = expectedEntry;
+      changes.push(`Updated ${hookName} hook`);
+    }
+
+    for (const duplicateIndex of managedIndices.slice(1).reverse()) {
+      currentEntries.splice(duplicateIndex, 1);
+      changes.push(`Removed duplicate ${hookName} context-mode hook`);
+    }
+
+    hooks[hookName] = currentEntries;
+  }
+
+  private isExpectedHookEntry(
+    hookName: string,
+    entry: HookEntry,
+    expectedEntry: HookEntry,
+  ): boolean {
+    if (!entry || typeof entry !== "object") return false;
+    if (hookName === "PreToolUse" && entry.matcher !== expectedEntry.matcher) {
+      return false;
+    }
+    return this.entryContainsManagedCommand(hookName, entry);
+  }
+
+  private isManagedContextModeEntry(hookName: string, entry: HookEntry): boolean {
+    if (!entry || typeof entry !== "object") return false;
+    return this.entryContainsManagedCommand(hookName, entry);
+  }
+
+  private entryContainsManagedCommand(hookName: string, entry: HookEntry): boolean {
+    const normalizedCommands = (Array.isArray(entry.hooks) ? entry.hooks : [])
+      .map((hook) => this.normalizeCommand(hook.command))
+      .filter((command) => command.length > 0);
+    const expectedCliCommand = this.normalizeCommand(
+      CODEX_HOOK_COMMANDS[hookName as keyof typeof CODEX_HOOK_COMMANDS] ?? "",
+    );
+    const legacySuffixes = LEGACY_HOOK_PATH_SUFFIXES[hookName as keyof typeof LEGACY_HOOK_PATH_SUFFIXES] ?? [];
+
+    return normalizedCommands.some((command) =>
+      command.includes(expectedCliCommand)
+      || legacySuffixes.some((suffix) => command.includes(suffix)),
+    );
+  }
+
+  private normalizeCommand(command: string | undefined): string {
+    return (command ?? "").replace(/\\/g, "/");
   }
 
   /**
