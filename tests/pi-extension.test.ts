@@ -1064,5 +1064,64 @@ describe("Pi MCP bridge (#426)", () => {
       void sd; // silence unused
       await wireApi._trigger("session_shutdown");
     }, 30_000);
+
+    // Race regression — comment 4412197109 on PR #472.
+    //
+    // Each Pi subagent spawns a fresh `pi --mode json -p --no-session`
+    // process that loads context-mode and then immediately fires
+    // `before_agent_start` to dispatch the LLM call. The MCP bridge
+    // bootstrap (spawn server.bundle.mjs → initialize → tools/list →
+    // pi.registerTool × N) is fire-and-forget via `_mcpBridgeReady`, so
+    // without an explicit await the LLM call goes out with an empty
+    // ctx_* tool registry and the routing block (~2.5K tokens) becomes
+    // dead weight — the LLM is told to call ctx_execute / ctx_search /
+    // etc. but Pi has not yet registered them.
+    //
+    // This test pins the contract: by the time `before_agent_start`
+    // resolves, the canonical ctx_* tools MUST have been registered
+    // through pi.registerTool. The pre-trigger assertion confirms the
+    // race window is open (otherwise the test would pass for the wrong
+    // reason — bridge happened to win the race).
+    it("before_agent_start awaits MCP bridge bootstrap so ctx_* are registered before LLM call", async () => {
+      const wireApi = createMockPiApi();
+      await registerPiExtension(wireApi, { projectDir: tempDir });
+
+      // Establish a session so before_agent_start does real work
+      // (the handler early-returns when `!_sessionId`).
+      await wireApi._trigger(
+        "session_start",
+        {},
+        { session_id: "race-test", project_dir: tempDir },
+      );
+
+      // Sanity: bridge bootstrap is in flight, no tool registered yet.
+      // If this ever fails, the bridge stopped racing and the test
+      // loses meaning — adjust the bootstrap or remove the guard.
+      const preCalls = (wireApi.registerTool as any).mock.calls.length;
+      expect(preCalls).toBe(0);
+
+      // The race: trigger before_agent_start now. Pi will dispatch the
+      // LLM call as soon as this resolves — so the handler MUST block
+      // until the bridge has registered ctx_* tools.
+      await wireApi._trigger("before_agent_start", {
+        sessionID: "race-test",
+        prompt: "anything",
+        systemPrompt: "",
+      });
+
+      const calls = (wireApi.registerTool as any).mock.calls as Array<[any]>;
+      const registeredNames = calls.map(([t]) => t?.name).filter(Boolean);
+      expect(registeredNames).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+        ]),
+      );
+
+      await wireApi._trigger("session_shutdown");
+    }, 30_000);
   });
 });
