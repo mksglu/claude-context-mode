@@ -36,7 +36,7 @@ export interface HookInput {
   tool_input: Record<string, unknown>;
   tool_response?: string;
   /** Optional structured output from the tool (may carry isError) */
-  tool_output?: { isError?: boolean };
+  tool_output?: { isError?: boolean; is_error?: boolean };
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -51,6 +51,15 @@ function safeString(value: string | null | undefined): string {
 function safeStringAny(value: unknown): string {
   if (value == null) return "";
   return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function isToolError(input: HookInput): boolean {
+  const response = String(input.tool_response ?? "");
+  const isErrorFlag = input.tool_output?.isError === true || input.tool_output?.is_error === true;
+  const isBashError =
+    input.tool_name === "Bash" &&
+    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
+  return isBashError || isErrorFlag;
 }
 
 interface ApplyPatchTarget {
@@ -194,6 +203,7 @@ function extractFileAndRule(input: HookInput): SessionEvent[] {
   }
 
   if (tool_name === "apply_patch") {
+    if (isToolError(input)) return [];
     const patchTargets = extractApplyPatchTargets(
       String(tool_input["command"] ?? tool_input["patch"] ?? ""),
     );
@@ -263,16 +273,9 @@ function extractCwd(input: HookInput): SessionEvent[] {
  * isError flag in tool_output.
  */
 function extractError(input: HookInput): SessionEvent[] {
-  const { tool_name, tool_input, tool_response, tool_output } = input;
-
+  const { tool_response } = input;
   const response = String(tool_response ?? "");
-  const isErrorFlag = tool_output?.isError === true;
-
-  const isBashError =
-    tool_name === "Bash" &&
-    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
-
-  if (!isBashError && !isErrorFlag) return [];
+  if (!isToolError(input)) return [];
 
   return [{
     type: "error_tool",
@@ -418,6 +421,7 @@ function extractPlan(input: HookInput): SessionEvent[] {
   }
 
   if (input.tool_name === "apply_patch") {
+    if (isToolError(input)) return [];
     const patchTargets = extractApplyPatchTargets(
       String(input.tool_input["command"] ?? input.tool_input["patch"] ?? ""),
     );
@@ -951,15 +955,11 @@ function extractData(message: string): SessionEvent[] {
 let lastError: { tool: string; error: string; callsSince: number } | null = null;
 
 function extractErrorResolution(input: HookInput): SessionEvent[] {
-  const { tool_name, tool_response, tool_output } = input;
+  const { tool_name, tool_response } = input;
   const response = String(tool_response ?? "");
-  const isErrorFlag = tool_output?.isError === true;
-  const isBashError =
-    tool_name === "Bash" &&
-    /exit code [1-9]|error:|Error:|FAIL|failed/i.test(response);
 
   // If this call is an error, store it and return
-  if (isBashError || isErrorFlag) {
+  if (isToolError(input)) {
     lastError = { tool: tool_name, error: response.slice(0, 200), callsSince: 0 };
     return [];
   }
@@ -976,7 +976,7 @@ function extractErrorResolution(input: HookInput): SessionEvent[] {
     return [];
   }
 
-  const callSucceeded = !isBashError && !isErrorFlag;
+  const callSucceeded = !isToolError(input);
   if (!callSucceeded) return [];
 
   // Check if this is a resolution: same tool, or Edit/Write after a Read error

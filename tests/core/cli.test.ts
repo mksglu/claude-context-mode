@@ -1125,6 +1125,18 @@ describe("Shell-free upgrade (#185)", () => {
     expect(entryBody).toContain("process.exit(1);");
   });
 
+  test("cli.ts already-latest path still configures hooks", () => {
+    const upgradeStart = CLI_SOURCE.indexOf("async function upgrade");
+    expect(upgradeStart).toBeGreaterThan(-1);
+    const upgradeBody = CLI_SOURCE.slice(upgradeStart);
+
+    const alreadyLatestIdx = upgradeBody.indexOf('p.log.success(color.green("Already on latest")');
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    const configureIdx = upgradeBody.indexOf("adapter.configureAllHooks(pluginRoot)");
+    expect(configureIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+  });
+
   test("server.ts inline fallback uses execFileSync, not execSync", () => {
     // The inline script template must use execFileSync
     const inlineStart = SERVER_SOURCE.indexOf("Inline fallback");

@@ -442,7 +442,9 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     }
 
     const hookFile = hookConfig.ok ? hookConfig.config : { hooks: {} };
-    const hooks = hookFile.hooks ?? {};
+    const hooks = hookFile.hooks && typeof hookFile.hooks === "object" && !Array.isArray(hookFile.hooks)
+      ? hookFile.hooks
+      : {};
     const desiredHooks = this.generateHookConfig(pluginRoot);
     const changes: string[] = [];
 
@@ -582,6 +584,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     entry: HookEntry,
     expectedEntry: HookEntry,
   ): boolean {
+    if (!entry || typeof entry !== "object") return false;
     if (hookName === "PreToolUse" && entry.matcher !== expectedEntry.matcher) {
       return false;
     }
@@ -589,11 +592,12 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private isManagedContextModeEntry(hookName: string, entry: HookEntry): boolean {
+    if (!entry || typeof entry !== "object") return false;
     return this.entryContainsManagedCommand(hookName, entry);
   }
 
   private entryContainsManagedCommand(hookName: string, entry: HookEntry): boolean {
-    const normalizedCommands = entry.hooks
+    const normalizedCommands = (Array.isArray(entry.hooks) ? entry.hooks : [])
       .map((hook) => this.normalizeCommand(hook.command))
       .filter((command) => command.length > 0);
     const expectedCliCommand = this.normalizeCommand(

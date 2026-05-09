@@ -42,6 +42,12 @@ try {
     tool_response: typeof input.tool_response === "string"
       ? input.tool_response
       : JSON.stringify(input.tool_response ?? ""),
+    tool_output: input.tool_output
+      ? {
+        ...input.tool_output,
+        isError: input.tool_output.isError === true || input.tool_output.is_error === true,
+      }
+      : undefined,
   };
 
   const events = extractEvents(normalizedInput);

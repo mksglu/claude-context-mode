@@ -493,6 +493,30 @@ describe("Plan Mode Events", () => {
     assert.ok(planEvents[0].data.includes("my-plan.md"));
   });
 
+  test("does not extract file continuity events from failed apply_patch", () => {
+    const input = {
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/failed.ts",
+          "+export const failed = true;",
+          "*** Update File: src/existing.ts",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    };
+
+    const events = extractEvents(input);
+    assert.equal(events.filter(e => e.type === "file_write").length, 0);
+    assert.equal(events.filter(e => e.type === "file_edit").length, 0);
+  });
+
   test("does not extract plan event from Write to non-plan path", () => {
     const input = {
       tool_name: "Write",
@@ -2193,6 +2217,28 @@ describe("Error Resolution Events", () => {
       0,
       "failed apply_patch should not resolve a prior Read error",
     );
+  });
+
+  test("does not emit plan_file_write when apply_patch fails after Read error", () => {
+    resetErrorResolutionState();
+
+    const events = extractEvents({
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Update File: .claude/plans/bad-plan.md",
+          "@@",
+          "-old",
+          "+new",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    });
+
+    assert.equal(events.filter(e => e.type === "plan_file_write").length, 0);
   });
 
   test("does not emit error_resolved for unrelated tool after error", () => {

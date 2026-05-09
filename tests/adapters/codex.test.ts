@@ -349,6 +349,36 @@ describe("CodexAdapter", () => {
       );
       expect(readFileSync(hooksPath, "utf-8")).toBe(malformed);
     });
+
+    it("does not crash on schema-invalid entries with non-array hooks", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: "not-an-array" },
+            null,
+          ],
+        },
+      }, null, 2), "utf-8");
+
+      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).not.toThrow();
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: unknown }>>;
+      };
+      expect(Array.isArray(written.hooks.PreToolUse)).toBe(true);
+    });
+
+    it("does not crash when top-level hooks is not an object", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: [],
+      }, null, 2), "utf-8");
+
+      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).not.toThrow();
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, unknown>;
+      };
+      expect(typeof written.hooks).toBe("object");
+      expect(Array.isArray(written.hooks.PreToolUse)).toBe(true);
+    });
   });
 
   describe("validateHooks", () => {
@@ -393,6 +423,33 @@ describe("CodexAdapter", () => {
       expect(results).toHaveLength(1);
       expect(results[0]?.status).toBe("fail");
       expect(results[0]?.message).toContain("Could not read ~/.codex/hooks.json");
+    });
+
+    it("fails when hooks.json entries use an invalid schema", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: "not-an-array" },
+            null,
+          ],
+        },
+      }, null, 2), "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results.some((result) => result.status === "fail")).toBe(true);
+      expect(results[0]?.check).toBe("PreToolUse hook");
+    });
+
+    it("fails when top-level hooks uses an invalid schema", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: [],
+      }, null, 2), "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results.some((result) => result.status === "fail")).toBe(true);
+      expect(results[0]?.check).toBe("PreToolUse hook");
     });
   });
 });
