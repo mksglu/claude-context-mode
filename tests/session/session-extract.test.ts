@@ -2164,6 +2164,37 @@ describe("Error Resolution Events", () => {
     assert.equal(resolved.length, 1, "apply_patch after Read error should resolve");
   });
 
+  test("does not emit error_resolved when apply_patch fails after Read error", () => {
+    resetErrorResolutionState();
+
+    extractEvents({
+      tool_name: "Read",
+      tool_input: { file_path: "/project/src/missing.ts" },
+      tool_response: "File not found",
+      tool_output: { isError: true },
+    });
+
+    const fixEvents = extractEvents({
+      tool_name: "apply_patch",
+      tool_input: {
+        command: [
+          "*** Begin Patch",
+          "*** Add File: src/missing.ts",
+          "+export {};",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      tool_response: "Patch failed",
+      tool_output: { isError: true },
+    });
+
+    assert.equal(
+      fixEvents.filter(e => e.type === "error_resolved").length,
+      0,
+      "failed apply_patch should not resolve a prior Read error",
+    );
+  });
+
   test("does not emit error_resolved for unrelated tool after error", () => {
     resetErrorResolutionState();
 

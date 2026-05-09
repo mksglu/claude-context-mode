@@ -530,7 +530,8 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
    ```
 
    > **Feature flag note:** Current Codex builds expose hooks under `[features].hooks`
-   > (or `codex --enable hooks`). The legacy `[features].codex_hooks` key is deprecated.
+   > (or `codex --enable hooks`). Prefer `[features].hooks`; `[features].codex_hooks`
+   > remains accepted as a legacy alias in current Codex builds.
    > In normal interactive Codex sessions you usually do not need to set either flag
    > manually because hooks are already stable.
 

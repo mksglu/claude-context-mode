@@ -20,6 +20,7 @@ import {
   accessSync,
   copyFileSync,
   constants,
+  mkdirSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,6 +67,12 @@ interface CodexHookInput {
 interface CodexHooksFile {
   hooks?: HookRegistration;
 }
+
+type HooksConfigReadResult =
+  | { ok: true; config: CodexHooksFile }
+  | { ok: false; reason: "missing" }
+  | { ok: false; reason: "invalid_json"; error: string }
+  | { ok: false; reason: "read_error"; error: string };
 
 const PRE_TOOL_USE_MATCHER_PATTERN =
   "local_shell|shell|shell_command|exec_command|container.exec|Bash|Shell|grep_files|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute";
@@ -327,18 +334,44 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
   validateHooks(_pluginRoot: string): DiagnosticResult[] {
     const hookConfig = this.readHooksConfig();
-    if (!hookConfig?.hooks) {
+    if (!hookConfig.ok) {
+      if (hookConfig.reason === "missing") {
+        return [{
+          check: "Hooks config",
+          status: "fail",
+          message: "No readable ~/.codex/hooks.json found",
+          fix: "Copy configs/codex/hooks.json to ~/.codex/hooks.json or run context-mode upgrade",
+        }];
+      }
+      if (hookConfig.reason === "invalid_json") {
+        return [{
+          check: "Hooks config",
+          status: "fail",
+          message: `~/.codex/hooks.json is not valid JSON: ${hookConfig.error}`,
+          fix: "Repair ~/.codex/hooks.json so it contains valid JSON, then rerun context-mode upgrade if needed",
+        }];
+      }
+
       return [{
         check: "Hooks config",
         status: "fail",
-        message: "No readable ~/.codex/hooks.json found",
-        fix: "Copy configs/codex/hooks.json to ~/.codex/hooks.json or run context-mode upgrade",
+        message: `Could not read ~/.codex/hooks.json: ${hookConfig.error}`,
+        fix: "Check permissions and file accessibility for ~/.codex/hooks.json, then rerun context-mode upgrade if needed",
+      }];
+    }
+
+    if (!hookConfig.config.hooks) {
+      return [{
+        check: "Hooks config",
+        status: "fail",
+        message: "~/.codex/hooks.json is missing the top-level hooks object",
+        fix: "Update ~/.codex/hooks.json to match configs/codex/hooks.json",
       }];
     }
 
     const expected = this.generateHookConfig("");
     return Object.entries(expected).map(([hookName, entries]) => {
-      const actualEntries = hookConfig.hooks?.[hookName];
+      const actualEntries = hookConfig.config.hooks?.[hookName];
       const expectedEntry = entries[0];
       const ok = Array.isArray(actualEntries)
         && actualEntries.some((entry) => this.isExpectedHookEntry(hookName, entry, expectedEntry));
@@ -403,7 +436,12 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   // ── Upgrade ────────────────────────────────────────────
 
   configureAllHooks(pluginRoot: string): string[] {
-    const hookFile = this.readHooksConfig() ?? { hooks: {} };
+    const hookConfig = this.readHooksConfig();
+    if (!hookConfig.ok && hookConfig.reason !== "missing") {
+      throw new Error(`Failed to update ~/.codex/hooks.json: ${hookConfig.error}`);
+    }
+
+    const hookFile = hookConfig.ok ? hookConfig.config : { hooks: {} };
     const hooks = hookFile.hooks ?? {};
     const desiredHooks = this.generateHookConfig(pluginRoot);
     const changes: string[] = [];
@@ -481,16 +519,30 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return resolve(homedir(), ".codex", "hooks.json");
   }
 
-  private readHooksConfig(): CodexHooksFile | null {
+  private readHooksConfig(): HooksConfigReadResult {
+    const hooksPath = this.getHooksPath();
     try {
-      return JSON.parse(readFileSync(this.getHooksPath(), "utf-8")) as CodexHooksFile;
-    } catch {
-      return null;
+      return { ok: true, config: JSON.parse(readFileSync(hooksPath, "utf-8")) as CodexHooksFile };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+
+      if (code === "ENOENT") {
+        return { ok: false, reason: "missing" };
+      }
+      if (error instanceof SyntaxError) {
+        return { ok: false, reason: "invalid_json", error: message };
+      }
+      return { ok: false, reason: "read_error", error: message };
     }
   }
 
   private writeHooksConfig(config: CodexHooksFile): void {
-    writeFileSync(this.getHooksPath(), JSON.stringify(config, null, 2) + "\n", "utf-8");
+    const hooksPath = this.getHooksPath();
+    mkdirSync(dirname(hooksPath), { recursive: true });
+    writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
   }
 
   private upsertManagedHookEntry(

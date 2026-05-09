@@ -976,6 +976,9 @@ function extractErrorResolution(input: HookInput): SessionEvent[] {
     return [];
   }
 
+  const callSucceeded = !isBashError && !isErrorFlag;
+  if (!callSucceeded) return [];
+
   // Check if this is a resolution: same tool, or Edit/Write after a Read error
   const sameTool = tool_name === lastError.tool;
   const editAfterReadError =

@@ -133,7 +133,11 @@ const args = process.argv.slice(2);
 if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
-  upgrade();
+  upgrade().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    p.log.error(color.red(message));
+    process.exit(1);
+  });
 } else if (args[0] === "hook") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
@@ -919,12 +923,17 @@ async function upgrade() {
 
   // Step 4: Configure hooks — adapter-aware
   p.log.step(`Configuring ${adapter.name} hooks...`);
-  const hookChanges = adapter.configureAllHooks(pluginRoot);
-  for (const change of hookChanges) {
-    p.log.info(color.dim(`  ${change}`));
-    changes.push(change);
+  try {
+    const hookChanges = adapter.configureAllHooks(pluginRoot);
+    for (const change of hookChanges) {
+      p.log.info(color.dim(`  ${change}`));
+      changes.push(change);
+    }
+    p.log.success(color.green("Hooks configured") + color.dim(` — ${adapter.name}`));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Hook configuration failed: ${message}`);
   }
-  p.log.success(color.green("Hooks configured") + color.dim(` — ${adapter.name}`));
 
   // Step 5: Set hook script permissions — adapter-aware
   p.log.step("Setting hook script permissions...");

@@ -1,7 +1,7 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
@@ -279,10 +279,11 @@ describe("CodexAdapter", () => {
 
   describe("configureAllHooks", () => {
     const hooksPath = join(homedir(), ".codex", "hooks.json");
+    const codexDir = join(homedir(), ".codex");
 
     beforeEach(() => {
-      rmSync(hooksPath, { force: true });
-      mkdirSync(join(homedir(), ".codex"), { recursive: true });
+      rmSync(codexDir, { recursive: true, force: true });
+      mkdirSync(codexDir, { recursive: true });
     });
 
     it("writes the native Codex hooks file with the scoped PreToolUse matcher", () => {
@@ -319,14 +320,44 @@ describe("CodexAdapter", () => {
       expect(written.hooks.SessionStart).toHaveLength(2);
       expect(written.hooks.SessionStart[1]?.hooks[0]?.command).toBe("node C:/tools/extra-hook.js");
     });
+
+    it("creates ~/.codex/hooks.json when the parent directory is missing", () => {
+      rmSync(codexDir, { recursive: true, force: true });
+
+      adapter.configureAllHooks("/ignored/plugin/root");
+
+      expect(existsSync(hooksPath)).toBe(true);
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+
+      expect(Object.keys(written.hooks).sort()).toEqual([
+        "PostToolUse",
+        "PreToolUse",
+        "SessionStart",
+        "Stop",
+        "UserPromptSubmit",
+      ]);
+    });
+
+    it("does not overwrite malformed hooks.json", () => {
+      const malformed = "{ invalid json";
+      writeFileSync(hooksPath, malformed, "utf-8");
+
+      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).toThrow(
+        "Failed to update ~/.codex/hooks.json",
+      );
+      expect(readFileSync(hooksPath, "utf-8")).toBe(malformed);
+    });
   });
 
   describe("validateHooks", () => {
     const hooksPath = join(homedir(), ".codex", "hooks.json");
+    const codexDir = join(homedir(), ".codex");
 
     beforeEach(() => {
-      rmSync(hooksPath, { force: true });
-      mkdirSync(join(homedir(), ".codex"), { recursive: true });
+      rmSync(codexDir, { recursive: true, force: true });
+      mkdirSync(codexDir, { recursive: true });
     });
 
     it("fails when hooks.json is missing", () => {
@@ -342,6 +373,26 @@ describe("CodexAdapter", () => {
       expect(results.every((result) => result.status === "pass")).toBe(true);
       expect(results.map((result) => result.check)).toContain("UserPromptSubmit hook");
       expect(results.map((result) => result.check)).toContain("Stop hook");
+    });
+
+    it("fails when hooks.json is malformed JSON", () => {
+      writeFileSync(hooksPath, "{ invalid json", "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("fail");
+      expect(results[0]?.message).toContain("not valid JSON");
+    });
+
+    it("fails with a read error message when hooks.json cannot be read", () => {
+      mkdirSync(hooksPath, { recursive: true });
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("fail");
+      expect(results[0]?.message).toContain("Could not read ~/.codex/hooks.json");
     });
   });
 });
