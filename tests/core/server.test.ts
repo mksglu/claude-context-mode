@@ -3254,6 +3254,77 @@ describe("SSRF guard — ssrfGuard policy in src/server.ts", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// buildFetchCode — embedded SSRF guard contract (#476 review follow-ups)
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { buildFetchCode } from "../../src/server.js";
+
+describe("buildFetchCode — embedded SSRF guard contract", () => {
+  const generated = buildFetchCode("https://example.com/x", "/tmp/x");
+
+  test("strips proxy env vars (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY)", () => {
+    // A configured outbound proxy would route fetch through an arbitrary
+    // target; DNS resolution would happen at the proxy and the in-subprocess
+    // DNS guard would never see the rebound IP. The generated subprocess
+    // source must delete every proxy env var before any fetch can run.
+    expect(generated).toMatch(/delete process\.env\.HTTP_PROXY/);
+    expect(generated).toMatch(/delete process\.env\.HTTPS_PROXY/);
+    expect(generated).toMatch(/delete process\.env\.ALL_PROXY/);
+    expect(generated).toMatch(/delete process\.env\.http_proxy/);
+    expect(generated).toMatch(/delete process\.env\.https_proxy/);
+    expect(generated).toMatch(/delete process\.env\.all_proxy/);
+  });
+
+  test("patches dns/promises lookup (separate function reference from dns.lookup)", () => {
+    // Patching dns.lookup does NOT affect dnsPromises.lookup. Today undici
+    // uses callback-form dns.lookup so default fetch is covered, but the
+    // invariant is fragile — a future undici switch or any caller using
+    // dnsPromises.lookup directly would bypass the guard.
+    expect(generated).toMatch(/require\(['"]node:dns\/promises['"]\)/);
+    expect(generated).toMatch(/dnsPromises\.lookup\s*=\s*async\s+function/);
+    expect(generated).toMatch(/SSRF blocked/);
+  });
+
+  test("patches dns.resolve4 and dns.resolve6 (libuv bypass path)", () => {
+    // dns.resolve* uses a different code path (no getaddrinfo, no /etc/hosts)
+    // than dns.lookup — they must be patched separately or the guard is
+    // trivially bypassed by any caller using dns.resolve* directly.
+    expect(generated).toMatch(/['"]resolve4['"]\s*,\s*['"]resolve6['"]/);
+    expect(generated).toMatch(/dns\[name\]\s*=\s*function/);
+  });
+
+  test("classifyIp embeds without references to module scope", () => {
+    // classifyIp is embedded into the subprocess via Function.prototype.toString().
+    // If a future change ever has classifyIp close over a module-scope helper
+    // (e.g. a regex constant declared above it), the embedded source will
+    // ReferenceError at parse or call time — silently breaking the guard. Pin
+    // the contract: classifyIp source must contain no identifiers that can
+    // only resolve in module scope.
+    const src = classifyIp.toString();
+    const forbidden = [
+      "require(",
+      "process.",
+      "globalThis.",
+      "global.",
+      "__dirname",
+      "__filename",
+    ];
+    for (const ident of forbidden) {
+      expect(src).not.toContain(ident);
+    }
+    // Roundtrip: eval the source in an empty vm context with no globals,
+    // then invoke it. This is exactly what the subprocess does.
+    const { runInNewContext } = require("node:vm");
+    const ctx: Record<string, unknown> = {};
+    runInNewContext(`${src}\n;globalThis.fn = classifyIp;`, ctx);
+    const fn = ctx.fn as (ip: string) => "block" | "private" | "public";
+    expect(fn("169.254.169.254")).toBe("block");
+    expect(fn("8.8.8.8")).toBe("public");
+    expect(fn("10.0.0.1")).toBe("private");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ctx_doctor resource cleanup regression (#247)
 // ═══════════════════════════════════════════════════════════════════════════
 
