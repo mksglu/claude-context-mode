@@ -22,13 +22,13 @@ Use: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)`
 ## REDIRECTED — use sandbox
 
 ### Terminal / run_in_terminal (>20 lines output)
-Terminal ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
+Terminal ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`.
 Otherwise: `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "shell", code: "...")`
 
 ### read_file (for analysis)
 Reading to **edit** → read_file correct. Reading to **analyze/explore/summarize** → `ctx_execute_file(path, language, code)`.
 
-### grep / search (large results)
+### grep / search — may flood context
 Use `ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection

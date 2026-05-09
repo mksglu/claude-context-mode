@@ -22,7 +22,7 @@ Use: `ctx_fetch_and_index(url, source)` then `ctx_search(queries)`
 ## REDIRECTED — use sandbox
 
 ### Bash (>20 lines output)
-Bash ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
+Bash ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`.
 Otherwise: `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "shell", code: "...")`
 
 ### Read (for analysis)

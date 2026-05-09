@@ -23,13 +23,13 @@ Use: `mcp__context-mode__ctx_fetch_and_index(url, source)` then `mcp__context-mo
 ## REDIRECTED — use sandbox
 
 ### Shell (>20 lines output)
-`run_command` ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
+`run_command` ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`.
 Otherwise: `mcp__context-mode__ctx_batch_execute(commands, queries)` or `mcp__context-mode__ctx_execute(language: "shell", code: "...")`
 
 ### File reading (for analysis)
 Reading to **edit** → `view_file`/`replace_file_content` correct. Reading to **analyze/explore/summarize** → `mcp__context-mode__ctx_execute_file(path, language, code)`.
 
-### Search (large results)
+### Search — may flood context
 Use `mcp__context-mode__ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection

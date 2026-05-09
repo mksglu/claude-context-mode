@@ -22,7 +22,7 @@ Use: `mcp__context-mode__ctx_fetch_and_index(url, source)` then `mcp__context-mo
 ## REDIRECTED — use sandbox
 
 ### Bash (>20 lines output)
-Bash ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
+Bash ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`.
 Otherwise: `mcp__context-mode__ctx_batch_execute(commands, queries)` or `mcp__context-mode__ctx_execute(language: "shell", code: "...")`
 
 ### Read (for analysis)

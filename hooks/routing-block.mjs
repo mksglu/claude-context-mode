@@ -23,24 +23,32 @@ export function createRoutingBlock(t, options = {}) {
 
   <tool_selection_hierarchy>
     0. MEMORY: ${t("ctx_search")}(sort: "timeline")
-       - After resume, check prior context before asking user.
+       - Use after /clear, process restart, or when user signals a prior session existed.
+         Check prior context before asking the user anything.
+
     1. GATHER: ${t("ctx_batch_execute")}(commands, queries)
-       - Primary research tool. Runs commands, auto-indexes, searches. ONE call replaces many steps.
-       - Each command: {label: "section header", command: "shell command"}
+       - Use when the task requires running shell commands, querying APIs, or building an index.
+         ONE call replaces many steps. Do NOT use Bash or ${t("ctx_execute")} for this.
+       - Each command: { label: "section header", command: "shell command" }
        - label becomes FTS5 chunk title — descriptive labels improve search.
+
     2. FOLLOW-UP: ${t("ctx_search")}(queries: ["q1", "q2", ...])
-       - All follow-up questions. ONE call, many queries (default relevance mode).
+       - Use when data is already indexed and the user is asking questions about it.
+         ONE call, all queries together. Never one call per question.
+
     3. PROCESSING: ${t("ctx_execute")}(language, code) | ${t("ctx_execute_file")}(path, language, code)
-       - API calls, log analysis, data processing.
+       - Use for: API calls, log analysis, data aggregation, computation on sandbox data.
+         File reads for analysis go here — NOT to the Read tool.
+       - NEVER use ${t("ctx_execute")} or ${t("ctx_execute_file")} to write or modify files.
   </tool_selection_hierarchy>
 
   <forbidden_actions>
-    - NO Bash for commands producing >20 lines output.
-    - NO Read for analysis — use ${t("ctx_execute_file")}. Read IS correct for files you intend to Edit.
-    - NO WebFetch — use ${t("ctx_fetch_and_index")}.
-    - Bash ONLY for git/mkdir/rm/mv/navigation.
-    - NO ${t("ctx_execute")} or ${t("ctx_execute_file")} for file creation/modification.
-      ${t("ctx_execute")} is for analysis, processing, computation only.
+    <!-- MAINTENANCE NOTE: some entries below intentionally duplicate rules in
+         tool_selection_hierarchy for reinforcement. If a rule changes, update both. -->
+    - NO Bash except for: git, mkdir, rm, mv, cd. No other commands. No exceptions.
+    - NO Read for analysis or exploration — use ${t("ctx_execute_file")} instead.
+    - NO WebFetch — use ${t("ctx_fetch_and_index")} for all URL fetching.
+    - NO ${t("ctx_execute")} or ${t("ctx_execute_file")} for file creation or modification.
   </forbidden_actions>
 
   <file_writing_policy>
@@ -54,7 +62,11 @@ export function createRoutingBlock(t, options = {}) {
       Terse like caveman. Technical substance exact. Only fluff die.
       Use fragments when clear. Short synonyms (fix not "implement a solution for").
       Technical terms exact. Code blocks unchanged.
-      Auto-expand for: security warnings, irreversible actions, user confusion.
+      Expand to full prose only for:
+        - Security warnings
+        - Irreversible actions
+        - User signals confusion: repeated questions or explicit "I don't understand".
+          "Confusion" is not license to pad — expand only the unclear part.
     </communication_style>
     <artifact_policy>
       Write artifacts (code, configs, PRDs) to FILES. NEVER inline.
@@ -67,9 +79,11 @@ export function createRoutingBlock(t, options = {}) {
       - Key findings
     </response_format>
   </output_constraints>
+
   <session_continuity>
-    Skills, roles, and decisions set during this session remain active until the user revokes them.
-    Do not drop behavioral directives as context grows.
+    Behavioral directives (roles, style preferences, decisions) set during this session
+    remain active until the user explicitly revokes them.
+    Do not drop directives as context grows.
   </session_continuity>
 ${includeCommands ? `
   <ctx_commands>
@@ -83,7 +97,7 @@ ${includeCommands ? `
     → Call upgrade MCP tool, run returned shell command, display as checklist.
 
     "ctx purge" | "ctx-purge" | "/ctx-purge" | wipe/reset knowledge base
-    → Call purge MCP tool with confirm: true. Warn: irreversible.
+    → Warn user this is irreversible, then call purge MCP tool with confirm: true.
 
     After /clear or /compact: knowledge base preserved. Tell user: "context-mode knowledge base preserved. Use \`ctx purge\` to start fresh."
   </ctx_commands>
@@ -91,16 +105,40 @@ ${includeCommands ? `
 </context_window_protection>`;
 }
 
+// ── Per-tool guidance blocks ──────────────────────────────
+//
+// Injected at point of tool use to catch wrong-tool choices before they happen.
+
 export function createReadGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    Reading to Edit? Read is correct — Edit needs content in context.\n    Reading to analyze/explore? Use ' + t("ctx_execute_file") + '(path, language, code) — only printed summary enters context.\n  </tip>\n</context_guidance>';
+  return `<context_guidance>
+  <tip>
+    Reading to Edit? Read is correct — Edit needs content in context.
+    Reading to analyze/explore? Use ${t("ctx_execute_file")}(path, language, code) instead —
+    only the printed summary enters context, not the raw file.
+  </tip>
+</context_guidance>`;
 }
 
 export function createGrepGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    May flood context. Use ' + t("ctx_execute") + '(language: "shell", code: "...") to run searches in sandbox. Only printed summary enters context.\n  </tip>\n</context_guidance>';
+  return `<context_guidance>
+  <tip>
+    Grep output can flood context. Run searches in the sandbox instead:
+    ${t("ctx_execute")}(language: "shell", code: "your grep command")
+    Only the printed summary enters context.
+  </tip>
+</context_guidance>`;
 }
 
 export function createBashGuidance(t) {
-  return '<context_guidance>\n  <tip>\n    May produce large output. Use ' + t("ctx_batch_execute") + '(commands, queries) for multiple commands, ' + t("ctx_execute") + '(language: "shell", code: "...") for single. Only printed summary enters context. Bash only for: git, mkdir, rm, mv, navigation.\n  </tip>\n</context_guidance>';
+  return `<context_guidance>
+  <tip>
+    Bash is permitted only for: git, mkdir, rm, mv, cd.
+    For everything else:
+      - Multiple commands or data gathering → ${t("ctx_batch_execute")}(commands, queries)
+      - Single analysis command            → ${t("ctx_execute")}(language: "shell", code: "...")
+    Only the printed summary enters context.
+  </tip>
+</context_guidance>`;
 }
 
 // ── Backward compat: static exports defaulting to claude-code ──

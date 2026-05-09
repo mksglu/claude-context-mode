@@ -22,13 +22,13 @@ Use: `@context-mode/ctx_fetch_and_index(url, source)` then `@context-mode/ctx_se
 ## REDIRECTED — use sandbox
 
 ### Shell (>20 lines output)
-Shell ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`, `ls`, `npm install`, `pip install`.
+Shell ONLY for: `git`, `mkdir`, `rm`, `mv`, `cd`.
 Otherwise: `@context-mode/ctx_batch_execute(commands, queries)` or `@context-mode/ctx_execute(language: "shell", code: "...")`
 
 ### fs_read / read (for analysis)
 Reading to **edit** → fs_read correct. Reading to **analyze/explore/summarize** → `@context-mode/ctx_execute_file(path, language, code)`.
 
-### grep / search (large results)
+### grep / search — may flood context
 Use `@context-mode/ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection
