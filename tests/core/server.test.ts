@@ -3474,6 +3474,15 @@ describe("getSessionDir uses pre-detection when adapter not yet detected", () =>
     expect(claudeIdx).toBeGreaterThan(-1);
     expect(detectIdx).toBeLessThan(claudeIdx);
   });
+
+  test("getSessionDir honors CODEX_HOME in the Codex pre-detection branch", () => {
+    const fn = serverSrc.match(/function getSessionDir\(\)[\s\S]*?^}/m);
+    expect(fn).not.toBeNull();
+    const body = fn![0];
+    expect(serverSrc).toContain("function resolveCodexConfigRoot");
+    expect(body).toContain('segments[0] === ".codex"');
+    expect(body).toContain("resolveCodexConfigRoot()");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

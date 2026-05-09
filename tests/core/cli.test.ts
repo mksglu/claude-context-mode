@@ -804,6 +804,44 @@ describe("Bin entry uses cli.bundle.mjs", () => {
     expect(doctorSection).toContain("FTS5");
   });
 
+  it("doctor hook script discovery supports flat and nested hook config entries", () => {
+    for (const rel of ["src/cli.ts", "src/server.ts"]) {
+      const src = readFileSync(resolve(ROOT, rel), "utf-8");
+      const helper = src.match(/function getCommandsFromHookEntry[\s\S]*?^}/m);
+      expect(helper, `${rel} helper missing`).not.toBeNull();
+      expect(helper![0]).toContain("(entry as { command?: unknown }).command");
+      expect(helper![0]).toContain("Array.isArray(hooks)");
+
+      const discovery = src.match(/function getHookScriptPaths[\s\S]*?^}/m);
+      expect(discovery, `${rel} discovery missing`).not.toBeNull();
+      expect(discovery![0]).toContain("getCommandsFromHookEntry(entry)");
+      expect(discovery![0]).not.toContain("entry.hooks");
+    }
+  });
+
+  it("cli doctor renders hook warnings as WARN instead of FAIL", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const loopStart = src.indexOf("for (const result of hookResults)");
+    const loopEnd = src.indexOf("// Hook scripts exist", loopStart);
+    const loop = src.slice(loopStart, loopEnd);
+
+    expect(loop).toContain('result.status === "warn"');
+    expect(loop).toContain("p.log.warn");
+    expect(loop).toContain(": WARN");
+  });
+
+  it("upgrade still reaches hook configuration when already on latest", () => {
+    const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    const alreadyLatestIdx = src.indexOf("Already on latest");
+    const configureIdx = src.indexOf("Configuring ${adapter.name} hooks");
+
+    expect(alreadyLatestIdx).toBeGreaterThan(-1);
+    expect(configureIdx).toBeGreaterThan(alreadyLatestIdx);
+
+    const alreadyLatestBlock = src.slice(alreadyLatestIdx, configureIdx);
+    expect(alreadyLatestBlock).not.toContain("return;");
+  });
+
   it("server.ts ctx_upgrade uses cli.bundle.mjs with fallback", () => {
     const src = readFileSync(resolve(ROOT, "src", "server.ts"), "utf-8");
     // ctx_upgrade handler must prefer cli.bundle.mjs
@@ -1275,7 +1313,7 @@ describe("Codex CLI hook dispatch (#225)", () => {
     expect(hookMap).toContain('"codex"');
   });
 
-  test("codex HOOK_MAP has pretooluse, posttooluse, sessionstart", () => {
+  test("codex HOOK_MAP has all Codex hook dispatches", () => {
     const mapStart = CLI_SOURCE.indexOf("const HOOK_MAP");
     const mapEnd = CLI_SOURCE.indexOf("};", mapStart) + 2;
     const hookMap = CLI_SOURCE.slice(mapStart, mapEnd);
@@ -1285,7 +1323,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("pretooluse");
     expect(codexBlock).toContain("posttooluse");
+    expect(codexBlock).toContain("precompact");
     expect(codexBlock).toContain("sessionstart");
+    expect(codexBlock).toContain("userpromptsubmit");
+    expect(codexBlock).toContain("stop");
   });
 
   test("codex hooks point to dedicated hooks/codex/ directory", () => {
@@ -1297,7 +1338,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
     const codexBlock = hookMap.slice(codexStart, codexEnd);
     expect(codexBlock).toContain("hooks/codex/pretooluse.mjs");
     expect(codexBlock).toContain("hooks/codex/posttooluse.mjs");
+    expect(codexBlock).toContain("hooks/codex/precompact.mjs");
     expect(codexBlock).toContain("hooks/codex/sessionstart.mjs");
+    expect(codexBlock).toContain("hooks/codex/userpromptsubmit.mjs");
+    expect(codexBlock).toContain("hooks/codex/stop.mjs");
   });
 
   test("hooks/codex/pretooluse.mjs exists", () => {
@@ -1310,6 +1354,10 @@ describe("Codex CLI hook dispatch (#225)", () => {
 
   test("hooks/codex/sessionstart.mjs exists", () => {
     expect(existsSync(resolve(ROOT, "hooks/codex/sessionstart.mjs"))).toBe(true);
+  });
+
+  test("hooks/codex/precompact.mjs exists", () => {
+    expect(existsSync(resolve(ROOT, "hooks/codex/precompact.mjs"))).toBe(true);
   });
 
   test("session-helpers.mjs exports CODEX_OPTS", () => {

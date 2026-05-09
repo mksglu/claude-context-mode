@@ -141,10 +141,72 @@ function resolveClaudeConfigRoot(): string {
   return join(homedir(), ".claude");
 }
 
+function resolveCodexConfigRoot(): string {
+  const envVal = process.env.CODEX_HOME;
+  if (envVal) {
+    if (envVal.startsWith("~")) return join(homedir(), envVal.replace(/^~[/\\]?/, ""));
+    return envVal;
+  }
+  return join(homedir(), ".codex");
+}
+
+function getCommandsFromHookEntry(entry: unknown): string[] {
+  const commands: string[] = [];
+
+  if (entry && typeof entry === "object") {
+    const command = (entry as { command?: unknown }).command;
+    if (typeof command === "string") commands.push(command);
+
+    const hooks = (entry as { hooks?: unknown }).hooks;
+    if (Array.isArray(hooks)) {
+      for (const hook of hooks) {
+        if (hook && typeof hook === "object") {
+          const nestedCommand = (hook as { command?: unknown }).command;
+          if (typeof nestedCommand === "string") commands.push(nestedCommand);
+        }
+      }
+    }
+  }
+
+  return commands;
+}
+
+function extractHookScriptPath(command: string): string | null {
+  const match = command.match(/(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|(\S+\.mjs))/);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+function getHookScriptPaths(adapter: HookAdapter, pluginRoot: string): string[] {
+  const paths = new Set<string>();
+  const hookConfig = adapter.generateHookConfig(pluginRoot);
+
+  for (const entries of Object.values(hookConfig) as unknown[]) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      for (const command of getCommandsFromHookEntry(entry)) {
+        const scriptPath = extractHookScriptPath(command);
+        if (scriptPath) paths.add(scriptPath);
+      }
+    }
+  }
+
+  return [...paths];
+}
+
+async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
+  if (_detectedAdapter) return _detectedAdapter;
+  try {
+    const { getAdapter } = await import("./adapters/detect.js");
+    const signal = detectPlatform();
+    return await getAdapter(signal.platform);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get the platform-specific sessions directory from the detected adapter.
- * Falls back to <CLAUDE_CONFIG_DIR>/context-mode/sessions/ (or
- * ~/.claude/context-mode/sessions/) before adapter detection.
+ * Falls back to the detected platform config root before adapter detection.
  */
 function getSessionDir(): string {
   if (_detectedAdapter) return _detectedAdapter.getSessionDir();
@@ -152,15 +214,18 @@ function getSessionDir(): string {
   // call detectPlatform() (sync, env-var-based) and look up segments via
   // getSessionDirSegments() (sync map, no adapter instantiation). This keeps
   // non-Claude platforms from spilling sessions into ~/.claude/. For Claude
-  // Code (segments=[".claude"]), reroute through the CLAUDE_CONFIG_DIR
-  // contract so the pre-detection window does not split-state with hooks.
+  // Code/Codex (single-segment roots), reroute through their config-dir
+  // contracts so the pre-detection window does not split-state with hooks.
   try {
     const signal = detectPlatform();
     const segments = getSessionDirSegments(signal.platform);
     if (segments) {
-      const root = segments.length === 1 && segments[0] === ".claude"
-        ? resolveClaudeConfigRoot()
-        : join(homedir(), ...segments);
+      let root = join(homedir(), ...segments);
+      if (segments.length === 1 && segments[0] === ".claude") {
+        root = resolveClaudeConfigRoot();
+      } else if (segments.length === 1 && segments[0] === ".codex") {
+        root = resolveCodexConfigRoot();
+      }
       const dir = join(root, "context-mode", "sessions");
       mkdirSync(dir, { recursive: true });
       return dir;
@@ -2653,12 +2718,28 @@ server.registerTool(
       }
     }
 
-    // Hook script
-    const hookPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
-    if (existsSync(hookPath)) {
-      lines.push(`[OK] Hook script: PASS — ${hookPath}`);
+    // Hooks
+    const diagnosticAdapter = await getDiagnosticAdapter();
+    if (diagnosticAdapter) {
+      for (const result of diagnosticAdapter.validateHooks(pluginRoot)) {
+        const prefix = result.status === "pass" ? "[OK]" : result.status === "warn" ? "[WARN]" : "[FAIL]";
+        const fix = result.fix ? ` — fix: ${result.fix}` : "";
+        lines.push(`${prefix} ${result.check}: ${result.message}${fix}`);
+      }
+
+      const hookScriptPaths = getHookScriptPaths(diagnosticAdapter, pluginRoot);
+      if (hookScriptPaths.length === 0) {
+        lines.push("[OK] Hook scripts: no direct .mjs script paths to verify");
+      }
+      for (const hookPath of hookScriptPaths) {
+        if (existsSync(hookPath)) {
+          lines.push(`[OK] Hook script: PASS — ${hookPath}`);
+        } else {
+          lines.push(`[FAIL] Hook script: FAIL — not found at ${hookPath}`);
+        }
+      }
     } else {
-      lines.push(`[FAIL] Hook script: FAIL — not found at ${hookPath}`);
+      lines.push("[WARN] Hooks: adapter detection unavailable");
     }
 
     // Version

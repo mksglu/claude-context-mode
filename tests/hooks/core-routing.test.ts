@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from
 import { spawn } from "node:child_process";
 import {
   writeFileSync,
+  mkdirSync,
   unlinkSync,
   existsSync,
   readdirSync,
@@ -31,6 +32,7 @@ let routePreToolUse: (
 } | null;
 
 let resetGuidanceThrottle: () => void;
+let initSecurity: (buildDir: string) => Promise<boolean>;
 let ROUTING_BLOCK: string;
 let createRoutingBlock: (t: any, options?: { includeCommands?: boolean }) => string;
 let READ_GUIDANCE: string;
@@ -40,6 +42,7 @@ beforeAll(async () => {
   const mod = await import("../../hooks/core/routing.mjs");
   routePreToolUse = mod.routePreToolUse;
   resetGuidanceThrottle = mod.resetGuidanceThrottle;
+  initSecurity = mod.initSecurity;
 
   const constants = await import("../../hooks/routing-block.mjs");
   ROUTING_BLOCK = constants.ROUTING_BLOCK;
@@ -486,6 +489,41 @@ describe("routePreToolUse", () => {
         },
       );
       expect(result).toBeNull();
+    });
+  });
+
+  describe("Codex context-mode MCP execute security", () => {
+    let projectDir: string;
+
+    beforeAll(async () => {
+      await initSecurity(resolve(process.cwd(), "build"));
+    });
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "ctx-codex-routing-"));
+      mkdirSync(join(projectDir, ".claude"), { recursive: true });
+      writeFileSync(
+        join(projectDir, ".claude", "settings.local.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(sudo *)"] } }),
+        "utf-8",
+      );
+    });
+
+    afterEach(() => {
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it.each([
+      ["ctx_execute", { language: "shell", code: "sudo whoami" }],
+      ["mcp__other__ctx_execute", { language: "shell", code: "sudo whoami" }],
+      ["ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
+      ["mcp__other__ctx_execute_file", { path: "script.sh", language: "shell", code: "sudo whoami" }],
+      ["ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
+      ["mcp__other__ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
+    ])("denies shell policy matches for %s", (toolName, toolInput) => {
+      const result = routePreToolUse(toolName, toolInput, projectDir);
+      expect(result?.action).toBe("deny");
+      expect(result?.reason).toContain("deny pattern");
     });
   });
 

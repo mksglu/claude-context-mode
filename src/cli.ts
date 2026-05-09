@@ -43,6 +43,49 @@ function browserOpenArgv(
   ];
 }
 
+function getCommandsFromHookEntry(entry: unknown): string[] {
+  const commands: string[] = [];
+
+  if (entry && typeof entry === "object") {
+    const command = (entry as { command?: unknown }).command;
+    if (typeof command === "string") commands.push(command);
+
+    const hooks = (entry as { hooks?: unknown }).hooks;
+    if (Array.isArray(hooks)) {
+      for (const hook of hooks) {
+        if (hook && typeof hook === "object") {
+          const nestedCommand = (hook as { command?: unknown }).command;
+          if (typeof nestedCommand === "string") commands.push(nestedCommand);
+        }
+      }
+    }
+  }
+
+  return commands;
+}
+
+function extractHookScriptPath(command: string): string | null {
+  const match = command.match(/(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|(\S+\.mjs))/);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+function getHookScriptPaths(adapter: HookAdapter, pluginRoot: string): string[] {
+  const paths = new Set<string>();
+  const hookConfig = adapter.generateHookConfig(pluginRoot);
+
+  for (const entries of Object.values(hookConfig) as unknown[]) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      for (const command of getCommandsFromHookEntry(entry)) {
+        const scriptPath = extractHookScriptPath(command);
+        if (scriptPath) paths.add(scriptPath);
+      }
+    }
+  }
+
+  return [...paths];
+}
+
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
 import type { HookAdapter } from "./adapters/types.js";
@@ -81,6 +124,7 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
   "codex": {
     pretooluse: "hooks/codex/pretooluse.mjs",
     posttooluse: "hooks/codex/posttooluse.mjs",
+    precompact: "hooks/codex/precompact.mjs",
     sessionstart: "hooks/codex/sessionstart.mjs",
     userpromptsubmit: "hooks/codex/userpromptsubmit.mjs",
     stop: "hooks/codex/stop.mjs",
@@ -400,6 +444,12 @@ async function doctor(): Promise<number> {
   for (const result of hookResults) {
     if (result.status === "pass") {
       p.log.success(color.green(`${result.check}: PASS`) + ` — ${result.message}`);
+    } else if (result.status === "warn") {
+      p.log.warn(
+        color.yellow(`${result.check}: WARN`) +
+          ` — ${result.message}` +
+          (result.fix ? color.dim(`\n  Run: ${result.fix}`) : ""),
+      );
     } else {
       p.log.error(
         color.red(`${result.check}: FAIL`) +
@@ -409,17 +459,24 @@ async function doctor(): Promise<number> {
     }
   }
 
-  // Hook script exists
-  p.log.step("Checking hook script...");
-  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
-  try {
-    accessSync(hookScriptPath, constants.R_OK);
-    p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${hookScriptPath}`));
-  } catch {
-    p.log.error(
-      color.red("Hook script exists: FAIL") +
-        color.dim(` — not found at ${hookScriptPath}`),
-    );
+  // Hook scripts exist
+  p.log.step("Checking hook scripts...");
+  const hookScriptPaths = getHookScriptPaths(adapter, pluginRoot);
+  if (hookScriptPaths.length === 0) {
+    p.log.success(color.green("Hook scripts: PASS") + color.dim(" — no direct .mjs script paths to verify"));
+  } else {
+    for (const scriptPath of hookScriptPaths) {
+      const absolutePath = resolve(pluginRoot, scriptPath);
+      try {
+        accessSync(absolutePath, constants.R_OK);
+        p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${absolutePath}`));
+      } catch {
+        p.log.error(
+          color.red("Hook script exists: FAIL") +
+            color.dim(` — not found at ${absolutePath}`),
+        );
+      }
+    }
   }
 
   // Plugin registration — adapter-aware
