@@ -341,6 +341,19 @@ export default function piExtension(pi: any): void {
 
   pi.on("before_agent_start", async (event: any) => {
     try {
+      // Block first agent start until the MCP bridge bootstrap has
+      // settled so the LLM call dispatched right after this handler
+      // sees the ctx_* tools in Pi's registry. Each subagent starts
+      // a fresh `pi --mode json -p --no-session` process whose only
+      // window to register tools is the gap between piExtension(pi)
+      // returning and the first before_agent_start firing — that gap
+      // is too small for the spawn → initialize → tools/list →
+      // pi.registerTool round-trip, so without this await the first
+      // (and often only) prompt of a subagent goes out with an empty
+      // ctx_* registry and the routing block becomes dead weight.
+      // Resolves on bootstrap failure too — the bridge is best-effort.
+      await _mcpBridgeReady;
+
       if (!_sessionId) return;
 
       const prompt = String(event?.prompt ?? "");
