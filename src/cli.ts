@@ -26,6 +26,7 @@ import {
   hasBunRuntime,
   getAvailableLanguages,
 } from "./runtime.js";
+import { getHookScriptPaths } from "./util/hook-config.js";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
 // duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
 // Keep in sync — pure data, no I/O.
@@ -45,7 +46,6 @@ function browserOpenArgv(
 
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
-import type { HookAdapter } from "./adapters/types.js";
 
 /* -------------------------------------------------------
  * Hook dispatcher — `context-mode hook <platform> <event>`
@@ -81,6 +81,7 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
   "codex": {
     pretooluse: "hooks/codex/pretooluse.mjs",
     posttooluse: "hooks/codex/posttooluse.mjs",
+    precompact: "hooks/codex/precompact.mjs",
     sessionstart: "hooks/codex/sessionstart.mjs",
     userpromptsubmit: "hooks/codex/userpromptsubmit.mjs",
     stop: "hooks/codex/stop.mjs",
@@ -400,6 +401,12 @@ async function doctor(): Promise<number> {
   for (const result of hookResults) {
     if (result.status === "pass") {
       p.log.success(color.green(`${result.check}: PASS`) + ` — ${result.message}`);
+    } else if (result.status === "warn") {
+      p.log.warn(
+        color.yellow(`${result.check}: WARN`) +
+          ` — ${result.message}` +
+          (result.fix ? color.dim(`\n  Run: ${result.fix}`) : ""),
+      );
     } else {
       p.log.error(
         color.red(`${result.check}: FAIL`) +
@@ -409,17 +416,24 @@ async function doctor(): Promise<number> {
     }
   }
 
-  // Hook script exists
-  p.log.step("Checking hook script...");
-  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
-  try {
-    accessSync(hookScriptPath, constants.R_OK);
-    p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${hookScriptPath}`));
-  } catch {
-    p.log.error(
-      color.red("Hook script exists: FAIL") +
-        color.dim(` — not found at ${hookScriptPath}`),
-    );
+  // Hook scripts exist
+  p.log.step("Checking hook scripts...");
+  const hookScriptPaths = getHookScriptPaths(adapter, pluginRoot);
+  if (hookScriptPaths.length === 0) {
+    p.log.success(color.green("Hook scripts: PASS") + color.dim(" — no direct .mjs script paths to verify"));
+  } else {
+    for (const scriptPath of hookScriptPaths) {
+      const absolutePath = resolve(pluginRoot, scriptPath);
+      try {
+        accessSync(absolutePath, constants.R_OK);
+        p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${absolutePath}`));
+      } catch {
+        p.log.error(
+          color.red("Hook script exists: FAIL") +
+            color.dim(` — not found at ${absolutePath}`),
+        );
+      }
+    }
   }
 
   // Plugin registration — adapter-aware

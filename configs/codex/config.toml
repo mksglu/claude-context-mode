@@ -1,5 +1,8 @@
 # Codex CLI — context-mode MCP server configuration
 # Add this to ~/.codex/config.toml
 
+[features]
+hooks = true
+
 [mcp_servers.context-mode]
 command = "context-mode"

@@ -28,7 +28,7 @@ Otherwise: `mcp__context-mode__ctx_batch_execute(commands, queries)` or `mcp__co
 ### Read (for analysis)
 Reading to **Edit** → Read correct. Reading to **analyze/explore/summarize** → `mcp__context-mode__ctx_execute_file(path, language, code)`.
 
-### Grep (large results)
+### Grep — may flood context
 Use `mcp__context-mode__ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection

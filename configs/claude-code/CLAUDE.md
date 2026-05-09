@@ -28,7 +28,7 @@ Otherwise: `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "she
 ### Read (for analysis)
 Reading to **Edit** → Read correct. Reading to **analyze/explore/summarize** → `ctx_execute_file(path, language, code)`.
 
-### Grep (large results)
+### Grep — may flood context
 Use `ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection

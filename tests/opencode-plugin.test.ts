@@ -521,14 +521,11 @@ describe("ContextModePlugin", () => {
         { sessionID: "C", model: {} } as any,
         outC,
       );
-      expect(outC.system.length).toBe(3); // HEADER + routing + snapshot
+      expect(outC.system.length).toBe(3); // HEADER + routing
       expect(outC.system.some((s) => s.includes("session_resume"))).toBe(true);
     });
 
-    // v1.0.106 — visible signal so users can confirm the feature actually
-    // fired (without it Mickey reported "I can't find use case for it" —
-    // the inject was silent and invisible in OPENCODE_DEBUG logs).
-    it("emits a visible context-mode marker comment alongside the snapshot", async () => {
+    it("emits a snapshot", async () => {
       const projectDir = join(tempDir, "sysxform-marker");
       const plugin = await createTestPlugin(projectDir);
 
@@ -546,11 +543,10 @@ describe("ContextModePlugin", () => {
         { sessionID: "consumer", model: {} } as any,
         out,
       );
-      // v1.0.107 — out.system is [HEADER, routing-block, snapshot-with-marker]
+      // v1.0.107 — out.system is [HEADER, routing-block]
       expect(out.system.length).toBe(3);
       const snapshotEntry = out.system.find((s) => s.includes("session_resume"));
       expect(snapshotEntry).toBeDefined();
-      expect(snapshotEntry!).toMatch(/^<!-- context-mode v[\d.]+: resumed prior session [\w-]{1,8}/);
     });
   });
 

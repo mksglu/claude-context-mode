@@ -31,7 +31,7 @@ import { execFileSync } from "node:child_process";
 // MCP server has chdir'd into the installed package directory.
 let _wtCache: { projectDir: string; envSuffix: string | undefined; suffix: string } | undefined;
 
-function normalizeWorktreePath(path: string): string {
+export function normalizeWorktreePath(path: string): string {
   const normalized = path.replace(/\\/g, "/");
   if (/^\/+$/.test(normalized)) return "/";
   if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;

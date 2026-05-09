@@ -460,8 +460,7 @@ async function createContextModePlugin(ctx: PluginContext) {
       if (Array.isArray(output?.system)) {
         if (!systemHasRoutingInstructions(output.system)) {
           try {
-            const marker = `<!-- context-mode v${VERSION}: routing block injected (sessionID=${sessionId.slice(0, 8)}) -->\n`;
-            output.system.splice(1, 0, marker + routingBlock);
+            output.system.splice(1, 0, routingBlock);
           } catch {
             // Never break the chat turn on routing-block injection failure.
           }
@@ -489,15 +488,6 @@ async function createContextModePlugin(ctx: PluginContext) {
         }
 
         if (Array.isArray(output?.system)) {
-          // Visible signal — without this, the injection is silent and users
-          // cannot tell the feature is active (Mickey: "I can't find use case
-          // for it"). The XML comment is harmless to the model and shows up in
-          // OPENCODE_DEBUG logs as proof the snapshot landed.
-          const eventCount = row.snapshot.match(/events="(\d+)"/)?.[1] ?? "?";
-          const marker =
-            `<!-- context-mode v${VERSION}: resumed prior session ${row.sessionId.slice(0, 8)} ` +
-            `(${eventCount} events, ${row.snapshot.length} chars) -->\n`;
-
           // Insert at index 1 (after the header) — NOT unshift.
           // OpenCode's llm.ts:117-128 saves `header = system[0]` BEFORE this
           // hook runs and then folds the rest into a 2-part structure
@@ -508,7 +498,7 @@ async function createContextModePlugin(ctx: PluginContext) {
           // provider prompt cache is invalidated on every resume injection.
           // Inserting at index 1 keeps the header invariant and lets the
           // snapshot ride along inside the cached body block.
-          output.system.splice(1, 0, marker + row.snapshot);
+          output.system.splice(1, 0, row.snapshot);
           // Mark consumed only AFTER successful splice so failed paths can retry
           if (process.env.OPENCODE_DEBUG) {
             await logger(output.system[1], { sessionId, source: "on resume" });

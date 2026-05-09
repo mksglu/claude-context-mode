@@ -1,10 +1,11 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
+import { SessionDB } from "../../src/session/db.js";
 
 describe("CodexAdapter", () => {
   let adapter: CodexAdapter;
@@ -26,6 +27,10 @@ describe("CodexAdapter", () => {
 
     it("sessionStart is true", () => {
       expect(adapter.capabilities.sessionStart).toBe(true);
+    });
+
+    it("preCompact is true", () => {
+      expect(adapter.capabilities.preCompact).toBe(true);
     });
 
     it("canModifyArgs is false (Codex does not support updatedInput)", () => {
@@ -260,6 +265,23 @@ describe("CodexAdapter", () => {
       expect(adapter.getSessionDir()).toContain(".codex");
       expect(adapter.getSessionDir()).toContain("sessions");
     });
+
+    it("honors CODEX_HOME for settings, hooks, and session paths", () => {
+      const savedCodexHome = process.env.CODEX_HOME;
+      const codexHome = join(homedir(), "custom-codex-home");
+      process.env.CODEX_HOME = codexHome;
+
+      try {
+        const customAdapter = new CodexAdapter();
+        expect(customAdapter.getSettingsPath()).toBe(join(codexHome, "config.toml"));
+        expect(customAdapter.getHooksPath()).toBe(join(codexHome, "hooks.json"));
+        expect(customAdapter.getSessionDir()).toBe(join(codexHome, "context-mode", "sessions"));
+      } finally {
+        if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = savedCodexHome;
+        rmSync(codexHome, { recursive: true, force: true });
+      }
+    });
   });
 
   // ── generateHookConfig ────────────────────────────────
@@ -269,10 +291,18 @@ describe("CodexAdapter", () => {
       const config = adapter.generateHookConfig("/path/to/plugin");
       expect(config).toHaveProperty("PreToolUse");
       expect(config).toHaveProperty("PostToolUse");
+      expect(config).toHaveProperty("PreCompact");
       expect(config).toHaveProperty("SessionStart");
       expect(config).toHaveProperty("UserPromptSubmit");
       expect(config).toHaveProperty("Stop");
-      expect(config.PreToolUse[0]?.matcher).toContain("mcp__plugin_context-mode_context-mode__ctx_batch_execute");
+      expect(config.PreToolUse[0]?.matcher).toContain("apply_patch");
+      expect(config.PreToolUse[0]?.matcher).toContain("Edit");
+      expect(config.PreToolUse[0]?.matcher).toContain("Write");
+      expect(config.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_execute");
+      expect(config.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_batch_execute");
+      expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
+      expect(config.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
+      expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
       expect(config.UserPromptSubmit[0]?.hooks[0]?.command).toBe("context-mode hook codex userpromptsubmit");
     });
   });
@@ -294,8 +324,13 @@ describe("CodexAdapter", () => {
 
       expect(changes.some((change) => change.includes("Added PreToolUse hook"))).toBe(true);
       expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
-      expect(written.hooks.PreToolUse[0]?.matcher).toContain("mcp__plugin_context-mode_context-mode__ctx_execute");
+      expect(changes.some((change) => change.includes("Enabled Codex hooks feature flag"))).toBe(true);
+      expect(written.hooks.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_execute");
+      expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
+      expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
+      expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
       expect(written.hooks.Stop[0]?.hooks[0]?.command).toBe("context-mode hook codex stop");
+      expect(readFileSync(join(codexDir, "config.toml"), "utf-8")).toContain("hooks = true");
     });
 
     it("preserves unrelated hook entries while updating context-mode hooks", () => {
@@ -333,6 +368,7 @@ describe("CodexAdapter", () => {
 
       expect(Object.keys(written.hooks).sort()).toEqual([
         "PostToolUse",
+        "PreCompact",
         "PreToolUse",
         "SessionStart",
         "Stop",
@@ -340,14 +376,19 @@ describe("CodexAdapter", () => {
       ]);
     });
 
-    it("does not overwrite malformed hooks.json", () => {
+    it("backs up malformed hooks.json before replacing it", () => {
       const malformed = "{ invalid json";
       writeFileSync(hooksPath, malformed, "utf-8");
 
-      expect(() => adapter.configureAllHooks("/ignored/plugin/root")).toThrow(
-        "Failed to update ~/.codex/hooks.json",
+      const changes = adapter.configureAllHooks("/ignored/plugin/root");
+      const backupName = readdirSync(codexDir).find((name) =>
+        name.startsWith("hooks.json.broken-") && name.endsWith(".bak"),
       );
-      expect(readFileSync(hooksPath, "utf-8")).toBe(malformed);
+
+      expect(backupName).toBeDefined();
+      expect(readFileSync(join(codexDir, backupName!), "utf-8")).toBe(malformed);
+      expect(changes.some((change) => change.includes("Backed up malformed Codex hooks"))).toBe(true);
+      expect(JSON.parse(readFileSync(hooksPath, "utf-8")).hooks.PreCompact).toBeDefined();
     });
 
     it("does not crash on schema-invalid entries with non-array hooks", () => {
@@ -379,6 +420,16 @@ describe("CodexAdapter", () => {
       expect(typeof written.hooks).toBe("object");
       expect(Array.isArray(written.hooks.PreToolUse)).toBe(true);
     });
+
+    it("backs up both hooks.json and config.toml when both exist", () => {
+      writeFileSync(hooksPath, JSON.stringify({ hooks: {} }), "utf-8");
+      const settingsPath = join(codexDir, "config.toml");
+      writeFileSync(settingsPath, "[features]\nhooks = false\n", "utf-8");
+
+      expect(adapter.backupSettings()).toBe(`${hooksPath}.bak`);
+      expect(readFileSync(`${hooksPath}.bak`, "utf-8")).toContain('"hooks"');
+      expect(readFileSync(`${settingsPath}.bak`, "utf-8")).toContain("hooks = false");
+    });
   });
 
   describe("validateHooks", () => {
@@ -392,17 +443,29 @@ describe("CodexAdapter", () => {
 
     it("fails when hooks.json is missing", () => {
       const results = adapter.validateHooks("/ignored/plugin/root");
-      expect(results).toHaveLength(1);
-      expect(results[0]?.status).toBe("fail");
-      expect(results[0]?.check).toBe("Hooks config");
+      expect(results.some((result) => result.status === "fail" && result.check === "Hooks config")).toBe(true);
+      expect(results.some((result) => result.check === "Codex hooks feature flag")).toBe(true);
     });
 
     it("passes when all required Codex hooks are configured", () => {
       adapter.configureAllHooks("/ignored/plugin/root");
       const results = adapter.validateHooks("/ignored/plugin/root");
       expect(results.every((result) => result.status === "pass")).toBe(true);
+      expect(results.map((result) => result.check)).toContain("PreCompact hook");
       expect(results.map((result) => result.check)).toContain("UserPromptSubmit hook");
       expect(results.map((result) => result.check)).toContain("Stop hook");
+    });
+
+    it("warns instead of failing when only PreCompact is missing", () => {
+      const hooks = adapter.generateHookConfig("/ignored/plugin/root");
+      delete (hooks as Partial<typeof hooks>).PreCompact;
+      writeFileSync(hooksPath, JSON.stringify({ hooks }, null, 2), "utf-8");
+      writeFileSync(join(codexDir, "config.toml"), "[features]\nhooks = true\n", "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+      const precompact = results.find((result) => result.check === "PreCompact hook");
+      expect(precompact?.status).toBe("warn");
+      expect(results.filter((result) => result.status === "fail")).toHaveLength(0);
     });
 
     it("fails when hooks.json is malformed JSON", () => {
@@ -410,9 +473,7 @@ describe("CodexAdapter", () => {
 
       const results = adapter.validateHooks("/ignored/plugin/root");
 
-      expect(results).toHaveLength(1);
-      expect(results[0]?.status).toBe("fail");
-      expect(results[0]?.message).toContain("not valid JSON");
+      expect(results.some((result) => result.status === "fail" && result.message.includes("not valid JSON"))).toBe(true);
     });
 
     it("fails with a read error message when hooks.json cannot be read", () => {
@@ -420,9 +481,7 @@ describe("CodexAdapter", () => {
 
       const results = adapter.validateHooks("/ignored/plugin/root");
 
-      expect(results).toHaveLength(1);
-      expect(results[0]?.status).toBe("fail");
-      expect(results[0]?.message).toContain("Could not read ~/.codex/hooks.json");
+      expect(results.some((result) => result.status === "fail" && result.message.includes("Could not read"))).toBe(true);
     });
 
     it("fails when hooks.json entries use an invalid schema", () => {
@@ -438,7 +497,7 @@ describe("CodexAdapter", () => {
       const results = adapter.validateHooks("/ignored/plugin/root");
 
       expect(results.some((result) => result.status === "fail")).toBe(true);
-      expect(results[0]?.check).toBe("PreToolUse hook");
+      expect(results.some((result) => result.check === "PreToolUse hook")).toBe(true);
     });
 
     it("fails when top-level hooks uses an invalid schema", () => {
@@ -449,7 +508,7 @@ describe("CodexAdapter", () => {
       const results = adapter.validateHooks("/ignored/plugin/root");
 
       expect(results.some((result) => result.status === "fail")).toBe(true);
-      expect(results[0]?.check).toBe("PreToolUse hook");
+      expect(results.some((result) => result.check === "PreToolUse hook")).toBe(true);
     });
   });
 });
@@ -531,5 +590,110 @@ describe("Codex stop hook script", () => {
     });
 
     expect(JSON.parse(stdout.trim())).toEqual({});
+  });
+});
+
+describe("Codex precompact hook script", () => {
+  it("persists a resume snapshot, compact count, and compaction summary", () => {
+    const hookScript = resolve(__dirname, "../../hooks/codex/precompact.mjs");
+    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
+    const projectDir = join(codexHome, "project");
+    const sessionId = "test-precompact";
+    const savedCodexHome = process.env.CODEX_HOME;
+
+    mkdirSync(projectDir, { recursive: true });
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const dbPath = new CodexAdapter().getSessionDBPath(projectDir);
+      const db = new SessionDB({ dbPath });
+      db.ensureSession(sessionId, projectDir);
+      db.insertEvent(sessionId, {
+        type: "file_edit",
+        category: "file",
+        data: "Edited src/app.ts",
+        priority: 2,
+      }, "PostToolUse");
+      db.close();
+
+      const stdout = execFileSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          session_id: sessionId,
+          cwd: projectDir,
+          hook_event_name: "PreCompact",
+          source: "compact",
+        }),
+        encoding: "utf-8",
+        timeout: 10000,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+
+      expect(JSON.parse(stdout.trim())).toEqual({});
+
+      const verifyDb = new SessionDB({ dbPath });
+      const resume = verifyDb.getResume(sessionId);
+      const compactCount = verifyDb.getSessionStats(sessionId)?.compact_count;
+      const hasCompactionSummary = verifyDb
+        .getEvents(sessionId)
+        .some((event) => event.category === "compaction");
+      verifyDb.close();
+
+      expect(resume?.snapshot).toContain("<session_resume");
+      expect(resume?.snapshot).toContain("app.ts");
+      expect(resume?.event_count).toBe(1);
+      expect(compactCount).toBe(1);
+      expect(hasCompactionSummary).toBe(true);
+    } finally {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
+  });
+});
+
+describe("Codex sessionstart hook script", () => {
+  it("injects a compact resume snapshot before marking it consumed", () => {
+    const hookScript = resolve(__dirname, "../../hooks/codex/sessionstart.mjs");
+    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
+    const projectDir = join(codexHome, "project");
+    const sessionId = "test-sessionstart-compact";
+    const snapshot = "<session_resume><task_state>restore me</task_state></session_resume>";
+    const savedCodexHome = process.env.CODEX_HOME;
+
+    mkdirSync(projectDir, { recursive: true });
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const dbPath = new CodexAdapter().getSessionDBPath(projectDir);
+      const db = new SessionDB({ dbPath });
+      db.ensureSession(sessionId, projectDir);
+      db.upsertResume(sessionId, snapshot, 1);
+      db.close();
+
+      const stdout = execFileSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          session_id: sessionId,
+          cwd: projectDir,
+          hook_event_name: "SessionStart",
+          source: "compact",
+        }),
+        encoding: "utf-8",
+        timeout: 10000,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+
+      const parsed = JSON.parse(stdout.trim());
+      expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
+      expect(parsed.hookSpecificOutput.additionalContext).toContain("restore me");
+
+      const verifyDb = new SessionDB({ dbPath });
+      const consumed = verifyDb.getResume(sessionId)?.consumed;
+      verifyDb.close();
+      expect(consumed).toBe(1);
+    } finally {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
   });
 });
