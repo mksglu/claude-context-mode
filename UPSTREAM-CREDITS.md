@@ -2,7 +2,7 @@
 
 context-mode vendors a small set of operating-discipline skills authored
 by Matt Pocock. They are referenced as the operational backbone of the
-[`context-mode-ops`](context-mode-ops/SKILL.md) skill (`/diagnose`, `/tdd`,
+[`context-mode-ops`](skills/context-mode-ops/SKILL.md) skill (`/diagnose`, `/tdd`,
 `/grill-me`, `/grill-with-docs`, `/improve-codebase-architecture`).
 
 ## Source
@@ -23,7 +23,7 @@ by Matt Pocock. They are referenced as the operational backbone of the
 
 ## Why vendor instead of just listing as docs?
 
-The owner operating directive at the top of `context-mode-ops/SKILL.md`
+The owner operating directive at the top of `skills/context-mode-ops/SKILL.md`
 treats these skills as **mandatory tools**, not advisory references. If a
 context-mode user invokes `/context-mode-ops` and the directive points to
 skills they have never installed, the discipline collapses. Vendoring
