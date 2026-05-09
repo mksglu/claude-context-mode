@@ -6,6 +6,7 @@
  * discovering plugins from the .openclaw-plugin/ directory.
  *
  * The actual plugin definition (object form with id, name, configSchema,
- * register) lives in src/openclaw-plugin.ts, compiled to build/openclaw-plugin.js.
+ * register) lives in src/adapters/openclaw/plugin.ts, compiled to
+ * build/adapters/openclaw/plugin.js.
  */
-export { default } from "../build/openclaw-plugin.js";
+export { default } from "../build/adapters/openclaw/plugin.js";

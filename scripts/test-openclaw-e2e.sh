@@ -31,14 +31,25 @@ function section(label) { console.log(`\n--- ${label} ---`); }
 
 // ── 0. Load plugin ────────────────────────────────────────
 section("Phase 1: Plugin load");
-const pluginPath = join(process.cwd(), "build", "openclaw-plugin.js");
-if (!existsSync(pluginPath)) { fail("build/openclaw-plugin.js exists"); process.exit(1); }
+// Plugin entry was moved from build/openclaw-plugin.js to
+// build/adapters/openclaw/plugin.js when the OpenClaw entry file was
+// relocated under src/adapters/openclaw/. The legacy path is kept as a
+// fall-back so older checked-out CI configs do not break across the
+// transition.
+const pluginPath = join(process.cwd(), "build", "adapters", "openclaw", "plugin.js");
+const legacyPluginPath = join(process.cwd(), "build", "openclaw-plugin.js");
+const resolvedPluginPath = existsSync(pluginPath)
+  ? pluginPath
+  : existsSync(legacyPluginPath)
+    ? legacyPluginPath
+    : null;
+if (!resolvedPluginPath) { fail("build/adapters/openclaw/plugin.js exists"); process.exit(1); }
 
 let plugin;
 try {
-  const mod = await import(pluginPath);
+  const mod = await import(resolvedPluginPath);
   plugin = mod.default;
-  pass("build/openclaw-plugin.js loaded");
+  pass(`${resolvedPluginPath.includes("adapters") ? "build/adapters/openclaw/plugin.js" : "build/openclaw-plugin.js"} loaded`);
 } catch (err) {
   fail("plugin load", err.message);
   process.exit(1);

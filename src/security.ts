@@ -472,7 +472,11 @@ export function evaluateFilePath(
 
   for (const globs of denyGlobs) {
     for (const glob of globs) {
-      const regex = fileGlobToRegex(glob, caseInsensitive);
+      // Normalize the glob's path separators the same way candidates were
+      // normalized — otherwise a Windows absolute deny rule like
+      // `Read(C:\Users\...\secret.env)` parses with literal backslashes that
+      // never match a forward-slash candidate.
+      const regex = fileGlobToRegex(toForward(glob), caseInsensitive);
       for (const candidate of candidates) {
         if (regex.test(candidate)) {
           return { denied: true, matchedPattern: glob };

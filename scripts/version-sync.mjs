@@ -12,6 +12,7 @@ console.log(`→ syncing version ${version} to manifests...`);
 const targets = [
   ".claude-plugin/plugin.json",
   ".claude-plugin/marketplace.json",
+  ".cursor-plugin/plugin.json",
   ".openclaw-plugin/openclaw.plugin.json",
   ".openclaw-plugin/package.json",
   "openclaw.plugin.json",

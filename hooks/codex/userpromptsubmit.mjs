@@ -31,7 +31,7 @@ try {
     const { SessionDB } = await loadSessionDB();
     const { extractUserEvents } = await loadExtract();
     const { resolveProjectAttributions } = await loadProjectAttribution();
-    const dbPath = getSessionDBPath(OPTS);
+    const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
     const sessionId = getSessionId(input, OPTS);
 
@@ -72,4 +72,3 @@ try {
 process.stdout.write(JSON.stringify({
   hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "" },
 }) + "\n");
-

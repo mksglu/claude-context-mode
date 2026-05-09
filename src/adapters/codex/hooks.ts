@@ -1,12 +1,16 @@
 /**
  * adapters/codex/hooks — Codex CLI hook definitions.
  *
- * Codex CLI hooks are stable (codex_hooks Stage::Stable, default_enabled: true).
- * 5 hook events: PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop.
+ * Codex CLI hooks run behind the current `hooks` feature flag surface.
+ * Prefer `[features].hooks`; the legacy `[features].codex_hooks` alias is still
+ * accepted in current Codex builds.
+ * 6 hook events: PreToolUse, PostToolUse, PreCompact, SessionStart,
+ * UserPromptSubmit, Stop. PreCompact is runtime-gated on Codex builds that emit
+ * the event.
  * Same JSON stdin/stdout wire protocol as Claude Code.
  *
- * Config: ~/.codex/hooks.json (JSON format, same schema as Claude Code)
- * MCP: full support via [mcp_servers] in ~/.codex/config.toml
+ * Config: $CODEX_HOME/hooks.json or ~/.codex/hooks.json.
+ * MCP: full support via [mcp_servers] in $CODEX_HOME/config.toml.
  *
  * Known limitations:
  *   - PreToolUse: deny works, updatedInput not yet supported (openai/codex#18491)
@@ -18,10 +22,11 @@
 // Hook type constants
 // ─────────────────────────────────────────────────────────
 
-/** Codex CLI hook types — mirrors Claude Code's 5-event model. */
+/** Codex CLI hook types — mirrors Claude Code's continuity events. */
 export const HOOK_TYPES = {
   PRE_TOOL_USE: "PreToolUse",
   POST_TOOL_USE: "PostToolUse",
+  PRE_COMPACT: "PreCompact",
   SESSION_START: "SessionStart",
   USER_PROMPT_SUBMIT: "UserPromptSubmit",
   STOP: "Stop",

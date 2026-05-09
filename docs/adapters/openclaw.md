@@ -118,13 +118,13 @@ This is the first release that includes the `api.on()` fix from [PR #9761](https
 
 ## Workspace Routing
 
-The adapter includes a workspace router (`src/openclaw/workspace-router.ts`) that resolves project paths from Pi Agent session metadata, ensuring session databases and routing instructions are scoped per-workspace.
+The adapter includes a workspace router (`src/adapters/openclaw/workspace-router.ts`) that resolves project paths from Pi Agent session metadata, ensuring session databases and routing instructions are scoped per-workspace.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
-| `src/openclaw-plugin.ts` | Main plugin entry (sync register, initPromise pattern) |
-| `src/openclaw/workspace-router.ts` | Workspace path resolution for session scoping |
+| `src/adapters/openclaw/plugin.ts` | Main plugin entry (sync register, initPromise pattern) |
+| `src/adapters/openclaw/workspace-router.ts` | Workspace path resolution for session scoping |
 | `.openclaw-plugin/` | Plugin manifest (index.ts, openclaw.plugin.json, package.json) |
 | `scripts/install-openclaw-plugin.sh` | One-shot installer |

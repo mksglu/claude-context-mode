@@ -16,7 +16,7 @@ import {
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
-import { existsSync, mkdirSync, rmSync, openSync, closeSync, constants as fsConstants } from "node:fs";
+import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, constants as fsConstants } from "node:fs";
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
@@ -84,12 +84,30 @@ function guidanceOnce(type, content, sessionId) {
   return { action: "context", additionalContext: content };
 }
 
+/**
+ * Robust recursive delete. On Windows, `fs.rmSync` on directories under a
+ * tmpdir whose path contains non-ASCII characters (e.g. a Chinese / Japanese /
+ * Korean username) silently no-ops without throwing — see #454. Fall back to a
+ * manual unlink + rmdir walk so the marker dir actually goes away.
+ */
+function rmSyncRobust(dir) {
+  try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  if (!existsSync(dir)) return;
+  // Manual fallback for Windows + non-ASCII tmpdir paths
+  try {
+    for (const name of readdirSync(dir)) {
+      try { unlinkSync(resolve(dir, name)); } catch {}
+    }
+    rmdirSync(dir);
+  } catch {}
+}
+
 export function resetGuidanceThrottle(sessionId) {
   _guidanceShown.clear();
   // Clear ppid-based dir (legacy / fallback callers) and the sessionId dir if given
-  try { rmSync(guidanceDirFor(), { recursive: true, force: true }); } catch {}
+  rmSyncRobust(guidanceDirFor());
   if (sessionId) {
-    try { rmSync(guidanceDirFor(sessionId), { recursive: true, force: true }); } catch {}
+    rmSyncRobust(guidanceDirFor(sessionId));
   }
 }
 
@@ -112,15 +130,134 @@ function stripQuotedContent(cmd) {
     .replace(/"[^"]*"/g, '""');                   // double-quoted strings
 }
 
+/**
+ * Built-in allowlist of structurally-bounded Bash commands (#463).
+ *
+ * The PreToolUse Bash nudge ("May produce large output. Use ctx_…") is
+ * tuned for unbounded commands like `find /` or `cat large-file`. On
+ * commands whose stdout is structurally bounded (system probes, version
+ * checks, simple git read subcommands), the nudge is pure noise — a
+ * recurring ~85 tokens that trains the agent to ignore the warning.
+ *
+ * isStructurallyBounded() returns true ONLY when the command:
+ *   1. Has no shell control operators (pipe, redirect, command
+ *      substitution, &&, ||, ;) — any of those can compose with an
+ *      unbounded command and re-introduce flooding.
+ *   2. Matches one of the conservative patterns below.
+ *
+ * Unknown commands are treated as unbounded (false) — fail-safe default.
+ */
+const SAFE_COMMAND_PATTERNS = [
+  // System probes (no stdout, or one short line)
+  /^pwd$/,
+  /^whoami$/,
+  /^hostname(?:\s+-[a-zA-Z]+)?$/,
+  /^date(?:\s+.+)?$/,
+  /^echo\s/,
+  /^printf\s/,
+  /^which\s+\S+(?:\s+\S+)*$/,
+  /^type\s+\S+(?:\s+\S+)*$/,
+  /^command\s+-v\s+\S+(?:\s+\S+)*$/,
+  /^readlink(?:\s+.+)?$/,
+  /^basename(?:\s+.+)?$/,
+  /^dirname(?:\s+.+)?$/,
+  // Filesystem ops (silent on success, errors on stderr only).
+  // For cp / mv / rm we explicitly refuse `-v` / `--verbose`: verbose
+  // mode prints one line per file and can flood on big trees
+  // (recursive copy of /etc, mass rename, etc.). The "silent on
+  // success" invariant only holds without -v.
+  /^cd(?:\s+.+)?$/,
+  /^mkdir(?:\s+.+)?$/,
+  /^touch\s+.+$/,
+  /^mv(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+.+$/,
+  /^cp(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+.+$/,
+  /^rm(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+.+$/,
+  // ls — refuse recursive (-R / --recursive) to keep output bounded.
+  /^ls(?!\s+-[a-zA-Z]*R)(?!\s+--recursive)(?:\s+.+)?$/,
+  // git read-only / status subcommands
+  /^git\s+status(?:\s+.+)?$/,
+  /^git\s+rev-parse(?:\s+.+)?$/,
+  /^git\s+remote(?:\s+-v|\s+show\s+\S+)?$/,
+  /^git\s+branch(?:\s+.+)?$/,
+  /^git\s+config\s+--get(?:\s+.+)?$/,
+  /^git\s+diff\s+--stat(?:\s+.+)?$/,
+  /^git\s+diff\s+--name-only(?:\s+.+)?$/,
+  /^git\s+stash\s+list$/,
+  /^git\s+tag(?:\s+-l(?:\s+.+)?)?$/,
+  // git log only when explicitly bounded by -<N> with N up to two digits
+  /^git\s+log\s+-\d{1,2}(?:\s+.+)?$/,
+  // Version probes (--version anywhere, or `cmd -V`)
+  /(?:^|\s)--version(?:\s|$)/,
+  /^\S+\s+-V(?:\s|$)/,
+];
+
+// Bash shell control operators that can compose a safe command with an
+// unbounded sink. Any match disqualifies the command from the allowlist.
+//
+// Note `&` (single — background + sequence): listed BEFORE `&&` in the
+// alternation so the regex engine doesn't accidentally short-match `&&`
+// when `&` is itself a separator (`date & cat huge.log`). Without this,
+// `^date(?:\s+.+)?$` would match the whole string and bypass the gate.
+const SHELL_CONTROL_OPERATORS = /[|`]|\$\(|>>|>|<(?!<)|&(?!&)|&&|\|\||;/;
+
+/**
+ * @param {string} command Raw Bash command string from the hook payload.
+ * @returns {boolean} true when the command's output is bounded enough that
+ *   the routing nudge would be noise. Conservative — unknown commands
+ *   return false.
+ */
+export function isStructurallyBounded(command) {
+  if (!command) return false;
+  const trimmed = command.trim();
+  if (SHELL_CONTROL_OPERATORS.test(trimmed)) return false;
+  return SAFE_COMMAND_PATTERNS.some(rx => rx.test(trimmed));
+}
+
 // Try to import security module — may not exist
 let security = null;
+let securityInitFailed = false;
 
+/**
+ * @returns {boolean} true if security module loaded successfully.
+ *
+ * Loud fail: if `build/security.js` is missing or fails to import, log a
+ * clear stderr warning instead of swallowing the error silently. Without
+ * this, user-configured `permissions.deny` patterns (#466) become no-ops
+ * with no indication that policy enforcement is disabled — a fail-open
+ * security regression.
+ */
 export async function initSecurity(buildDir) {
   try {
+    const { existsSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
     const { pathToFileURL } = await import("node:url");
-    const secPath = (await import("node:path")).resolve(buildDir, "security.js");
+    const secPath = resolve(buildDir, "security.js");
+    if (!existsSync(secPath)) {
+      if (!securityInitFailed && !process.env.CONTEXT_MODE_SUPPRESS_SECURITY_WARNING) {
+        process.stderr.write(
+          `[context-mode] WARNING: ${secPath} not found — security deny patterns will NOT be enforced. ` +
+            `Run \`npm run build\` to generate it. Set CONTEXT_MODE_SUPPRESS_SECURITY_WARNING=1 to silence.\n`,
+        );
+      }
+      securityInitFailed = true;
+      return false;
+    }
     security = await import(pathToFileURL(secPath).href);
-  } catch { /* not available */ }
+    return true;
+  } catch (err) {
+    if (!securityInitFailed && !process.env.CONTEXT_MODE_SUPPRESS_SECURITY_WARNING) {
+      process.stderr.write(
+        `[context-mode] WARNING: failed to load security module — deny patterns NOT enforced: ${err?.message ?? err}\n`,
+      );
+    }
+    securityInitFailed = true;
+    return false;
+  }
+}
+
+/** @returns {boolean} true if a previous initSecurity() call failed to load the module. */
+export function isSecurityInitFailed() {
+  return securityInitFailed;
 }
 
 /**
@@ -181,6 +318,21 @@ const TOOL_ALIASES = {
   "fs_write": "Write",
   "execute_bash": "Bash",
 };
+
+function toolLeafName(toolName) {
+  const raw = String(toolName ?? "");
+  const withoutMcpPrefix = raw.startsWith("MCP:") ? raw.slice(4) : raw;
+  const parts = withoutMcpPrefix.split(/__|\//).filter(Boolean);
+  return parts.at(-1) ?? withoutMcpPrefix;
+}
+
+function matchesContextModeTool(toolName, ctxName, legacyName) {
+  const raw = String(toolName ?? "");
+  const leaf = toolLeafName(raw);
+  if (leaf === ctxName) return true;
+  if (raw.startsWith("MCP:") && leaf === legacyName) return true;
+  return raw.includes("context-mode") && leaf === legacyName;
+}
 
 /**
  * Route a PreToolUse event. Returns normalized decision object or null for passthrough.
@@ -314,6 +466,14 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       });
     }
 
+    // Skip the routing nudge for commands whose output is structurally
+    // bounded (#463) — pwd, whoami, git status, --version probes, etc.
+    // Conservative: any pipe/redirect/chain disqualifies, unknown commands
+    // still get the nudge.
+    if (isStructurallyBounded(command)) {
+      return null;
+    }
+
     // allow all other Bash commands, but inject routing nudge (once per session)
     return guidanceOnce("bash", bashGuidance, sessionId);
   }
@@ -356,12 +516,8 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP execute: security check for shell commands ───
-  // Match both __execute and __ctx_execute (prefixed tool names)
-  // Cursor can also surface the tool as MCP:ctx_execute_file.
-  if (
-    (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?execute$/.test(toolName)) ||
-    /^MCP:(ctx_)?execute$/.test(toolName)
-  ) {
+  // Match bare, generic MCP, and legacy context-mode execute tool names.
+  if (matchesContextModeTool(toolName, "ctx_execute", "execute")) {
     if (security && toolInput.language === "shell") {
       const code = toolInput.code ?? "";
       const policies = security.readBashPolicies(projectDir);
@@ -379,11 +535,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP execute_file: check file path + code against deny patterns ───
-  // Cursor can also surface the tool as MCP:ctx_execute_file.
-  if (
-    (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?execute_file$/.test(toolName)) ||
-    /^MCP:(ctx_)?execute_file$/.test(toolName)
-  ) {
+  if (matchesContextModeTool(toolName, "ctx_execute_file", "execute_file")) {
     if (security) {
       // Check file path against Read deny patterns
       const filePath = toolInput.path ?? "";
@@ -413,7 +565,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   }
 
   // ─── MCP batch_execute: check each command individually ───
-  if (toolName.includes("context-mode") && /(?:__|\/)(ctx_)?batch_execute$/.test(toolName)) {
+  if (matchesContextModeTool(toolName, "ctx_batch_execute", "batch_execute")) {
     if (security) {
       const commands = toolInput.commands ?? [];
       const policies = security.readBashPolicies(projectDir);

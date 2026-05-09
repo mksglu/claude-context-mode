@@ -21,12 +21,19 @@ import { tmpdir } from "node:os";
  */
 async function createTestPlugin(tempDir: string) {
   // Import the plugin module
-  const { ContextModePlugin } = await import("../src/opencode-plugin.js");
+  const { ContextModePlugin } = await import("../src/adapters/opencode/plugin.js");
 
   // Monkey-patch the session dir to use temp directory
   // The plugin uses homedir() internally, but we can control the DB path
   // by creating the plugin with a unique directory that produces a unique hash
-  return ContextModePlugin({ directory: tempDir });
+  return ContextModePlugin({
+    directory: tempDir,
+    client: {
+      app: {
+        log: async () => {},
+      },
+    },
+  });
 }
 
 // ── Tests ─────────────────────────────────────────────────
@@ -380,7 +387,7 @@ describe("ContextModePlugin", () => {
       expect(middle).toContain("<context_window_protection>");
     });
 
-    it("does NOT re-inject on second call with the same sessionID (multi-turn)", async () => {
+    it("does NOT re-inject resume snapshot on second call with the same sessionID (multi-turn)", async () => {
       const projectDir = join(tempDir, "sysxform-once-per-session");
       const plugin = await createTestPlugin(projectDir);
 
@@ -407,8 +414,10 @@ describe("ContextModePlugin", () => {
         { sessionID: "turn-X", model: {} } as any,
         out2,
       );
-      // Same session — already injected this process — silent (header only).
-      expect(out2.system).toEqual(["HEADER"]);
+      // Same session — resume snapshot consumed from DB. Routing block re-injects (no dedup).
+      expect(out2.system.length).toBe(2); // HEADER + routing block
+      expect(out2.system[1]).toContain("<context_window_protection>");
+      expect(out2.system.join("\n")).not.toContain("session_resume");
     });
 
     // v1.0.106 — Mickey #376 follow-up: self-injection guard
@@ -469,15 +478,16 @@ describe("ContextModePlugin", () => {
         { context: [] as string[], prompt: undefined },
       );
 
-      // C's next turn — routing already injected this session, but resume
-      // gate not consumed yet (no premature gate). Should pick up donor row.
+      // C's next turn — routing block re-injects (every turn), plus resume
+      // snapshot from donor (no premature gate — DB claim still available).
       const out2 = { system: ["HEADER"] };
       await plugin["experimental.chat.system.transform"](
         { sessionID: "C", model: {} } as any,
         out2,
       );
-      expect(out2.system.length).toBe(2); // HEADER + snapshot (no re-routing)
+      expect(out2.system.length).toBe(3); // HEADER + snapshot + routing
       expect(out2.system[1]).toContain("session_resume");
+      expect(out2.system[2]).toContain("<context_window_protection>");
     });
 
     // v1.0.106 — prefer next session over self-injection
@@ -595,8 +605,8 @@ describe("ContextModePlugin", () => {
       expect(joined).toContain("context-mode_ctx_search");
     });
 
-    it("OC-1: does NOT re-inject routing block on second turn per session", async () => {
-      const plugin = await createTestPlugin(join(tempDir, "oc1-once"));
+    it("OC-1: re-injects routing block on every turn (per-turn reliability)", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "oc1-every-turn"));
       const out1 = { system: ["HEADER"] };
       await plugin["experimental.chat.system.transform"](
         { sessionID: "oc1-twice", model: {} } as any,
@@ -609,8 +619,43 @@ describe("ContextModePlugin", () => {
         { sessionID: "oc1-twice", model: {} } as any,
         out2,
       );
-      // Second turn — routing block already injected this process; silent.
-      expect(out2.system).toEqual(["HEADER"]);
+      // Routing block injects every turn for reliability (no dedup set).
+      expect(out2.system.join("\n")).toContain("<context_window_protection>");
+      expect(out2.system.length).toBe(2);
+    });
+
+    it("OC-1: skips routing block when system prompt already contains context-mode instructions", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "oc1-dedup"));
+      // Simulate AGENTS.md already loaded by the host — contains routing markers
+      const agentsContent = [
+        "# context-mode rules",
+        "Use ctx_execute for analysis",
+        "Use ctx_batch_execute for commands",
+        "Use ctx_fetch_and_index for URLs",
+      ].join("\n");
+      const out = { system: ["HEADER", agentsContent] };
+      await plugin["experimental.chat.system.transform"](
+        { sessionID: "oc1-dedup-sess", model: {} } as any,
+        out,
+      );
+      // system unchanged — no routing block injected (2+ markers detected)
+      expect(out.system.length).toBe(2);
+      expect(out.system[0]).toBe("HEADER");
+      expect(out.system[1]).toBe(agentsContent);
+      expect(out.system.join("\n")).not.toContain("<context_window_protection>");
+    });
+
+    it("OC-1: injects routing block when only one marker present (below quorum)", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "oc1-below-quorum"));
+      // Only one marker — below the 2-of-3 quorum — routing block still injects
+      const partialContent = "Some text mentioning ctx_execute but nothing else";
+      const out = { system: ["HEADER", partialContent] };
+      await plugin["experimental.chat.system.transform"](
+        { sessionID: "oc1-quorum-sess", model: {} } as any,
+        out,
+      );
+      expect(out.system.length).toBe(3); // HEADER + routing + partialContent
+      expect(out.system[1]).toContain("<context_window_protection>");
     });
   });
 
@@ -707,55 +752,6 @@ describe("ContextModePlugin", () => {
       const autoBlock = output.context.find((c) => c.includes("<session_state source=\"compaction\">"));
       expect(autoBlock).toBeDefined();
       expect(autoBlock!.length).toBeLessThanOrEqual(2000);
-    });
-  });
-
-  // ── OC-4: AGENTS.md / CLAUDE.md rule capture (Z4) ─────────
-  // Capture the project AGENTS.md (OpenCode's CLAUDE.md equivalent) on
-  // first hook fire per projectDir, as rule + rule_content events.
-
-  describe("AGENTS.md rule capture (OC-4)", () => {
-    it("OC-4: captures AGENTS.md as rule + rule_content events on first tool.execute.after", async () => {
-      const projectDir = join(tempDir, "oc4-agents-md");
-      mkdirSync(projectDir, { recursive: true });
-      writeFileSync(join(projectDir, "AGENTS.md"), "# project rules\n- never push without approval");
-
-      const plugin = await createTestPlugin(projectDir);
-      await plugin["tool.execute.after"](
-        { tool: "Read", sessionID: "oc4-sess", callID: "c1", args: { file_path: "/x.ts" } },
-        { title: "Read", output: "x", metadata: {} },
-      );
-
-      const { SessionDB } = await import("../src/session/db.js");
-      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
-      const adapter = new OpenCodeAdapter("opencode");
-      const db = new SessionDB({ dbPath: adapter.getSessionDBPath(projectDir) });
-      const events = db.getEvents("oc4-sess") as any[];
-      db.close();
-      const rule = events.find((e: any) => e.type === "rule");
-      const ruleContent = events.find((e: any) => e.type === "rule_content");
-      expect(rule).toBeDefined();
-      expect(rule.data).toContain("AGENTS.md");
-      expect(ruleContent).toBeDefined();
-      expect(ruleContent.data).toContain("never push without approval");
-    });
-
-    it("OC-4: skips capture when AGENTS.md missing", async () => {
-      const projectDir = join(tempDir, "oc4-no-agents");
-      mkdirSync(projectDir, { recursive: true });
-      const plugin = await createTestPlugin(projectDir);
-      await plugin["tool.execute.after"](
-        { tool: "Read", sessionID: "oc4-empty-sess", callID: "c1", args: { file_path: "/y.ts" } },
-        { title: "Read", output: "y", metadata: {} },
-      );
-
-      const { SessionDB } = await import("../src/session/db.js");
-      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
-      const adapter = new OpenCodeAdapter("opencode");
-      const db = new SessionDB({ dbPath: adapter.getSessionDBPath(projectDir) });
-      const events = db.getEvents("oc4-empty-sess") as any[];
-      db.close();
-      expect(events.find((e: any) => e.type === "rule")).toBeUndefined();
     });
   });
 

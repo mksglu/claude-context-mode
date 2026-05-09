@@ -11,8 +11,15 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { ContentStore, cleanupStaleDBs } from "../src/store.js";
-import { withRetry, closeDB, loadDatabase, applyWALPragmas } from "../src/db-base.js";
+import {
+  withRetry,
+  closeDB,
+  loadDatabase,
+  applyWALPragmas,
+  nodeSqliteHasFts5,
+} from "../src/db-base.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(__dirname, "fixtures");
@@ -1809,5 +1816,91 @@ describe("Stopword filtering in search queries", () => {
       `Proximity should favor chunk with meaningful terms close together, got: ${results[0].title}`,
     );
     store.close();
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// nodeSqliteHasFts5 — issue #461
+// On Linux + Node >= 22.5, the picker used to commit to node:sqlite as
+// soon as the import succeeded, even on Node builds whose bundled SQLite
+// is compiled without FTS5. ctx_search/ctx_batch_execute then failed with
+// "no such module: fts5". The picker now probes FTS5 support before
+// adopting node:sqlite, falling through to better-sqlite3 otherwise.
+// ─────────────────────────────────────────────────────────
+describe("nodeSqliteHasFts5 — FTS5 capability probe (#461)", () => {
+  test("returns true when CREATE VIRTUAL TABLE … USING fts5 succeeds", () => {
+    let opened = 0;
+    let closed = 0;
+    class FakeDB {
+      constructor(path: string) {
+        assert.equal(path, ":memory:", "probe must use :memory:");
+        opened++;
+      }
+      exec(sql: string): void {
+        assert.match(sql, /CREATE VIRTUAL TABLE .* USING fts5/i);
+      }
+      close(): void { closed++; }
+    }
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), true);
+    assert.equal(opened, 1);
+    assert.equal(closed, 1);
+  });
+
+  test("returns false when FTS5 module is missing on the bundled SQLite", () => {
+    // Reproduces the exact symptom reported in #461 against Node v22.14.0:
+    //   db.exec("CREATE VIRTUAL TABLE t USING fts5(x)") → "no such module: fts5"
+    let closed = 0;
+    class FakeDB {
+      exec(_sql: string): void {
+        throw new Error("no such module: fts5");
+      }
+      close(): void { closed++; }
+    }
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), false);
+    assert.equal(closed, 1, "probe DB must be closed even when FTS5 check throws");
+  });
+
+  test("returns false when DatabaseSync constructor itself throws", () => {
+    class FakeDB {
+      constructor() { throw new Error("DatabaseSync ctor failure"); }
+      exec(_sql: string): void {}
+      close(): void {}
+    }
+    // Probe must not crash the picker — it just reports "no FTS5".
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), false);
+  });
+
+  test("close() failure does not propagate out of the probe", () => {
+    class FakeDB {
+      exec(_sql: string): void {}
+      close(): void { throw new Error("close failed"); }
+    }
+    // Probe should still report success — the FTS5 check passed before close().
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), true);
+  });
+
+  test("real node:sqlite probe matches FTS5 availability on this runtime", () => {
+    // Sanity check: if node:sqlite is loadable, the probe answer must agree
+    // with a direct FTS5 attempt on a fresh DatabaseSync. Skipped when
+    // node:sqlite is unavailable (older Node, non-Linux without flag).
+    let DatabaseSync: any;
+    try {
+      const requireFn = createRequire(import.meta.url);
+      ({ DatabaseSync } = requireFn(["node", "sqlite"].join(":")));
+    } catch {
+      return;
+    }
+    let directOK = false;
+    let direct: any = null;
+    try {
+      direct = new DatabaseSync(":memory:");
+      direct.exec("CREATE VIRTUAL TABLE __direct_probe USING fts5(x)");
+      directOK = true;
+    } catch {
+      directOK = false;
+    } finally {
+      try { direct?.close(); } catch { /* ignore */ }
+    }
+    assert.equal(nodeSqliteHasFts5(DatabaseSync), directOK);
   });
 });
