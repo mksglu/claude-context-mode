@@ -26,6 +26,7 @@ import {
   hasBunRuntime,
   getAvailableLanguages,
 } from "./runtime.js";
+import { getHookScriptPaths } from "./util/hook-config.js";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
 // duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
 // Keep in sync — pure data, no I/O.
@@ -43,52 +44,8 @@ function browserOpenArgv(
   ];
 }
 
-function getCommandsFromHookEntry(entry: unknown): string[] {
-  const commands: string[] = [];
-
-  if (entry && typeof entry === "object") {
-    const command = (entry as { command?: unknown }).command;
-    if (typeof command === "string") commands.push(command);
-
-    const hooks = (entry as { hooks?: unknown }).hooks;
-    if (Array.isArray(hooks)) {
-      for (const hook of hooks) {
-        if (hook && typeof hook === "object") {
-          const nestedCommand = (hook as { command?: unknown }).command;
-          if (typeof nestedCommand === "string") commands.push(nestedCommand);
-        }
-      }
-    }
-  }
-
-  return commands;
-}
-
-function extractHookScriptPath(command: string): string | null {
-  const match = command.match(/(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|(\S+\.mjs))/);
-  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
-}
-
-function getHookScriptPaths(adapter: HookAdapter, pluginRoot: string): string[] {
-  const paths = new Set<string>();
-  const hookConfig = adapter.generateHookConfig(pluginRoot);
-
-  for (const entries of Object.values(hookConfig) as unknown[]) {
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      for (const command of getCommandsFromHookEntry(entry)) {
-        const scriptPath = extractHookScriptPath(command);
-        if (scriptPath) paths.add(scriptPath);
-      }
-    }
-  }
-
-  return [...paths];
-}
-
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
-import type { HookAdapter } from "./adapters/types.js";
 
 /* -------------------------------------------------------
  * Hook dispatcher — `context-mode hook <platform> <event>`

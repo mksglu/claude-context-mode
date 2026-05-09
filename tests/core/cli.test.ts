@@ -805,17 +805,18 @@ describe("Bin entry uses cli.bundle.mjs", () => {
   });
 
   it("doctor hook script discovery supports flat and nested hook config entries", () => {
+    const helperSrc = readFileSync(resolve(ROOT, "src", "util", "hook-config.ts"), "utf-8");
+    expect(helperSrc).toContain("export function getCommandsFromHookEntry");
+    expect(helperSrc).toContain("(entry as { command?: unknown }).command");
+    expect(helperSrc).toContain("Array.isArray(hooks)");
+    expect(helperSrc).toContain("getCommandsFromHookEntry(entry)");
+    expect(helperSrc).not.toContain("entry.hooks");
+
     for (const rel of ["src/cli.ts", "src/server.ts"]) {
       const src = readFileSync(resolve(ROOT, rel), "utf-8");
-      const helper = src.match(/function getCommandsFromHookEntry[\s\S]*?^}/m);
-      expect(helper, `${rel} helper missing`).not.toBeNull();
-      expect(helper![0]).toContain("(entry as { command?: unknown }).command");
-      expect(helper![0]).toContain("Array.isArray(hooks)");
-
-      const discovery = src.match(/function getHookScriptPaths[\s\S]*?^}/m);
-      expect(discovery, `${rel} discovery missing`).not.toBeNull();
-      expect(discovery![0]).toContain("getCommandsFromHookEntry(entry)");
-      expect(discovery![0]).not.toContain("entry.hooks");
+      expect(src).toContain('import { getHookScriptPaths } from "./util/hook-config.js";');
+      expect(src).not.toContain("function getCommandsFromHookEntry");
+      expect(src).not.toContain("function getHookScriptPaths");
     }
   });
 

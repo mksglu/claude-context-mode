@@ -299,7 +299,9 @@ describe("CodexAdapter", () => {
       expect(config.PreToolUse[0]?.matcher).toContain("Edit");
       expect(config.PreToolUse[0]?.matcher).toContain("Write");
       expect(config.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_execute");
-      expect(config.PreToolUse[0]?.matcher).toContain("mcp__plugin_context-mode_context-mode__ctx_batch_execute");
+      expect(config.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_batch_execute");
+      expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
+      expect(config.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
       expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
       expect(config.UserPromptSubmit[0]?.hooks[0]?.command).toBe("context-mode hook codex userpromptsubmit");
     });
@@ -323,7 +325,9 @@ describe("CodexAdapter", () => {
       expect(changes.some((change) => change.includes("Added PreToolUse hook"))).toBe(true);
       expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
       expect(changes.some((change) => change.includes("Enabled Codex hooks feature flag"))).toBe(true);
-      expect(written.hooks.PreToolUse[0]?.matcher).toContain("mcp__plugin_context-mode_context-mode__ctx_execute");
+      expect(written.hooks.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_execute");
+      expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
+      expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
       expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
       expect(written.hooks.Stop[0]?.hooks[0]?.command).toBe("context-mode hook codex stop");
       expect(readFileSync(join(codexDir, "config.toml"), "utf-8")).toContain("hooks = true");

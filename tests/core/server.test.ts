@@ -3420,6 +3420,20 @@ describe("ctx_doctor — renderer-safe output (Z.ai compat)", () => {
 // env-var-based) and feeds the result into the map. Falls back to `.claude`
 // only if the map returns null (defensive — covers "unknown" PlatformId).
 
+describe("ctx_doctor hook script checks", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("resolves relative hook script paths against pluginRoot", () => {
+    const doctorSection = serverSrc.slice(serverSrc.indexOf("ctx_doctor"), serverSrc.indexOf("ctx_upgrade"));
+    expect(doctorSection).toContain("for (const scriptPath of hookScriptPaths)");
+    expect(doctorSection).toContain("const hookPath = resolve(pluginRoot, scriptPath)");
+    expect(doctorSection).not.toContain("for (const hookPath of hookScriptPaths)");
+  });
+});
+
 describe("getSessionDirSegments — sync platform → segments map", () => {
   test("returns correct segments for every supported platform", async () => {
     const { getSessionDirSegments } = await import("../../src/adapters/detect.js");
@@ -3479,9 +3493,9 @@ describe("getSessionDir uses pre-detection when adapter not yet detected", () =>
     const fn = serverSrc.match(/function getSessionDir\(\)[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
     const body = fn![0];
-    expect(serverSrc).toContain("function resolveCodexConfigRoot");
+    expect(serverSrc).toContain('import { resolveCodexConfigDir } from "./adapters/codex/paths.js";');
     expect(body).toContain('segments[0] === ".codex"');
-    expect(body).toContain("resolveCodexConfigRoot()");
+    expect(body).toContain("resolveCodexConfigDir()");
   });
 });
 

@@ -34,6 +34,8 @@ import { persistToolCallCounter, restoreSessionStats } from "./session/persist-t
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
+import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
+import { getHookScriptPaths } from "./util/hook-config.js";
 import { loadDatabase } from "./db-base.js";
 import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
@@ -141,58 +143,6 @@ function resolveClaudeConfigRoot(): string {
   return join(homedir(), ".claude");
 }
 
-function resolveCodexConfigRoot(): string {
-  const envVal = process.env.CODEX_HOME;
-  if (envVal) {
-    if (envVal.startsWith("~")) return join(homedir(), envVal.replace(/^~[/\\]?/, ""));
-    return envVal;
-  }
-  return join(homedir(), ".codex");
-}
-
-function getCommandsFromHookEntry(entry: unknown): string[] {
-  const commands: string[] = [];
-
-  if (entry && typeof entry === "object") {
-    const command = (entry as { command?: unknown }).command;
-    if (typeof command === "string") commands.push(command);
-
-    const hooks = (entry as { hooks?: unknown }).hooks;
-    if (Array.isArray(hooks)) {
-      for (const hook of hooks) {
-        if (hook && typeof hook === "object") {
-          const nestedCommand = (hook as { command?: unknown }).command;
-          if (typeof nestedCommand === "string") commands.push(nestedCommand);
-        }
-      }
-    }
-  }
-
-  return commands;
-}
-
-function extractHookScriptPath(command: string): string | null {
-  const match = command.match(/(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|(\S+\.mjs))/);
-  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
-}
-
-function getHookScriptPaths(adapter: HookAdapter, pluginRoot: string): string[] {
-  const paths = new Set<string>();
-  const hookConfig = adapter.generateHookConfig(pluginRoot);
-
-  for (const entries of Object.values(hookConfig) as unknown[]) {
-    if (!Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      for (const command of getCommandsFromHookEntry(entry)) {
-        const scriptPath = extractHookScriptPath(command);
-        if (scriptPath) paths.add(scriptPath);
-      }
-    }
-  }
-
-  return [...paths];
-}
-
 async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
   if (_detectedAdapter) return _detectedAdapter;
   try {
@@ -224,7 +174,7 @@ function getSessionDir(): string {
       if (segments.length === 1 && segments[0] === ".claude") {
         root = resolveClaudeConfigRoot();
       } else if (segments.length === 1 && segments[0] === ".codex") {
-        root = resolveCodexConfigRoot();
+        root = resolveCodexConfigDir();
       }
       const dir = join(root, "context-mode", "sessions");
       mkdirSync(dir, { recursive: true });
@@ -2731,7 +2681,8 @@ server.registerTool(
       if (hookScriptPaths.length === 0) {
         lines.push("[OK] Hook scripts: no direct .mjs script paths to verify");
       }
-      for (const hookPath of hookScriptPaths) {
+      for (const scriptPath of hookScriptPaths) {
+        const hookPath = resolve(pluginRoot, scriptPath);
         if (existsSync(hookPath)) {
           lines.push(`[OK] Hook script: PASS — ${hookPath}`);
         } else {

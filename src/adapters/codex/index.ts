@@ -23,12 +23,12 @@ import {
   mkdirSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { getWorktreeSuffix, normalizeWorktreePath } from "../../session/db.js";
+import { resolveCodexConfigDir } from "./paths.js";
 
 import {
   type HookAdapter,
@@ -77,7 +77,7 @@ type HooksConfigReadResult =
   | { ok: false; reason: "read_error"; error: string };
 
 const PRE_TOOL_USE_MATCHER_PATTERN =
-  "local_shell|shell|shell_command|exec_command|container.exec|functions\\.exec_command|Bash|Shell|apply_patch|functions\\.apply_patch|Edit|Write|Read|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__.*__ctx_execute|mcp__.*__ctx_execute_file|mcp__.*__ctx_batch_execute|mcp__.*__ctx_fetch_and_index|mcp__.*__ctx_search|mcp__.*__ctx_index|mcp__plugin_context-mode_context-mode__ctx_execute|mcp__plugin_context-mode_context-mode__ctx_execute_file|mcp__plugin_context-mode_context-mode__ctx_batch_execute";
+  "local_shell|shell|shell_command|exec_command|container.exec|functions\\.exec_command|Bash|Shell|apply_patch|functions\\.apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__.*__ctx_execute|mcp__.*__ctx_execute_file|mcp__.*__ctx_batch_execute|mcp__.*__ctx_fetch_and_index|mcp__.*__ctx_search|mcp__.*__ctx_index";
 
 const CODEX_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",
@@ -96,17 +96,6 @@ const LEGACY_HOOK_PATH_SUFFIXES: Record<keyof typeof CODEX_HOOK_COMMANDS, string
   UserPromptSubmit: ["hooks/userpromptsubmit.mjs", "hooks/codex/userpromptsubmit.mjs"],
   Stop: ["hooks/stop.mjs", "hooks/codex/stop.mjs"],
 };
-
-function resolveCodexConfigDir(): string {
-  const envVal = process.env.CODEX_HOME;
-  if (envVal) {
-    if (envVal.startsWith("~")) {
-      return resolve(homedir(), envVal.replace(/^~[/\\]?/, ""));
-    }
-    return resolve(envVal);
-  }
-  return resolve(homedir(), ".codex");
-}
 
 function getTomlSection(raw: string, sectionName: string): string | null {
   const lines = raw.split(/\r?\n/);
@@ -168,40 +157,6 @@ function ensureCodexHooksFeature(raw: string): { text: string; changed: boolean 
 
   lines.splice(featuresIndex + 1, 0, "hooks = true");
   return { text: lines.join(newline), changed: true };
-}
-
-function normalizeCodexProjectDir(projectDir: string): string {
-  const normalized = projectDir.replace(/\\/g, "/");
-  if (/^\/+$/.test(normalized)) return "/";
-  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
-  return normalized.replace(/\/+$/, "");
-}
-
-function getCodexWorktreeSuffix(projectDir: string): string {
-  const explicit = process.env.CONTEXT_MODE_SESSION_SUFFIX;
-  if (explicit !== undefined) return explicit ? `__${explicit}` : "";
-
-  try {
-    const git = (args: string[]) => execFileSync(
-      "git",
-      ["-C", projectDir, ...args],
-      { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    const root = normalizeCodexProjectDir(git(["rev-parse", "--show-toplevel"]));
-    const mainWorktree = git(["worktree", "list", "--porcelain"])
-      .split(/\r?\n/)
-      .find((line) => line.startsWith("worktree "))
-      ?.replace("worktree ", "")
-      ?.trim();
-    const mainRoot = mainWorktree ? normalizeCodexProjectDir(mainWorktree) : null;
-    if (root && mainRoot && root !== mainRoot) {
-      return `__${createHash("sha256").update(root).digest("hex").slice(0, 8)}`;
-    }
-  } catch {
-    // Not a git worktree, or git is unavailable.
-  }
-
-  return "";
 }
 
 // ─────────────────────────────────────────────────────────
@@ -359,15 +314,15 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getSessionDBPath(projectDir: string): string {
-    const normalized = normalizeCodexProjectDir(projectDir);
+    const normalized = normalizeWorktreePath(projectDir);
     const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-    return join(this.getSessionDir(), `${hash}${getCodexWorktreeSuffix(normalized)}.db`);
+    return join(this.getSessionDir(), `${hash}${getWorktreeSuffix(normalized)}.db`);
   }
 
   getSessionEventsPath(projectDir: string): string {
-    const normalized = normalizeCodexProjectDir(projectDir);
+    const normalized = normalizeWorktreePath(projectDir);
     const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-    return join(this.getSessionDir(), `${hash}${getCodexWorktreeSuffix(normalized)}-events.md`);
+    return join(this.getSessionDir(), `${hash}${getWorktreeSuffix(normalized)}-events.md`);
   }
 
   getInstructionFiles(): string[] {
@@ -531,7 +486,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         check: "Hooks config",
         status: "fail",
         message: `${this.getHooksPath()} is missing the top-level hooks object`,
-        fix: "Update ~/.codex/hooks.json to match configs/codex/hooks.json",
+        fix: `Update ${this.getHooksPath()} to match configs/codex/hooks.json`,
       }]);
     }
 
@@ -551,7 +506,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
           : hookName === "PreCompact"
             ? `${hookName} hook missing or not pointing to context-mode; compaction snapshots require a Codex build that emits PreCompact`
             : `${hookName} hook missing or not pointing to context-mode`,
-        fix: ok ? undefined : "Update ~/.codex/hooks.json to match configs/codex/hooks.json",
+        fix: ok ? undefined : `Update ${this.getHooksPath()} to match configs/codex/hooks.json`,
       };
     }));
   }
@@ -617,7 +572,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
       changes.push(`Backed up malformed Codex hooks to ${backupPath}`);
       hookFile = { hooks: {} };
     } else {
-      throw new Error(`Failed to update ~/.codex/hooks.json: ${hookConfig.error}`);
+      throw new Error(`Failed to update ${this.getHooksPath()}: ${hookConfig.error}`);
     }
 
     const hooks = hookFile.hooks && typeof hookFile.hooks === "object" && !Array.isArray(hookFile.hooks)
