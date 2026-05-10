@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   isPluginInstallPath,
   resolveProjectDir,
@@ -9,6 +11,8 @@ import {
 } from "../../src/util/project-dir.js";
 
 const cleanup: string[] = [];
+const bunAvailable = spawnSync("bun", ["--version"], { stdio: "ignore" }).status === 0;
+
 afterEach(() => {
   while (cleanup.length) {
     const p = cleanup.pop();
@@ -34,6 +38,27 @@ function writeTranscript(root: string, encodedDir: string, sessionId: string, cw
   writeFileSync(file, lines.join("\n") + "\n");
   if (mtime) utimesSync(file, mtime, mtime);
   return file;
+}
+
+function compiledResolverScript(): string {
+  const moduleUrl = pathToFileURL(join(process.cwd(), "build/util/project-dir.js")).href;
+  return `
+    import { resolveProjectDir } from ${JSON.stringify(moduleUrl)};
+    const result = resolveProjectDir({
+      env: {},
+      cwd: "/Users/x/fallback",
+      pwd: undefined,
+      transcriptsRoot: "/nonexistent/transcripts"
+    });
+    console.log(result);
+  `;
+}
+
+function runCompiledResolver(command: string, args: string[]): string {
+  return execFileSync(command, args, {
+    encoding: "utf-8",
+    env: { ...process.env, PWD: "" },
+  }).trim();
 }
 
 describe("isPluginInstallPath", () => {
@@ -182,5 +207,21 @@ describe("resolveProjectDirFromTranscript", () => {
       transcriptsRoot: "/nonexistent/transcripts",
     });
     expect(result).toBe("/Users/x/proj");
+  });
+
+  it("compiled ESM resolver runs under Node without CommonJS require", () => {
+    const output = runCompiledResolver(process.execPath, [
+      "--input-type=module",
+      "-e",
+      compiledResolverScript(),
+    ]);
+
+    expect(output).toBe("/Users/x/fallback");
+  });
+
+  it.runIf(bunAvailable)("compiled ESM resolver runs under Bun without CommonJS require", () => {
+    const output = runCompiledResolver("bun", ["-e", compiledResolverScript()]);
+
+    expect(output).toBe("/Users/x/fallback");
   });
 });
