@@ -1,0 +1,145 @@
+name: Bench
+
+# Non-blocking performance regression check. Always exits 0 — surfaces deltas
+# vs tests/perf-baseline.json as a PR comment, never gates merge. Owner runs
+# `npm run bench:baseline:update` locally on the canonical machine and commits
+# the JSON when ready to ratify a new baseline.
+
+on:
+  pull_request:
+    branches: [next, main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: bench (${{ matrix.os }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build server bundle
+        run: npm run bundle
+
+      - name: Run perf check (--json)
+        id: check
+        shell: bash
+        continue-on-error: true
+        env:
+          PERF_COLDSTART_ITER: ${{ runner.os == 'Windows' && '5' || '10' }}
+          PERF_COLDSTART_WARMUP: '1'
+        run: |
+          mkdir -p .bench
+          set +e
+          npx tsx tests/perf-regression-check.ts --check --json > .bench/result.json 2> .bench/err.log
+          echo "exit_code=$?"
+
+      - name: Upload bench artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.os }}
+          path: .bench/
+          if-no-files-found: warn
+          retention-days: 14
+
+  comment:
+    needs: bench
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            const marker = "<!-- ctx-bench-delta -->";
+            const root = "artifacts";
+
+            const fmt = (v, u) => v === null
+              ? "—"
+              : (u === "ms" ? v.toFixed(1) + "ms" : v.toFixed(2) + "µs");
+            const pct = (p) => p === null
+              ? "—"
+              : (p >= 0 ? "+" : "") + p.toFixed(1) + "%";
+            const icon = (s) =>
+              s === "regression" ? "🔴" :
+              s === "improved"   ? "🟢" :
+              s === "new"        ? "🆕" : "⚪";
+
+            const sections = [];
+            const dirs = fs.existsSync(root) ? fs.readdirSync(root).sort() : [];
+            let totalRegressions = 0;
+            for (const sub of dirs) {
+              const subDir = path.join(root, sub);
+              const resFile = path.join(subDir, "result.json");
+              const errFile = path.join(subDir, "err.log");
+              if (fs.existsSync(resFile)) {
+                try {
+                  const j = JSON.parse(fs.readFileSync(resFile, "utf8"));
+                  totalRegressions += j.regressionCount || 0;
+                  const summary = j.regressionCount > 0
+                    ? `❌ ${j.regressionCount} regression(s), ${j.newCount} new`
+                    : `✅ no regressions, ${j.newCount} new`;
+                  const rows = (j.rows || []).map((r) =>
+                    `| ${icon(r.status)} | \`${r.metric}\` | ${fmt(r.baseline, r.unit)} | ${fmt(r.current, r.unit)} | ${pct(r.deltaPct)} |`
+                  ).join("\n");
+                  sections.push(
+                    `<details><summary><b>${sub}</b> — ${summary} (node ${j.node})</summary>\n\n` +
+                    `| Status | Metric | Baseline | Current | Δ% |\n|---|---|---|---|---|\n${rows}\n\n</details>`
+                  );
+                  continue;
+                } catch (e) {
+                  // fall through to error path
+                }
+              }
+              const errTxt = fs.existsSync(errFile)
+                ? fs.readFileSync(errFile, "utf8").slice(-1500)
+                : "(no err log)";
+              sections.push(
+                `<details><summary><b>${sub}</b> — ⚠️ bench failed or produced no JSON</summary>\n\n\`\`\`\n${errTxt}\n\`\`\`\n\n</details>`
+              );
+            }
+
+            const headline = totalRegressions > 0
+              ? `**${totalRegressions} regression(s) detected** across matrix.`
+              : "No regressions vs baseline.";
+
+            const body =
+              `${marker}\n## Performance check\n\n${headline}\n\n` +
+              sections.join("\n\n") +
+              `\n\n<sub>Threshold: 5% relative or 50ms / 5µs absolute (whichever is greater). Reporting-only — does not block merge. Update baseline locally with \`npm run bench:baseline:update\` and commit \`tests/perf-baseline.json\`.</sub>`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const list = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = list.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
