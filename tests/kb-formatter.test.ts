@@ -230,4 +230,44 @@ describe("statusline unit contract (v1.0.118)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // BRAND_NEW state: both lifetime and session are zero — statusline shows
+  // the marketing headline (no kb() output at all). Pins that the "saves
+  // ~98%" tagline survives the v1.0.118 refactor and the byte-format
+  // surfaces don't intrude here.
+  test("BRAND_NEW state output shows the marketing headline only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ctx-kb-fmt-brand-"));
+    try {
+      // dir has no .db; HOME points to dir so multi-adapter scan finds nothing.
+      const out = runStatusline({
+        HOME: dir,
+        CONTEXT_MODE_SESSION_DIR: dir,
+        CLAUDE_SESSION_ID: "pid-anything",
+      });
+      assert.match(out, /context-mode/);
+      assert.match(out, /saves ~98% of context window/, "BRAND_NEW headline");
+      assert.doesNotMatch(out, /\$/, "no dollar math in any path");
+      assert.doesNotMatch(out, /\bthis chat\b/, "no ACTIVE block");
+      assert.doesNotMatch(out, /\bkept out\b/, "no FRESH/ACTIVE 'kept out' label");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ACTIVE percent label boundary — v1.0.118 swapped "efficient" for "kept out"
+  // on the percent block. Pin that the new copy renders and the old one doesn't.
+  test("ACTIVE percent block uses 'kept out', never 'efficient'", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ctx-kb-fmt-pct-"));
+    try {
+      seedDb({ dir, sessionId: "pid-pct", bytesAvoided: 1_048_576 });
+      const out = runStatusline({
+        CONTEXT_MODE_SESSION_DIR: dir,
+        CLAUDE_SESSION_ID: "pid-pct",
+      });
+      assert.match(out, /\b\d+%\s+kept out\b/, "percent block carries 'kept out' label");
+      assert.doesNotMatch(out, /efficient/, "old 'efficient' label retired");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

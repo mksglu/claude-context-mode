@@ -310,6 +310,10 @@ describe("statusline.mjs — multi-adapter aggregation", () => {
       /across\s+\d+\s+tools?/i,
       "shows multi-adapter aggregate when 2+ real adapters",
     );
+    // v1.0.118 dropped the multi-USD figure that used to ride alongside
+    // "across N tools" — guard that it stays dropped under the
+    // multi-adapter render path too.
+    assert.doesNotMatch(stdout, /\$/, "v1.0.118 dropped dollar math from statusline");
   });
 
   // Slice 2 cont: with only ONE real adapter, do NOT show "across N tools".
