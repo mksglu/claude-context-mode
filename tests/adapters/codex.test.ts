@@ -543,53 +543,142 @@ describe("Codex pretooluse hook script", () => {
 });
 
 describe("Codex userpromptsubmit hook script", () => {
-  it("outputs valid JSON with UserPromptSubmit hookEventName", () => {
+  it("captures current goal for the continuous memory governor", () => {
     const hookScript = resolve(__dirname, "../../hooks/codex/userpromptsubmit.mjs");
-    const input = JSON.stringify({
-      session_id: "test-userprompt",
-      cwd: "/tmp",
-      hook_event_name: "UserPromptSubmit",
-      model: "o3",
-      permission_mode: "default",
-      prompt: "remember this decision",
-      transcript_path: null,
-      turn_id: "t1",
-    });
+    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
+    const projectDir = join(codexHome, "project");
+    const sessionId = "test-userprompt";
+    const savedCodexHome = process.env.CODEX_HOME;
 
-    const stdout = execFileSync(process.execPath, [hookScript], {
-      input,
-      encoding: "utf-8",
-      timeout: 10000,
-    });
+    mkdirSync(projectDir, { recursive: true });
+    process.env.CODEX_HOME = codexHome;
 
-    const parsed = JSON.parse(stdout.trim());
-    expect(parsed.hookSpecificOutput).toBeDefined();
-    expect(parsed.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+    try {
+      const stdout = execFileSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          session_id: sessionId,
+          cwd: projectDir,
+          hook_event_name: "UserPromptSubmit",
+          model: "o3",
+          permission_mode: "default",
+          prompt: "Implement the Continuous Memory Governor MVP",
+          transcript_path: null,
+          turn_id: "t1",
+        }),
+        encoding: "utf-8",
+        timeout: 10000,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+
+      const parsed = JSON.parse(stdout.trim());
+      expect(parsed.hookSpecificOutput).toBeDefined();
+      expect(parsed.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: new CodexAdapter().getSessionDir(),
+      });
+      const db = new SessionDB({ dbPath });
+      const currentGoal = db
+        .getEvents(sessionId)
+        .find((event) => event.type === "current_goal" && event.category === "memory-governor");
+      db.close();
+
+      expect(currentGoal?.data).toContain("Continuous Memory Governor");
+    } finally {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
   });
 });
 
 describe("Codex stop hook script", () => {
-  it("outputs valid JSON without requesting continuation", () => {
+  it("refreshes a bounded continuous-memory capsule without requesting continuation", () => {
     const hookScript = resolve(__dirname, "../../hooks/codex/stop.mjs");
-    const input = JSON.stringify({
-      session_id: "test-stop",
-      cwd: "/tmp",
-      hook_event_name: "Stop",
-      model: "o3",
-      permission_mode: "default",
-      last_assistant_message: "done",
-      stop_hook_active: false,
-      transcript_path: null,
-      turn_id: "t1",
-    });
+    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
+    const projectDir = join(codexHome, "project");
+    const sessionId = "test-stop";
+    const savedCodexHome = process.env.CODEX_HOME;
 
-    const stdout = execFileSync(process.execPath, [hookScript], {
-      input,
-      encoding: "utf-8",
-      timeout: 10000,
-    });
+    mkdirSync(projectDir, { recursive: true });
+    process.env.CODEX_HOME = codexHome;
 
-    expect(JSON.parse(stdout.trim())).toEqual({});
+    try {
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: new CodexAdapter().getSessionDir(),
+      });
+      const db = new SessionDB({ dbPath });
+      db.ensureSession(sessionId, projectDir);
+      db.insertEvent(sessionId, {
+        type: "current_goal",
+        category: "memory-governor",
+        data: "Implement the Continuous Memory Governor MVP",
+        priority: 5,
+      }, "UserPromptSubmit");
+      db.insertEvent(sessionId, {
+        type: "decision",
+        category: "decision",
+        data: "Do not depend on Codex PreCompact for continuity.",
+        priority: 2,
+      }, "UserPromptSubmit");
+      db.insertEvent(sessionId, {
+        type: "file_edit",
+        category: "file",
+        data: "hooks/codex/stop.mjs",
+        priority: 2,
+      }, "PostToolUse");
+      db.insertEvent(sessionId, {
+        type: "task_create",
+        category: "task",
+        data: JSON.stringify({ subject: "Wire Stop curation into SessionStart restore" }),
+        priority: 2,
+      }, "UserPromptSubmit");
+      db.insertEvent(sessionId, {
+        type: "tool_output_noise",
+        category: "data",
+        data: "NOISY_RAW_OUTPUT ".repeat(400),
+        priority: 1,
+      }, "PostToolUse");
+      db.close();
+
+      const stdout = execFileSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          session_id: sessionId,
+          cwd: projectDir,
+          hook_event_name: "Stop",
+          model: "o3",
+          permission_mode: "default",
+          last_assistant_message: "done",
+          stop_hook_active: false,
+          transcript_path: null,
+          turn_id: "t1",
+        }),
+        encoding: "utf-8",
+        timeout: 10000,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+
+      expect(JSON.parse(stdout.trim())).toEqual({});
+
+      const verifyDb = new SessionDB({ dbPath });
+      const capsule = verifyDb
+        .getEvents(sessionId)
+        .find((event) => event.type === "working_state_capsule" && event.category === "memory-governor");
+      verifyDb.close();
+
+      expect(capsule?.data).toContain("<continuous_memory");
+      expect(capsule?.data).toContain("Continuous Memory Governor");
+      expect(capsule?.data).toContain("hooks/codex/stop.mjs");
+      expect(capsule?.data).toContain("Stop curation");
+      expect(capsule?.data).not.toContain("NOISY_RAW_OUTPUT");
+      expect(Buffer.byteLength(capsule?.data ?? "", "utf8")).toBeLessThan(5000);
+    } finally {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
   });
 });
 
@@ -696,6 +785,61 @@ describe("Codex sessionstart hook script", () => {
       const consumed = verifyDb.getResume(sessionId)?.consumed;
       verifyDb.close();
       expect(consumed).toBe(1);
+    } finally {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
+  });
+
+  it("injects continuous memory capsule when no compact resume snapshot exists", () => {
+    const hookScript = resolve(__dirname, "../../hooks/codex/sessionstart.mjs");
+    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
+    const projectDir = join(codexHome, "project");
+    const sessionId = "test-sessionstart-memory-governor";
+    const capsule = "<continuous_memory><current_goal>restore via Stop capsule</current_goal></continuous_memory>";
+    const savedCodexHome = process.env.CODEX_HOME;
+
+    mkdirSync(projectDir, { recursive: true });
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: new CodexAdapter().getSessionDir(),
+      });
+      const db = new SessionDB({ dbPath });
+      db.ensureSession(sessionId, projectDir);
+      db.insertEvent(sessionId, {
+        type: "working_state_capsule",
+        category: "memory-governor",
+        data: capsule,
+        priority: 5,
+      }, "Stop");
+      db.insertEvent(sessionId, {
+        type: "tool_output_noise",
+        category: "data",
+        data: "src/noisy.ts",
+        priority: 1,
+      }, "PostToolUse");
+      db.close();
+
+      const stdout = execFileSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          session_id: sessionId,
+          cwd: projectDir,
+          hook_event_name: "SessionStart",
+          source: "compact",
+        }),
+        encoding: "utf-8",
+        timeout: 10000,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+
+      const parsed = JSON.parse(stdout.trim());
+      const additionalContext = String(parsed.hookSpecificOutput.additionalContext);
+      expect(additionalContext).toContain("restore via Stop capsule");
+      expect(additionalContext).not.toContain("src/noisy.ts");
     } finally {
       if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = savedCodexHome;

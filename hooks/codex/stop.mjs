@@ -7,6 +7,7 @@ import "../ensure-deps.mjs";
 
 import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, CODEX_OPTS } from "../session-helpers.mjs";
 import { createSessionLoaders } from "../session-loaders.mjs";
+import { buildContinuousMemoryCapsule } from "./memory-governor.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,12 +28,34 @@ try {
   db.ensureSession(sessionId, projectDir);
   db.insertEvent(sessionId, {
     type: "session_end",
-    status: "completed",
-    stop_hook_active: input.stop_hook_active ?? false,
-    last_assistant_message: typeof input.last_assistant_message === "string"
-      ? input.last_assistant_message.slice(0, 2000)
-      : null,
+    category: "session",
+    data: JSON.stringify({
+      status: "completed",
+      stop_hook_active: input.stop_hook_active ?? false,
+      last_assistant_message: typeof input.last_assistant_message === "string"
+        ? input.last_assistant_message.slice(0, 2000)
+        : null,
+    }),
+    priority: 2,
   }, "Stop");
+
+  const events = db.getEvents(sessionId);
+  const capsule = buildContinuousMemoryCapsule(events, {
+    source: "stop",
+    searchTool: "ctx_search",
+  });
+  if (capsule) {
+    db.insertEvent(sessionId, {
+      type: "working_state_capsule",
+      category: "memory-governor",
+      data: capsule,
+      priority: 5,
+    }, "Stop", {
+      projectDir,
+      source: "stop",
+      confidence: 1,
+    });
+  }
 
   db.close();
 } catch {
