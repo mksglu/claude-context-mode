@@ -14,6 +14,11 @@ import { ContentStore } from "../src/store.js";
 const runtimes = detectRuntimes();
 const executor = new PolyglotExecutor({ runtimes });
 
+const JSON_MODE = process.argv.includes("--json");
+const log = (...args: unknown[]) => {
+  if (!JSON_MODE) console.log(...args);
+};
+
 interface BenchResult {
   name: string;
   language: string;
@@ -38,7 +43,7 @@ async function bench(
     language !== "shell" &&
     !runtimeMap[language]
   ) {
-    console.log(`  - ${name} [${language}] SKIP (runtime not available)`);
+    log(`  - ${name} [${language}] SKIP (runtime not available)`);
     return null;
   }
 
@@ -68,7 +73,7 @@ async function bench(
     p95Ms: +times[Math.floor(times.length * 0.95)].toFixed(1),
   };
 
-  console.log(
+  log(
     `  ${name} [${language}]: avg=${result.avgMs}ms min=${result.minMs}ms p95=${result.p95Ms}ms`,
   );
   return result;
@@ -168,20 +173,35 @@ function printTable(results: BenchResult[]) {
   }
 }
 
+interface ConcurrentResult {
+  concurrency: number;
+  totalMs: number;
+  perTaskMs: number;
+}
+
+interface ScenarioResult {
+  name: string;
+  outputBytes: number;
+  rawBytes: number;
+  savingsPct: number;
+}
+
 async function main() {
-  console.log("Context Mode — Performance Benchmarks");
-  console.log("======================================\n");
-  console.log("System:");
-  console.log(getRuntimeSummary(runtimes));
-  console.log(
+  log("Context Mode — Performance Benchmarks");
+  log("======================================\n");
+  log("System:");
+  log(getRuntimeSummary(runtimes));
+  log(
     `\nBun detected: ${hasBunRuntime() ? "YES (fast path)" : "NO (using Node.js)"}`,
   );
-  console.log();
+  log();
 
   const results: BenchResult[] = [];
+  const concurrentResults: ConcurrentResult[] = [];
+  const scenarioResults: ScenarioResult[] = [];
 
   // === 1. Hello World (Cold Start Overhead) ===
-  console.log("1. Hello World (measures cold start overhead):");
+  log("1. Hello World (measures cold start overhead):");
   const r1 = await bench(
     "hello-world",
     "javascript",
@@ -212,7 +232,7 @@ async function main() {
   if (r7) results.push(r7);
 
   // === 2. JSON Processing ===
-  console.log("\n2. JSON Processing (1000 items → summary):");
+  log("\n2. JSON Processing (1000 items → summary):");
   const r8 = await bench(
     "json-process",
     "javascript",
@@ -249,7 +269,7 @@ puts JSON.generate({ count: data.length, sum: total.round(2) })
   if (r10) results.push(r10);
 
   // === 3. String Processing (10K lines) ===
-  console.log("\n3. String Processing (10K lines → filter):");
+  log("\n3. String Processing (10K lines → filter):");
   const r11 = await bench(
     "string-10k-filter",
     "javascript",
@@ -280,7 +300,7 @@ print(f"filtered: {len(filtered)}")
   if (r13) results.push(r13);
 
   // === 4. Output Size ===
-  console.log("\n4. Output Size (measures stream processing):");
+  log("\n4. Output Size (measures stream processing):");
   const r14 = await bench(
     "output-1kb",
     "javascript",
@@ -310,7 +330,7 @@ print(f"filtered: {len(filtered)}")
   if (r17) results.push(r17);
 
   // === 5. Concurrent Execution ===
-  console.log("\n5. Concurrent Execution:");
+  log("\n5. Concurrent Execution:");
   for (const concurrency of [1, 5, 10, 20]) {
     const start = performance.now();
     const promises = Array.from({ length: concurrency }, (_, i) =>
@@ -322,13 +342,18 @@ print(f"filtered: {len(filtered)}")
     await Promise.all(promises);
     const total = performance.now() - start;
     const perTask = total / concurrency;
-    console.log(
+    concurrentResults.push({
+      concurrency,
+      totalMs: +total.toFixed(1),
+      perTaskMs: +perTask.toFixed(1),
+    });
+    log(
       `  ${concurrency} concurrent: ${total.toFixed(0)}ms total, ${perTask.toFixed(1)}ms/task`,
     );
   }
 
   // === 6. Context Savings Simulation ===
-  console.log("\n6. Context Savings (simulated real workloads):");
+  log("\n6. Context Savings (simulated real workloads):");
 
   const scenarios = [
     {
@@ -391,43 +416,73 @@ print(f"filtered: {len(filtered)}")
       language: "javascript",
       code: s.code,
     });
-    const savings = ((1 - r.stdout.length / s.rawSize) * 100).toFixed(0);
-    console.log(
+    const savings = +((1 - r.stdout.length / s.rawSize) * 100).toFixed(0);
+    scenarioResults.push({
+      name: s.name,
+      outputBytes: r.stdout.length,
+      rawBytes: s.rawSize,
+      savingsPct: savings,
+    });
+    log(
       `  ${s.name}: ${r.stdout.length} bytes output (was ~${(s.rawSize / 1024).toFixed(0)}KB) → ${savings}% context saved`,
     );
   }
 
   // === Search Path Performance (FTS5 hot path) ===
-  console.log("\n=== Search Path Performance ===");
-  console.log(
+  log("\n=== Search Path Performance ===");
+  log(
     `Setup: ${SEARCH_N_DOCS} seeded documents, ${SEARCH_N_ITERS} iterations per measurement`,
   );
 
   const fuzzy = benchFuzzyCache();
-  console.log("\nfuzzy-correct LRU cache (ContentStore)");
-  console.log(`  cold (1st call, levenshtein over vocab) : ${fuzzy.cold.toFixed(1)} µs`);
-  console.log(`  warm (cache hit, avg of ${SEARCH_N_ITERS})      : ${fuzzy.warm.toFixed(2)} µs`);
-  console.log(`  speedup                                  : ${(fuzzy.cold / fuzzy.warm).toFixed(0)}×`);
+  log("\nfuzzy-correct LRU cache (ContentStore)");
+  log(`  cold (1st call, levenshtein over vocab) : ${fuzzy.cold.toFixed(1)} µs`);
+  log(`  warm (cache hit, avg of ${SEARCH_N_ITERS})      : ${fuzzy.warm.toFixed(2)} µs`);
+  log(`  speedup                                  : ${(fuzzy.cold / fuzzy.warm).toFixed(0)}×`);
 
   const dedup = benchTokenDedup();
-  console.log(`\ntoken dedup (raw FTS5, ${SEARCH_N_DOCS} docs)`);
-  console.log(`  5× duplicate tokens (pre-dedup) : ${dedup.dup.toFixed(1)} µs/query`);
-  console.log(`  1 token (post-dedup)            : ${dedup.deduped.toFixed(1)} µs/query`);
-  console.log(`  speedup from dedup              : ${(dedup.dup / dedup.deduped).toFixed(2)}×`);
+  log(`\ntoken dedup (raw FTS5, ${SEARCH_N_DOCS} docs)`);
+  log(`  5× duplicate tokens (pre-dedup) : ${dedup.dup.toFixed(1)} µs/query`);
+  log(`  1 token (post-dedup)            : ${dedup.deduped.toFixed(1)} µs/query`);
+  log(`  speedup from dedup              : ${(dedup.dup / dedup.deduped).toFixed(2)}×`);
 
   // === Print Summary Table ===
-  console.log("\n=== Full Results Table ===");
-  printTable(results);
+  log("\n=== Full Results Table ===");
+  if (!JSON_MODE) printTable(results);
 
   // === Comparison Note ===
-  console.log("\n=== Comparison: context-mode vs raw cat/bash ===");
-  console.log(
+  log("\n=== Comparison: context-mode vs raw cat/bash ===");
+  log(
     "When Claude Code uses cat/head/Read to view a 50KB file, ALL 50KB enters context.",
   );
-  console.log(
+  log(
     "With context-mode execute_file, only the summary (typically 100-500 bytes) enters context.",
   );
-  console.log("This means 95-99% context savings on large files.\n");
+  log("This means 95-99% context savings on large files.\n");
+
+  if (JSON_MODE) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          schema: "ctx-bench/v1",
+          platform: process.platform,
+          arch: process.arch,
+          node: process.version,
+          benchmarks: results,
+          concurrent: concurrentResults,
+          search: {
+            fuzzyColdUs: +fuzzy.cold.toFixed(2),
+            fuzzyWarmUs: +fuzzy.warm.toFixed(2),
+            dedupDupUs: +dedup.dup.toFixed(2),
+            dedupDedupedUs: +dedup.deduped.toFixed(2),
+          },
+          scenarios: scenarioResults,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  }
 }
 
 main().catch((err) => {
