@@ -155,15 +155,17 @@ describe("statusline.mjs — SessionDB-backed reads", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  // SLICE 1: lifetime $ comes from SessionDB, not from sidecar JSON.
+  // SLICE 1: lifetime bytes come from SessionDB, not from sidecar JSON.
   // Seed a SessionDB with substantial event data → statusline must render
-  // a lifetime $ derived from those bytes (NOT $0.00, NOT a stale sidecar).
+  // a kb()-formatted byte total derived from those bytes (NOT 0, NOT a
+  // stale sidecar). v1.0.118 dropped dollar math; this slice now asserts
+  // on the unified byte formatter.
   // 60s timeout: Windows fork+exec + 1000-row SQLite seed + statusline subprocess
   // (which walks git worktrees + reads SessionDB analytics) regularly takes >30s
   // on the windows-latest runner. Mac/Linux finish in <2s.
-  test("renders lifetime $ from SessionDB session_events bytes", { timeout: 60_000 }, () => {
-    // 1000 events × ~256 bytes data = ~256KB → ~64K tokens → ~$0.96
-    // Use bytes_avoided so it counts as keptOut savings.
+  test("renders lifetime bytes from SessionDB session_events", { timeout: 60_000 }, () => {
+    // 1000 events × 1 KB avoided = ~1 MB lifetime → rendered as "1.0 MB"
+    // by kb(). Use bytes_avoided so it counts as keptOut savings.
     const events = Array.from({ length: 1000 }, () => ({
       bytesAvoided: 1024, // 1KB avoided per event
       data: "x".repeat(64),
@@ -176,20 +178,24 @@ describe("statusline.mjs — SessionDB-backed reads", () => {
     });
 
     assert.match(stdout, /context-mode/, "brand visible");
-    // 1MB avoided ÷ 4 bytes/token = 256K tokens × $15/1M = $3.84 (and bytes_returned=0)
-    // Substantively positive lifetime $ — proves SessionDB is the source.
+    // Substantively positive lifetime number in kb() units (KB/MB/GB) —
+    // proves SessionDB is the source.
     assert.match(
       stdout,
-      /\$([1-9]\d*|0\.\d*[1-9])/,
-      "non-zero $ derived from SessionDB rows",
+      /\b\d+(\.\d+)?\s*(KB|MB|GB)\b/,
+      "kb()-formatted bytes derived from SessionDB rows",
     );
+    assert.doesNotMatch(stdout, /\$/, "v1.0.118 dropped dollar math from statusline");
     assert.doesNotMatch(stdout, /NaN/);
   });
 
   // SLICE 1 cont: no SessionDB → headline fallback (substantiated, no $).
+  // HOME is overridden to dir so getMultiAdapterLifetimeStats finds nothing
+  // and the brand-new path is reached deterministically across machines.
   test("empty sessionsDir falls back to substantiated headline", () => {
     // dir exists but has no .db files
     const { stdout } = runStatusline({
+      HOME: dir,
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "any-session-id",
     });

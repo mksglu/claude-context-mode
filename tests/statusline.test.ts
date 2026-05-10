@@ -141,8 +141,11 @@ describe("statusline.mjs — render fallbacks", () => {
 
   // BRAND-NEW state: no SessionDB. Falls back to substantiated README
   // headline ("~98% of context window") — no fabricated $/dev/month copy.
+  // HOME is overridden to dir so getMultiAdapterLifetimeStats finds nothing
+  // and the brand-new path is reached deterministically across machines.
   test("brand-new state: no SessionDB shows substantiated headline", () => {
     const out = runStatusline({
+      HOME: dir,
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-doesnotexist",
     });
@@ -155,6 +158,7 @@ describe("statusline.mjs — render fallbacks", () => {
   test("empty sessions dir shows substantiated headline", () => {
     // dir is freshly mkdtemp'd — empty, no .db files.
     const out = runStatusline({
+      HOME: dir,
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-empty",
     });
@@ -169,6 +173,7 @@ describe("statusline.mjs — render fallbacks", () => {
   test("corrupt .db file degrades to headline", () => {
     writeFileSync(join(dir, "deadbeefdeadbeef.db"), "not a sqlite file");
     const out = runStatusline({
+      HOME: dir,
       CONTEXT_MODE_SESSION_DIR: dir,
       CLAUDE_SESSION_ID: "pid-bad",
     });
@@ -247,15 +252,17 @@ esac
       CLAUDE_SESSION_ID: "",
     });
 
-    // The session $ block surfaces only when conversation matches the
-    // resolved session_id. "saved this session" proves the walk landed
-    // on pid-90001 and getRealBytesStats found those events.
+    // The session block surfaces only when conversation matches the
+    // resolved session_id. "this chat" proves the walk landed on
+    // pid-90001 and getRealBytesStats found those events. v1.0.118
+    // replaced the $-based "saved this session" phrase with byte-based
+    // "this chat" — pin the new contract.
     assert.match(
       out,
-      /\$[0-9]/,
+      /this chat/,
       "resolver landed on pid-90001 → SessionDB had matching events",
     );
-    assert.match(out, /saved this session/);
+    assert.doesNotMatch(out, /\$/, "v1.0.118 dropped dollar math from statusline");
   });
 
   // linux: walk via /proc/<pid>/status. CTX_TEST_PROC_DIR points at a
@@ -286,8 +293,8 @@ esac
       CLAUDE_SESSION_ID: "",
     });
 
-    assert.match(out, /\$[0-9]/, "resolver landed on pid-70001 via /proc walk");
-    assert.match(out, /saved this session/);
+    assert.match(out, /this chat/, "resolver landed on pid-70001 via /proc walk");
+    assert.doesNotMatch(out, /\$/, "v1.0.118 dropped dollar math from statusline");
   });
 
   // win32: degraded fallback to process.ppid + one-shot stderr warning so
@@ -303,7 +310,8 @@ esac
       CLAUDE_SESSION_ID: "",
     });
 
-    assert.match(stdout, /\$[0-9]/, "fell back to ppid-based session_id");
+    assert.match(stdout, /this chat/, "fell back to ppid-based session_id");
+    assert.doesNotMatch(stdout, /\$/, "v1.0.118 dropped dollar math from statusline");
     assert.match(
       stderr,
       /Windows process-tree walk unsupported/i,
@@ -333,7 +341,7 @@ describe("statusline.mjs — CONTEXT_MODE_SESSION_DIR override", () => {
       CLAUDE_SESSION_ID: "any-id",
     });
     assert.match(out, /context-mode/);
-    assert.match(out, /\$[0-9]/, "render reflects override-dir SessionDB");
-    assert.match(out, /saved this session/);
+    assert.match(out, /this chat/, "render reflects override-dir SessionDB");
+    assert.doesNotMatch(out, /\$/, "v1.0.118 dropped dollar math from statusline");
   });
 });
