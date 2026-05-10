@@ -96,6 +96,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "npx tsx tests/benchmark.ts",
+    "benchmark:codex-continuity": "npx tsx tests/codex-continuity-benchmark.ts",
     "test:use-cases": "npx tsx tests/use-cases.ts",
     "test:compare": "npx tsx tests/context-comparison.ts",
     "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",

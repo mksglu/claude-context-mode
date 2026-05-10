@@ -62,7 +62,7 @@ try {
     // session whose session_meta.started_at is more recent — observed
     // cross-session bleed when a different session started after this one
     // and before the resume.
-    const events = sessionId ? getSessionEvents(db, sessionId) : [];
+    const events = sessionId && !resumeSnapshot ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
       const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
       additionalContext += buildSessionDirective(source, eventMeta, toolNamer);

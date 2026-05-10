@@ -702,6 +702,57 @@ describe("Codex sessionstart hook script", () => {
       try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
     }
   });
+
+  it("does not duplicate session-event directive when compact resume snapshot exists", () => {
+    const hookScript = resolve(__dirname, "../../hooks/codex/sessionstart.mjs");
+    const codexHome = mkdtempSync(join(tmpdir(), "context-mode-codex-home-"));
+    const projectDir = join(codexHome, "project");
+    const sessionId = "test-sessionstart-compact-slim";
+    const snapshot = "<session_resume><task_state>restore only snapshot</task_state></session_resume>";
+    const savedCodexHome = process.env.CODEX_HOME;
+
+    mkdirSync(projectDir, { recursive: true });
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const adapter = new CodexAdapter();
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: adapter.getSessionDir(),
+      });
+      const db = new SessionDB({ dbPath });
+      db.ensureSession(sessionId, projectDir);
+      db.insertEvent(sessionId, {
+        type: "file_edit",
+        category: "file",
+        data: "src/noisy.ts",
+        priority: 2,
+      }, "PostToolUse");
+      db.upsertResume(sessionId, snapshot, 1);
+      db.close();
+
+      const stdout = execFileSync(process.execPath, [hookScript], {
+        input: JSON.stringify({
+          session_id: sessionId,
+          cwd: projectDir,
+          hook_event_name: "SessionStart",
+          source: "compact",
+        }),
+        encoding: "utf-8",
+        timeout: 10000,
+        env: { ...process.env, CODEX_HOME: codexHome },
+      });
+
+      const parsed = JSON.parse(stdout.trim());
+      const additionalContext = String(parsed.hookSpecificOutput.additionalContext);
+      expect(additionalContext).toContain("restore only snapshot");
+      expect(additionalContext).not.toContain("src/noisy.ts");
+    } finally {
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = savedCodexHome;
+      try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
+  });
 });
 
 // Pins the #492 follow-up invariants:
