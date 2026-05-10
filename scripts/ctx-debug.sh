@@ -213,6 +213,18 @@ kv "Shell" "${SHELL:-unknown}"
 [ -n "${ZSH_VERSION:-}" ]  && kv "Zsh version" "$ZSH_VERSION"
 kv "Locale" "LANG=${LANG:-unset}, LC_ALL=${LC_ALL:-unset}"
 
+# Desktop apps (macOS only).
+if [ "$OS_TYPE" = "macos" ]; then
+  for app_path in "/Applications/Claude.app" "/Applications/Codex.app"; do
+    app_name="$(basename "$app_path" .app)"
+    if [ -d "$app_path" ]; then
+      ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist" 2>/dev/null)"
+      bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist" 2>/dev/null)"
+      kv "$app_name.app" "v${ver:-unknown} (${bundle:-?})"
+    fi
+  done
+fi
+
 # ─── 2. Runtime Versions ─────────────────────────────────────────────────────
 
 section "2. Runtime Versions"
@@ -440,9 +452,16 @@ config_file "Claude settings.local.json" "$HOME_DIR/.claude/settings.local.json"
 # Gemini CLI
 config_file "Gemini settings.json" "$HOME_DIR/.gemini/settings.json"
 
-# Codex
+# Codex (CLI + desktop app share ~/.codex/)
 config_file "Codex config.toml" "$HOME_DIR/.codex/config.toml"
 config_file "Codex hooks.json" "$HOME_DIR/.codex/hooks.json"
+
+# Claude Desktop (macOS + Windows; distinct from Claude Code)
+if [ "$OS_TYPE" = "macos" ]; then
+  config_file "Claude Desktop config" "$HOME_DIR/Library/Application Support/Claude/claude_desktop_config.json"
+elif [ "$OS_TYPE" = "windows" ]; then
+  config_file "Claude Desktop config" "$APPDATA/Claude/claude_desktop_config.json"
+fi
 
 # Cursor (project + global)
 config_file "Cursor hooks.json (project)" "$CWD/.cursor/hooks.json"
@@ -573,6 +592,14 @@ if [ "$OS_TYPE" = "windows" ]; then
     fi
   fi
 fi
+
+# Hardcoded nvm path detection — common breakage when nvm version changes.
+# Hooks pinned to /Users/x/.nvm/versions/node/vN.M.K/... silently die after `nvm install <newer>`.
+for hooks_file in "$HOME_DIR/.codex/hooks.json" "$CLAUDE_SETTINGS"; do
+  if [ -f "$hooks_file" ] && grep -q 'nvm/versions/node/v[0-9]' "$hooks_file" 2>/dev/null; then
+    warn "$(basename "$hooks_file") has a hardcoded nvm node path — will break when nvm switches versions. Prefer 'context-mode hook <platform> <event>' form (resolved via PATH)."
+  fi
+done
 
 # ─── 8. SQLite / FTS5 Test ───────────────────────────────────────────────────
 

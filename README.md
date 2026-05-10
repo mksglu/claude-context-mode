@@ -122,6 +122,82 @@ This gives you all 11 MCP tools without automatic routing. The model can still u
 </details>
 
 <details>
+<summary><strong>Claude Desktop</strong> — MCP-only, no hooks</summary>
+
+**Prerequisites:** Node.js 18+, [Claude Desktop](https://claude.ai/download) (macOS or Windows).
+
+> Claude Desktop is the consumer chat app, not Claude Code. MCP tools work; hooks and slash commands don't. Routing happens via a one-time paste into a Project's Custom Instructions.
+
+**Install:**
+
+1. Install context-mode globally:
+
+   ```bash
+   npm install -g context-mode
+   ```
+
+2. Edit Claude Desktop's MCP config:
+   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "context-mode": {
+         "command": "context-mode"
+       }
+     }
+   }
+   ```
+
+3. In Claude Desktop, go to Settings → Projects → New Project. Paste the contents of `node_modules/context-mode/configs/claude-code/CLAUDE.md` into the **Custom Instructions** field. Without this, the model falls back to raw `Bash`/`Read` for ~40% of operations.
+
+4. Quit Claude Desktop completely (`⌘Q` on macOS, tray → Quit on Windows — the close button keeps the MCP server running). Reopen.
+
+**Verify** — open a new conversation inside the project and paste these:
+
+```
+1. Run ctx_doctor and paste the full output.
+2. Use ctx_execute to count .ts files under src/. Print only the number.
+3. Run ctx_stats.
+```
+
+Prompt 1 returns runtime/FTS5/hook checks, prompt 2 returns a single integer (proves the model picked `ctx_execute` over `Bash`), prompt 3 returns the context savings ratio. If the model uses `Bash` instead, the Custom Instructions paste was skipped or the chat is outside the project.
+
+**Troubleshooting:**
+
+- **Server missing from the MCP panel:** check `~/Library/Logs/Claude/mcp-server-context-mode.log`. The usual cause is `command: "context-mode"` not on Claude Desktop's `PATH`. Replace it with the absolute path from `which context-mode` (e.g. `/opt/homebrew/bin/context-mode` or your nvm path).
+- **`better_sqlite3.node was compiled against NODE_MODULE_VERSION ...`:** native module ABI mismatch. Swap `command: "context-mode"` for `command: "npx"` with `args: ["-y", "context-mode@latest"]` — first run is slower but it rebuilds against the runtime Node version.
+
+<details>
+<summary>Alternative — npx-on-demand (no global install)</summary>
+
+```json
+{
+  "mcpServers": {
+    "context-mode": {
+      "command": "npx",
+      "args": ["-y", "context-mode@latest"]
+    }
+  }
+}
+```
+
+First conversation pays a ~30–60s download, subsequent runs are cached. Useful for trying it out before committing to a global install.
+
+</details>
+
+**Diagnostic:** When reporting issues, run the debug script and paste its output:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/scripts/ctx-debug.sh)
+```
+
+Covers Claude Desktop (config path, app version, log) alongside every other supported platform. The script prints the report path on exit (a JSON file under your system temp directory). Read-only, redacts secrets.
+
+</details>
+
+<details>
 <summary><strong>Gemini CLI</strong> — one config file, hooks included</summary>
 
 **Prerequisites:** Node.js 18+, Gemini CLI installed.
@@ -510,9 +586,11 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 </details>
 
 <details>
-<summary><strong>Codex CLI</strong> — MCP + hooks</summary>
+<summary><strong>Codex CLI + Codex Desktop</strong> — MCP + hooks</summary>
 
-**Prerequisites:** Node.js 18+, Codex CLI installed.
+**Prerequisites:** Node.js 18+, Codex CLI or the Codex desktop app installed.
+
+> The terminal CLI and the Codex desktop app share `~/.codex/`. The same install works for both — the desktop app is an Electron wrapper that reads the same `config.toml` and `hooks.json`.
 
 **Install:**
 
@@ -555,11 +633,29 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 
    For global use: `cp node_modules/context-mode/configs/codex/AGENTS.md ~/.codex/AGENTS.md`. Global applies to all projects. If both exist, Codex CLI merges them.
 
-5. Restart Codex CLI.
+5. Restart Codex CLI (or fully quit and reopen the desktop app).
 
-**Verify:** Start a session and type `ctx stats`. Context-mode tools should appear and respond.
+**Verify (CLI):** Run `codex` in your terminal and type `ctx stats`. Tools should appear and respond.
+
+**Verify (Desktop):** Open the Codex desktop app and paste these into a new chat:
+
+```
+1. Run ctx_doctor and paste the full output.
+2. Use ctx_execute to count .ts files under src/. Print only the number.
+3. Run ctx_stats.
+```
+
+Prompt 1 returns runtime/FTS5/hook checks, prompt 2 returns a single integer (proves the model picked `ctx_execute` over the shell), prompt 3 returns the context savings ratio. Hooks fire identically across both surfaces because they share `~/.codex/hooks.json`.
 
 **Routing:** MCP tools work. Hook-based routing is active when `~/.codex/hooks.json` is configured. The `AGENTS.md` file provides routing instructions for model awareness.
+
+**Diagnostic:** When reporting issues, run the debug script and paste its output:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/mksglu/context-mode/main/scripts/ctx-debug.sh)
+```
+
+Covers both the CLI and the desktop app (they share `~/.codex/`), including hook validation and a hardcoded-nvm-path warning. The script prints the report path on exit. Read-only, redacts secrets.
 
 </details>
 
