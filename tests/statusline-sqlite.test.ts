@@ -158,7 +158,10 @@ describe("statusline.mjs — SessionDB-backed reads", () => {
   // SLICE 1: lifetime $ comes from SessionDB, not from sidecar JSON.
   // Seed a SessionDB with substantial event data → statusline must render
   // a lifetime $ derived from those bytes (NOT $0.00, NOT a stale sidecar).
-  test("renders lifetime $ from SessionDB session_events bytes", () => {
+  // 60s timeout: Windows fork+exec + 1000-row SQLite seed + statusline subprocess
+  // (which walks git worktrees + reads SessionDB analytics) regularly takes >30s
+  // on the windows-latest runner. Mac/Linux finish in <2s.
+  test("renders lifetime $ from SessionDB session_events bytes", { timeout: 60_000 }, () => {
     // 1000 events × ~256 bytes data = ~256KB → ~64K tokens → ~$0.96
     // Use bytes_avoided so it counts as keptOut savings.
     const events = Array.from({ length: 1000 }, () => ({
@@ -280,7 +283,9 @@ describe("statusline.mjs — multi-adapter aggregation", () => {
 
   // Slice 2 RED: with TWO real adapters seeded under HOME, the statusline
   // surfaces the cross-tool aggregate. Counts adapters via "across N tools".
-  test("renders 'across N tools' when 2+ real adapters detected", () => {
+  // 60s timeout for the same reason as the slice 1 test above — Windows is
+  // slow at fork+exec and the multi-adapter walk multiplies the cost.
+  test("renders 'across N tools' when 2+ real adapters detected", { timeout: 60_000 }, () => {
     seedRealAdapter(join(home, ".claude", "context-mode", "sessions"), "claude");
     seedRealAdapter(join(home, ".gemini", "context-mode", "sessions"), "gemini");
 
