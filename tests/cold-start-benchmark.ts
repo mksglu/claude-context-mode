@@ -39,6 +39,11 @@ const WARMUP = Number(process.env.WARMUP ?? 1);
 const TIMEOUT_MS = Number(process.env.TIMEOUT_MS ?? 30000);
 const POLL_MS = Number(process.env.POLL_MS ?? 10);
 
+const JSON_MODE = process.argv.includes("--json");
+const log = (...args: unknown[]) => {
+  if (!JSON_MODE) console.log(...args);
+};
+
 type IterationStatus = "ok" | "timeout" | "spawn-error";
 
 interface IterationResult {
@@ -161,29 +166,29 @@ function fmt(ms: number): string {
 }
 
 async function main(): Promise<void> {
-  console.log("Context Mode — Cold-Start Benchmark");
-  console.log("====================================");
-  console.log(`Node:        ${process.version}`);
-  console.log(`Platform:    ${process.platform} (${process.arch})`);
-  console.log(`Bundle:      ${existsSync(resolve(REPO_ROOT, "server.bundle.mjs")) ? "PRESENT" : "MISSING (will trigger build path)"}`);
-  console.log(`Iterations:  ${ITERATIONS} (warmup: ${WARMUP})`);
-  console.log(`Timeout:     ${TIMEOUT_MS}ms per iteration`);
-  console.log("");
+  log("Context Mode — Cold-Start Benchmark");
+  log("====================================");
+  log(`Node:        ${process.version}`);
+  log(`Platform:    ${process.platform} (${process.arch})`);
+  log(`Bundle:      ${existsSync(resolve(REPO_ROOT, "server.bundle.mjs")) ? "PRESENT" : "MISSING (will trigger build path)"}`);
+  log(`Iterations:  ${ITERATIONS} (warmup: ${WARMUP})`);
+  log(`Timeout:     ${TIMEOUT_MS}ms per iteration`);
+  log("");
 
   const sigintHandler = async () => {
-    console.log("\nSIGINT received — killing live children...");
+    console.error("\nSIGINT received — killing live children...");
     await Promise.all(Array.from(liveChildren).map(killChild));
     process.exit(130);
   };
   process.on("SIGINT", sigintHandler);
 
   if (WARMUP > 0) {
-    console.log(`Warming up (${WARMUP} iteration${WARMUP === 1 ? "" : "s"}, discarded)...`);
+    log(`Warming up (${WARMUP} iteration${WARMUP === 1 ? "" : "s"}, discarded)...`);
     for (let i = 0; i < WARMUP; i++) {
       const r = await measureSingleColdStart();
-      console.log(`  warmup ${i + 1}: ${r.status === "ok" ? `${fmt(r.elapsedMs)}ms` : `SKIP (${r.status})`}`);
+      log(`  warmup ${i + 1}: ${r.status === "ok" ? `${fmt(r.elapsedMs)}ms` : `SKIP (${r.status})`}`);
     }
-    console.log("");
+    log("");
   }
 
   const results: IterationResult[] = [];
@@ -191,10 +196,10 @@ async function main(): Promise<void> {
     const r = await measureSingleColdStart();
     results.push(r);
     if (r.status === "ok") {
-      console.log(`  iteration ${i + 1}: ${fmt(r.elapsedMs)}ms`);
+      log(`  iteration ${i + 1}: ${fmt(r.elapsedMs)}ms`);
     } else {
       const tail = r.stderr ? ` — stderr: ${r.stderr.split("\n").pop()}` : "";
-      console.log(`  iteration ${i + 1}: SKIP (${r.status})${tail}`);
+      log(`  iteration ${i + 1}: SKIP (${r.status})${tail}`);
     }
   }
 
@@ -204,10 +209,31 @@ async function main(): Promise<void> {
     .sort((a, b) => a - b);
   const skipCount = results.length - okTimes.length;
 
-  console.log("");
-  console.log("=== Summary ===");
+  log("");
+  log("=== Summary ===");
   if (okTimes.length === 0) {
-    console.log("All iterations skipped — no successful measurements.");
+    if (JSON_MODE) {
+      process.stdout.write(
+        JSON.stringify(
+          {
+            schema: "ctx-coldstart/v1",
+            platform: process.platform,
+            arch: process.arch,
+            node: process.version,
+            iterations: ITERATIONS,
+            warmup: WARMUP,
+            timeoutMs: TIMEOUT_MS,
+            okCount: 0,
+            skipCount,
+            allSkipped: true,
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+    } else {
+      log("All iterations skipped — no successful measurements.");
+    }
     process.off("SIGINT", sigintHandler);
     process.exit(1);
   }
@@ -218,15 +244,40 @@ async function main(): Promise<void> {
   const p95 = percentile(okTimes, 0.95);
   const p99 = percentile(okTimes, 0.99);
 
-  console.log("| Metric    | Value (ms) |");
-  console.log("|-----------|------------|");
-  console.log(`| ok-count  | ${String(okTimes.length).padStart(10)} |`);
-  console.log(`| skip-count| ${String(skipCount).padStart(10)} |`);
-  console.log(`| min       | ${fmt(min).padStart(10)} |`);
-  console.log(`| p50       | ${fmt(p50).padStart(10)} |`);
-  console.log(`| p95       | ${fmt(p95).padStart(10)} |`);
-  console.log(`| p99       | ${fmt(p99).padStart(10)} |`);
-  console.log(`| max       | ${fmt(max).padStart(10)} |`);
+  log("| Metric    | Value (ms) |");
+  log("|-----------|------------|");
+  log(`| ok-count  | ${String(okTimes.length).padStart(10)} |`);
+  log(`| skip-count| ${String(skipCount).padStart(10)} |`);
+  log(`| min       | ${fmt(min).padStart(10)} |`);
+  log(`| p50       | ${fmt(p50).padStart(10)} |`);
+  log(`| p95       | ${fmt(p95).padStart(10)} |`);
+  log(`| p99       | ${fmt(p99).padStart(10)} |`);
+  log(`| max       | ${fmt(max).padStart(10)} |`);
+
+  if (JSON_MODE) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          schema: "ctx-coldstart/v1",
+          platform: process.platform,
+          arch: process.arch,
+          node: process.version,
+          iterations: ITERATIONS,
+          warmup: WARMUP,
+          timeoutMs: TIMEOUT_MS,
+          okCount: okTimes.length,
+          skipCount,
+          minMs: +min.toFixed(1),
+          p50Ms: +p50.toFixed(1),
+          p95Ms: +p95.toFixed(1),
+          p99Ms: +p99.toFixed(1),
+          maxMs: +max.toFixed(1),
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  }
 
   process.off("SIGINT", sigintHandler);
 }
