@@ -55,7 +55,7 @@ jobs:
           PERF_COLDSTART_WARMUP: '1'
         run: |
           mkdir -p .bench
-          npx tsx tests/benchmark.ts --check --json > .bench/result.json 2> .bench/err.log || true
+          npx tsx tests/benchmark.ts --check --json > .bench/result.json 2> .bench/err.log
 
       - name: Upload bench artifact
         if: always()

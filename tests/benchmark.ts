@@ -986,12 +986,54 @@ function regressionSelfTest(): void {
   if (ext["coldStart.p95Ms"]?.value !== 300) errors.push("coldStart.p95Ms not extracted");
   if (ext["search.fuzzyWarmUs"]?.value !== 1.5) errors.push("search.fuzzyWarmUs not extracted");
 
+  // e2e: baseline JSON round-trip (updateBaseline → write → read → validate).
+  const tmpBaselinePath = resolve(tmpdir(), `bench-self-test-${Date.now()}.json`);
+  try {
+    const seed: Baseline = {
+      schemaVersion: "ctx-perf-baseline/v1",
+      lastUpdated: "2026-01-01",
+      thresholds: { relPct: 0.05, absFloorMs: 50, absFloorUs: 5 },
+      platforms: {},
+    };
+    const updated = updateBaseline(seed, "test-arch", {
+      "metric.x": { value: 100, unit: "ms" },
+    });
+    writeFileSync(tmpBaselinePath, JSON.stringify(updated, null, 2));
+    const reloaded: unknown = JSON.parse(readFileSync(tmpBaselinePath, "utf8"));
+    try {
+      validateBaseline(reloaded);
+      if (reloaded.platforms["test-arch"]?.metrics["metric.x"]?.value !== 100) {
+        errors.push("baseline round-trip lost metric value");
+      }
+    } catch (e) {
+      errors.push(`baseline round-trip validate failed: ${(e as Error).message}`);
+    }
+  } finally {
+    try { rmSync(tmpBaselinePath); } catch { /* ignore */ }
+  }
+
+  // e2e: printRegressionTable doesn't throw on mixed-status rows (output suppressed).
+  const tableRows: DeltaRow[] = [
+    { metric: "a", unit: "ms", baseline: 100, current: 150, deltaAbs: 50, deltaPct: 50, status: "regression" },
+    { metric: "b", unit: "us", baseline: null, current: 5, deltaAbs: null, deltaPct: null, status: "new" },
+    { metric: "c", unit: "ms", baseline: 200, current: 180, deltaAbs: -20, deltaPct: -10, status: "improved" },
+  ];
+  const origLog = console.log;
+  console.log = () => { /* suppress table output during self-test */ };
+  try {
+    printRegressionTable(tableRows);
+  } catch (e) {
+    errors.push(`printRegressionTable threw: ${(e as Error).message}`);
+  } finally {
+    console.log = origLog;
+  }
+
   if (errors.length > 0) {
     console.error("self-test FAILED:");
     for (const e of errors) console.error("  -", e);
     process.exit(1);
   }
-  console.log("self-test PASSED (13 assertions)");
+  console.log("self-test PASSED (15 assertions)");
 }
 
 async function regressionMain(): Promise<void> {
