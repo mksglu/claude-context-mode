@@ -8,6 +8,7 @@ name: Bench
 on:
   pull_request:
     branches: [next, main]
+    # Skip on docs-only PRs — bench is non-blocking and adds ~3-5min CI cost per OS.
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -17,6 +18,12 @@ permissions:
   contents: read
   pull-requests: write
 
+# Cancel superseded runs on the same PR so concurrent force-pushes don't race
+# against the sticky-comment upsert.
+concurrency:
+  group: bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   bench:
     strategy:
@@ -25,6 +32,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     name: bench (${{ matrix.os }})
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -47,9 +55,7 @@ jobs:
           PERF_COLDSTART_WARMUP: '1'
         run: |
           mkdir -p .bench
-          set +e
-          npx tsx tests/perf-regression-check.ts --check --json > .bench/result.json 2> .bench/err.log
-          echo "exit_code=$?"
+          npx tsx tests/perf-regression-check.ts --check --json > .bench/result.json 2> .bench/err.log || true
 
       - name: Upload bench artifact
         if: always()
@@ -101,8 +107,8 @@ jobs:
                   const j = JSON.parse(fs.readFileSync(resFile, "utf8"));
                   totalRegressions += j.regressionCount || 0;
                   const summary = j.regressionCount > 0
-                    ? `❌ ${j.regressionCount} regression(s), ${j.newCount} new`
-                    : `✅ no regressions, ${j.newCount} new`;
+                    ? `❌ ${j.regressionCount} regression(s), ${j.newCount ?? 0} new`
+                    : `✅ no regressions, ${j.newCount ?? 0} new`;
                   const rows = (j.rows || []).map((r) =>
                     `| ${icon(r.status)} | \`${r.metric}\` | ${fmt(r.baseline, r.unit)} | ${fmt(r.current, r.unit)} | ${pct(r.deltaPct)} |`
                   ).join("\n");

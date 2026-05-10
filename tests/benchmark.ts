@@ -486,6 +486,16 @@ print(f"filtered: {len(filtered)}")
 }
 
 main().catch((err) => {
-  console.error("Benchmark error:", err);
+  const message = err instanceof Error ? err.message : String(err);
+  if (JSON_MODE) {
+    process.stdout.write(JSON.stringify({
+      schema: "ctx-bench/v1",
+      ok: false,
+      errorKind: "unknown",
+      message,
+    }, null, 2) + "\n");
+  } else {
+    console.error("Benchmark error:", err);
+  }
   process.exit(1);
 });

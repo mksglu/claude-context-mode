@@ -20,7 +20,7 @@
  * before owner commits to a budget.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,9 +46,30 @@ function platformKey(): string {
   return `${process.platform}-${process.arch}`;
 }
 
-function loadBaseline(): Baseline {
-  return JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as Baseline;
+function validateBaseline(b: unknown): asserts b is Baseline {
+  if (!b || typeof b !== "object") throw new Error("baseline: not an object");
+  const x = b as Record<string, unknown>;
+  if (x.schemaVersion !== "ctx-perf-baseline/v1") {
+    throw new Error(`baseline: unsupported schemaVersion ${String(x.schemaVersion)} (expected ctx-perf-baseline/v1)`);
+  }
+  const t = x.thresholds as Record<string, unknown> | undefined;
+  if (!t || typeof t !== "object") throw new Error("baseline: thresholds missing or not object");
+  for (const k of ["relPct", "absFloorMs", "absFloorUs"] as const) {
+    const v = t[k];
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`baseline: thresholds.${k} must be a positive finite number, got ${String(v)}`);
+    }
+  }
+  if (!x.platforms || typeof x.platforms !== "object") throw new Error("baseline: platforms missing or not object");
 }
+
+function loadBaseline(): Baseline {
+  const raw: unknown = JSON.parse(readFileSync(BASELINE_PATH, "utf8"));
+  validateBaseline(raw);
+  return raw;
+}
+
+const BENCH_TIMEOUT_MS = 600_000; // 10 min ceiling — cold-start can run ~5min on Windows.
 
 function runJsonBench(relPath: string, env: Record<string, string> = {}): Record<string, unknown> {
   const r = spawnSync(
@@ -60,8 +81,13 @@ function runJsonBench(relPath: string, env: Record<string, string> = {}): Record
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 16 * 1024 * 1024,
+      timeout: BENCH_TIMEOUT_MS,
+      killSignal: "SIGKILL",
     },
   );
+  if (r.signal === "SIGKILL") {
+    throw new Error(`${relPath} timed out (>${BENCH_TIMEOUT_MS / 1000}s)\n${r.stderr ?? ""}`);
+  }
   if (r.status !== 0) {
     throw new Error(`${relPath} failed (exit ${r.status}):\n${r.stderr}`);
   }
@@ -152,6 +178,13 @@ function fmt(n: number, unit: Unit): string {
   return unit === "ms" ? `${n.toFixed(1)}ms` : `${n.toFixed(2)}µs`;
 }
 
+const STATUS_ICON: Record<DeltaRow["status"], string> = {
+  ok: "OK  ",
+  regression: "FAIL",
+  improved: "FAST",
+  new: "NEW ",
+};
+
 function printTable(rows: DeltaRow[]): void {
   console.log("");
   console.log(
@@ -161,11 +194,7 @@ function printTable(rows: DeltaRow[]): void {
     "|--------|-------------------------------------------------|---------------|---------------|---------------|----------|",
   );
   for (const r of rows) {
-    const icon =
-      r.status === "regression" ? "FAIL"
-      : r.status === "improved" ? "FAST"
-      : r.status === "new" ? "NEW "
-      : "OK  ";
+    const icon = STATUS_ICON[r.status];
     const baseline = r.baseline === null ? "—" : fmt(r.baseline, r.unit);
     const current = fmt(r.current, r.unit);
     const dAbs = r.deltaAbs === null ? "—" : (r.deltaAbs >= 0 ? "+" : "") + fmt(r.deltaAbs, r.unit);
@@ -177,9 +206,10 @@ function printTable(rows: DeltaRow[]): void {
 }
 
 function update(baseline: Baseline, platform: string, current: Record<string, MetricValue>): Baseline {
-  const next: Baseline = JSON.parse(JSON.stringify(baseline));
+  const next: Baseline = structuredClone(baseline);
   next.lastUpdated = new Date().toISOString().slice(0, 10);
   next.platforms[platform] = {
+    ...(next.platforms[platform] ?? {}),
     node: process.version,
     metrics: current,
   };
@@ -252,7 +282,7 @@ function selfTest(): void {
     for (const e of errors) console.error("  -", e);
     process.exit(1);
   }
-  console.log("self-test PASSED (8 assertions)");
+  console.log("self-test PASSED (13 assertions)");
 }
 
 async function main(): Promise<void> {
@@ -292,7 +322,9 @@ async function main(): Promise<void> {
 
   if (wantUpdate) {
     const next = update(baseline, platform, current);
-    writeFileSync(BASELINE_PATH, JSON.stringify(next, null, 2) + "\n");
+    const tmp = BASELINE_PATH + ".tmp";
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n");
+    renameSync(tmp, BASELINE_PATH);
     console.error(`[perf-check] baseline updated for ${platform} (${Object.keys(current).length} metrics)`);
     return;
   }
@@ -322,6 +354,16 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("perf-regression-check error:", err);
+  const message = err instanceof Error ? err.message : String(err);
+  if (process.argv.includes("--json")) {
+    process.stdout.write(JSON.stringify({
+      schema: "ctx-perf-check/v1",
+      ok: false,
+      errorKind: "unknown",
+      message,
+    }, null, 2) + "\n");
+  } else {
+    console.error("perf-regression-check error:", err);
+  }
   process.exit(1);
 });

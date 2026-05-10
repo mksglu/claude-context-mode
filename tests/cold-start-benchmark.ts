@@ -50,7 +50,6 @@ interface IterationResult {
   status: IterationStatus;
   elapsedMs: number;
   stderr: string;
-  pid: number;
 }
 
 const liveChildren = new Set<ChildProcess>();
@@ -120,7 +119,6 @@ function measureSingleColdStart(): Promise<IterationResult> {
         status,
         elapsedMs,
         stderr: stderrBuf.trim(),
-        pid: child.pid ?? -1,
       });
     };
 
@@ -283,7 +281,17 @@ async function main(): Promise<void> {
 }
 
 main().catch(async (err) => {
-  console.error("Cold-start bench error:", err);
   await Promise.all(Array.from(liveChildren).map(killChild));
+  const message = err instanceof Error ? err.message : String(err);
+  if (JSON_MODE) {
+    process.stdout.write(JSON.stringify({
+      schema: "ctx-coldstart/v1",
+      ok: false,
+      errorKind: "unknown",
+      message,
+    }, null, 2) + "\n");
+  } else {
+    console.error("Cold-start bench error:", err);
+  }
   process.exit(1);
 });
