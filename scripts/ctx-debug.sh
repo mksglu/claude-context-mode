@@ -13,9 +13,30 @@ set -uo pipefail  # NOT -e — we must never crash
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-# Detect plugin root (directory containing this script's parent).
+# Detect plugin root.
+# 1. Honor explicit CLAUDE_PLUGIN_ROOT.
+# 2. Try $SCRIPT_DIR/.. (works for repo checkout: `bash scripts/ctx-debug.sh`).
+# 3. Fall back to common install locations (works for `bash <(curl ...)` standalone).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)}"
+
+# Process-substitution invocation lands SCRIPT_DIR in /dev/fd, so the parent
+# is /dev — not a context-mode checkout. Probe known install paths instead.
+if [ ! -f "$PLUGIN_ROOT/package.json" ] || ! grep -q '"name":[[:space:]]*"context-mode"' "$PLUGIN_ROOT/package.json" 2>/dev/null; then
+  PLUGIN_CACHE_LATEST="$(ls -1d "$HOME/.claude/plugins/cache/context-mode/context-mode"/*/ 2>/dev/null | sort -V | tail -1)"
+  CANDIDATES=(
+    "${PLUGIN_CACHE_LATEST%/}"
+    "$(npm root -g 2>/dev/null)/context-mode"
+    "/opt/homebrew/lib/node_modules/context-mode"
+    "/usr/local/lib/node_modules/context-mode"
+  )
+  for c in "${CANDIDATES[@]}"; do
+    if [ -n "$c" ] && [ -f "$c/package.json" ] && grep -q '"name":[[:space:]]*"context-mode"' "$c/package.json" 2>/dev/null; then
+      PLUGIN_ROOT="$c"
+      break
+    fi
+  done
+fi
 
 # timed SECS CMD [ARGS...] — portable timeout wrapper (macOS has no `timeout`)
 timed() {
