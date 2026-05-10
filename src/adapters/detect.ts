@@ -43,10 +43,9 @@ export const PLATFORM_ENV_VARS = [
   // 800+ hits in major OSS detection libs (Vercel Next.js, Bun, Google
   // gemini-cli, Nx, CrewAI).
   ["cursor",             ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
-  // kilo (OpenCode fork) — Kilo-Org/kilocode packages/opencode/src/index.ts:140
-  // sets `process.env.KILO_PID = String(process.pid)`. Bare KILO is NEVER set
-  // (verified). Kilo also sets OPENCODE=1 (fork) — listed before opencode.
-  ["kilo",               ["KILO_PID"]],
+  // kilo (OpenCode fork) — Kilo-Org/kilocode packages/opencode/src/index.ts:138 + 139
+  // sets `process.env.KILO = 1` + `process.env.KILO_PID = String(process.pid)`. 
+  ["kilo",               ["KILO", "KILO_PID"]],
   // opencode — sst/opencode packages/opencode/src/index.ts:108-109 sets
   // OPENCODE=1 + OPENCODE_PID=<pid> on every CLI invocation.
   ["opencode",           ["OPENCODE", "OPENCODE_PID"]],
@@ -68,7 +67,11 @@ export const PLATFORM_ENV_VARS = [
   // qwen-code — QWEN_PROJECT_DIR per QwenLM/qwen-code docs/users/features/hooks.md.
   // (QWEN_SESSION_ID removed — 0 hits in qwen-code repository.)
   ["qwen-code",          ["QWEN_PROJECT_DIR"]],
-  // pi — PI_PROJECT_DIR consumed by src/pi-extension.ts:154 + src/server.ts:153
+  // omp (can1357/oh-my-pi). PI_CODING_AGENT_DIR is the upstream
+  // agent-dir override per `packages/utils/src/dirs.ts:193`. Listed
+  // BEFORE pi so OMP is not misclassified as Pi when both are installed.
+  ["omp",                ["PI_CODING_AGENT_DIR"]],
+  // pi — PI_PROJECT_DIR consumed by src/adapters/pi/extension.ts:154 + src/server.ts:153
   // — implies the Pi runtime sets it before invoking the extension.
   ["pi",                 ["PI_PROJECT_DIR"]],
   // openclaw — removed (runtime never sets OPENCLAW_HOME or OPENCLAW_CLI;
@@ -97,6 +100,7 @@ export function getSessionDirSegments(platform: string): string[] | null {
     case "vscode-copilot":   return [".vscode"];
     case "kiro":             return [".kiro"];
     case "pi":               return [".pi"];
+    case "omp":              return [".omp"];
     case "qwen-code":        return [".qwen"];
     case "kilo":             return [".config", "kilo"];
     case "opencode":         return [".config", "opencode"];
@@ -138,7 +142,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "zed", "qwen-code",
+      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {
@@ -202,6 +206,15 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
       platform: "kiro",
       confidence: "medium",
       reason: "~/.kiro/ directory exists",
+    };
+  }
+
+  // OMP listed BEFORE pi: shared ~/.pi history with OMP-only ~/.omp/ marker.
+  if (existsSync(resolve(home, ".omp"))) {
+    return {
+      platform: "omp",
+      confidence: "medium",
+      reason: "~/.omp/ directory exists",
     };
   }
 
@@ -337,6 +350,19 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "qwen-code": {
       const { QwenCodeAdapter } = await import("./qwen-code/index.js");
       return new QwenCodeAdapter();
+    }
+
+    case "omp": {
+      const { OMPAdapter } = await import("./omp/index.js");
+      return new OMPAdapter();
+    }
+
+    case "pi": {
+      // Issue #473 follow-up: without this case, getAdapter("pi") fell
+      // through to ClaudeCodeAdapter and Pi sessions wrote into
+      // ~/.claude/context-mode/. PiAdapter pins storage to ~/.pi/.
+      const { PiAdapter } = await import("./pi/index.js");
+      return new PiAdapter();
     }
 
     default: {

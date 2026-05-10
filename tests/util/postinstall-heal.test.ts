@@ -1,0 +1,256 @@
+/**
+ * scripts/postinstall.mjs — installed_plugins.json self-heal contract.
+ *
+ * v1.0.114 hotfix for users broken by v1.0.113's `/ctx-upgrade`. Their
+ * Claude Code plugin loader rejects context-mode → MCP gone → they
+ * can't run `/ctx-upgrade` to recover. The escape hatch is `npm install
+ * -g context-mode@1.0.114` whose postinstall MUST repair their registry.
+ *
+ * These integration tests spawn `node scripts/postinstall.mjs` in a
+ * subprocess with isolated HOME and assert end-to-end behavior:
+ *   - Heals when run as a true `npm install -g` (npm_config_global=true).
+ *   - Skips silently when run as a contributor's local `npm install`.
+ *   - One-line stderr summary; no walls of text, no scary noise.
+ *   - No-op when registry already healthy.
+ */
+
+import { afterEach, describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, "../..");
+const REPO_POSTINSTALL = resolve(REPO_ROOT, "scripts", "postinstall.mjs");
+const REPO_HEAL_IP = resolve(REPO_ROOT, "scripts", "heal-installed-plugins.mjs");
+const REPO_HEAL_SQLITE3 = resolve(REPO_ROOT, "scripts", "heal-better-sqlite3.mjs");
+const KEY = "context-mode@context-mode";
+
+/**
+ * Simulate an `npm install -g` package layout: copy postinstall + its
+ * sibling helper modules into a tmpdir that has NO `.git` ancestor. The
+ * `isGlobalInstall()` heuristic in postinstall.mjs walks up looking for
+ * `.git` and skips heal if found — exactly what we want during contributor
+ * `npm install` runs but exactly what we have to *bypass* in vitest, since
+ * the test always lives inside a git checkout.
+ */
+function stagePostinstallPackage(): {
+  scriptPath: string;
+  packageDir: string;
+} {
+  const root = mkdtempSync(join(tmpdir(), "ctx-postinstall-pkg-"));
+  cleanups.push(root);
+  const scriptsDir = join(root, "scripts");
+  const hooksDir = join(root, "hooks");
+  mkdirSync(scriptsDir, { recursive: true });
+  mkdirSync(hooksDir, { recursive: true });
+  copyFileSync(REPO_POSTINSTALL, join(scriptsDir, "postinstall.mjs"));
+  copyFileSync(REPO_HEAL_IP, join(scriptsDir, "heal-installed-plugins.mjs"));
+  copyFileSync(REPO_HEAL_SQLITE3, join(scriptsDir, "heal-better-sqlite3.mjs"));
+  // postinstall imports ../hooks/normalize-hooks.mjs — provide a no-op stub
+  // so the import does not crash. Real postinstall wraps the import in
+  // try/catch so even a missing file is fine, but copying a stub keeps the
+  // test focused on the heal contract, not on Windows hook normalization.
+  writeFileSync(
+    join(hooksDir, "normalize-hooks.mjs"),
+    "export function normalizeHooksOnStartup() {}\n",
+  );
+  return { scriptPath: join(scriptsDir, "postinstall.mjs"), packageDir: root };
+}
+
+const cleanups: string[] = [];
+afterEach(() => {
+  while (cleanups.length) {
+    const dir = cleanups.pop();
+    if (dir) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    }
+  }
+});
+
+function makeTmp(prefix = "ctx-postinstall-"): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  cleanups.push(dir);
+  return dir;
+}
+
+interface FakeHome {
+  home: string;
+  registryPath: string;
+  cacheDir: string;
+}
+
+/**
+ * Lay out a fake HOME with `~/.claude/plugins/installed_plugins.json`
+ * + a context-mode cache dir whose plugin.json declares `cacheVersion`.
+ */
+function buildFakeHome(opts: {
+  entryVersion: string;
+  cacheVersion: string;
+  enabledPlugins?: unknown;
+}): FakeHome {
+  const home = makeTmp("ctx-postinstall-home-");
+  const pluginsRoot = resolve(home, ".claude", "plugins");
+  const cacheDir = resolve(pluginsRoot, "cache", "context-mode", "context-mode", opts.cacheVersion);
+  mkdirSync(resolve(cacheDir, ".claude-plugin"), { recursive: true });
+  writeFileSync(
+    resolve(cacheDir, ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "context-mode", version: opts.cacheVersion }, null, 2),
+  );
+  const registry: Record<string, unknown> = {
+    version: 2,
+    plugins: {
+      [KEY]: [
+        {
+          scope: "user",
+          installPath: cacheDir,
+          version: opts.entryVersion,
+          installedAt: "2025-01-01T00:00:00.000Z",
+          lastUpdated: "2025-01-01T00:00:00.000Z",
+        },
+      ],
+    },
+  };
+  if (opts.enabledPlugins !== undefined) registry.enabledPlugins = opts.enabledPlugins;
+  const registryPath = resolve(pluginsRoot, "installed_plugins.json");
+  writeFileSync(registryPath, JSON.stringify(registry, null, 2) + "\n");
+  return { home, registryPath, cacheDir };
+}
+
+/**
+ * Spawn a staged copy of postinstall (in a no-`.git` package layout) with
+ * isolated HOME and chosen `npm_config_global` value. Returns
+ * { stdout, stderr, status }.
+ */
+function runPostinstall(opts: {
+  home: string;
+  global: boolean;
+}): { stdout: string; stderr: string; status: number | null } {
+  const staged = stagePostinstallPackage();
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    HOME: opts.home,
+    USERPROFILE: opts.home,
+  };
+  if (opts.global) env.npm_config_global = "true";
+  const r = spawnSync(process.execPath, [staged.scriptPath], {
+    cwd: staged.packageDir,
+    env,
+    encoding: "utf-8",
+    timeout: 30_000,
+  });
+  return { stdout: r.stdout ?? "", stderr: r.stderr ?? "", status: r.status };
+}
+
+function readRegistry(p: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(p, "utf-8"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slice 5 — non-global install must NOT mutate registry
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("postinstall — non-global install (contributor `npm install`)", () => {
+  it("does NOT heal installed_plugins.json when npm_config_global is unset", () => {
+    const fake = buildFakeHome({
+      entryVersion: "1.0.99",      // poisoned
+      cacheVersion: "1.0.113",     // would be healed if we ran
+      enabledPlugins: {},
+    });
+
+    const before = readFileSync(fake.registryPath, "utf-8");
+    const r = runPostinstall({ home: fake.home, global: false });
+    // Best-effort posture — postinstall must never crash.
+    expect(r.status === 0 || r.status === null).toBe(true);
+
+    // Registry MUST be untouched.
+    expect(readFileSync(fake.registryPath, "utf-8")).toBe(before);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slice 6 — global install with poisoned registry: heal happens
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("postinstall — global install with poisoned registry", () => {
+  it("repairs entry.version + enabledPlugins and emits one stderr line", () => {
+    const fake = buildFakeHome({
+      entryVersion: "1.0.99",         // poisoned
+      cacheVersion: "1.0.113",        // truth
+      enabledPlugins: {},             // /ctx-upgrade emptied this
+    });
+
+    const r = runPostinstall({ home: fake.home, global: true });
+    expect(r.status === 0 || r.status === null).toBe(true);
+
+    const after = readRegistry(fake.registryPath) as {
+      plugins: Record<string, Array<{ version: string }>>;
+      enabledPlugins: Record<string, unknown>;
+    };
+    expect(after.plugins[KEY][0].version).toBe("1.0.113");
+    expect(after.enabledPlugins[KEY]).toBeDefined();
+
+    // Concise stderr summary: a single human-readable line mentioning
+    // context-mode + heal verb. NOT a wall of text.
+    const healLines = r.stderr
+      .split(/\r?\n/)
+      .filter((l) => /context-mode/i.test(l) && /heal|sync|repair/i.test(l));
+    expect(healLines.length).toBe(1);
+    // No emoji / ANSI noise — line should be plain ASCII summary.
+    expect(healLines[0]).toMatch(/^context-mode:/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slice 7 — global install but no Claude Code registry: silent OK
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("postinstall — global install, user not on Claude Code", () => {
+  it("emits a single benign one-liner and never crashes", () => {
+    const home = makeTmp("ctx-postinstall-home-bare-");
+    const r = runPostinstall({ home, global: true });
+    expect(r.status === 0 || r.status === null).toBe(true);
+
+    // No "scary" stderr noise — no stack traces, no ENOENT, no JSON parse.
+    expect(r.stderr).not.toMatch(/stack/i);
+    expect(r.stderr).not.toMatch(/throw/i);
+    expect(r.stderr).not.toMatch(/ENOENT/);
+    expect(r.stderr).not.toMatch(/SyntaxError/);
+
+    // Exactly one summary line that mentions context-mode.
+    const ctxLines = r.stderr.split(/\r?\n/).filter((l) => /context-mode:/.test(l));
+    expect(ctxLines.length).toBe(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slice 8 — registry already healthy: "no heal needed" line
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("postinstall — global install, registry already healthy", () => {
+  it("emits 'no heal needed' and leaves registry bytes unchanged", () => {
+    const fake = buildFakeHome({
+      entryVersion: "1.0.114",
+      cacheVersion: "1.0.114",
+      enabledPlugins: { [KEY]: true },
+    });
+    const before = readFileSync(fake.registryPath, "utf-8");
+
+    const r = runPostinstall({ home: fake.home, global: true });
+    expect(r.status === 0 || r.status === null).toBe(true);
+    expect(readFileSync(fake.registryPath, "utf-8")).toBe(before);
+
+    const ctxLines = r.stderr.split(/\r?\n/).filter((l) => /context-mode:/.test(l));
+    expect(ctxLines.length).toBe(1);
+    expect(ctxLines[0]).toMatch(/no heal needed/i);
+  });
+});

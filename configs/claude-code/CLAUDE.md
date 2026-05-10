@@ -28,7 +28,7 @@ Otherwise: `ctx_batch_execute(commands, queries)` or `ctx_execute(language: "she
 ### Read (for analysis)
 Reading to **Edit** → Read correct. Reading to **analyze/explore/summarize** → `ctx_execute_file(path, language, code)`.
 
-### Grep (large results)
+### Grep — may flood context
 Use `ctx_execute(language: "shell", code: "grep ...")` in sandbox.
 
 ## Tool selection
@@ -57,9 +57,6 @@ Routing block auto-injected into subagent prompts. Bash-type subagents upgraded 
 
 ## Output
 
-Terse like caveman. Technical substance exact. Only fluff die.
-Drop: articles, filler (just/really/basically), pleasantries, hedging. Fragments OK. Short synonyms. Code unchanged.
-Pattern: [thing] [action] [reason]. [next step]. Auto-expand for: security warnings, irreversible actions, user confusion.
 Write artifacts to FILES — never inline. Return: file path + 1-line description.
 Descriptive source labels for `ctx_search(source: "label")`.
 

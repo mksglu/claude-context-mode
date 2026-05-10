@@ -1,0 +1,36 @@
+{
+  "name": "context-mode",
+  "version": "1.0.111",
+  "description": "Cursor plugin that saves 98% of your context window. Sandboxed code execution in 11 languages, FTS5 knowledge base with BM25 ranking, intent-driven search, and native Cursor v1.7+ hook routing for context protection.",
+  "author": {
+    "name": "Mert Koseoğlu",
+    "email": "code.bm.ksglu@gmail.com"
+  },
+  "homepage": "https://github.com/mksglu/context-mode#readme",
+  "repository": "https://github.com/mksglu/context-mode",
+  "license": "Elastic-2.0",
+  "logo": ".cursor-plugin/assets/logo.png",
+  "keywords": [
+    "mcp",
+    "context-window",
+    "sandbox",
+    "code-execution",
+    "fts5",
+    "bm25",
+    "playwright",
+    "context7",
+    "cursor"
+  ],
+  "rules": "./configs/cursor/context-mode.mdc",
+  "skills": "./skills/",
+  "hooks": "./hooks/cursor/hooks.json",
+  "mcpServers": {
+    "context-mode": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "context-mode"
+      ]
+    }
+  }
+}

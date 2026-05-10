@@ -15,6 +15,11 @@ import { mkdtempSync, rmSync, existsSync, unlinkSync, writeFileSync, realpathSyn
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
 
+
+const _hashCanonical = (p: string) => createHash("sha256").update(
+  (process.platform === "darwin" || process.platform === "win32") ? p.toLowerCase() : p
+).digest("hex").slice(0, 16);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = join(__dirname, "..", "..", "hooks", "kiro");
 
@@ -44,6 +49,13 @@ function runHook(hookFile: string, input: Record<string, unknown>, cwd?: string)
   };
 }
 
+function normalizeProjectPathForSessionHash(projectDir: string): string {
+  const normalized = projectDir.replace(/\\/g, "/");
+  if (/^\/+$/.test(normalized)) return "/";
+  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
+  return normalized.replace(/\/+$/, "");
+}
+
 describe("Kiro hooks", () => {
   let tempDir: string;
   let dbPath: string;
@@ -52,7 +64,7 @@ describe("Kiro hooks", () => {
     // macOS symlinks /var -> /private/var: subprocess process.cwd() returns the
     // realpath, so hash the realpath here too or DB lookup hashes will diverge.
     tempDir = realpathSync(mkdtempSync(join(tmpdir(), "kiro-hook-test-")));
-    const hash = createHash("sha256").update(tempDir).digest("hex").slice(0, 16);
+    const hash = _hashCanonical(normalizeProjectPathForSessionHash(tempDir));
     const sessionsDir = join(homedir(), ".kiro", "context-mode", "sessions");
     dbPath = join(sessionsDir, `${hash}.db`);
   });
@@ -148,8 +160,8 @@ describe("Kiro hooks", () => {
       }, tempDir);
       expect(result.exitCode).toBe(0);
 
-      // Verify prompt landed in SessionDB. Hook uses process.cwd() (= realpath
-      // of tempDir on macOS) to derive DB path via SHA-256.
+      // Verify prompt landed in SessionDB. Hook uses the parsed cwd to derive
+      // the DB path via the shared normalized project-dir hash.
       expect(existsSync(dbPath)).toBe(true);
       const Database = (await import("better-sqlite3")).default;
       const db = new Database(dbPath, { readonly: true });

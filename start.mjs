@@ -9,15 +9,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
 process.chdir(__dirname);
 
-if (!process.env.CLAUDE_PROJECT_DIR) {
-  process.env.CLAUDE_PROJECT_DIR = originalCwd;
+// Plugin-install-path guard (mirror of src/util/project-dir.ts isPluginInstallPath
+// — duplicated here because start.mjs ships as raw JS and cannot import TS).
+// When Claude Code runs `/ctx-upgrade` it kills + respawns the MCP server with
+// `cwd` pointing at the plugin install dir. Setting CLAUDE_PROJECT_DIR from
+// that path then poisons every downstream ctx_stats / SessionDB / hash
+// computation — sessions silently re-root under the plugin install dir. Skip
+// the env auto-set in that case; getProjectDir() defends a second time inside
+// server.ts via resolveProjectDir(). See src/util/project-dir.ts.
+const isPluginInstallPath = (p) =>
+  /[/\\]\.claude[/\\]plugins[/\\](cache|marketplaces)[/\\]/.test(p);
+const safeOriginalCwd = isPluginInstallPath(originalCwd) ? null : originalCwd;
+
+if (!process.env.CLAUDE_PROJECT_DIR && safeOriginalCwd) {
+  process.env.CLAUDE_PROJECT_DIR = safeOriginalCwd;
 }
 
 // Platform-agnostic project dir — guaranteed to be set for ALL platforms.
 // Adapters may set their own env var (GEMINI_PROJECT_DIR, etc.) but this
 // is the universal fallback so server.ts getProjectDir() never relies on cwd().
-if (!process.env.CONTEXT_MODE_PROJECT_DIR) {
-  process.env.CONTEXT_MODE_PROJECT_DIR = originalCwd;
+if (!process.env.CONTEXT_MODE_PROJECT_DIR && safeOriginalCwd) {
+  process.env.CONTEXT_MODE_PROJECT_DIR = safeOriginalCwd;
 }
 
 // Routing instructions file auto-write DISABLED for all platforms (#158, #164).
@@ -95,6 +107,35 @@ if (cacheMatch) {
     /* best effort — don't block server startup */
   }
 }
+
+// ── Self-heal Layer 3 + 4: installed_plugins.json registry repair ──
+// v1.0.113 hotfix follow-up. /ctx-upgrade can leave installed_plugins.json
+// with two distinct kinds of poison:
+//   HEAL 3: per-entry `version` drifts away from the actual cache dir's
+//           plugin.json `version` field. Claude Code's plugin loader then
+//           rejects the entry as a manifest mismatch and silently
+//           disconnects context-mode.
+//   HEAL 4: top-level `enabledPlugins[<key>]` is missing or emptied.
+//           Claude Code skips disabled plugins, so MCP never starts and
+//           the user has no /ctx-upgrade escape hatch.
+// Logic is shared verbatim with scripts/postinstall.mjs (single source of
+// truth) so users who fix themselves via `npm install -g context-mode`
+// follow the exact same code path. Best-effort, never blocks MCP boot.
+try {
+  const { healInstalledPlugins, healSettingsEnabledPlugins } =
+    await import("./scripts/heal-installed-plugins.mjs");
+  const pluginKey = "context-mode@context-mode";
+  const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+  const pluginCacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  try { healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey }); }
+  catch { /* best effort */ }
+  // v1.0.116: Claude Code's plugin loader reads settings.json.enabledPlugins
+  // (NOT installed_plugins.json) — heal that one too so /ctx-upgrade-induced
+  // disable state is repaired before next /reload-plugins.
+  try { healSettingsEnabledPlugins({ settingsPath, pluginKey }); }
+  catch { /* best effort */ }
+} catch { /* best effort — never block MCP boot */ }
 
 // ── Self-heal Layer 4: Deploy global SessionStart hook + register in settings.json ──
 // This hook lives outside the plugin directory (~/.claude/hooks/) so it works

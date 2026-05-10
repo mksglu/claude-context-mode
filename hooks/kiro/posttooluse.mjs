@@ -25,10 +25,10 @@ try {
   const { resolveProjectAttributions } = await loadProjectAttribution();
   const { SessionDB } = await loadSessionDB();
 
-  const dbPath = getSessionDBPath(OPTS);
-  const db = new SessionDB({ dbPath });
   const sessionId = getSessionId(input, OPTS);
   const projectDir = getInputProjectDir(input, OPTS);
+  const dbPath = getSessionDBPath(OPTS, projectDir);
+  const db = new SessionDB({ dbPath });
 
   db.ensureSession(sessionId, projectDir);
 

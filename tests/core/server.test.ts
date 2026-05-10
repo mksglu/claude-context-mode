@@ -1183,6 +1183,470 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ctx_index: Read deny-policy enforcement (#442)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Real-MCP integration test: ctx_execute_file calls checkFilePathDenyPolicy
+// before reading the file, but ctx_index historically skipped the check —
+// any file readable by the MCP server process could be indexed into FTS5
+// and exfiltrated through ctx_search. This pins the fix end-to-end via
+// JSON-RPC against a freshly spawned server with .claude/settings.json
+// containing a Read deny pattern matching the target file.
+
+describe("ctx_index: Read deny-policy enforcement (#442)", () => {
+  // Per-test projectDir prevents FTS5 cross-pollution between tests and
+  // removes order-coupling on the empty-store cross-check.
+  function setupProject(
+    denyRules: string[],
+    files: Record<string, string>,
+  ): string {
+    const dir = mkdtempSync(join(tmpdir(), "ctx-index-deny-"));
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(
+      join(dir, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { deny: denyRules } }),
+      "utf-8",
+    );
+    for (const [rel, content] of Object.entries(files)) {
+      const full = join(dir, rel);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, content, "utf-8");
+    }
+    return dir;
+  }
+
+  function spawnServerInProject(projectDir: string): ChildProcess {
+    return spawn("node", [mcpEntry], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+        CLAUDE_PROJECT_DIR: projectDir,
+      },
+    });
+  }
+
+  // Rejects on timeout (rather than resolving undefined) so silent
+  // server-spawn / import failures surface as a failing test instead of
+  // false-positive assertions on optional-chained undefined access.
+  async function awaitRpc(
+    proc: ChildProcess,
+    request: Record<string, unknown> & { id: number },
+    timeoutMs = 15_000,
+  ): Promise<DoctorJsonRpcResponse> {
+    const id = request.id;
+    return new Promise((resolve, reject) => {
+      let buffer = "";
+      let stderr = "";
+      const onStderr = (d: Buffer) => { stderr += d.toString(); };
+      const onData = (d: Buffer) => {
+        buffer += d.toString();
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const parsed = JSON.parse(line) as DoctorJsonRpcResponse;
+            if (parsed.id === id) {
+              proc.stdout!.off("data", onData);
+              proc.stderr!.off("data", onStderr);
+              clearTimeout(timer);
+              resolve(parsed);
+              return;
+            }
+          } catch { /* not JSON-RPC line */ }
+        }
+      };
+      const timer = setTimeout(() => {
+        proc.stdout!.off("data", onData);
+        proc.stderr!.off("data", onStderr);
+        reject(new Error(
+          `awaitRpc timeout after ${timeoutMs}ms for id=${id} method=${request.method}\n` +
+          `stderr: ${stderr.slice(-2000)}`,
+        ));
+      }, timeoutMs);
+      proc.stdout!.on("data", onData);
+      proc.stderr!.on("data", onStderr);
+      sendRpc(proc, request);
+    });
+  }
+
+  async function initServer(proc: ChildProcess, clientName: string): Promise<void> {
+    await awaitRpc(proc, {
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: clientName, version: "1.0" } },
+    });
+    sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+  }
+
+  function killProc(proc: ChildProcess): void {
+    try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+  }
+
+  test("ctx_index({ path: <denied> }) returns deny-policy error and never indexes", async () => {
+    const secretMarker = `secret-marker-${process.pid}-${Date.now()}`;
+    const projectDir = setupProject(
+      ["Read(./secret.env)", "Read(secret.env)"],
+      { "secret.env": `SECRET_TOKEN=${secretMarker}\n` },
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-442");
+
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: "secret.env" } },
+      });
+
+      expect(indexResp.error).toBeUndefined();
+      expect(indexResp.result?.isError).toBe(true);
+      const indexText = indexResp.result?.content?.[0]?.text ?? "";
+      expect(indexText).toContain("blocked by security policy");
+      expect(indexText).toContain("Read deny pattern");
+      // Pin the matched pattern so a future bug firing the wrong rule
+      // cannot pass on the generic substring alone.
+      expect(indexText).toMatch(/Read deny pattern \.?\/?secret\.env/);
+      expect(indexText).not.toMatch(/Indexed \d+ section/);
+
+      // Per-test projectDir guarantees an empty FTS5 store, so the secret
+      // marker absence is the load-bearing exfil-prevention pin.
+      const searchResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 101, method: "tools/call",
+        params: { name: "ctx_search", arguments: { queries: [secretMarker] } },
+      });
+      expect(searchResp.error).toBeUndefined();
+      const searchText = searchResp.result?.content?.[0]?.text ?? "";
+      const searchedEmpty =
+        searchText.includes("No results found") ||
+        searchText.includes("After indexing");
+      expect(searchedEmpty).toBe(true);
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <denied via glob *.env> }) blocks", async () => {
+    const projectDir = setupProject(
+      ["Read(*.env)"],
+      { "secret.env": `SECRET_TOKEN=glob-${process.pid}\n` },
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-glob-442");
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: "secret.env" } },
+      });
+      expect(indexResp.result?.isError).toBe(true);
+      const text = indexResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("blocked by security policy");
+      expect(text).toMatch(/Read deny pattern .*\*\.env/);
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <absolute denied> }) blocks", async () => {
+    const projectDir = setupProject(
+      [], // populated below after we know absolute path
+      { "secret.env": `SECRET_TOKEN=abs-${process.pid}\n` },
+    );
+    const absSecret = join(projectDir, "secret.env");
+    // Rewrite settings.json with the absolute deny rule.
+    writeFileSync(
+      join(projectDir, ".claude", "settings.json"),
+      JSON.stringify({ permissions: { deny: [`Read(${absSecret})`] } }),
+      "utf-8",
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-abs-442");
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: absSecret } },
+      });
+      expect(indexResp.result?.isError).toBe(true);
+      const text = indexResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("blocked by security policy");
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <denied via ../traversal> }) blocks", async () => {
+    // Use a glob deny rule that matches the canonical (lexical/realpath)
+    // form — proves evaluateFilePath's canonicalization defeats the
+    // `sub/../secret.env` traversal trick.
+    const projectDir = setupProject(
+      ["Read(**/secret.env)"],
+      {
+        "secret.env": `SECRET_TOKEN=trav-${process.pid}\n`,
+        "sub/placeholder.md": "# placeholder\n",
+      },
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-deny-trav-442");
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: "sub/../secret.env" } },
+      });
+      expect(indexResp.result?.isError).toBe(true);
+      const text = indexResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("blocked by security policy");
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ path: <allowed> }) succeeds and is searchable", async () => {
+    const allowedMarker = `allowed-marker-${process.pid}-${Date.now()}`;
+    const projectDir = setupProject(
+      ["Read(./secret.env)", "Read(secret.env)"],
+      { "public-doc.md": `# Public doc\n\n${allowedMarker}\n` },
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-allow-442");
+
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: { name: "ctx_index", arguments: { path: "public-doc.md" } },
+      });
+      expect(indexResp.error).toBeUndefined();
+      expect(indexResp.result?.isError).toBeFalsy();
+      const indexText = indexResp.result?.content?.[0]?.text ?? "";
+      expect(indexText).toMatch(/Indexed \d+ section/);
+
+      const searchResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 101, method: "tools/call",
+        params: { name: "ctx_search", arguments: { queries: [allowedMarker] } },
+      });
+      expect(searchResp.error).toBeUndefined();
+      expect(searchResp.result?.content?.[0]?.text ?? "").toContain(allowedMarker);
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_index({ content: ... }) bypass branch — gate truly tied to `path`", async () => {
+    // Configure a deny rule that WOULD match the inline `source` value if
+    // the gate naively ran on it. Success here proves the bypass is keyed
+    // on `path` absence, not on `source`.
+    const projectDir = setupProject(
+      ["Read(test-inline)", "Read(./test-inline)"],
+      {},
+    );
+    const proc = spawnServerInProject(projectDir);
+    try {
+      await initServer(proc, "ctx-index-content-442");
+      const inlineMarker = `inline-marker-${process.pid}-${Date.now()}`;
+      const indexResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 100, method: "tools/call",
+        params: {
+          name: "ctx_index",
+          arguments: {
+            content: `# Inline\n\n${inlineMarker}\n`,
+            source: "test-inline",
+          },
+        },
+      });
+      expect(indexResp.error).toBeUndefined();
+      expect(indexResp.result?.isError).toBeFalsy();
+      expect(indexResp.result?.content?.[0]?.text ?? "").toMatch(/Indexed \d+ section/);
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ctx_insight: execFile migration + port schema hardening (#441)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Three layers of regression protection:
+//
+//   1. Coarse source guard — `src/server.ts` must not reintroduce the
+//      `execSync(\`…${…}…\`)` template-string injection pattern anywhere.
+//      Behavioral coverage of the helpers themselves lives below in this
+//      same file (mocked spawnSync, asserts argv arrays + no shell:true +
+//      Windows LISTENING anchoring + per-pid failure isolation).
+//
+//   2. Cross-reference — server.ts must define the structured helpers
+//      (openBrowserSync / killProcessOnPort) inline so the handler can
+//      surface auto-open / kill failures to the agent rather than silently
+//      reporting success.
+//
+//   3. Real-MCP integration — spawn the server via stdio JSON-RPC and
+//      verify the tightened port schema rejects out-of-range and
+//      non-integer values BEFORE the handler runs.
+
+describe("ctx_insight: execFile migration source guard (#441)", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("server.ts contains no execSync template-string interpolation anywhere", () => {
+    // Match: execSync(`...${...}...`) — the original injection pattern.
+    // Scoped to the entire file (not just the ctx_insight handler) because
+    // any reintroduction of the pattern in server.ts is a regression worth
+    // catching.
+    const templateInterpolation = /execSync\(`[^`]*\$\{/m;
+    expect(serverSrc).not.toMatch(templateInterpolation);
+  });
+
+  test("server.ts defines structured helpers (openBrowserSync, killProcessOnPort)", () => {
+    // The helpers must be the ones that return BrowserOpenResult / KillResult
+    // so the ctx_insight handler can surface failures. They live inline in
+    // server.ts (PR #452 folded the prior src/process-utils.ts back in).
+    expect(serverSrc).toMatch(/export function openBrowserSync\b/);
+    expect(serverSrc).toMatch(/export function killProcessOnPort\b/);
+    expect(serverSrc).toMatch(/export type BrowserOpenResult\b/);
+    expect(serverSrc).toMatch(/export type KillResult\b/);
+  });
+
+  test("port schema is bounded to a valid TCP port range", () => {
+    const portDecl = serverSrc.match(/port:\s*z\.coerce\.number\(\)([^,\n]*)\.optional\(\)/);
+    expect(portDecl).not.toBeNull();
+    const constraints = portDecl![1];
+    expect(constraints).toContain(".int()");
+    expect(constraints).toContain(".min(1)");
+    expect(constraints).toContain(".max(65535)");
+  });
+});
+
+describe("ctx_insight: port schema rejects invalid values (#441)", () => {
+  function spawnInsightServer(): ChildProcess {
+    return spawn("node", [mcpEntry], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" },
+    });
+  }
+
+  async function awaitRpc(
+    proc: ChildProcess,
+    id: number,
+    request: Record<string, unknown>,
+    timeoutMs = 10_000,
+  ): Promise<DoctorJsonRpcResponse | undefined> {
+    return new Promise((resolve) => {
+      let buffer = "";
+      const onData = (d: Buffer) => {
+        buffer += d.toString();
+        let idx: number;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          if (!line) continue;
+          try {
+            const parsed = JSON.parse(line) as DoctorJsonRpcResponse;
+            if (parsed.id === id) {
+              proc.stdout!.off("data", onData);
+              clearTimeout(timer);
+              resolve(parsed);
+              return;
+            }
+          } catch { /* ignore */ }
+        }
+      };
+      const timer = setTimeout(() => {
+        proc.stdout!.off("data", onData);
+        resolve(undefined);
+      }, timeoutMs);
+      proc.stdout!.on("data", onData);
+      sendRpc(proc, request);
+    });
+  }
+
+  // Each invalid value is exercised against a fresh server so a schema
+  // failure on one input cannot mask a regression on another.
+  const invalidPortCases: Array<{ label: string; port: unknown }> = [
+    { label: "zero (below min)", port: 0 },
+    { label: "negative (below min)", port: -1 },
+    { label: "above 16-bit range", port: 65536 },
+    { label: "non-integer", port: 3.14 },
+    { label: "non-numeric string", port: "not-a-port" },
+  ];
+
+  for (const { label, port } of invalidPortCases) {
+    test(`rejects port=${JSON.stringify(port)} (${label}) at schema layer`, async () => {
+      const proc = spawnInsightServer();
+      try {
+        const init = await awaitRpc(proc, 1, {
+          jsonrpc: "2.0", id: 1, method: "initialize",
+          params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-insight-441", version: "1.0" } },
+        });
+        // Init must succeed before tools/call — otherwise an unrelated startup
+        // failure could masquerade as schema rejection.
+        expect(init?.result).toBeDefined();
+        sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+        const resp = await awaitRpc(proc, 100, {
+          jsonrpc: "2.0", id: 100, method: "tools/call",
+          params: { name: "ctx_insight", arguments: { port } },
+        });
+
+        // Schema rejection surfaces as either a JSON-RPC `error` envelope or
+        // a tool result with `isError: true`. Both shapes count as "the
+        // handler never executed" — the contract this test pins.
+        const rejected =
+          (resp?.error !== undefined) ||
+          (resp?.result?.isError === true);
+        expect(rejected).toBe(true);
+
+        // Cross-check: no "Dashboard running" success text leaked through.
+        const text = resp?.result?.content?.[0]?.text ?? "";
+        expect(text).not.toMatch(/Dashboard running at/);
+      } finally {
+        try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+      }
+    }, 20_000);
+  }
+
+  // Pin the schema layer specifically: at least one case must surface as a
+  // JSON-RPC `error` with code -32602 (Invalid params), proving zod rejected
+  // the input before the handler ran.  A regression that loosened the schema
+  // back to `z.coerce.number().optional()` and let the handler crash on
+  // `port=0` would still satisfy the lenient `isError === true` checks above
+  // — but it would not produce a -32602 envelope here.
+  test("schema layer rejects out-of-range port with JSON-RPC -32602", async () => {
+    const proc = spawnInsightServer();
+    try {
+      const init = await awaitRpc(proc, 1, {
+        jsonrpc: "2.0", id: 1, method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "ctx-insight-441-schema", version: "1.0" } },
+      });
+      expect(init?.result).toBeDefined();
+      sendRpc(proc, { jsonrpc: "2.0", method: "notifications/initialized" });
+
+      const resp = await awaitRpc(proc, 200, {
+        jsonrpc: "2.0", id: 200, method: "tools/call",
+        params: { name: "ctx_insight", arguments: { port: 70000 } },
+      });
+
+      // Either a top-level error with code -32602 or an isError result whose
+      // text mentions schema/range-validation language. Both prove zod fired.
+      const errCode = resp?.error?.code;
+      const text = resp?.result?.content?.[0]?.text ?? "";
+      const schemaSignal =
+        errCode === -32602 ||
+        /(less than or equal|65535|invalid|too_big|expected number)/i.test(text);
+      expect(schemaSignal).toBe(true);
+    } finally {
+      try { proc.kill("SIGTERM"); } catch { /* best effort */ }
+    }
+  }, 20_000);
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ctx_execute_file: projectRoot env cascade parity with ctx_index
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -1378,7 +1842,16 @@ describe("Hook Injection", () => {
     const parsed = JSON.parse(output);
     const prompt = parsed.hookSpecificOutput.updatedInput.prompt;
     assert.ok(prompt.includes("<output_constraints>"), "Should inject output_constraints");
-    assert.ok(prompt.includes("Terse like caveman"), "Should mention concise communication style");
+    // Pillar 4 (caveman/Output Compression) retired in #482. Routing block
+    // must NOT push a prose-style directive — assert the negative.
+    assert.ok(
+      !prompt.toLowerCase().includes("terse like caveman"),
+      "Routing block must not contain caveman/terse style directive",
+    );
+    assert.ok(
+      !prompt.includes("<communication_style>"),
+      "Routing block must not contain communication_style block",
+    );
     assert.ok(
       prompt.includes("<tool_selection_hierarchy>"),
       "Should inject tool_selection_hierarchy",
@@ -1632,6 +2105,9 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     resolve(__dirname, "../../src/server.ts"),
     "utf-8",
   );
+  const packageJson = JSON.parse(
+    readFileSync(resolve(__dirname, "../../package.json"), "utf-8"),
+  );
 
   test("tries cli.bundle.mjs first", () => {
     expect(serverSrc).toContain("cli.bundle.mjs");
@@ -1650,16 +2126,67 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     expect(serverSrc).toMatch(/\.ctx-upgrade-inline\.mjs/);
   });
 
-  test("inline fallback copies key files to plugin root", () => {
-    // The inline script must copy build artifacts back
-    expect(serverSrc).toMatch(/server\.bundle\.mjs/);
-    expect(serverSrc).toMatch(/cli\.bundle\.mjs/);
+  test("inline fallback copies package files to plugin root", () => {
+    // The inline script must copy the published package payload back, including
+    // newly added files such as the statusline bin directory.
+    expect(packageJson.files).toEqual(
+      expect.arrayContaining(["server.bundle.mjs", "cli.bundle.mjs", "bin"]),
+    );
+    expect(serverSrc).toContain('readFileSync(join(T,"package.json"),"utf8")');
+    expect(serverSrc).toContain("pkg.files");
+    expect(serverSrc).toContain("Array.isArray(pkg.files)");
+    expect(serverSrc).toContain("cpSync(from,to,{recursive:true,force:true})");
     expect(serverSrc).toMatch(/npm.*install/);
   });
 
   test("fallback only triggers when neither CLI file exists", () => {
     // There should be an else/fallback branch after checking both paths
     expect(serverSrc).toMatch(/existsSync\(fallbackPath\)/);
+  });
+
+  // ── #469 follow-up: insight-cache cleanup must route through the shared
+  //    locale-independent helper, not the original inline `for /f`/`findstr`
+  //    block (which was the exact bug PR #469 fixed for ctx_insight). The
+  //    orphan call site at the top of the ctx_upgrade handler still carried
+  //    the broken pattern. Lock that down here.
+  describe("ctx_upgrade insight-cache cleanup uses killProcessOnPort (#469 follow-up)", () => {
+    // Scope assertions to the ctx_upgrade tool registration body so we don't
+    // accidentally match the shared killProcessOnPort helper definition or
+    // its tests below in the same file.
+    const upgradeMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_upgrade"[\s\S]*?^\);/m,
+    );
+    const upgradeBody = upgradeMatch ? upgradeMatch[0] : "";
+
+    test("ctx_upgrade tool block was located in source", () => {
+      expect(upgradeMatch).not.toBeNull();
+    });
+
+    test("ctx_upgrade does NOT contain the broken inline 'for /f' netstat parser", () => {
+      // The locale-broken Windows pattern PR #469 already removed from
+      // killProcessOnPort. Reintroducing it anywhere in ctx_upgrade is a
+      // regression on non-English Windows.
+      expect(upgradeBody).not.toMatch(/for\s+\/f\s+"tokens=5"/);
+      expect(upgradeBody).not.toMatch(/findstr\s+:4747/);
+    });
+
+    test("ctx_upgrade does NOT shell out to taskkill / lsof directly", () => {
+      // All port-cleanup must go through the shared helper. The handler
+      // itself must not hand-roll either Windows or POSIX kill commands.
+      expect(upgradeBody).not.toMatch(/taskkill/);
+      expect(upgradeBody).not.toMatch(/lsof\s+-ti:4747/);
+    });
+
+    test("ctx_upgrade routes insight-cache cleanup through killProcessOnPort(4747)", () => {
+      // Positive assertion: the handler must call the shared helper.
+      expect(upgradeBody).toMatch(/killProcessOnPort\(\s*4747\s*\)/);
+    });
+
+    test("ctx_upgrade preserves best-effort semantics (cleanup wrapped in try/catch)", () => {
+      // Cleanup failure must not block the upgrade — the try/catch at the
+      // top of the handler with the "best effort" comment must remain.
+      expect(upgradeBody).toMatch(/best effort/i);
+    });
   });
 });
 
@@ -1715,19 +2242,20 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     );
     expect(purgeMatch).not.toBeNull();
     const purgeBody = purgeMatch![0];
-    // 1. Wipes FTS5 knowledge base
+    // 1. Closes the FTS5 knowledge base BEFORE wiping (releases Windows lock)
     expect(purgeBody).toContain("_store.cleanup()");
     expect(purgeBody).toContain("_store = null");
-    // 2. Wipes session events DB
-    expect(purgeBody).toContain("sessDbPath");
-    expect(purgeBody).toContain("session events DB");
-    // 3. Wipes session events markdown
-    expect(purgeBody).toContain("eventsPath");
-    expect(purgeBody).toContain("-events.md");
-    // 4. Resets in-memory stats
+    // 2. Delegates the on-disk wipe to the purgeSession deep module so all
+    //    file-kind sweeps (session DB, events.md, cleanup flag, FTS5 store,
+    //    legacy content) flow through ONE code path with uniform dual-hash.
+    expect(purgeBody).toContain("purgeSession({");
+    expect(purgeBody).toContain("projectDir: getProjectDir()");
+    expect(purgeBody).toContain("sessionsDir: getSessionDir()");
+    expect(purgeBody).toContain("storePath: storePathForPurge");
+    // 3. Resets in-memory stats
     expect(purgeBody).toContain("sessionStats.calls = {}");
     expect(purgeBody).toContain("sessionStats.sessionStart = Date.now()");
-    // Confirms with list of deleted items
+    // 4. Confirms with list of deleted items
     expect(purgeBody).toContain("Purged:");
   });
 });
@@ -1764,28 +2292,45 @@ describe("Platform-aware session paths via adapter", () => {
     expect(statsMatch![0]).not.toMatch(/["']\.claude["']/);
   });
 
-  // ── Adapter methods used for session paths ──
-  test("session paths derived from adapter.getSessionDir or getSessionDBPath", () => {
-    // Either directly uses adapter methods or a helper that delegates to them
-    expect(serverSrc).toMatch(/getSessionDir\(\)|getSessionDBPath\(/);
+  // ── Adapter methods used for session paths (post-C2 narrowing) ──
+  test("session paths derived from adapter.getSessionDir + resolveSessionDbPath", () => {
+    // C2 narrowing (2026-05): adapter no longer exposes getSessionDBPath /
+    // getSessionEventsPath. server.ts must derive per-project DB paths via
+    // resolveSessionDbPath while reading the adapter ONLY for the platform
+    // sessionDir. Pin both calls so an accidental regression to a missing
+    // helper or a deleted adapter method is caught at the test boundary.
+    expect(serverSrc).toMatch(/getSessionDir\(/);
+    expect(serverSrc).toMatch(/resolveSessionDbPath\(/);
   });
 
   // ── Comprehensive projectDir detection ──
-  test("getProjectDir checks verified platform env vars", () => {
+  test("getProjectDir delegates to resolveProjectDir; chain lives in util/project-dir.ts", () => {
     const fn = serverSrc.match(/function getProjectDir[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
     const body = fn![0];
-    // Only env vars verified to be set by host IDEs before MCP server spawn
-    expect(body).toContain("CLAUDE_PROJECT_DIR");
-    expect(body).toContain("GEMINI_PROJECT_DIR");
-    expect(body).toContain("VSCODE_CWD");
-    expect(body).toContain("OPENCODE_PROJECT_DIR");
-    expect(body).toContain("PI_PROJECT_DIR");
-    // Universal fallback set by start.mjs for ALL platforms (Cursor, OpenClaw, etc.)
-    expect(body).toContain("CONTEXT_MODE_PROJECT_DIR");
-    expect(body).toContain("process.cwd()");
+    // Server.ts MUST delegate so the env-var chain + plugin-path rejection
+    // is unified with start.mjs (see v1.0.113 hotfix).
+    expect(body).toContain("resolveProjectDir");
+    expect(body).toContain("process.env.PWD");
+    // Env-var chain itself moved to the shared resolver — pin its contract there.
+    const utilSrc = readFileSync(
+      resolve(__dirname, "../../src/util/project-dir.ts"),
+      "utf-8",
+    );
+    for (const v of [
+      "CLAUDE_PROJECT_DIR",
+      "GEMINI_PROJECT_DIR",
+      "VSCODE_CWD",
+      "OPENCODE_PROJECT_DIR",
+      "PI_PROJECT_DIR",
+      "IDEA_INITIAL_DIRECTORY",
+      "CONTEXT_MODE_PROJECT_DIR",
+    ]) {
+      expect(utilSrc).toContain(v);
+    }
+    expect(utilSrc).toContain("isPluginInstallPath");
     // Must NOT contain semantically wrong env vars
-    expect(body).not.toContain("OPENCLAW_HOME"); // install dir, not project dir
+    expect(utilSrc).not.toContain("OPENCLAW_HOME");
   });
 
   // ── Content DB is platform-isolated (not shared) ──
@@ -1808,20 +2353,28 @@ describe("Project dir hash consistency", () => {
     "utf-8",
   );
 
-  test("shared hashProjectDir helper exists and normalizes backslashes", () => {
-    const fn = serverSrc.match(/function hashProjectDir[\s\S]*?^}/m);
-    expect(fn).not.toBeNull();
-    const body = fn![0];
-    // Must normalize Windows backslashes before hashing
-    expect(body).toMatch(/replace\(.*\\\\.*\/.*\)/);
-    expect(body).toContain("createHash");
+  test("server.ts imports canonical hash + path resolvers from session/db.js", () => {
+    // After the case-fold migration + content-store migration, all DB
+    // path computation lives in src/session/db.ts. The server MUST import
+    // resolveSessionDbPath + resolveContentStorePath rather than rolling
+    // its own hash + join inline.
+    expect(serverSrc).toMatch(
+      /import\s*\{[^}]*resolveSessionDbPath[^}]*\}\s*from\s*"\.\/session\/db\.js"/,
+    );
+    expect(serverSrc).toMatch(
+      /import\s*\{[^}]*resolveContentStorePath[^}]*\}\s*from\s*"\.\/session\/db\.js"/,
+    );
+    // The deleted local helpers MUST be gone — guards against accidental
+    // re-introduction that would split the case-fold contract.
+    expect(serverSrc).not.toMatch(/^function hashProjectDir\(/m);
+    expect(serverSrc).not.toMatch(/^function normalizeProjectDirForHash\(/m);
   });
 
-  test("getStorePath uses hashProjectDir, not inline hashing", () => {
+  test("getStorePath delegates to resolveContentStorePath (auto case-fold migration)", () => {
     const fn = serverSrc.match(/function getStorePath[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
-    expect(fn![0]).toContain("hashProjectDir");
-    // Must NOT have its own inline createHash call
+    expect(fn![0]).toContain("resolveContentStorePath");
+    // Must NOT have its own inline createHash call.
     expect(fn![0]).not.toContain("createHash");
   });
 
@@ -1842,6 +2395,37 @@ describe("Project dir hash consistency", () => {
     expect(purgeMatch![0]).toContain("hashProjectDir");
     expect(purgeMatch![0]).not.toContain("createHash");
   });
+
+  // ── B3b Slice 3.1: ctx_stats must scope getLifetimeStats to the active
+  //    adapter via getSessionDir(), not the hardcoded ~/.claude/ default.
+  //    Bug evidence: src/server.ts:2602/2612/2620 currently call
+  //    `getLifetimeStats()` with no args, so non-Claude platforms (Cursor,
+  //    OpenCode, JetBrains, ...) silently aggregate from the wrong dir.
+  //    Statusline at src/server.ts:540 already passes
+  //    `{ sessionsDir: getSessionDir() }` — the three ctx_stats sites must
+  //    mirror that contract exactly. Note: `getMultiAdapterLifetimeStats`
+  //    is NOT covered by this test because it takes `{ home }` and
+  //    intentionally defaults to homedir() to scan every adapter dir; the
+  //    bare-call form is correct for that helper.
+  test("ctx_stats scopes lifetime aggregation to the active adapter sessionsDir", () => {
+    const statsMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_stats"[\s\S]*?^\);/m,
+    );
+    expect(statsMatch).not.toBeNull();
+    const body = statsMatch![0];
+    // Every `getLifetimeStats(` invocation inside ctx_stats MUST be argumented
+    // (sessionsDir-aware). A bare `()` call falls back to the hardcoded
+    // ~/.claude/context-mode/sessions default and silently mis-attributes
+    // lifetime counts on non-Claude platforms. Use a negative lookbehind to
+    // exclude `getMultiAdapterLifetimeStats(` whose default is intentional.
+    const bareCalls = body.match(
+      /(?<!MultiAdapter)getLifetimeStats\(\s*\)/g,
+    );
+    expect(bareCalls, "ctx_stats must not call getLifetimeStats() with no args").toBeNull();
+    // Should pass an object literal containing `sessionsDir` (mirrors the
+    // statusline contract at src/server.ts:540).
+    expect(body).toMatch(/getLifetimeStats\(\s*\{\s*sessionsDir:\s*getSessionDir\(\)/);
+  });
 });
 
 // ─── Purge deleted array honesty ─────────────────────────────────────────────
@@ -1853,26 +2437,36 @@ describe("ctx_purge deleted array is honest", () => {
   );
 
   test("every deleted.push in ctx_purge is guarded by a success check", () => {
-    const purgeMatch = serverSrc.match(
+    // After the purgeSession() deep-module extraction, the per-file-kind
+    // success guards live in src/session/purge.ts. The handler itself only
+    // ever pushes "session stats" — which is the always-truthful in-memory
+    // reset and explicitly exempted from the guard rule. The deep module
+    // is independently covered by tests/session/purge-session.test.ts which
+    // proves each label appears only when at least one file was unlinked.
+    const purgeBody = serverSrc.match(
       /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
-    );
-    expect(purgeMatch).not.toBeNull();
-    const body = purgeMatch![0];
-
-    // Find all deleted.push calls and check each one
-    const pushes = [...body.matchAll(/deleted\.push\("([^"]+)"\)/g)];
-    expect(pushes.length).toBeGreaterThanOrEqual(4);
-
+    )![0];
+    const pushes = [...purgeBody.matchAll(/deleted\.push\("([^"]+)"\)/g)];
     for (const push of pushes) {
-      const label = push[1];
-      if (label === "session stats") continue; // always truthful (in-memory)
+      expect(push[1]).toBe("session stats");
+    }
 
-      // Get the 120 chars before this push — must contain a conditional guard
+    const moduleSrc = readFileSync(
+      resolve(__dirname, "../../src/session/purge.ts"),
+      "utf-8",
+    );
+    // Each user-facing label inside purgeSession() must be conditionally
+    // pushed (success check).  We grep every push and verify the 120 chars
+    // before it contain a guard.
+    const modulePushes = [...moduleSrc.matchAll(/deleted\.push\("([^"]+)"\)/g)];
+    expect(modulePushes.length).toBeGreaterThanOrEqual(2);
+    for (const push of modulePushes) {
       const idx = push.index!;
-      const context = body.slice(Math.max(0, idx - 120), idx);
+      const context = moduleSrc.slice(Math.max(0, idx - 160), idx);
       const isGuarded = /if\s*\(\s*\w*[Ff]ound/.test(context)
-        || /if\s*\(_store\)/.test(context);
-      expect(isGuarded, `"${label}" push must be guarded by a found/success check`).toBe(true);
+        || /if\s*\(\s*removed\s*\)/.test(context)
+        || /if\s*\(\s*_store\s*\)/.test(context);
+      expect(isGuarded, `"${push[1]}" in purge.ts must be guarded by a success check`).toBe(true);
     }
   });
 });
@@ -1959,22 +2553,36 @@ describe("ContentStore purge behavior", () => {
   });
 
   test("ctx_purge handler deletes DB file even when _store is null (--continue scenario)", () => {
-    // This tests the server.ts logic: when _store is null, ctx_purge should
-    // still delete the DB file on disk using getStorePath()
+    // After the purgeSession() extraction (src/session/purge.ts) the
+    // _store-is-null branch lives there: the handler ALWAYS resolves
+    // getStorePath() and passes it as `storePath`, regardless of whether
+    // _store was open.  purgeSession unlinks the file unconditionally,
+    // which is exactly the --continue scenario this test was created for.
+    // Behavioral coverage: tests/session/purge-session.test.ts slice 5.
     const serverSrc = readFileSync(
       resolve(__dirname, "../../src/server.ts"),
       "utf-8",
     );
-    const purgeMatch = serverSrc.match(
+    const purgeBody = serverSrc.match(
       /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
-    );
-    expect(purgeMatch).not.toBeNull();
-    const purgeBody = purgeMatch![0];
+    )![0];
 
-    // Must have an else branch for when _store is null
-    expect(purgeBody).toContain("} else {");
-    expect(purgeBody).toContain("getStorePath()");
-    expect(purgeBody).toContain("unlinkSync");
+    // Handler resolves storePath BEFORE the optional _store.cleanup() so
+    // the disk wipe runs whether _store was open or not.
+    const storePathIdx = purgeBody.indexOf("getStorePath()");
+    const storeCleanupIdx = purgeBody.indexOf("_store.cleanup()");
+    expect(storePathIdx).toBeGreaterThan(-1);
+    expect(storePathIdx).toBeLessThan(storeCleanupIdx === -1 ? Infinity : storeCleanupIdx);
+    // Handler always passes storePath into the deep module — that is what
+    // makes the wipe unconditional.
+    expect(purgeBody).toContain("storePath: storePathForPurge");
+
+    // Deep module is the one calling unlinkSync on the FTS5 store path.
+    const moduleSrc = readFileSync(
+      resolve(__dirname, "../../src/session/purge.ts"),
+      "utf-8",
+    );
+    expect(moduleSrc).toContain("unlinkSync");
   });
 });
 
@@ -2465,7 +3073,7 @@ describe("runBatchCommands P0 hardening", () => {
 // runPool — shared concurrency primitive (PRD finding G)
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { runPool, type PoolJob } from "../../src/concurrency/runPool.js";
+import { runPool, type PoolJob } from "../../src/runPool.js";
 
 describe("runPool primitive", () => {
   test("empty jobs returns empty settled array", async () => {
@@ -2614,7 +3222,7 @@ describe("ctx_fetch_and_index batch refactor", () => {
 
   test("capped-concurrency note appears only when capped", () => {
     expect(fetchHandlerSrc).toMatch(/cappedNote\s*=\s*capped\s*\?/);
-    // Caveman style — `cap=N/Mcpu` instead of "capped from N to M; M cores available".
+    // Compact form `cap=N/Mcpu` (replaces verbose "capped from N to M; M cores available").
     expect(fetchHandlerSrc).toContain("cap=${effectiveConcurrency}/${cpus().length}cpu");
   });
 
@@ -2635,13 +3243,13 @@ describe("ctx_fetch_and_index batch refactor", () => {
   });
 
   test("batch header uses singular form for count=1 (review F5 plural fix)", () => {
-    // Per CLAUDE.md "Terse like caveman" + grammar correctness:
-    // "1 errors" → "1 error" via the fmt() helper.
+    // Grammar correctness in the compact status line: "1 errors" → "1 error"
+    // via the fmt() helper, so the line stays grammatical at any count.
     expect(fetchHandlerSrc).toContain('const fmt = (n: number, sing: string, plur: string)');
     expect(fetchHandlerSrc).toContain('n === 1 ? sing : plur');
   });
 
-  test("batch header uses caveman style (review F5 terse format)", () => {
+  test("batch header uses compact format (review F5)", () => {
     // Old: "Batch fetched N URLs at concurrency=X (capped from Y to X; Z cores available): a fetched, b cached, c errors. d new sections (eKB total)."
     // New: "fetched N c=X cap=X/Zcpu. ok=a cache=b err=c. d sections eKB."
     expect(fetchHandlerSrc).toContain("`fetched ${batch.length} c=${effectiveConcurrency}");
@@ -2774,6 +3382,164 @@ describe("SSRF guard — ssrfGuard policy in src/server.ts", () => {
     expect(guardIdx).toBeGreaterThan(-1);
     expect(cacheIdx).toBeGreaterThan(-1);
     expect(guardIdx).toBeLessThan(cacheIdx);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// buildFetchCode — embedded SSRF guard contract (#476 review follow-ups)
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { buildFetchCode } from "../../src/server.js";
+
+describe("buildFetchCode — embedded SSRF guard contract", () => {
+  const generated = buildFetchCode("https://example.com/x", "/tmp/x");
+
+  test("strips proxy env vars (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY)", () => {
+    // A configured outbound proxy would route fetch through an arbitrary
+    // target; DNS resolution would happen at the proxy and the in-subprocess
+    // DNS guard would never see the rebound IP. The generated subprocess
+    // source must delete every proxy env var before any fetch can run.
+    expect(generated).toMatch(/delete process\.env\.HTTP_PROXY/);
+    expect(generated).toMatch(/delete process\.env\.HTTPS_PROXY/);
+    expect(generated).toMatch(/delete process\.env\.ALL_PROXY/);
+    expect(generated).toMatch(/delete process\.env\.http_proxy/);
+    expect(generated).toMatch(/delete process\.env\.https_proxy/);
+    expect(generated).toMatch(/delete process\.env\.all_proxy/);
+  });
+
+  test("patches dns/promises lookup (separate function reference from dns.lookup)", () => {
+    // Patching dns.lookup does NOT affect dnsPromises.lookup. Today undici
+    // uses callback-form dns.lookup so default fetch is covered, but the
+    // invariant is fragile — a future undici switch or any caller using
+    // dnsPromises.lookup directly would bypass the guard.
+    expect(generated).toMatch(/require\(['"]node:dns\/promises['"]\)/);
+    expect(generated).toMatch(/dnsPromises\.lookup\s*=\s*async\s+function/);
+    expect(generated).toMatch(/SSRF blocked/);
+  });
+
+  test("patches dns.resolve4 and dns.resolve6 (libuv bypass path)", () => {
+    // dns.resolve* uses a different code path (no getaddrinfo, no /etc/hosts)
+    // than dns.lookup — they must be patched separately or the guard is
+    // trivially bypassed by any caller using dns.resolve* directly.
+    expect(generated).toMatch(/['"]resolve4['"]\s*,\s*['"]resolve6['"]/);
+    expect(generated).toMatch(/dns\[name\]\s*=\s*function/);
+  });
+
+  describe("buildFetchCode — redirect chain rebinding", () => {
+    // SSRF rebinding via HTTP redirect chain bypasses the parent's pre-flight
+    // ssrfGuard: a 302 to http://attacker/ (or an IPv4-mapped IMDS literal)
+    // sends the subprocess fetch to an alternate host the parent never
+    // classified. The connect-time DNS guard catches some cases, but a
+    // direct-IP redirect target may not trigger getaddrinfo at all. Mitigate
+    // at the HTTP layer: emit `redirect: 'manual'` in the generated source,
+    // re-validate every Location header against ssrfGuard's classifier, and
+    // cap the redirect chain so an attacker cannot exhaust the loop.
+    const generated = buildFetchCode("https://example.com/x", "/tmp/x");
+
+    test("generated source uses redirect: 'manual' (no follow default)", () => {
+      // The default `redirect: 'follow'` lets undici chase a 3xx Location
+      // BEFORE the in-subprocess DNS guard sees the target hostname (and even
+      // when it does, a direct IPv4-literal redirect skips getaddrinfo). The
+      // generated subprocess source MUST opt out of automatic following so
+      // every hop is re-validated by classifyIp before another fetch fires.
+      expect(generated).toMatch(/redirect:\s*['"]manual['"]/);
+    });
+
+    test("manual redirect handler validates Location host via classifyIp", () => {
+      // After receiving a 3xx, the subprocess must parse the Location header,
+      // resolve its host, and run the same classifyIp policy as ssrfGuard
+      // before issuing the next fetch. Without this re-check, an attacker can
+      // redirect to http://169.254.169.254/ or any rebinding-friendly host.
+      expect(generated).toMatch(/Location/);
+      expect(generated).toMatch(/classifyIp\s*\(/);
+      // The redirect handler specifically must invoke classifyIp on the
+      // redirect target — not just the parent's pre-flight call site.
+      expect(generated).toMatch(/redirect[\s\S]{0,400}classifyIp/);
+    });
+
+    test("redirect chain is capped (no unbounded follow)", () => {
+      // An attacker controlling redirect responses could otherwise loop the
+      // subprocess forever or chain enough hops to amortize a slow rebinding
+      // attack. Cap at 5 — the standard browser limit — and abort cleanly.
+      expect(generated).toMatch(/(maxRedirects|MAX_REDIRECTS|redirectCount\s*[<>]=?\s*5|<\s*5|<=\s*5)/);
+    });
+
+    test("non-3xx response path still emits content (preserves 200 semantics)", () => {
+      // Manual redirect handling must not break the happy path: a 200 OK
+      // still flows through emit() with the right content-type branch. Pin
+      // the existing emit() call sites so a refactor that drops them fails.
+      expect(generated).toMatch(/emit\(['"]json['"]/);
+      expect(generated).toMatch(/emit\(['"]html['"]/);
+      expect(generated).toMatch(/emit\(['"]text['"]/);
+    });
+  });
+
+  test("classifyIp embeds without references to module scope", () => {
+    // classifyIp is embedded into the subprocess via Function.prototype.toString().
+    // If a future change ever has classifyIp close over a module-scope helper
+    // (e.g. a regex constant declared above it), the embedded source will
+    // ReferenceError at parse or call time — silently breaking the guard. Pin
+    // the contract: classifyIp source must contain no identifiers that can
+    // only resolve in module scope.
+    const src = classifyIp.toString();
+    const forbidden = [
+      "require(",
+      "process.",
+      "globalThis.",
+      "global.",
+      "__dirname",
+      "__filename",
+    ];
+    for (const ident of forbidden) {
+      expect(src).not.toContain(ident);
+    }
+    // Roundtrip: eval the source in an empty vm context with no globals,
+    // then invoke it. This is exactly what the subprocess does.
+    const { runInNewContext } = require("node:vm");
+    const ctx: Record<string, unknown> = {};
+    runInNewContext(`${src}\n;globalThis.fn = classifyIp;`, ctx);
+    const fn = ctx.fn as (ip: string) => "block" | "private" | "public";
+    expect(fn("169.254.169.254")).toBe("block");
+    expect(fn("8.8.8.8")).toBe("public");
+    expect(fn("10.0.0.1")).toBe("private");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// buildFetchCode — IPv6 zone-id + generic dns.resolve (#476 round-3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("buildFetchCode — IPv6 zone-id + generic dns.resolve", () => {
+  test("classifyIp strips IPv6 zone-id before classification (link-local)", () => {
+    // fe80::/10 link-local with %eth0 zone suffix must still be blocked.
+    // Today the lowercase prefix check `fe8`/`fe9`/`fea`/`feb` accidentally
+    // catches link-local even with a zone suffix — but only because the
+    // suffix is appended *after* the prefix. Pin the behavior explicitly so
+    // a future refactor cannot regress.
+    expect(classifyIp("fe80::1%eth0")).toBe("block");
+    expect(classifyIp("fe80::1%25eth0")).toBe("block"); // URL-encoded zone
+  });
+
+  test("classifyIp strips IPv6 zone-id before classification (non-link-local)", () => {
+    // RFC 6874 permits zone identifiers on any IPv6 address (not just
+    // link-local). Without zone stripping, a loopback `::1%eth0` would NOT
+    // match the strict equality `lower === "::1"` and would leak through as
+    // "public". Pin every class so the strip happens before classification.
+    expect(classifyIp("::1%eth0")).toBe("private");        // loopback w/ zone
+    expect(classifyIp("fc00::1%eth0")).toBe("private");    // ULA w/ zone
+    expect(classifyIp("ff00::1%eth0")).toBe("block");      // multicast w/ zone
+    expect(classifyIp("2001:db8::1%eth0")).toBe("public"); // doc range w/ zone
+  });
+
+  test("buildFetchCode patches generic dns.resolve (not just resolve4/resolve6)", () => {
+    // dns.resolve is the polymorphic entrypoint that dispatches on rrtype.
+    // Today only resolve4/resolve6 are patched; a caller using
+    // `dns.resolve(host, 'A', cb)` or default rrtype goes through an
+    // un-guarded code path. Patch the generic wrapper so every A/AAAA
+    // record runs through classifyIp.
+    const generated = buildFetchCode("https://example.com/x", "/tmp/x");
+    expect(generated).toMatch(/dns\.resolve\s*=\s*function/);
+    expect(generated).toMatch(/classifyIp/);
   });
 });
 
@@ -2944,6 +3710,20 @@ describe("ctx_doctor — renderer-safe output (Z.ai compat)", () => {
 // env-var-based) and feeds the result into the map. Falls back to `.claude`
 // only if the map returns null (defensive — covers "unknown" PlatformId).
 
+describe("ctx_doctor hook script checks", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("resolves relative hook script paths against pluginRoot", () => {
+    const doctorSection = serverSrc.slice(serverSrc.indexOf("ctx_doctor"), serverSrc.indexOf("ctx_upgrade"));
+    expect(doctorSection).toContain("for (const scriptPath of hookScriptPaths)");
+    expect(doctorSection).toContain("const hookPath = resolve(pluginRoot, scriptPath)");
+    expect(doctorSection).not.toContain("for (const hookPath of hookScriptPaths)");
+  });
+});
+
 describe("getSessionDirSegments — sync platform → segments map", () => {
   test("returns correct segments for every supported platform", async () => {
     const { getSessionDirSegments } = await import("../../src/adapters/detect.js");
@@ -2997,6 +3777,15 @@ describe("getSessionDir uses pre-detection when adapter not yet detected", () =>
     expect(detectIdx).toBeGreaterThan(-1);
     expect(claudeIdx).toBeGreaterThan(-1);
     expect(detectIdx).toBeLessThan(claudeIdx);
+  });
+
+  test("getSessionDir honors CODEX_HOME in the Codex pre-detection branch", () => {
+    const fn = serverSrc.match(/function getSessionDir\(\)[\s\S]*?^}/m);
+    expect(fn).not.toBeNull();
+    const body = fn![0];
+    expect(serverSrc).toContain('import { resolveCodexConfigDir } from "./adapters/codex/paths.js";');
+    expect(body).toContain('segments[0] === ".codex"');
+    expect(body).toContain("resolveCodexConfigDir()");
   });
 });
 
@@ -3072,5 +3861,555 @@ describe("ctx_fetch_and_index cache key includes URL (Fix 6/10)", () => {
     expect(aResults.length).toBeGreaterThan(0);
     expect(bResults.length).toBeGreaterThan(0);
     store.close();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ctx_insight process helpers (formerly tests/core/process-utils.test.ts)
+//
+// Behavioral tests for browserOpenArgv / openBrowserSync / killProcessOnPort
+// (canonical home: src/server.ts). PR #452 review flagged that source-grep
+// tests pin implementation strings, not the actual security property. These
+// tests mock spawnSync directly and assert:
+//
+//   - argv arrays only — never `shell: true`
+//   - per-platform fallback semantics (xdg-open → sensible-browser)
+//   - Windows netstat parser anchors on LISTENING + local-address column
+//   - per-pid kill failures do not abort the remaining loop
+//   - structured results surface failure to callers
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { vi } from "vitest";
+import {
+  browserOpenArgv,
+  openBrowserSync,
+  killProcessOnPort,
+  type SpawnSyncFn,
+} from "../../src/server.js";
+
+type Captured = { cmd: string; args: readonly string[]; opts: unknown };
+type FakeReturn = { status: number | null; stdout?: string; error?: Error };
+
+function makeRunner(
+  responses: Array<FakeReturn | ((cmd: string, args: readonly string[]) => FakeReturn)>,
+): { runner: SpawnSyncFn; calls: Captured[] } {
+  const calls: Captured[] = [];
+  let i = 0;
+  const runner: SpawnSyncFn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    const next = responses[i++];
+    const r = typeof next === "function" ? next(cmd, args) : next;
+    return {
+      pid: 0,
+      output: [],
+      stdout: r?.stdout ?? "",
+      stderr: "",
+      status: r?.status ?? 0,
+      signal: null,
+      error: r?.error,
+    } as ReturnType<SpawnSyncFn>;
+  };
+  return { runner, calls };
+}
+
+describe("browserOpenArgv", () => {
+  test("darwin → open url", () => {
+    expect(browserOpenArgv("http://x", "darwin")).toEqual([
+      { cmd: "open", args: ["http://x"] },
+    ]);
+  });
+
+  test("win32 → cmd /c start with empty title", () => {
+    // The empty-string title arg is the security-relevant detail: if it were
+    // dropped, `start "http://attacker?evil=1"` would be parsed as a window
+    // title rather than a URL.
+    expect(browserOpenArgv("http://x", "win32")).toEqual([
+      { cmd: "cmd", args: ["/c", "start", "", "http://x"] },
+    ]);
+  });
+
+  test("linux → xdg-open then sensible-browser fallback", () => {
+    expect(browserOpenArgv("http://x", "linux")).toEqual([
+      { cmd: "xdg-open", args: ["http://x"] },
+      { cmd: "sensible-browser", args: ["http://x"] },
+    ]);
+  });
+
+  test("argv contains url as a single argument — no shell metachar expansion", () => {
+    // A URL with shell metachars must appear verbatim as one argv entry on
+    // every platform. If it were ever interpolated into a shell string, the
+    // `; rm -rf /` would split into a separate command.
+    const evil = "http://x; rm -rf /; #";
+    for (const platform of ["darwin", "win32", "linux"] as const) {
+      const attempts = browserOpenArgv(evil, platform);
+      for (const { args } of attempts) {
+        expect(args).toContain(evil);
+      }
+    }
+  });
+});
+
+describe("openBrowserSync", () => {
+  test("darwin: spawnSync('open', [url]) with no shell:true", () => {
+    const { runner, calls } = makeRunner([{ status: 0 }]);
+    const r = openBrowserSync("http://x", "darwin", runner);
+
+    expect(r.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe("open");
+    expect(calls[0].args).toEqual(["http://x"]);
+    expect(calls[0].opts).not.toHaveProperty("shell", true);
+  });
+
+  test("win32: cmd /c start '' url, no shell:true", () => {
+    const { runner, calls } = makeRunner([{ status: 0 }]);
+    openBrowserSync("http://x", "win32", runner);
+
+    expect(calls[0].cmd).toBe("cmd");
+    expect(calls[0].args).toEqual(["/c", "start", "", "http://x"]);
+    expect(calls[0].opts).not.toHaveProperty("shell", true);
+  });
+
+  test("linux: xdg-open status=0 → sensible-browser is NOT called", () => {
+    const { runner, calls } = makeRunner([{ status: 0 }]);
+    const r = openBrowserSync("http://x", "linux", runner);
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.method).toBe("xdg-open");
+    expect(calls.map(c => c.cmd)).toEqual(["xdg-open"]);
+  });
+
+  test("linux: xdg-open status!=0 → sensible-browser fallback fires", () => {
+    const { runner, calls } = makeRunner([
+      { status: 3 },
+      { status: 0 },
+    ]);
+    const r = openBrowserSync("http://x", "linux", runner);
+
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.method).toBe("sensible-browser");
+    expect(calls.map(c => c.cmd)).toEqual(["xdg-open", "sensible-browser"]);
+  });
+
+  test("linux: xdg-open killed by signal (status=null + error) → fallback fires", () => {
+    // The pre-fix bug: status===null was treated as success. Verify both
+    // signal-kill and ENOENT trigger the fallback.
+    const { runner, calls } = makeRunner([
+      { status: null, error: new Error("Killed by signal") },
+      { status: 0 },
+    ]);
+    const r = openBrowserSync("http://x", "linux", runner);
+
+    expect(r.ok).toBe(true);
+    expect(calls.map(c => c.cmd)).toEqual(["xdg-open", "sensible-browser"]);
+  });
+
+  test("linux: both xdg-open and sensible-browser fail → ok=false with reason", () => {
+    const { runner } = makeRunner([
+      { status: 1, error: new Error("ENOENT xdg-open") },
+      { status: 1, error: new Error("ENOENT sensible-browser") },
+    ]);
+    const r = openBrowserSync("http://x", "linux", runner);
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.method).toBe("none");
+      expect(r.reason).toContain("xdg-open");
+      expect(r.reason).toContain("sensible-browser");
+    }
+  });
+
+  test("runner throws synchronously → caught, surfaced in reason", () => {
+    const runner: SpawnSyncFn = () => { throw new Error("EMFILE"); };
+    const r = openBrowserSync("http://x", "darwin", runner);
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("EMFILE");
+  });
+});
+
+describe("killProcessOnPort — Linux/macOS (lsof)", () => {
+  test("port free (lsof status=1, empty stdout) → no kill, no error", () => {
+    const { runner, calls } = makeRunner([
+      { status: 1, stdout: "" },
+    ]);
+    const r = killProcessOnPort(4747, "linux", runner);
+
+    expect(r.killedPids).toEqual([]);
+    expect(r.attemptedPids).toEqual([]);
+    expect(r.errors).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe("lsof");
+    expect(calls[0].args).toEqual(["-ti", ":4747"]);
+  });
+
+  test("lsof ENOENT (binary missing) → surfaced as error, no kill attempt", () => {
+    const { runner, calls } = makeRunner([
+      { status: null, error: new Error("ENOENT") },
+    ]);
+    const r = killProcessOnPort(4747, "linux", runner);
+
+    expect(r.attemptedPids).toEqual([]);
+    expect(r.errors.join(" ")).toMatch(/lsof.*ENOENT/);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("two pids, both kill cleanly → both reported as killed", () => {
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: "1234\n5678\n" },
+      { status: 0 },
+      { status: 0 },
+    ]);
+    const r = killProcessOnPort(4747, "linux", runner);
+
+    expect(r.killedPids).toEqual(["1234", "5678"]);
+    expect(r.attemptedPids).toEqual(["1234", "5678"]);
+    expect(r.errors).toEqual([]);
+
+    // Argv check: each kill receives the pid as a single argv entry.
+    expect(calls[1]).toEqual(expect.objectContaining({ cmd: "kill", args: ["1234"] }));
+    expect(calls[2]).toEqual(expect.objectContaining({ cmd: "kill", args: ["5678"] }));
+  });
+
+  test("first pid kill fails → second pid still attempted (no abort)", () => {
+    // Pre-fix: try/catch wrapped the entire for-loop, so a single pid
+    // failure aborted the rest of the kills.
+    const { runner } = makeRunner([
+      { status: 0, stdout: "1111\n2222\n3333\n" },
+      { status: 1, error: new Error("EPERM") },
+      { status: 0 },
+      { status: 0 },
+    ]);
+    const r = killProcessOnPort(4747, "linux", runner);
+
+    expect(r.attemptedPids).toEqual(["1111", "2222", "3333"]);
+    expect(r.killedPids).toEqual(["2222", "3333"]);
+    expect(r.errors.join(" ")).toMatch(/kill 1111/);
+  });
+
+  test("runner throws on a kill → loop continues, error captured", () => {
+    let calls = 0;
+    const runner: SpawnSyncFn = (cmd, args) => {
+      calls++;
+      if (cmd === "lsof") {
+        return { pid: 0, output: [], stdout: "1\n2\n", stderr: "", status: 0, signal: null } as ReturnType<SpawnSyncFn>;
+      }
+      if (cmd === "kill" && args[0] === "1") throw new Error("boom");
+      return { pid: 0, output: [], stdout: "", stderr: "", status: 0, signal: null } as ReturnType<SpawnSyncFn>;
+    };
+    const r = killProcessOnPort(4747, "linux", runner);
+
+    expect(calls).toBe(3);
+    expect(r.attemptedPids).toEqual(["1", "2"]);
+    expect(r.killedPids).toEqual(["2"]);
+    expect(r.errors.join(" ")).toMatch(/boom/);
+  });
+
+  test("garbage in lsof stdout is filtered (only digit-PIDs accepted)", () => {
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: "1234\n\nNot-a-pid\n5678\n" },
+      { status: 0 },
+      { status: 0 },
+    ]);
+    const r = killProcessOnPort(4747, "linux", runner);
+
+    expect(r.killedPids).toEqual(["1234", "5678"]);
+    expect(calls).toHaveLength(3); // lsof + 2 kills
+  });
+});
+
+describe("killProcessOnPort — Windows (netstat)", () => {
+  // Sample netstat -ano output. The MUST-NOT-KILL row's REMOTE column
+  // contains :4747 — pre-fix `line.includes(":4747")` matched it and killed
+  // the unrelated PID 9876.
+  const netstatOut = [
+    "Active Connections",
+    "",
+    "  Proto  Local Address          Foreign Address        State           PID",
+    "  TCP    0.0.0.0:4747           0.0.0.0:0              LISTENING       1234",
+    "  TCP    192.168.1.5:54321      8.8.8.8:4747           ESTABLISHED     9876", // MUST NOT match
+    "  UDP    0.0.0.0:4747           *:*                                    5555", // UDP, must not match
+    "  TCP    [::]:4747              [::]:0                 LISTENING       1235",
+    "",
+  ].join("\r\n");
+
+  test("only LISTENING TCP rows whose LOCAL column ends with :port are killed", () => {
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: netstatOut },
+      { status: 0 }, // taskkill 1234
+      { status: 0 }, // taskkill 1235
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+    expect(r.attemptedPids).not.toContain("9876"); // remote-port match — was the bug
+    expect(r.attemptedPids).not.toContain("5555"); // UDP — must not be killed
+
+    // taskkill argv: /F /PID <pid> with no shell:true
+    const killCalls = calls.filter(c => c.cmd === "taskkill");
+    for (const c of killCalls) {
+      expect(c.args[0]).toBe("/F");
+      expect(c.args[1]).toBe("/PID");
+      expect(c.opts).not.toHaveProperty("shell", true);
+    }
+  });
+
+  test("netstat ENOENT → surfaced as error", () => {
+    const { runner } = makeRunner([
+      { status: null, error: new Error("ENOENT") },
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.errors.join(" ")).toMatch(/netstat.*ENOENT/);
+    expect(r.attemptedPids).toEqual([]);
+  });
+
+  test("first taskkill fails → second pid still attempted", () => {
+    const { runner } = makeRunner([
+      { status: 0, stdout: netstatOut },
+      { status: 1, error: new Error("Access denied") }, // taskkill 1234
+      { status: 0 }, // taskkill 1235
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toContain("1234");
+    expect(r.attemptedPids).toContain("1235");
+    expect(r.killedPids).toContain("1235");
+    expect(r.killedPids).not.toContain("1234");
+    expect(r.errors.join(" ")).toMatch(/taskkill 1234/);
+  });
+});
+
+describe("killProcessOnPort — input validation", () => {
+  test("rejects out-of-range port without spawning anything", () => {
+    const spy = vi.fn();
+    const r = killProcessOnPort(70000, "linux", spy as unknown as SpawnSyncFn);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(r.errors.join(" ")).toMatch(/invalid port/);
+  });
+
+  test("rejects non-integer port without spawning anything", () => {
+    const spy = vi.fn();
+    const r = killProcessOnPort(3.14 as number, "linux", spy as unknown as SpawnSyncFn);
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(r.errors.join(" ")).toMatch(/invalid port/);
+  });
+});
+
+// ─── ctx_insight helper follow-ups (#441 follow-up) ──────────────────────────
+//
+// 1. Hard timeout on every helper-internal spawnSync. A hung lsof/xdg-open/
+//    taskkill would otherwise block the MCP tool indefinitely. We assert the
+//    timeout option is propagated to the runner — the actual cap value is an
+//    implementation detail, but its presence is the regression we lock.
+//
+// 2. Windows non-English locale support. The pre-followup parser keyed off
+//    `state !== "LISTENING"` which is locale-translated (Windows-FR shows
+//    `À l'écoute`, Windows-DE `ABHÖREN`, Windows-ES `ESCUCHANDO`, etc.), so
+//    on non-EN Windows the helper would silently match zero rows and never
+//    free a stuck dashboard port. The remote-address column is NOT
+//    locale-translated; we now key off it instead.
+
+describe("Helper spawnSync timeout (#441 follow-up)", () => {
+  test("openBrowserSync passes a timeout to the runner", () => {
+    const { runner, calls } = makeRunner([{ status: 0 }]);
+    openBrowserSync("http://x", "darwin", runner);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts).toBeDefined();
+    expect(typeof (calls[0].opts as { timeout?: number }).timeout).toBe("number");
+    expect((calls[0].opts as { timeout: number }).timeout).toBeGreaterThan(0);
+  });
+
+  test("killProcessOnPort (Linux) passes a timeout to lsof and kill", () => {
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: "1234\n" },
+      { status: 0 }, // kill 1234
+    ]);
+    killProcessOnPort(4747, "linux", runner);
+
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(typeof (c.opts as { timeout?: number }).timeout).toBe("number");
+      expect((c.opts as { timeout: number }).timeout).toBeGreaterThan(0);
+    }
+  });
+
+  test("killProcessOnPort (Windows) passes a timeout to netstat and taskkill", () => {
+    const winFixture = [
+      "  Proto  Local Address          Foreign Address        State           PID",
+      "  TCP    0.0.0.0:4747           0.0.0.0:0              LISTENING       1234",
+      "",
+    ].join("\r\n");
+    const { runner, calls } = makeRunner([
+      { status: 0, stdout: winFixture },
+      { status: 0 }, // taskkill 1234
+    ]);
+    killProcessOnPort(4747, "win32", runner);
+
+    expect(calls.map(c => c.cmd)).toEqual(["netstat", "taskkill"]);
+    for (const c of calls) {
+      expect(typeof (c.opts as { timeout?: number }).timeout).toBe("number");
+      expect((c.opts as { timeout: number }).timeout).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("killProcessOnPort — Windows non-English locale (#441 follow-up)", () => {
+  // Same regression fixture as the en-US Windows test, but with the STATE
+  // column translated. Pre-followup, the helper required `state === "LISTENING"`
+  // and so silently produced zero PIDs on non-EN Windows. The follow-up keys
+  // off the remote-address column (locale-independent) so this fixture must
+  // now match LISTENING rows 1234 + 1235 and skip the ESTABLISHED row 9876
+  // and the UDP row 5555.
+  const netstatFr = [
+    "Connexions actives",
+    "",
+    "  Proto  Adresse locale         Adresse distante       État            PID",
+    "  TCP    0.0.0.0:4747           0.0.0.0:0              À l'écoute      1234",
+    "  TCP    192.168.1.5:54321      8.8.8.8:4747           ESTABLI         9876",
+    "  UDP    0.0.0.0:4747           *:*                                    5555",
+    "  TCP    [::]:4747              [::]:0                 À l'écoute      1235",
+    "",
+  ].join("\r\n");
+
+  const netstatDe = [
+    "Aktive Verbindungen",
+    "",
+    "  Proto  Lokale Adresse         Remoteadresse          Status          PID",
+    "  TCP    0.0.0.0:4747           0.0.0.0:0              ABHÖREN         1234",
+    "  TCP    192.168.1.5:54321      8.8.8.8:4747           HERGESTELLT     9876",
+    "  TCP    [::]:4747              [::]:0                 ABHÖREN         1235",
+    "",
+  ].join("\r\n");
+
+  test("French Windows netstat output: kills 1234 and 1235, ignores 9876 + 5555", () => {
+    const { runner } = makeRunner([
+      { status: 0, stdout: netstatFr },
+      { status: 0 }, // taskkill 1234
+      { status: 0 }, // taskkill 1235
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+    expect(r.attemptedPids).not.toContain("9876");
+    expect(r.attemptedPids).not.toContain("5555");
+    expect(r.killedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+  });
+
+  test("German Windows netstat output: kills 1234 and 1235, ignores 9876", () => {
+    const { runner } = makeRunner([
+      { status: 0, stdout: netstatDe },
+      { status: 0 }, // taskkill 1234
+      { status: 0 }, // taskkill 1235
+    ]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+    expect(r.attemptedPids).not.toContain("9876");
+    expect(r.killedPids).toEqual(expect.arrayContaining(["1234", "1235"]));
+  });
+
+  test("a connected remote :port still does NOT match (remote-column anchor)", () => {
+    // Sanity: the predicate must still reject the ESTABLISHED row whose
+    // REMOTE is 8.8.8.8:4747. This was the original pre-#441 bug; the
+    // follow-up must not regress it while changing the locale strategy.
+    const onlyEstablished = [
+      "  Proto  Local Address          Foreign Address        State           PID",
+      "  TCP    192.168.1.5:54321      8.8.8.8:4747           ESTABLISHED     9876",
+      "",
+    ].join("\r\n");
+    const { runner, calls } = makeRunner([{ status: 0, stdout: onlyEstablished }]);
+    const r = killProcessOnPort(4747, "win32", runner);
+
+    expect(r.attemptedPids).toEqual([]);
+    expect(calls).toHaveLength(1); // netstat only — no taskkill issued
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Prose-style policy (issue #482)
+// ═══════════════════════════════════════════════════════════════════════════
+// Decision: context-mode keeps raw data out of context but does not dictate
+// how the model writes its final answer. Aggressive brevity prompts have been
+// shown to degrade coding/reasoning benchmarks (Moonshot AI on kimi-k2.5).
+// Any caveman/terse-style language in shipped artifacts is a regression.
+
+describe("prose-style policy (#482)", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+  const routingBlock = readFileSync(
+    resolve(__dirname, "../../hooks/routing-block.mjs"),
+    "utf-8",
+  );
+
+  test("no caveman/terse directive lands in any MCP tool description", () => {
+    expect(serverSrc).not.toMatch(/terse like caveman/i);
+    expect(serverSrc).not.toMatch(/only fluff die/i);
+  });
+
+  test("routing-block has no <communication_style> or <response_format> blocks", () => {
+    expect(routingBlock).not.toMatch(/<communication_style>/);
+    expect(routingBlock).not.toMatch(/<response_format>/);
+    expect(routingBlock).not.toMatch(/terse like caveman/i);
+  });
+
+  test("README does not advertise an Output Compression pillar", () => {
+    const readme = readFileSync(
+      resolve(__dirname, "../../README.md"),
+      "utf-8",
+    );
+    expect(readme).not.toMatch(/\*\*Output Compression\*\*/);
+    expect(readme).not.toMatch(/terse like caveman/i);
+  });
+
+  test("committed bundles (cli/server/hooks) carry no caveman strings", () => {
+    // Defense-in-depth: src/* is stripped, but the npm-shipped bundles are
+    // built artifacts that could lag if a future release rebuilds from a
+    // dirty tree. Lock the deletion to the actually-published files too
+    // (round-5 finding).
+    const bundlePaths = [
+      "../../server.bundle.mjs",
+      "../../cli.bundle.mjs",
+      "../../hooks/session-extract.bundle.mjs",
+      "../../hooks/session-snapshot.bundle.mjs",
+      "../../hooks/session-db.bundle.mjs",
+    ];
+    for (const rel of bundlePaths) {
+      const p = resolve(__dirname, rel);
+      try {
+        const content = readFileSync(p, "utf-8");
+        expect(content).not.toMatch(/terse like caveman/i);
+        expect(content).not.toMatch(/only fluff die/i);
+      } catch (err) {
+        // Bundle missing on this checkout (e.g., fresh clone before
+        // `npm run bundle`). That is fine — CI's Build step generates
+        // them; this test only asserts negative when the file exists.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// homedir() import smoke test (round-5 finding from cluster C+E+G).
+// The merge at 43c63cb dropped this import; b8ca35e restored it. A future
+// merge could lose it again silently. Pin the contract: enumerateAdapterDirs
+// must work with a stubbed home and resolve to a path under that home.
+// ─────────────────────────────────────────────────────────
+describe("analytics homedir() import is alive (#43c63cb regression guard)", () => {
+  test("enumerateAdapterDirs() resolves a sessionsDir under the host home", async () => {
+    const { enumerateAdapterDirs } = await import("../../src/session/analytics.js");
+    const { homedir } = await import("node:os");
+    const dirs = enumerateAdapterDirs();
+    expect(dirs.length).toBeGreaterThan(0);
+    // At least one entry must mention the actual home directory — proves
+    // homedir() resolution is wired all the way through.
+    const home = homedir();
+    expect(dirs.every((d) => d.sessionsDir.startsWith(home))).toBe(true);
   });
 });

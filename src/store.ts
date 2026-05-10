@@ -11,7 +11,7 @@
 import type { Database as DatabaseInstance } from "better-sqlite3";
 import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
-import { readFileSync, readdirSync, unlinkSync, existsSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -331,6 +331,13 @@ function findMinSpan(positionLists: number[][]): number {
 export class ContentStore {
   #db: DatabaseInstance;
   #dbPath: string;
+  // Optional deny-policy callback. When set (by server.ts at startup),
+  // #refreshStaleSources consults it before re-reading file_path during
+  // auto-refresh. This catches policy edits between initial indexing and
+  // a later search: a file that was allowed at index time may have been
+  // added to the Read deny list afterwards. Without this hook, refresh
+  // would re-read and re-expose the file. See #442 round-3.
+  #denyChecker?: (filePath: string) => boolean;
 
   // ── Cached Prepared Statements ──
   // Prepared once at construction, reused on every call to avoid
@@ -782,6 +789,18 @@ export class ContentStore {
     );
   }
 
+  // ── Deny Policy Hook ──
+
+  /**
+   * Register a deny-policy checker. When set, #refreshStaleSources
+   * calls it before re-reading any file_path during auto-refresh.
+   * Returning `true` causes the source to be skipped (kept in cache,
+   * not re-indexed). server.ts wires this to the Read deny patterns.
+   */
+  setDenyChecker(fn: ((filePath: string) => boolean) | undefined): void {
+    this.#denyChecker = fn;
+  }
+
   // ── Index ──
 
   index(options: {
@@ -802,7 +821,29 @@ export class ContentStore {
       throw new Error("Either content or path must be provided");
     }
 
-    const text = hasContent ? content! : readFileSync(path!, "utf-8");
+    // Read file via fd to close the TOCTOU window between the security
+    // gate (security.ts evaluateFilePath calls realpathSync) and the read
+    // here. Lexical re-read by path string allowed an attacker to swap a
+    // symlink to a denied target (e.g. ~/.ssh/id_rsa) AFTER gate passed.
+    // openSync + fstat + readFileSync(fd) binds the read to the inode
+    // captured at gate-time. fstat also rejects non-regular files
+    // (directories, character devices) which would otherwise read as ""
+    // or throw inconsistently. See #442 round-3.
+    let text: string;
+    if (hasContent) {
+      text = content!;
+    } else {
+      const fd = openSync(path!, "r");
+      try {
+        const st = fstatSync(fd);
+        if (!st.isFile()) {
+          throw new Error(`refusing to index ${path}: not a regular file`);
+        }
+        text = readFileSync(fd, "utf-8");
+      } finally {
+        closeSync(fd);
+      }
+    }
     const label = source ?? path ?? "untitled";
     const chunks = this.#chunkMarkdown(text);
 
@@ -1222,17 +1263,36 @@ export class ContentStore {
     for (const src of sources) {
       try {
         if (!existsSync(src.file_path)) continue; // file deleted — keep cached results
+        // Re-check deny policy before re-reading. The Read deny list may
+        // have been edited after this source was originally indexed; a
+        // file that was allowed then may now be denied. Without this
+        // gate, refresh would happily re-read and re-expose it. #442 r3.
+        if (this.#denyChecker && this.#denyChecker(src.file_path)) continue;
         const mtime = statSync(src.file_path).mtime;
         const indexedAt = new Date(src.indexed_at + "Z");
         if (mtime <= indexedAt) continue; // file unchanged — fast path
 
-        // mtime advanced — check hash to confirm real change (not just touch)
-        const newContent = readFileSync(src.file_path, "utf-8");
+        // mtime advanced — fd-bound read for hash + indexing in one go.
+        // Open once, fstat, read from fd. Closes the swap-mid-flight
+        // window between hash read and re-index. #442 round-3.
+        const fd = openSync(src.file_path, "r");
+        let newContent: string;
+        try {
+          const st = fstatSync(fd);
+          if (!st.isFile()) continue; // skip non-regular targets
+          newContent = readFileSync(fd, "utf-8");
+        } finally {
+          closeSync(fd);
+        }
         const newHash = createHash("sha256").update(newContent).digest("hex");
         if (newHash === src.content_hash) continue; // content identical — skip
 
-        // File genuinely changed — re-index
-        this.index({ path: src.file_path, source: src.label });
+        // File genuinely changed — re-index using already-read content
+        // (avoids a second open/read race) but preserve file_path/hash
+        // by going through index() which stores them. Since we pass
+        // content, index() does NOT re-read; the bytes hashed above
+        // are exactly the bytes indexed.
+        this.index({ content: newContent, path: src.file_path, source: src.label });
         this.lastRefreshCount++;
       } catch {
         // Graceful degradation — never break search for stale detection

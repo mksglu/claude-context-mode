@@ -67,6 +67,44 @@ function commandExists(cmd: string): boolean {
   }
 }
 
+/**
+ * Stricter probe than commandExists() — also verifies the resolved binary
+ * actually runs. On Windows, `where python3` matches the Microsoft Store
+ * App Execution Alias stub at C:\Users\<u>\AppData\Local\Microsoft\WindowsApps\
+ * even when no real Python is installed; the stub exits non-zero (9009) and
+ * pops the Store. Filter those entries out and require `<cmd> --version` to
+ * exit 0 before declaring the runtime available (#455).
+ */
+function runnableExists(cmd: string): boolean {
+  if (isWindows) {
+    // Reject if every `where` hit lives under Microsoft\WindowsApps (Store stubs).
+    try {
+      const out = execSync(`where ${cmd}`, { encoding: "utf-8", stdio: "pipe" });
+      const hits = out.trim().split(/\r?\n/).map(p => p.trim()).filter(Boolean);
+      if (hits.length === 0) return false;
+      const realHits = hits.filter(p => !/\\Microsoft\\WindowsApps\\/i.test(p));
+      if (realHits.length === 0) return false;
+    } catch {
+      return false;
+    }
+  } else if (!commandExists(cmd)) {
+    return false;
+  }
+  // Probe with --version. On Windows, allow 5s for cold-start (MS Store stub
+  // fallthrough can be slow). On POSIX, 1500ms is plenty for a real binary
+  // and keeps cold detection of python3 → python → py under ~5s total (#454).
+  try {
+    execFileSync(cmd, ["--version"], {
+      shell: isWindows,
+      stdio: "pipe",
+      timeout: isWindows ? 5000 : 1500,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function bunExists(): boolean {
   if (commandExists("bun")) return true;
   for (const p of bunFallbackPaths()) {
@@ -76,10 +114,17 @@ function bunExists(): boolean {
 }
 
 function bunCommand(): string {
-  if (commandExists("bun")) return "bun";
+  // Prefer absolute .exe paths so spawn() can run with shell:false on Windows.
+  // `where bun` may resolve to a `bun.cmd` npm shim (#506) which CreateProcess
+  // cannot execute directly — return the real .exe wherever we can find one.
   for (const p of bunFallbackPaths()) {
     if (existsSync(p)) return p;
   }
+  // Bare name only if PATH resolution confirms it. On Windows this is
+  // typically a .cmd shim — the executor's needsShell list (which now
+  // includes "bun" — see #506) ensures shell:true so cmd.exe can resolve it.
+  if (commandExists("bun")) return "bun";
+  // Synthetic last-resort path for diagnostics/error messages.
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   return isWindows ? `${home}\\.bun\\bin\\bun.exe` : `${home}/.bun/bin/bun`;
 }
@@ -89,9 +134,17 @@ function bunFallbackPaths(): string[] {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   if (isWindows) {
     const localAppData = process.env.LOCALAPPDATA ?? "";
+    const appData = process.env.APPDATA ?? "";
     return [
+      // Native bun installer locations (irm bun.sh/install.ps1).
       ...(home ? [`${home}\\.bun\\bin\\bun.exe`] : []),
       ...(localAppData ? [`${localAppData}\\bun\\bin\\bun.exe`] : []),
+      // npm i -g bun installs bun.exe under the npm prefix (typically
+      // %APPDATA%\npm\node_modules\bun\bin\bun.exe). Without this, npm
+      // installs were "found" via bun.cmd shim on PATH and the bare "bun"
+      // string was returned — spawn() then ENOENT'd because CreateProcess
+      // can't execute .cmd files (#506).
+      ...(appData ? [`${appData}\\npm\\node_modules\\bun\\bin\\bun.exe`] : []),
     ];
   }
   return home ? [`${home}/.bun/bin/bun`] : [];
@@ -171,11 +224,13 @@ export function detectRuntimes(): RuntimeMap {
         : commandExists("ts-node")
           ? "ts-node"
           : null,
-    python: commandExists("python3")
+    python: runnableExists("python3")
       ? "python3"
-      : commandExists("python")
+      : runnableExists("python")
         ? "python"
-        : null,
+        : runnableExists("py")
+          ? "py"
+          : null,
     shell: shellOverride ?? (isWin
       ? (resolveWindowsBash() ?? (commandExists("sh") ? "sh" : commandExists("powershell") ? "powershell" : "cmd.exe"))
       : commandExists("bash") ? "bash" : "sh"),

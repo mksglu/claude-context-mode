@@ -6,6 +6,12 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     testTimeout: 30_000,
+    // afterAll cleanup loops over many better-sqlite3 handles on Windows
+    // and can exceed vitest's default 10s hookTimeout under fork contention
+    // (e.g. tests/session/session-pipeline.test.ts cleans every DB it
+    // created). Match testTimeout so the cleanup window matches the work
+    // window — same envelope better-sqlite3 already needs for tests.
+    hookTimeout: 30_000,
     // Native addons (better-sqlite3) can segfault in worker_threads during
     // process cleanup. Use forks on all platforms for stable isolation.
     pool: "forks",

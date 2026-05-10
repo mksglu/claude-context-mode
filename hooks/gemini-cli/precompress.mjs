@@ -9,7 +9,7 @@ import "../ensure-deps.mjs";
  * snapshot (<2KB XML), and stores it for injection after compress.
  */
 
-import { readStdin, parseStdin, getSessionId, getSessionDBPath, GEMINI_OPTS } from "../session-helpers.mjs";
+import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, GEMINI_OPTS } from "../session-helpers.mjs";
 import { createSessionLoaders } from "../session-loaders.mjs";
 import { appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -24,11 +24,12 @@ const DEBUG_LOG = join(homedir(), ".gemini", "context-mode", "precompress-debug.
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
+  const projectDir = getInputProjectDir(input, OPTS);
 
   const { buildResumeSnapshot } = await loadSnapshot();
   const { SessionDB } = await loadSessionDB();
 
-  const dbPath = getSessionDBPath(OPTS);
+  const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
   const sessionId = getSessionId(input, OPTS);
 

@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.111",
+  "version": "1.0.118",
   "type": "module",
   "description": "MCP plugin that saves 98% of your context window. Works with Claude Code, Gemini CLI, VS Code Copilot, OpenCode, and Codex CLI. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
   "author": "Mert Koseoğlu",
@@ -29,7 +29,7 @@
   "homepage": "https://github.com/mksglu/context-mode#readme",
   "pi": {
     "extensions": [
-      "./build/pi-extension.js"
+      "./build/adapters/pi/extension.js"
     ],
     "skills": [
       "./skills"
@@ -37,15 +37,20 @@
   },
   "openclaw": {
     "extensions": [
-      "./build/openclaw-plugin.js"
+      "./build/adapters/openclaw/plugin.js"
     ]
   },
+  "omp": {
+    "name": "context-mode",
+    "description": "Save 98% of your context window in OMP — sandboxed code execution, FTS5 search, hard-block curl/wget, session continuity across compaction.",
+    "hooks": "./build/adapters/omp/plugin.js"
+  },
   "bugs": "https://github.com/mksglu/context-mode/issues",
-  "main": "./build/opencode-plugin.js",
+  "main": "./build/adapters/opencode/plugin.js",
   "exports": {
-    ".": "./build/opencode-plugin.js",
-    "./plugin": "./build/opencode-plugin.js",
-    "./openclaw": "./build/openclaw-plugin.js",
+    ".": "./build/adapters/opencode/plugin.js",
+    "./plugin": "./build/adapters/opencode/plugin.js",
+    "./openclaw": "./build/adapters/openclaw/plugin.js",
     "./cli": "./cli.bundle.mjs"
   },
   "bin": {
@@ -74,6 +79,7 @@
     "start.mjs",
     "scripts/postinstall.mjs",
     "scripts/heal-better-sqlite3.mjs",
+    "scripts/heal-installed-plugins.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -81,12 +87,13 @@
     "build": "tsc && node -e \"if(process.platform!=='win32'){require('fs').chmodSync('build/cli.js',0o755)}\" && npm run bundle",
     "bundle": "esbuild src/server.ts --bundle --platform=node --target=node18 --format=esm --outfile=server.bundle.mjs --external:better-sqlite3 --external:turndown --external:turndown-plugin-gfm --external:@mixmark-io/domino --minify && esbuild src/cli.ts --bundle --platform=node --target=node18 --format=esm --outfile=cli.bundle.mjs --external:better-sqlite3 --minify && esbuild src/session/extract.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-extract.bundle.mjs --minify && esbuild src/session/snapshot.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-snapshot.bundle.mjs --minify && esbuild src/session/db.ts --bundle --platform=node --target=node18 --format=esm --outfile=hooks/session-db.bundle.mjs --external:better-sqlite3 --minify",
     "version-sync": "node scripts/version-sync.mjs",
-    "version": "node scripts/version-sync.mjs && git add .claude-plugin/plugin.json .claude-plugin/marketplace.json .openclaw-plugin/openclaw.plugin.json .openclaw-plugin/package.json openclaw.plugin.json .pi/extensions/context-mode/package.json",
+    "version": "node scripts/version-sync.mjs && git add package.json .claude-plugin/plugin.json .claude-plugin/marketplace.json .openclaw-plugin/openclaw.plugin.json .openclaw-plugin/package.json openclaw.plugin.json .pi/extensions/context-mode/package.json",
     "prepublishOnly": "npm run build",
     "dev": "npx tsx src/server.ts",
     "setup": "npx tsx src/cli.ts setup",
     "doctor": "npx tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "npx tsx tests/benchmark.ts",

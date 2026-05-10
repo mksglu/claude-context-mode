@@ -2,7 +2,7 @@ import "./setup-home";
 /**
  * Pi Extension Tests — TDD vertical slices.
  *
- * The Pi extension (src/pi-extension.ts) is a default-exported function that
+ * The Pi extension (src/adapters/pi/extension.ts) is a default-exported function that
  * receives a Pi API object and registers event handlers. Since we cannot test
  * against a real Pi runtime, we mock the Pi API to capture registered handlers
  * and invoke them with simulated events.
@@ -17,9 +17,11 @@ import "./setup-home";
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { SessionDB } from "../src/session/db.js";
 
 // ── Mock Pi API ──────────────────────────────────────────────
 
@@ -76,7 +78,7 @@ async function registerPiExtension(
   process.env.PI_PROJECT_DIR = projectDir;
   process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-  const mod = await import("../src/pi-extension.js");
+  const mod = await import("../src/adapters/pi/extension.js");
   const register = mod.default;
   await register(mockApi);
 
@@ -295,6 +297,26 @@ describe("Pi Extension", () => {
       });
     });
 
+    it("session_start uses Pi context arg for stable session ID", async () => {
+      await registerPiExtension(api);
+      const sessionFile = join(tempDir, "stable-session.jsonl");
+      const expectedSessionId = createHash("sha256")
+        .update(sessionFile)
+        .digest("hex")
+        .slice(0, 8);
+
+      await api._trigger(
+        "session_start",
+        { type: "session_start", reason: "startup" },
+        { sessionManager: { getSessionFile: () => sessionFile } },
+      );
+
+      const result = await api._getCommand("ctx-stats")!.handler!({});
+      expect((result as { text: string }).text).toContain(
+        `Session: \`${expectedSessionId}`,
+      );
+    });
+
     it("session_before_compact builds resume snapshot", async () => {
       await registerPiExtension(api);
 
@@ -346,6 +368,27 @@ describe("Pi Extension", () => {
 
       // Shutdown should clean up without error
       await api._trigger("session_shutdown", {});
+    });
+
+    it("session_start receives (event, ctx) — ctx.sessionManager is used for session ID", async () => {
+      await registerPiExtension(api);
+
+      // The handler signature must be (event, ctx), not (ctx).
+      // Pass a real-looking ctx as the second argument with sessionManager;
+      // if the signature were wrong, sessionManager would be on the event
+      // object and deriveSessionId would fall back to pi-<timestamp>.
+      const sessionFile = `/fake/session-${Date.now()}.jsonl`;
+      await api._trigger("session_start",
+        { reason: "startup" },                               // event (1st arg)
+        { sessionManager: { getSessionFile: () => sessionFile } }, // ctx (2nd arg)
+      );
+
+      // Verify the session was initialised with the file-derived ID by checking
+      // that before_agent_start doesn't blow up (it needs a valid _sessionId).
+      const result = await api._trigger("before_agent_start", {
+        systemPrompt: "Base.",
+      });
+      expect(result?.systemPrompt).toBeDefined();
     });
 
     it("handles session lifecycle in correct order", async () => {
@@ -513,6 +556,63 @@ describe("Pi Extension", () => {
       const result = await cmd!.handler!({});
       expect(result).toBeDefined();
     });
+
+    it("/ctx-stats treats SQLite started_at as UTC", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-09T12:30:00Z"));
+
+      const originalTZ = process.env.TZ;
+      process.env.TZ = "America/Los_Angeles";
+
+      const sessionFile = join(tempDir, "stats-utc-session.jsonl");
+      const sessionId = createHash("sha256")
+        .update(sessionFile)
+        .digest("hex")
+        .slice(0, 16);
+
+      try {
+        await registerPiExtension(api);
+        await api._trigger(
+          "session_start",
+          { type: "session_start", reason: "startup" },
+          { sessionManager: { getSessionFile: () => sessionFile } },
+        );
+
+        const dbPath = join(
+          process.env.HOME!,
+          ".pi",
+          "context-mode",
+          "sessions",
+          "context-mode.db",
+        );
+        const db = new SessionDB({ dbPath });
+        try {
+          // SQLite datetime('now') stores UTC as "YYYY-MM-DD HH:MM:SS".
+          // If parsed as local time in America/Los_Angeles, this would be
+          // 2026-05-09T19:00:00Z and the age would not be 30 minutes.
+          db.db
+            .prepare(
+              "UPDATE session_meta SET started_at = ? WHERE session_id = ?",
+            )
+            .run("2026-05-09 12:00:00", sessionId);
+        } finally {
+          db.close();
+        }
+
+        const result = await api._getCommand("ctx-stats")!.handler!({});
+
+        expect((result as { text: string }).text).toContain(
+          "- Session age: 30m",
+        );
+      } finally {
+        if (originalTZ === undefined) {
+          delete process.env.TZ;
+        } else {
+          process.env.TZ = originalTZ;
+        }
+        vi.useRealTimers();
+      }
+    });
   });
 
   // ═══════════════════════════════════════════════════════════
@@ -522,7 +622,7 @@ describe("Pi Extension", () => {
   describe("Slice 7: Routing block injection", () => {
     it("injects <context_window_protection> on first before_agent_start", async () => {
       await registerPiExtension(api);
-      await api._trigger("session_start", {
+      await api._trigger("session_start", {}, {
         sessionManager: { getSessionFile: () => `routing-1-${Date.now()}-${Math.random()}` },
       });
 
@@ -534,9 +634,9 @@ describe("Pi Extension", () => {
       expect(result.systemPrompt).toContain("<context_window_protection>");
     });
 
-    it("does not re-inject the routing block on subsequent calls", async () => {
+    it("re-injects the routing block on every subsequent call (Pi rebuilds system prompt each turn)", async () => {
       await registerPiExtension(api);
-      await api._trigger("session_start", {
+      await api._trigger("session_start", {}, {
         sessionManager: { getSessionFile: () => `routing-2-${Date.now()}-${Math.random()}` },
       });
 
@@ -546,12 +646,16 @@ describe("Pi Extension", () => {
       const second = await api._trigger("before_agent_start", {
         systemPrompt: "Base.",
       });
+      const third = await api._trigger("before_agent_start", {
+        systemPrompt: "Base.",
+      });
 
+      // Unlike Claude Code where the SessionStart hook persists context for the whole
+      // session, Pi rebuilds the system prompt fresh every turn. The routing block
+      // must be present on every call or the LLM loses MCP tool awareness after turn 1.
       expect(first?.systemPrompt).toContain("<context_window_protection>");
-      const occurrences = (
-        (second?.systemPrompt ?? "").match(/<context_window_protection>/g) ?? []
-      ).length;
-      expect(occurrences).toBe(0);
+      expect(second?.systemPrompt).toContain("<context_window_protection>");
+      expect(third?.systemPrompt).toContain("<context_window_protection>");
     });
   });
 
@@ -692,5 +796,628 @@ describe("Pi Extension", () => {
       await registerPiExtension(api1, { projectDir: join(tempDir, "reg1") });
       await registerPiExtension(api2, { projectDir: join(tempDir, "reg2") });
     });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// MCP bridge — bridges context-mode MCP tools into Pi's pi.registerTool()
+// surface so the LLM can actually reach ctx_execute / ctx_search / etc.
+// (#426). Pi 0.73.x has no native MCP support; without this bridge the
+// routing block tells the LLM about tools it cannot call.
+// ────────────────────────────────────────────────────────────────────────
+
+describe("Pi MCP bridge (#426)", () => {
+  let mcpScratch: string;
+
+  beforeEach(() => {
+    mcpScratch = mkdtempSync(join(tmpdir(), "ctx-pi-bridge-"));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(mcpScratch, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+
+  function writeFakeServer(source: string): string {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const path = join(mcpScratch, `fake-mcp-${Date.now()}-${Math.random()}.mjs`);
+    fs.writeFileSync(path, source, "utf-8");
+    return path;
+  }
+
+  // ── Unit: MCPStdioClient framing & lifecycle ──────────────────────
+
+  describe("MCPStdioClient", () => {
+    it("matches request id to response result over newline-delimited JSON", async () => {
+      const fakePath = writeFakeServer(`
+        let buf = "";
+        process.stdin.on("data", (chunk) => {
+          buf += chunk.toString("utf-8");
+          let idx;
+          while ((idx = buf.indexOf("\\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg; try { msg = JSON.parse(line); } catch { continue; }
+            if (msg.id == null) continue;
+            process.stdout.write(JSON.stringify({
+              jsonrpc: "2.0", id: msg.id,
+              result: { echoed: msg.method, params: msg.params },
+            }) + "\\n");
+          }
+        });
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        const r1 = await client.request("tools/list", { foo: 1 });
+        expect(r1).toEqual({ echoed: "tools/list", params: { foo: 1 } });
+        const r2 = await client.request("tools/call", { bar: 2 });
+        expect(r2).toEqual({ echoed: "tools/call", params: { bar: 2 } });
+      } finally {
+        client.shutdown();
+      }
+    });
+
+    it("matches concurrent in-flight requests by id (out-of-order responses)", async () => {
+      // Reverse delays so the slowest goes first — exercises the id-map
+      // dispatch, not just FIFO ordering.
+      const fakePath = writeFakeServer(`
+        let buf = "";
+        process.stdin.on("data", (chunk) => {
+          buf += chunk.toString("utf-8");
+          let idx;
+          while ((idx = buf.indexOf("\\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg; try { msg = JSON.parse(line); } catch { continue; }
+            if (msg.id == null) continue;
+            const delay = msg.params?.delay ?? 0;
+            setTimeout(() => {
+              process.stdout.write(JSON.stringify({
+                jsonrpc: "2.0", id: msg.id, result: { id: msg.id },
+              }) + "\\n");
+            }, delay);
+          }
+        });
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        const promises = [50, 40, 30, 20, 10].map((delay, i) =>
+          client.request<{ id: number }>("probe", { delay, idx: i }),
+        );
+        const results = await Promise.all(promises);
+        expect(results).toHaveLength(5);
+        for (const r of results) expect(typeof r.id).toBe("number");
+      } finally {
+        client.shutdown();
+      }
+    });
+
+    it("rejects in-flight requests when the child exits", async () => {
+      const fakePath = writeFakeServer(`
+        process.stdin.once("data", () => process.exit(0));
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      const promise = client.request("tools/list", {});
+      await expect(promise).rejects.toThrow(/exited|MCP/);
+      client.shutdown();
+    });
+
+    it("times out instead of hanging on a silent server", async () => {
+      const fakePath = writeFakeServer(`
+        process.stdin.on("data", () => {});
+        setInterval(() => {}, 1000);
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        await expect(
+          client.request("tools/list", {}, 200),
+        ).rejects.toThrow(/timeout/);
+      } finally {
+        client.shutdown();
+      }
+    });
+
+    it("ignores non-JSON stdout lines without crashing the parser", async () => {
+      const fakePath = writeFakeServer(`
+        process.stdout.write("[some startup banner]\\n");
+        process.stdout.write("not valid json {{{\\n");
+        let buf = "";
+        process.stdin.on("data", (chunk) => {
+          buf += chunk.toString("utf-8");
+          let idx;
+          while ((idx = buf.indexOf("\\n")) >= 0) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (!line) continue;
+            let msg; try { msg = JSON.parse(line); } catch { continue; }
+            if (msg.id == null) continue;
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { ok: true } }) + "\\n");
+          }
+        });
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+      try {
+        const r = await client.request<{ ok: boolean }>("ping", {});
+        expect(r.ok).toBe(true);
+      } finally {
+        client.shutdown();
+      }
+    });
+  });
+
+  // ── Integration: bootstrapMCPTools + real MCP server ──────────────
+
+  describe("bootstrapMCPTools — registers every ctx_* tool with Pi", () => {
+    // Lifted out of each `it` so the path resolution lives in one place
+    // and a future MCP-entrypoint move only has to change one line.
+    const path = require("node:path") as typeof import("node:path");
+    const url = require("node:url") as typeof import("node:url");
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const mcpEntry = path.resolve(here, "..", "start.mjs");
+    const mcpEnv = { ...process.env, CONTEXT_MODE_DISABLE_VERSION_CHECK: "1" };
+
+    let bridge: { tools: string[]; shutdown: () => void } | null = null;
+
+    afterEach(() => {
+      if (bridge) {
+        bridge.shutdown();
+        bridge = null;
+      }
+    });
+
+    it("registers the canonical ctx_* tool set", async () => {
+      const registered: Array<{ name: string; label: string; description: string; parameters: unknown; execute: Function }> = [];
+      const fakePi = {
+        registerTool: (tool: any) => {
+          registered.push(tool);
+        },
+      };
+
+      const { bootstrapMCPTools } = await import("../src/adapters/pi/mcp-bridge.js");
+      bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
+
+      // Pin the canonical names — adding new MCP tools is fine
+      // (arrayContaining), but losing one of these is the bug regression.
+      expect(bridge.tools).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_execute_file",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+          "ctx_doctor",
+          "ctx_stats",
+          "ctx_purge",
+        ]),
+      );
+
+      // Each registration must satisfy the Pi contract.
+      for (const reg of registered) {
+        expect(reg.name).toMatch(/^ctx_/);
+        expect(reg.label).toBe(reg.name);
+        expect(typeof reg.description).toBe("string");
+        expect(reg.parameters).toBeTruthy();
+        expect(typeof reg.execute).toBe("function");
+      }
+    }, 30_000);
+
+    it("execute() round-trips through tools/call to the MCP server", async () => {
+      const registered: any[] = [];
+      const fakePi = {
+        registerTool: (tool: any) => registered.push(tool),
+      };
+
+      const { bootstrapMCPTools } = await import("../src/adapters/pi/mcp-bridge.js");
+      bridge = await bootstrapMCPTools(fakePi, mcpEntry, { env: mcpEnv });
+
+      const indexTool = registered.find((t) => t.name === "ctx_index");
+      expect(indexTool).toBeDefined();
+
+      const marker = `pi-bridge-marker-${process.pid}-${Date.now()}`;
+      const result = await indexTool.execute("test-call-1", {
+        content: `# heading\n\n${marker}\n`,
+        source: "pi-bridge-smoke",
+      });
+
+      expect(result.content).toHaveLength(1);
+      expect(result.content[0].type).toBe("text");
+      // Server returns "Indexed N sections … from: pi-bridge-smoke" on
+      // success — pin the source label so a regression in tools/call
+      // arg-passing also fails this test.
+      expect(result.content[0].text).toMatch(/pi-bridge-smoke/);
+      expect(result.isError).toBeFalsy();
+    }, 30_000);
+  });
+
+  // ── Wiring: pi-extension.ts default export must call bootstrapMCPTools
+  //
+  // This is the regression that the rest of the suite does NOT catch: if
+  // a future refactor drops the `bootstrapMCPTools(pi, …)` call from
+  // src/adapters/pi/extension.ts but keeps the bridge module intact, every other
+  // bridge test stays green and the bug silently re-enters. We assert
+  // here that the extension's default export, after `_mcpBridgeReady`
+  // settles, has actually called `pi.registerTool` for at least the
+  // canonical ctx_* set.
+
+  describe("pi-extension.ts wiring (#426 regression guard)", () => {
+    it("registerPiExtension awaits bridge bootstrap and registers ctx_* via pi.registerTool", async () => {
+      const wireApi = createMockPiApi();
+      // PI_PROJECT_DIR / CLAUDE_PROJECT_DIR set inside registerPiExtension.
+      await registerPiExtension(wireApi, { projectDir: tempDir });
+
+      // Bootstrap is fire-and-forget on extension load — wait on the
+      // exported promise so the test does not race the spawn.
+      const mod = await import("../src/adapters/pi/extension.js");
+      await mod._mcpBridgeReady;
+
+      const calls = (wireApi.registerTool as any).mock.calls as Array<[any]>;
+      const registeredNames = calls.map(([t]) => t?.name).filter(Boolean);
+
+      // Same canonical pin as the bridge integration test — but reached
+      // through registerPiExtension instead of bootstrapMCPTools, so
+      // dropping the wiring fails this test even when the bridge module
+      // still works.
+      expect(registeredNames).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+        ]),
+      );
+
+      // Cleanup: SIGTERM the bridge child the wiring spawned so it does
+      // not leak past this test.
+      const sd = mod.default as any;
+      void sd; // silence unused
+      await wireApi._trigger("session_shutdown");
+    }, 30_000);
+
+    // Race regression — comment 4412197109 on PR #472.
+    //
+    // Each Pi subagent spawns a fresh `pi --mode json -p --no-session`
+    // process that loads context-mode and then immediately fires
+    // `before_agent_start` to dispatch the LLM call. The MCP bridge
+    // bootstrap (spawn server.bundle.mjs → initialize → tools/list →
+    // pi.registerTool × N) is fire-and-forget via `_mcpBridgeReady`, so
+    // without an explicit await the LLM call goes out with an empty
+    // ctx_* tool registry and the routing block (~2.5K tokens) becomes
+    // dead weight — the LLM is told to call ctx_execute / ctx_search /
+    // etc. but Pi has not yet registered them.
+    //
+    // This test pins the contract: by the time `before_agent_start`
+    // resolves, the canonical ctx_* tools MUST have been registered
+    // through pi.registerTool. The pre-trigger assertion confirms the
+    // race window is open (otherwise the test would pass for the wrong
+    // reason — bridge happened to win the race).
+    it("before_agent_start awaits MCP bridge bootstrap so ctx_* are registered before LLM call", async () => {
+      const wireApi = createMockPiApi();
+      await registerPiExtension(wireApi, { projectDir: tempDir });
+
+      // Establish a session so before_agent_start does real work
+      // (the handler early-returns when `!_sessionId`).
+      await wireApi._trigger(
+        "session_start",
+        {},
+        { session_id: "race-test", project_dir: tempDir },
+      );
+
+      // Sanity: bridge bootstrap is in flight, no tool registered yet.
+      // If this ever fails, the bridge stopped racing and the test
+      // loses meaning — adjust the bootstrap or remove the guard.
+      const preCalls = (wireApi.registerTool as any).mock.calls.length;
+      expect(preCalls).toBe(0);
+
+      // The race: trigger before_agent_start now. Pi will dispatch the
+      // LLM call as soon as this resolves — so the handler MUST block
+      // until the bridge has registered ctx_* tools.
+      await wireApi._trigger("before_agent_start", {
+        sessionID: "race-test",
+        prompt: "anything",
+        systemPrompt: "",
+      });
+
+      const calls = (wireApi.registerTool as any).mock.calls as Array<[any]>;
+      const registeredNames = calls.map(([t]) => t?.name).filter(Boolean);
+      expect(registeredNames).toEqual(
+        expect.arrayContaining([
+          "ctx_execute",
+          "ctx_search",
+          "ctx_index",
+          "ctx_batch_execute",
+          "ctx_fetch_and_index",
+        ]),
+      );
+
+      await wireApi._trigger("session_shutdown");
+    }, 30_000);
+  });
+
+  // ── Pi bridge resilience (#472 round-3) ───────────────────────────
+  //
+  // Three reliability gaps verified on PR #472 round-3 review:
+  //   1. stdio[2] = "ignore" silently swallows server crash logs — when
+  //      the MCP child dies during bootstrap the user sees nothing in
+  //      stderr, only "ctx_* tools will not be callable from this
+  //      session" with no diagnostic of WHY.
+  //   2. shutdown() sends SIGTERM and immediately nulls the child handle.
+  //      A child that ignores SIGTERM (or hangs on cleanup) becomes a
+  //      zombie because no SIGKILL fallback ever fires.
+  //   3. session_shutdown does not await `_mcpBridgeReady`. If shutdown
+  //      fires while bootstrap is still in flight, `_mcpBridge` is null
+  //      → the freshly-spawned MCP child is orphaned once bootstrap
+  //      eventually resolves.
+  //
+  // These tests pin the resilience contract: stderr piped, SIGKILL
+  // bounded at 5s, shutdown awaits bridge bootstrap up to 2s.
+
+  describe("Pi bridge resilience (#472 round-3)", () => {
+    it("captures child stderr instead of swallowing it (case 1: crash diagnostics)", async () => {
+      // Server writes a diagnostic line to stderr then exits non-zero,
+      // mimicking a real crash during initialize. With stdio[2] = "ignore"
+      // the diagnostic vanishes; with "pipe" it must reach process.stderr.
+      const fakePath = writeFakeServer(`
+        process.stderr.write("FAKE_MCP_CRASH_DIAG: bundle corrupted at line 42\\n");
+        process.exit(1);
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+
+      const captured: string[] = [];
+      const origWrite = process.stderr.write.bind(process.stderr);
+      // @ts-expect-error monkeypatch
+      process.stderr.write = (chunk: any, ...rest: any[]) => {
+        captured.push(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
+        return origWrite(chunk, ...rest);
+      };
+
+      try {
+        client.start();
+        // Give the child time to write its diag line and exit.
+        await new Promise((r) => setTimeout(r, 300));
+      } finally {
+        // @ts-expect-error restore
+        process.stderr.write = origWrite;
+        client.shutdown();
+      }
+
+      const all = captured.join("");
+      expect(all).toMatch(/FAKE_MCP_CRASH_DIAG/);
+      // Prefix lets ops grep across the noise of a real session.
+      expect(all).toMatch(/\[mcp-bridge\]/);
+    }, 10_000);
+
+    it.skipIf(process.platform === "win32")("escalates to SIGKILL when SIGTERM is ignored (case 2: bounded shutdown)", async () => {
+      // Windows has no POSIX signal delivery: child.kill('SIGTERM') maps to
+      // TerminateProcess (unblockable), and child.kill('SIGKILL') hits the
+      // same syscall. The fake server's `process.on('SIGTERM', ...)` handler
+      // never fires, so the SIGKILL-escalation contract that this test pins
+      // is fundamentally unobservable on win32. POSIX (Linux/macOS) coverage
+      // is sufficient for the resilience guarantee.
+      // Child explicitly ignores SIGTERM and refuses to exit. Without a
+      // SIGKILL fallback the process leaks indefinitely.
+      // Also ignore stdin 'end'/'close' so closing the pipe doesn't end
+      // the process — only SIGKILL should be able to terminate this.
+      // Emit "READY" on stdout once handlers are registered so the test
+      // does not race the spawn (otherwise SIGTERM arrives during Node
+      // bootstrap before our handler is registered → default terminate).
+      const fakePath = writeFakeServer(`
+        process.on("SIGTERM", () => { /* deliberately ignore */ });
+        process.on("SIGINT", () => { /* deliberately ignore */ });
+        process.on("SIGHUP", () => { /* deliberately ignore */ });
+        process.stdin.on("end", () => { /* stay alive */ });
+        process.stdin.on("close", () => { /* stay alive */ });
+        process.stdin.on("data", () => {});
+        setInterval(() => {}, 1000);
+        process.stdout.write("READY\\n");
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+
+      // Reach into the private child handle for the assertion. Tests
+      // already do this elsewhere and the field is the only way to
+      // observe the OS-level lifecycle without a polling sentinel.
+      const childRef: any = (client as any).child;
+      expect(childRef).toBeTruthy();
+      expect(childRef.killed).toBe(false);
+
+      // Wait for "READY" — confirms SIGTERM handler is installed.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("child never READY")), 3000);
+        childRef.stdout.on("data", (chunk: Buffer) => {
+          if (chunk.toString("utf-8").includes("READY")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      });
+
+      const exitPromise = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+        childRef.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+          resolve({ code, signal });
+        });
+      });
+
+      const t0 = Date.now();
+      client.shutdown();
+
+      // Bounded by the 5s SIGKILL timer — give it a small grace window.
+      const result = await Promise.race([
+        exitPromise.then((r) => ({ ...r, timedOut: false })),
+        new Promise<{ code: null; signal: null; timedOut: true }>((r) =>
+          setTimeout(() => r({ code: null, signal: null, timedOut: true }), 7500),
+        ),
+      ]);
+      const elapsedMs = Date.now() - t0;
+
+      // Must NOT have timed out — that would mean no SIGKILL fallback.
+      expect(result.timedOut).toBe(false);
+      // Killed by signal (SIGKILL) — Node's behavior across platforms:
+      // signal field populated when killed by signal.
+      expect(result.signal).toBe("SIGKILL");
+      // Bounded at ~5s — assert lower bound (escalation, not immediate)
+      // and upper bound (not hung beyond the 5s ceiling + grace).
+      expect(elapsedMs).toBeGreaterThanOrEqual(4500);
+      expect(elapsedMs).toBeLessThan(7000);
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("session_shutdown awaits bridge bootstrap so child is not orphaned (case 3: race)", async () => {
+      // Windows ChildProcess.killed/exitCode/signalCode lifecycle for
+      // tsx-spawned MCP children races with TerminateProcess in CI in a way
+      // that produces a false-negative for the dead-child assertion. The
+      // shutdown-await contract this test pins is platform-agnostic logic
+      // (the await on _mcpBridgeReady) — POSIX coverage exercises the race.
+      // Repro: trigger session_shutdown WHILE bootstrap is still in
+      // flight. Without an await on `_mcpBridgeReady`, _mcpBridge is
+      // null at shutdown time → the bootstrap eventually resolves and
+      // a live MCP child stays orphaned for the rest of the process.
+      //
+      // Instrument bootstrapMCPTools by patching the bridge module's
+      // `bootstrapMCPTools` to capture the resolved BridgeHandle, then
+      // check its underlying client.child after shutdown completes.
+      const wireApi = createMockPiApi();
+
+      const bridgeMod = await import("../src/adapters/pi/mcp-bridge.js");
+      const handles: any[] = [];
+      const origBootstrap = bridgeMod.bootstrapMCPTools;
+      const spy = vi
+        .spyOn(bridgeMod, "bootstrapMCPTools")
+        .mockImplementation(async (...args: any[]) => {
+          const handle = await (origBootstrap as any)(...args);
+          handles.push(handle);
+          return handle;
+        });
+
+      try {
+        await registerPiExtension(wireApi, { projectDir: tempDir });
+
+        const mod = await import("../src/adapters/pi/extension.js");
+
+        // Fire shutdown immediately — bootstrap is still in flight.
+        await wireApi._trigger("session_shutdown");
+
+        // Wait for the in-flight bootstrap to settle. By this point the
+        // child has been spawned. If session_shutdown did NOT await
+        // _mcpBridgeReady, the bridge handle resolves AFTER shutdown
+        // returned → the child is alive and orphaned.
+        await mod._mcpBridgeReady;
+        await new Promise((r) => setTimeout(r, 300));
+
+        expect(handles.length).toBeGreaterThan(0);
+        for (const handle of handles) {
+          const child = (handle.client as any).child;
+          // After session_shutdown, the bridge child must be dead OR
+          // the bridge handle's internal child reference must be null
+          // (already cleaned via shutdown()). If it's a live ChildProcess
+          // with no exit signal, the orphan bug is present.
+          if (child) {
+            const dead =
+              child.killed ||
+              child.exitCode !== null ||
+              child.signalCode !== null;
+            expect(dead).toBe(true);
+          }
+        }
+      } finally {
+        spy.mockRestore();
+        for (const handle of handles) {
+          try {
+            handle.shutdown();
+          } catch {
+            /* best effort */
+          }
+        }
+      }
+    }, 30_000);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #473 round-3: extension MUST route session dir through PiAdapter
+// rather than re-encoding the ~/.pi/context-mode/sessions literal. Any
+// drift (e.g., PiAdapter changes the segment list) would silently desync
+// otherwise — extension keeps writing to ~/.pi while the rest of the
+// harness reads from the new location.
+// ────────────────────────────────────────────────────────────────────────
+
+describe("Pi extension respects PiAdapter session dir (#473 round-3)", () => {
+  let scratch: string;
+  let mockedSessionDir: string;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), "pi-ext-r3-"));
+    mockedSessionDir = join(scratch, "custom-pi-sess");
+    mkdirSync(mockedSessionDir, { recursive: true });
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    vi.doUnmock("../src/adapters/pi/index.js");
+    vi.resetModules();
+  });
+
+  it("opens SessionDB at the path returned by PiAdapter.getSessionDir, not at ~/.pi literal", async () => {
+    vi.doMock("../src/adapters/pi/index.js", () => {
+      class MockPiAdapter {
+        getSessionDir() {
+          return mockedSessionDir;
+        }
+      }
+      return { PiAdapter: MockPiAdapter };
+    });
+
+    const projectDir = join(scratch, "project");
+    mkdirSync(projectDir, { recursive: true });
+    process.env.PI_PROJECT_DIR = projectDir;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    const localApi = createMockPiApi();
+    const mod = await import("../src/adapters/pi/extension.js");
+    await mod.default(localApi);
+
+    await localApi._trigger("session_start", {}, {});
+
+    // DB file must be created under the mocked dir — proof that the
+    // extension routes through PiAdapter rather than the hardcoded
+    // ~/.pi/context-mode/sessions literal.
+    const expectedDbPath = join(mockedSessionDir, "context-mode.db");
+    const { existsSync: fileExists } = await import("node:fs");
+    expect(fileExists(expectedDbPath)).toBe(true);
+
+    // Also assert the doctor command surfaces the mocked path so
+    // future contributors do not silently regress (it reads getDBPath()).
+    const doctor = localApi._getCommand("ctx-doctor");
+    expect(doctor?.handler).toBeDefined();
+    const result = await doctor!.handler!({}, { hasUI: false });
+    const text = String((result as { text?: string } | undefined)?.text ?? "");
+    expect(text).toContain(mockedSessionDir);
+
+    await localApi._trigger("session_shutdown");
+
+    delete process.env.PI_PROJECT_DIR;
+    delete process.env.CLAUDE_PROJECT_DIR;
   });
 });

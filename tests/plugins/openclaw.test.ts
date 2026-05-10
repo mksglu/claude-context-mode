@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { describe, it, expect, test, beforeAll, beforeEach, afterAll, afterEach, vi } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
 import { OpenClawSessionDB } from "../../src/adapters/openclaw/session-db.js";
-import { extractWorkspace, WorkspaceRouter } from "../../src/openclaw/workspace-router.js";
+import { extractWorkspace, WorkspaceRouter } from "../../src/adapters/openclaw/workspace-router.js";
 
 // MCP readiness sentinel — routing.mjs checks process.ppid in-process
 const _sentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
@@ -121,7 +121,7 @@ function createMockApiFull() {
 async function createTestPlugin(tempDir: string) {
   // Each test gets an isolated DB by running from a unique cwd (tempDir).
   // The plugin reads process.cwd() for projectDir — no fake env var needed.
-  const { default: plugin } = await import("../../src/openclaw-plugin.js");
+  const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
   const mock = createMockApiFull();
   await plugin.register(mock.api);
   return mock;
@@ -209,7 +209,7 @@ describe("OpenClawPlugin", () => {
 
   describe("object export", () => {
     it("exports object with id, name, configSchema, register", async () => {
-      const { default: plugin } = await import("../../src/openclaw-plugin.js");
+      const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
       expect(plugin.id).toBe("context-mode");
       expect(plugin.name).toBe("Context Mode");
       expect(plugin.configSchema).toBeDefined();
@@ -218,7 +218,7 @@ describe("OpenClawPlugin", () => {
     });
 
     it("configSchema has enabled property", async () => {
-      const { default: plugin } = await import("../../src/openclaw-plugin.js");
+      const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
       expect(plugin.configSchema.properties.enabled).toBeDefined();
       expect(plugin.configSchema.properties.enabled.type).toBe("boolean");
       expect(plugin.configSchema.properties.enabled.default).toBe(true);
@@ -798,7 +798,7 @@ describe("Plugin exports", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("plugin exports id, name, configSchema, register", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     assert.equal(plugin.id, "context-mode");
     assert.equal(plugin.name, "Context Mode");
     assert.ok(plugin.configSchema);
@@ -810,7 +810,7 @@ describe("session_start hook", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("session_start hook is registered", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -820,7 +820,7 @@ describe("session_start hook", () => {
   });
 
   test("session_start hook is registered with no priority (void hook)", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -831,7 +831,7 @@ describe("session_start hook", () => {
   });
 
   test("session_start handler resets resumeInjected — verified via before_prompt_build sequence", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -861,7 +861,7 @@ describe("compaction hooks", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("before_compaction hook is registered", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -871,7 +871,7 @@ describe("compaction hooks", () => {
   });
 
   test("after_compaction hook is registered", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -917,7 +917,7 @@ describe("resume injection (before_prompt_build)", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("before_prompt_build resume hook is registered at priority 10", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1131,7 +1131,7 @@ describe("before_model_resolve hook", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("before_model_resolve hook is registered", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1150,7 +1150,7 @@ describe("before_model_resolve hook", () => {
   });
 
   test("before_model_resolve handler runs without throwing on decision message", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1165,7 +1165,7 @@ describe("before_model_resolve hook", () => {
   });
 
   test("before_model_resolve is silent when userMessage is empty", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1187,7 +1187,7 @@ describe("command lifecycle hooks", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("command:reset hook is registered", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, hooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1197,7 +1197,7 @@ describe("command lifecycle hooks", () => {
   });
 
   test("command:stop hook is registered", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, hooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1207,7 +1207,7 @@ describe("command lifecycle hooks", () => {
   });
 
   test("command:reset handler runs cleanupOldSessions without throwing", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, hooks } = createMockApiHooks();
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1226,7 +1226,7 @@ describe("verbose logging", () => {
   beforeEach(() => { vi.resetModules(); });
 
   test("plugin works without logger (logger is optional)", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api } = createMockApiHooks(false); // no logger
 
     assert.doesNotThrow(() =>
@@ -1235,7 +1235,7 @@ describe("verbose logging", () => {
   });
 
   test("session_start emits info log when logger is provided", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks, logLines } = createMockApiHooks(true);
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1249,7 +1249,7 @@ describe("verbose logging", () => {
   });
 
   test("after_tool_call emits debug log for captured events when logger provided", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks, logLines } = createMockApiHooks(true);
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);
@@ -1268,7 +1268,7 @@ describe("verbose logging", () => {
   });
 
   test("before_prompt_build emits debug log when resume is injected", async () => {
-    const { default: plugin } = await import("../../src/openclaw-plugin.js");
+    const { default: plugin } = await import("../../src/adapters/openclaw/plugin.js");
     const { api, typedHooks, logLines } = createMockApiHooks(true);
 
     plugin.register(api as unknown as Parameters<typeof plugin.register>[0]);

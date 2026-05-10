@@ -40,6 +40,7 @@ src/
     opencode/      → OpenCode adapter
     codex/         → Codex CLI adapter
     vscode-copilot/ → VS Code Copilot adapter
+    omp/           → OMP (Oh My Pi) adapter — MCP-only, isolated ~/.omp/ storage (#473)
   openclaw/
     workspace-router.ts → Workspace path resolution for Pi Agent sessions
   openclaw-plugin.ts   → OpenClaw gateway plugin entry (sync register)
@@ -337,6 +338,23 @@ To test against a running OpenClaw gateway:
 2. Open a Pi Agent session and verify hooks fire by checking the debug log output.
 
 See [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md) for hook registration details and known upstream issues.
+
+## Prose-style policy (issue [#482](https://github.com/mksglu/context-mode/issues/482))
+
+context-mode does not dictate how the model writes its final answer. The four pillars (sandbox routing, session continuity, think-in-code, no prose-style enforcement) keep raw data out of context but leave editorial style — brevity vs. completeness, formatting, tone — entirely to the model and the user's own `CLAUDE.md` / `AGENTS.md`.
+
+**Why:** aggressive brevity instructions have been shown to degrade coding/reasoning benchmarks. Moonshot AI's report on `kimi-k2.5` (cited in [#482](https://github.com/mksglu/context-mode/issues/482), with the OpenCode fix at [anomalyco/opencode#20259](https://github.com/anomalyco/opencode/pull/20259)) showed that prompts like "minimize output tokens", "MUST answer concisely with fewer than 4 lines", and "one-word answers are best" pushed coding models to drop assumptions, caveats, verification evidence, failure modes, and security warnings the user actually needed.
+
+**What this means for contributors:**
+
+- Do **not** add brevity directives to MCP tool descriptions in `src/server.ts`.
+- Do **not** add `<communication_style>` or `<response_format>` blocks to `hooks/routing-block.mjs`.
+- Do **not** put "Terse like caveman" / "Only fluff die" / "Drop articles, filler" / "fewer than N lines" wording in any shipped adapter config under `configs/*/`.
+- Workflow-discipline rules — "write artifacts to FILES", "use descriptive `ctx_search` source labels", `<artifact_policy>` — are fine. They describe *what to do* (file vs. inline), not *how to write*.
+
+The regression test at `tests/core/server.test.ts > prose-style policy (#482)` pins the deletion: any caveman-style language landing in `src/server.ts`, `hooks/routing-block.mjs`, or `README.md` will fail CI.
+
+If you genuinely need to nudge the model on style for a specific use case, do it in your own project's `CLAUDE.md` / `AGENTS.md`. Don't ship it inside the framework.
 
 ## Submitting a Bug Report
 

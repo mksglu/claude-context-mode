@@ -5,6 +5,33 @@ import { join, resolve } from "node:path";
 import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { CursorAdapter } from "../../src/adapters/cursor/index.js";
 
+/**
+ * Helpers for the "cursor doctor — plugin install detection" suite.
+ * Plugin layout per Cursor convention:
+ *   <root>/<plugin-name>/.cursor-plugin/plugin.json
+ */
+function writePluginManifest(rootDir: string, pluginName: string, manifest: unknown): string {
+  const pluginDir = join(rootDir, pluginName, ".cursor-plugin");
+  mkdirSync(pluginDir, { recursive: true });
+  const manifestPath = join(pluginDir, "plugin.json");
+  const body = typeof manifest === "string" ? (manifest as string) : JSON.stringify(manifest, null, 2);
+  writeFileSync(manifestPath, body, "utf-8");
+  return manifestPath;
+}
+
+function pluginRoots(): { local: string; cache: string } {
+  return {
+    local: join(homedir(), ".cursor", "plugins", "local"),
+    cache: join(homedir(), ".cursor", "plugins", "cache"),
+  };
+}
+
+function clearPluginRoots(): void {
+  const { local, cache } = pluginRoots();
+  try { rmSync(local, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { rmSync(cache, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
 const fixture = (name: string) =>
   JSON.parse(
     readFileSync(join(process.cwd(), "tests", "fixtures", "cursor", name), "utf-8"),
@@ -350,6 +377,129 @@ describe("CursorAdapter", () => {
     it("generates hooks with stop entry", () => {
       const config = adapter.generateHookConfig("/path/to/plugin");
       expect(config).toHaveProperty("stop");
+    });
+  });
+
+  // #489 round-3 — pin detectPluginInstalls + plugin-aware checkPluginRegistration.
+  // Validates the previously-uncovered path under src/adapters/cursor/index.ts:367-435
+  // and resolves the self-contradiction where a plugin-only install could still
+  // emit `MCP registration: warn` while `Plugin install: pass`.
+  describe("cursor doctor — plugin install detection", () => {
+    let projectCursorDirExisted: boolean;
+
+    beforeEach(() => {
+      clearPluginRoots();
+      projectCursorDirExisted = existsSync(resolve(".cursor"));
+    });
+
+    afterEach(() => {
+      clearPluginRoots();
+      try { rmSync(resolve(".cursor", "mcp.json"), { force: true }); } catch { /* best effort */ }
+      if (!projectCursorDirExisted) {
+        try { rmSync(resolve(".cursor"), { recursive: true, force: true }); } catch { /* best effort */ }
+      }
+    });
+
+    // Case A — clean machine. No plugin roots → empty array, no throw.
+    it("returns [] when no plugin roots exist", () => {
+      const detect = (adapter as unknown as { detectPluginInstalls: () => string[] }).detectPluginInstalls.bind(adapter);
+      expect(detect()).toEqual([]);
+    });
+
+    // Case B — single valid install under `local`.
+    it("returns the manifest path for a valid plugin under local root", () => {
+      const { local } = pluginRoots();
+      const manifestPath = writePluginManifest(local, "context-mode", { name: "context-mode", version: "1.0.0" });
+
+      const detect = (adapter as unknown as { detectPluginInstalls: () => string[] }).detectPluginInstalls.bind(adapter);
+      const found = detect();
+      expect(found).toEqual([manifestPath]);
+    });
+
+    // Case C — both `local` and `cache` populated → 2 paths.
+    it("returns paths from both local and cache roots", () => {
+      const { local, cache } = pluginRoots();
+      const localManifest = writePluginManifest(local, "context-mode", { name: "context-mode" });
+      const cacheManifest = writePluginManifest(cache, "context-mode", { name: "context-mode" });
+
+      const detect = (adapter as unknown as { detectPluginInstalls: () => string[] }).detectPluginInstalls.bind(adapter);
+      const found = detect();
+      expect(found).toHaveLength(2);
+      expect(found).toContain(localManifest);
+      expect(found).toContain(cacheManifest);
+    });
+
+    // Case D — corrupt JSON must not throw; siblings with valid manifests still surface.
+    it("ignores corrupt plugin.json without throwing and still returns valid siblings", () => {
+      const { local } = pluginRoots();
+      writePluginManifest(local, "broken", "{ not valid json");
+      const validManifest = writePluginManifest(local, "context-mode", { name: "context-mode" });
+
+      const detect = (adapter as unknown as { detectPluginInstalls: () => string[] }).detectPluginInstalls.bind(adapter);
+      let found: string[] = [];
+      expect(() => { found = detect(); }).not.toThrow();
+      expect(found).toEqual([validManifest]);
+    });
+
+    // Case E — native hooks.json + plugin install → duplication warn.
+    it("emits Plugin/native hook duplication warn when native hooks coexist with plugin", () => {
+      const { local } = pluginRoots();
+      writePluginManifest(local, "context-mode", { name: "context-mode" });
+
+      // Native config with a context-mode hook command — drives the duplication branch.
+      const nativeDir = join(homedir(), ".cursor");
+      mkdirSync(nativeDir, { recursive: true });
+      writeFileSync(
+        join(nativeDir, "hooks.json"),
+        JSON.stringify({
+          version: 1,
+          hooks: {
+            preToolUse: [{ type: "command", command: "context-mode hook cursor pretooluse" }],
+          },
+        }, null, 2),
+        "utf-8",
+      );
+
+      const results = adapter.validateHooks(process.cwd());
+      const dup = results.find((r) => r.check === "Plugin/native hook duplication");
+      expect(dup).toBeDefined();
+      expect(dup?.status).toBe("warn");
+      expect(dup?.message).toContain("context-mode plugin detected");
+
+      // Cleanup native hooks.json so it doesn't leak into other tests.
+      try { rmSync(join(nativeDir, "hooks.json"), { force: true }); } catch { /* best effort */ }
+    });
+
+    // Case F — plugin-only install (no native mcp.json) must report MCP registration: pass.
+    // Resolves the self-contradicting `Plugin install: pass` + `MCP registration: warn`.
+    it("checkPluginRegistration returns pass when plugin is installed even without native mcp.json", () => {
+      const { local } = pluginRoots();
+      const manifestPath = writePluginManifest(local, "context-mode", { name: "context-mode" });
+
+      // Ensure no native mcp.json files exist anywhere we read from.
+      try { rmSync(resolve(".cursor", "mcp.json"), { force: true }); } catch { /* best effort */ }
+      try { rmSync(join(homedir(), ".cursor", "mcp.json"), { force: true }); } catch { /* best effort */ }
+
+      const result = adapter.checkPluginRegistration();
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain(manifestPath);
+    });
+
+    // Regression — native mcp.json still wins (hybrid install) and returns the mcp.json path.
+    it("checkPluginRegistration still recognises native mcp.json when both are present", () => {
+      const { local } = pluginRoots();
+      writePluginManifest(local, "context-mode", { name: "context-mode" });
+
+      mkdirSync(resolve(".cursor"), { recursive: true });
+      writeFileSync(
+        resolve(".cursor", "mcp.json"),
+        JSON.stringify({ mcpServers: { "context-mode": { command: "context-mode" } } }, null, 2),
+        "utf-8",
+      );
+
+      const result = adapter.checkPluginRegistration();
+      expect(result.status).toBe("pass");
+      expect(result.message).toContain(join(".cursor", "mcp.json"));
     });
   });
 });

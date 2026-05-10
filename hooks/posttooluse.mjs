@@ -80,6 +80,51 @@ await runHook(async () => {
       }
     } catch { /* best-effort */ }
 
+    // ─── D2 PRD Phase 3/4: redirect marker — emit byte-accounting event ───
+    // PreToolUse wrote `context-mode-redirect-${sessionId}.txt` for tools whose
+    // output we kept out of the model's context window (curl/wget, WebFetch,
+    // large Read). Format: `tool:type:bytesAvoided:commandSummary` (Override C).
+    try {
+      const redirectPath = resolve(tmpdir(), `context-mode-redirect-${sessionId}.txt`);
+      let redirectData;
+      try {
+        redirectData = readFileSync(redirectPath, "utf-8").trim();
+        // Slice 3.3: unlink so the next PostToolUse for an unrelated tool call
+        // does NOT re-emit the same event (no double-accounting).
+        unlinkSync(redirectPath);
+      } catch { /* no marker — Slice 3.4: phantom-event guard */ }
+
+      if (redirectData) {
+        // Parse first 3 colons; the rest (commandSummary) may itself contain
+        // colons (URLs do — `https://`). Avoid `split(":", 4)` which would
+        // truncate the summary at any embedded colon.
+        const i1 = redirectData.indexOf(":");
+        const i2 = i1 >= 0 ? redirectData.indexOf(":", i1 + 1) : -1;
+        const i3 = i2 >= 0 ? redirectData.indexOf(":", i2 + 1) : -1;
+        if (i1 > 0 && i2 > i1 && i3 > i2) {
+          const tool = redirectData.slice(0, i1);
+          const type = redirectData.slice(i1 + 1, i2);
+          const bytesRaw = redirectData.slice(i2 + 1, i3);
+          const summary = redirectData.slice(i3 + 1);
+          const bytesAvoided = Number.parseInt(bytesRaw, 10);
+          if (Number.isFinite(bytesAvoided) && bytesAvoided > 0) {
+            db.insertEvent(
+              sessionId,
+              {
+                type,
+                category: "redirect",
+                data: `${tool}: ${summary}`,
+                priority: 2,
+              },
+              "PreToolUse",
+              undefined,
+              { bytesAvoided, bytesReturned: 0 },
+            );
+          }
+        }
+      }
+    } catch { /* best-effort — never block hook */ }
+
     // ─── Category 27: Latency — read cross-hook marker and emit event if slow ───
     try {
       const toolName = input.tool_name ?? "";

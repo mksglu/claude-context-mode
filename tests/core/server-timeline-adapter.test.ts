@@ -22,12 +22,12 @@ const SERVER_SRC = readFileSync(
 );
 
 describe("ctx_search timeline mode wiring (server.ts)", () => {
-  it("opens SessionDB at <hash><worktreeSuffix>.db, not bare <hash>.db", () => {
-    // Bug #4: timeline mode looked at ${hash}.db but extract.ts/snapshot.ts
-    // write to ${hash}${getWorktreeSuffix()}.db — they never matched in
-    // worktree sessions.
+  it("opens SessionDB via resolveSessionDbPath (worktree suffix + casing migration)", () => {
+    // Bug #4: timeline mode used to look at ${hash}.db but writers used
+    // ${hash}${getWorktreeSuffix()}.db. Now both go through
+    // resolveSessionDbPath which also handles case-fold migration.
     expect(SERVER_SRC).toMatch(
-      /join\(\s*sessionsDir\s*,\s*`\$\{hashProjectDir\(\)\}\$\{getWorktreeSuffix\(\)\}\.db`/,
+      /resolveSessionDbPath\(\{\s*projectDir\s*,\s*sessionsDir\s*\}\)/,
     );
   });
 

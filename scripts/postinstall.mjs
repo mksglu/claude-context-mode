@@ -14,9 +14,32 @@ import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { healBetterSqlite3Binding } from "./heal-better-sqlite3.mjs";
+import { healInstalledPlugins, healSettingsEnabledPlugins } from "./heal-installed-plugins.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
+
+/**
+ * True when running as a real `npm install -g context-mode`. We use this
+ * to keep contributors' local `npm install` runs from rewriting their HOME's
+ * Claude Code registry (would be very surprising during dev).
+ *
+ * Heuristic: npm sets `npm_config_global=true` for global installs AND the
+ * package directory has no nearby `.git` (a contributor's clone always
+ * does). Both signals must agree.
+ */
+function isGlobalInstall() {
+  if (process.env.npm_config_global !== "true") return false;
+  // Walk up a few levels looking for .git — contributors always have one.
+  let dir = pkgRoot;
+  for (let i = 0; i < 4; i++) {
+    if (existsSync(join(dir, ".git"))) return false;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return true;
+}
 
 /**
  * Validate that a path is safe to interpolate into a cmd.exe command.
@@ -24,6 +47,55 @@ const pkgRoot = resolve(__dirname, "..");
  */
 function isSafeWindowsPath(p) {
   return !/[&|<>"^%\r\n]/.test(p);
+}
+
+// ── -1. v1.0.114 hotfix — installed_plugins.json registry repair ─────
+// /ctx-upgrade in v1.0.113 poisoned the registry (entry.version drifted
+// + enabledPlugins emptied), making Claude Code's plugin loader skip
+// context-mode entirely. start.mjs HEAL 3+4 fix this on every MCP boot,
+// but already-broken users have no MCP to boot — they need the heal to
+// run from npm postinstall. Shared module so both call sites stay in
+// sync. Only runs in real `npm install -g` to avoid surprising
+// contributors. Best effort, never blocks install. (#46915 follow-up.)
+if (isGlobalInstall()) {
+  try {
+    const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const pluginCacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    const result = healInstalledPlugins({
+      registryPath,
+      pluginCacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+    if (result.skipped === "no-registry") {
+      // Standalone npm user (no Claude Code) — silent success.
+      process.stderr.write("context-mode: install OK, no Claude Code registry found\n");
+    } else if (result.error) {
+      process.stderr.write(`context-mode: install OK, registry heal skipped (${result.error})\n`);
+    } else if (result.healed && result.healed.length > 0) {
+      process.stderr.write(`context-mode: healed installed_plugins.json (${result.healed.join(", ")})\n`);
+    } else {
+      process.stderr.write("context-mode: install OK, no heal needed\n");
+    }
+  } catch (err) {
+    // Never block install on a heal failure.
+    try {
+      process.stderr.write(`context-mode: install OK, heal aborted (${(err && err.message) || err})\n`);
+    } catch { /* truly best effort */ }
+  }
+
+  // v1.0.116: also heal settings.json.enabledPlugins (the file Claude Code's
+  // plugin loader actually reads). v1.0.114 only touched installed_plugins.json.
+  try {
+    const settingsPath = resolve(homedir(), ".claude", "settings.json");
+    const r = healSettingsEnabledPlugins({
+      settingsPath,
+      pluginKey: "context-mode@context-mode",
+    });
+    if (r.healed && r.healed.length > 0) {
+      process.stderr.write(`context-mode: healed settings.json (${r.healed.join(", ")})\n`);
+    }
+    // skipped/error: silent — already covered by the prior heal's stderr line.
+  } catch { /* never block install */ }
 }
 
 // ── 0. Self-heal Layer 3: Backward symlink for stale registry (anthropics/claude-code#46915) ──

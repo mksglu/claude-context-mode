@@ -60,6 +60,23 @@ await runHook(async () => {
         data: `Session compacted. ${events.length} events, ${fileEvents.length} files touched.`,
         priority: 1,
       }, "PreCompact");
+
+      // D2 PRD Phase 6.1: emit snapshot-built event with bytes_avoided=snapshot.length
+      // Snapshot bytes are bytes the model would have re-read on resume but didn't.
+      try {
+        db.insertEvent(
+          sessionId,
+          {
+            type: "snapshot-built",
+            category: "compaction",
+            data: `Snapshot built. ${snapshot.length} bytes for ${events.length} events.`,
+            priority: 1,
+          },
+          "PreCompact",
+          undefined,
+          { bytesAvoided: snapshot.length, bytesReturned: 0 },
+        );
+      } catch { /* best-effort */ }
     }
 
     db.close();

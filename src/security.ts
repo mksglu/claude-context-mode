@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
+
+import { resolveAdapterGlobalSettingsPaths } from "./util/claude-config.js";
 
 // ==============================================================================
 // Types
@@ -272,10 +273,19 @@ export function readBashPolicies(
     if (sharedPolicy) policies.push(sharedPolicy);
   }
 
-  const globalPath =
-    globalSettingsPath ?? resolve(homedir(), ".claude", "settings.json");
-  const globalPolicy = readSingleSettings(globalPath);
-  if (globalPolicy) policies.push(globalPolicy);
+  // Issue #451 round-3: read settings from EVERY adapter-specific global path
+  // PLUS the claude global (defense in depth). When the caller passes an
+  // explicit globalSettingsPath we honor it verbatim (back-compat with tests
+  // and callers that already know which file to read).
+  const globalPaths =
+    globalSettingsPath !== undefined
+      ? [globalSettingsPath]
+      : resolveAdapterGlobalSettingsPaths();
+
+  for (const globalPath of globalPaths) {
+    const globalPolicy = readSingleSettings(globalPath);
+    if (globalPolicy) policies.push(globalPolicy);
+  }
 
   return policies;
 }
@@ -338,10 +348,19 @@ export function readToolDenyPatterns(
     if (sharedGlobs !== null) result.push(sharedGlobs);
   }
 
-  const globalPath =
-    globalSettingsPath ?? resolve(homedir(), ".claude", "settings.json");
-  const globalGlobs = extractGlobs(globalPath);
-  if (globalGlobs !== null) result.push(globalGlobs);
+  // Issue #451 round-3: union over every adapter-specific global path PLUS
+  // claude global. Each settings file contributes its own globs array entry
+  // so the precedence ordering downstream remains per-file rather than
+  // collapsed.
+  const globalPaths =
+    globalSettingsPath !== undefined
+      ? [globalSettingsPath]
+      : resolveAdapterGlobalSettingsPaths();
+
+  for (const globalPath of globalPaths) {
+    const globalGlobs = extractGlobs(globalPath);
+    if (globalGlobs !== null) result.push(globalGlobs);
+  }
 
   return result;
 }
@@ -472,7 +491,11 @@ export function evaluateFilePath(
 
   for (const globs of denyGlobs) {
     for (const glob of globs) {
-      const regex = fileGlobToRegex(glob, caseInsensitive);
+      // Normalize the glob's path separators the same way candidates were
+      // normalized — otherwise a Windows absolute deny rule like
+      // `Read(C:\Users\...\secret.env)` parses with literal backslashes that
+      // never match a forward-slash candidate.
+      const regex = fileGlobToRegex(toForward(glob), caseInsensitive);
       for (const candidate of candidates) {
         if (regex.test(candidate)) {
           return { denied: true, matchedPattern: glob };

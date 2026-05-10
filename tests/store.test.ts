@@ -11,8 +11,15 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { ContentStore, cleanupStaleDBs } from "../src/store.js";
-import { withRetry, closeDB, loadDatabase, applyWALPragmas } from "../src/db-base.js";
+import {
+  withRetry,
+  closeDB,
+  loadDatabase,
+  applyWALPragmas,
+  nodeSqliteHasFts5,
+} from "../src/db-base.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtureDir = join(__dirname, "fixtures");
@@ -1809,5 +1816,163 @@ describe("Stopword filtering in search queries", () => {
       `Proximity should favor chunk with meaningful terms close together, got: ${results[0].title}`,
     );
     store.close();
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// nodeSqliteHasFts5 — issue #461
+// On Linux + Node >= 22.5, the picker used to commit to node:sqlite as
+// soon as the import succeeded, even on Node builds whose bundled SQLite
+// is compiled without FTS5. ctx_search/ctx_batch_execute then failed with
+// "no such module: fts5". The picker now probes FTS5 support before
+// adopting node:sqlite, falling through to better-sqlite3 otherwise.
+// ─────────────────────────────────────────────────────────
+describe("nodeSqliteHasFts5 — FTS5 capability probe (#461)", () => {
+  test("returns true when CREATE VIRTUAL TABLE … USING fts5 succeeds", () => {
+    let opened = 0;
+    let closed = 0;
+    class FakeDB {
+      constructor(path: string) {
+        assert.equal(path, ":memory:", "probe must use :memory:");
+        opened++;
+      }
+      exec(sql: string): void {
+        assert.match(sql, /CREATE VIRTUAL TABLE .* USING fts5/i);
+      }
+      close(): void { closed++; }
+    }
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), true);
+    assert.equal(opened, 1);
+    assert.equal(closed, 1);
+  });
+
+  test("returns false when FTS5 module is missing on the bundled SQLite", () => {
+    // Reproduces the exact symptom reported in #461 against Node v22.14.0:
+    //   db.exec("CREATE VIRTUAL TABLE t USING fts5(x)") → "no such module: fts5"
+    let closed = 0;
+    class FakeDB {
+      exec(_sql: string): void {
+        throw new Error("no such module: fts5");
+      }
+      close(): void { closed++; }
+    }
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), false);
+    assert.equal(closed, 1, "probe DB must be closed even when FTS5 check throws");
+  });
+
+  test("returns false when DatabaseSync constructor itself throws", () => {
+    class FakeDB {
+      constructor() { throw new Error("DatabaseSync ctor failure"); }
+      exec(_sql: string): void {}
+      close(): void {}
+    }
+    // Probe must not crash the picker — it just reports "no FTS5".
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), false);
+  });
+
+  test("close() failure does not propagate out of the probe", () => {
+    class FakeDB {
+      exec(_sql: string): void {}
+      close(): void { throw new Error("close failed"); }
+    }
+    // Probe should still report success — the FTS5 check passed before close().
+    assert.equal(nodeSqliteHasFts5(FakeDB as any), true);
+  });
+
+  test("real node:sqlite probe matches FTS5 availability on this runtime", () => {
+    // Sanity check: if node:sqlite is loadable, the probe answer must agree
+    // with a direct FTS5 attempt on a fresh DatabaseSync. Skipped when
+    // node:sqlite is unavailable (older Node, non-Linux without flag).
+    let DatabaseSync: any;
+    try {
+      const requireFn = createRequire(import.meta.url);
+      ({ DatabaseSync } = requireFn(["node", "sqlite"].join(":")));
+    } catch {
+      return;
+    }
+    let directOK = false;
+    let direct: any = null;
+    try {
+      direct = new DatabaseSync(":memory:");
+      direct.exec("CREATE VIRTUAL TABLE __direct_probe USING fts5(x)");
+      directOK = true;
+    } catch {
+      directOK = false;
+    } finally {
+      try { direct?.close(); } catch { /* ignore */ }
+    }
+    assert.equal(nodeSqliteHasFts5(DatabaseSync), directOK);
+  });
+});
+
+describe("ctx_index TOCTOU symlink swap (#442 round-3)", () => {
+  test("index() rejects non-regular files (e.g. /dev/null) via fd-bound fstat", () => {
+    // RED proof: prior to the fix, `readFileSync('/dev/null', 'utf-8')`
+    // returned "" so the index call silently produced 0 chunks instead
+    // of rejecting. After the fix, openSync + fstat + isFile() check
+    // throws because /dev/null is a character device, not a regular
+    // file. This invariant closes the swap-mid-flight window: any
+    // post-gate path swap to a non-regular target fails fstat.
+    if (process.platform === "win32") return; // /dev/null differs on win32
+    const charDev = "/dev/null";
+    const store = createStore();
+    try {
+      assert.throws(
+        () => store.index({ path: charDev, source: "chardev" }),
+        /not a regular file/,
+        "non-regular files must be rejected by fd-bound fstat",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("index() rejects non-regular files via fd-bound fstat (directory)", () => {
+    // If the path is swapped to a directory between gate and read,
+    // fstat on the opened fd reveals it and the read is rejected.
+    const dirPath = join(
+      tmpdir(),
+      `ctx-toctou-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const requireFn = createRequire(import.meta.url);
+    const fsSync = requireFn("node:fs");
+    fsSync.mkdirSync(dirPath);
+
+    try {
+      const store = createStore();
+      assert.throws(
+        () => store.index({ path: dirPath, source: "dir" }),
+        /not a regular file|EISDIR/,
+        "directory must not be readable through index()",
+      );
+      store.close();
+    } finally {
+      try { fsSync.rmdirSync(dirPath); } catch { /* ignore */ }
+    }
+  });
+
+  test("index() reads file content via fd (regression: normal indexing still works)", () => {
+    // After fd-bound read fix, normal file indexing must still produce
+    // the same chunks/content as before. Validates the GREEN path.
+    const requireFn = createRequire(import.meta.url);
+    const fsSync = requireFn("node:fs");
+    const safePath = join(
+      tmpdir(),
+      `ctx-toctou-safe-${Date.now()}-${Math.random().toString(36).slice(2)}.md`,
+    );
+    fsSync.writeFileSync(
+      safePath,
+      "# Safe Doc\n\nfd-bound read should produce normal chunks.\n",
+    );
+
+    try {
+      const store = createStore();
+      const result = store.index({ path: safePath, source: "safe-fd" });
+      assert.ok(result.totalChunks > 0, "fd-bound read indexed content");
+      assert.equal(result.label, "safe-fd");
+      store.close();
+    } finally {
+      try { fsSync.unlinkSync(safePath); } catch { /* ignore */ }
+    }
   });
 });

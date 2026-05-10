@@ -1,6 +1,6 @@
 # context-mode — MANDATORY routing rules
 
-context-mode MCP tools available. Rules protect context window from flooding. One unrouted command dumps 56 KB into context. Codex CLI has NO hooks — these instructions are ONLY enforcement. Follow strictly.
+context-mode MCP tools available. Rules protect context window from flooding. One unrouted command dumps 56 KB into context. Codex CLI hooks provide runtime enforcement when `[features].hooks = true`; these instructions remain mandatory model-side enforcement. Follow strictly.
 
 ## Think in Code — MANDATORY
 
@@ -54,9 +54,6 @@ GitHub API rate-limit: cap at 4 for `gh` calls.
 
 ## Output
 
-Terse like caveman. Technical substance exact. Only fluff die.
-Drop: articles, filler (just/really/basically), pleasantries, hedging. Fragments OK. Short synonyms. Code unchanged.
-Pattern: [thing] [action] [reason]. [next step]. Auto-expand for: security warnings, irreversible actions, user confusion.
 Write artifacts to FILES — never inline. Return: file path + 1-line description.
 Descriptive source labels for `ctx_search(source: "label")`.
 

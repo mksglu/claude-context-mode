@@ -209,14 +209,17 @@ export interface HookAdapter {
   /** Path to the platform's settings file (e.g., ~/.claude/settings.json). */
   getSettingsPath(): string;
 
-  /** Directory where session data is stored. */
+  /**
+   * Directory where session data is stored.
+   *
+   * NOTE — C2 narrowing (2026-05): this is the ONLY storage-path concern an
+   * adapter exposes. Per-project DB paths are derived by callers via
+   * `resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() })`
+   * (see `src/session/db.ts`). Per-project events.md paths follow the same
+   * `<sessionDir>/<hash><suffix>-events.md` shape and are computed inline at
+   * the small number of call sites that need them (server.ts, hooks).
+   */
   getSessionDir(): string;
-
-  /** Compute per-project session DB path. */
-  getSessionDBPath(projectDir: string): string;
-
-  /** Compute per-project session events file path. */
-  getSessionEventsPath(projectDir: string): string;
 
   /**
    * Platform config directory.
@@ -346,6 +349,7 @@ export type PlatformId =
   | "antigravity"
   | "kiro"
   | "pi"
+  | "omp"
   | "zed"
   | "qwen-code"
   | "unknown";

@@ -2,16 +2,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
-import { execSync, type ChildProcess } from "node:child_process";
+import { execSync, spawnSync, type ChildProcess, type SpawnSyncOptions, type SpawnSyncReturns } from "node:child_process";
 import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir, cpus } from "node:os";
 import { request as httpsRequest } from "node:https";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
-import { runPool, type PoolJob } from "./concurrency/runPool.js";
+import { runPool, type PoolJob } from "./runPool.js";
 import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
 import { composeFetchCacheKey } from "./fetch-cache.js";
 import {
@@ -29,13 +28,23 @@ import {
 } from "./runtime.js";
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
-import { getWorktreeSuffix, SessionDB } from "./session/db.js";
+import { hashProjectDirCanonical, hashProjectDirLegacy, resolveContentStorePath, resolveSessionDbPath, SessionDB } from "./session/db.js";
+import { purgeSession } from "./session/purge.js";
+import {
+  emitCacheHitEvent,
+  emitIndexWriteEvent,
+  emitSandboxExecuteEvent,
+} from "./session/event-emit.js";
 import { persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
+import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
+import { getHookScriptPaths } from "./util/hook-config.js";
+import { resolveClaudeConfigDir } from "./util/claude-config.js";
+import { resolveProjectDir } from "./util/project-dir.js";
 import { loadDatabase } from "./db-base.js";
-import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
+import { AnalyticsEngine, formatReport, getConversationStats, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -126,25 +135,58 @@ let _detectedAdapter: HookAdapter | null = null;
 let _insightChild: ChildProcess | null = null;
 
 /**
+ * Resolve the Claude Code config root, honoring `CLAUDE_CONFIG_DIR` (incl.
+ * leading `~`) before falling back to `~/.claude`. Mirrors
+ * `hooks/session-helpers.mjs::resolveConfigDir` and
+ * `ClaudeCodeAdapter.getConfigDir` so the pre-detection path agrees with
+ * hooks/adapter on where Claude Code session data lives. See issue #453.
+ *
+ * Issue #460 round-3: delegates to the canonical util so empty/whitespace
+ * env values fall back instead of poisoning downstream `join()` calls.
+ */
+function resolveClaudeConfigRoot(): string {
+  return resolveClaudeConfigDir();
+}
+
+async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
+  if (_detectedAdapter) return _detectedAdapter;
+  try {
+    const { getAdapter } = await import("./adapters/detect.js");
+    const signal = detectPlatform();
+    return await getAdapter(signal.platform);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get the platform-specific sessions directory from the detected adapter.
- * Falls back to ~/.claude/context-mode/sessions/ before adapter detection.
+ * Falls back to the detected platform config root before adapter detection.
  */
 function getSessionDir(): string {
   if (_detectedAdapter) return _detectedAdapter.getSessionDir();
   // Pre-detection path (race window before MCP `initialize` completes):
   // call detectPlatform() (sync, env-var-based) and look up segments via
   // getSessionDirSegments() (sync map, no adapter instantiation). This keeps
-  // non-Claude platforms from spilling sessions into ~/.claude/.
+  // non-Claude platforms from spilling sessions into ~/.claude/. For Claude
+  // Code/Codex (single-segment roots), reroute through their config-dir
+  // contracts so the pre-detection window does not split-state with hooks.
   try {
     const signal = detectPlatform();
     const segments = getSessionDirSegments(signal.platform);
     if (segments) {
-      const dir = join(homedir(), ...segments, "context-mode", "sessions");
+      let root = join(homedir(), ...segments);
+      if (segments.length === 1 && segments[0] === ".claude") {
+        root = resolveClaudeConfigRoot();
+      } else if (segments.length === 1 && segments[0] === ".codex") {
+        root = resolveCodexConfigDir();
+      }
+      const dir = join(root, "context-mode", "sessions");
       mkdirSync(dir, { recursive: true });
       return dir;
     }
-  } catch { /* fall through to .claude fallback */ }
-  const dir = join(homedir(), ".claude", "context-mode", "sessions");
+  } catch { /* fall through to claude fallback */ }
+  const dir = join(resolveClaudeConfigRoot(), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -161,14 +203,19 @@ function getSessionDir(): string {
  * that don't set their own env var (Cursor, OpenClaw, Codex, Kiro, Zed).
  */
 function getProjectDir(): string {
-  return process.env.CLAUDE_PROJECT_DIR
-    || process.env.GEMINI_PROJECT_DIR
-    || process.env.VSCODE_CWD
-    || process.env.OPENCODE_PROJECT_DIR
-    || process.env.PI_PROJECT_DIR
-    || process.env.IDEA_INITIAL_DIRECTORY
-    || process.env.CONTEXT_MODE_PROJECT_DIR
-    || process.cwd();
+  // Delegated to the shared resolver so the env-var chain rejects plugin
+  // install paths (set by a prior MCP boot's start.mjs after `/ctx-upgrade`)
+  // and prefers the shell-set PWD before the chdir'd cwd. v1.0.115 adds
+  // the Claude Code transcript heuristic — read `cwd` from the most-recently-
+  // modified `~/.claude/projects/<encoded>/<session>.jsonl` to recover the
+  // real project dir when MCP was launched from a non-project cwd (desktop-
+  // app launch, /ctx-upgrade respawn). See src/util/project-dir.ts.
+  return resolveProjectDir({
+    env: process.env,
+    cwd: process.cwd(),
+    pwd: process.env.PWD,
+    transcriptsRoot: join(homedir(), ".claude", "projects"),
+  });
 }
 
 /**
@@ -181,27 +228,17 @@ function resolveProjectPath(filePath: string): string {
 }
 
 /**
- * Consistent project dir hashing across all DB paths.
- * Normalizes Windows backslashes before hashing so the same project
- * always produces the same hash regardless of path separator.
- */
-function hashProjectDir(): string {
-  const projectDir = getProjectDir();
-  const normalized = projectDir.replace(/\\/g, "/");
-  return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-}
-
-/**
- * Resolve the per-project SessionDB path the way 4742160 originally did
- * for `persistToolCallCounter`. Centralized so the write-back, the
- * restore-on-startup, and any future SessionDB consumer all hash to the
- * same file under worktree isolation.
+ * Resolve the per-project SessionDB path. Delegates to
+ * {@link resolveSessionDbPath} so casing-only variants of the same
+ * physical worktree on macOS / Windows hit ONE DB, not two — and any
+ * pre-existing legacy raw-casing DB gets migrated in place on first
+ * resolve. Linux is a no-op.
  */
 function getSessionDbPath(): string {
-  return join(
-    getSessionDir(),
-    `${hashProjectDir()}${getWorktreeSuffix()}.db`,
-  );
+  return resolveSessionDbPath({
+    projectDir: getProjectDir(),
+    sessionsDir: getSessionDir(),
+  });
 }
 
 /**
@@ -214,12 +251,14 @@ function getSessionDbPath(): string {
  *         ~/.cursor/context-mode/content/87c28c41ddb64d38.db
  */
 function getStorePath(): string {
-  const hash = hashProjectDir();
   // Derive content dir from session dir: .../sessions/ → .../content/
-  const sessDir = getSessionDir();
-  const dir = join(dirname(sessDir), "content");
+  const dir = join(dirname(getSessionDir()), "content");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}.db`);
+  // Delegate to resolveContentStorePath: same case-fold + one-shot legacy
+  // rename behavior as resolveSessionDbPath. On macOS / Windows, an
+  // existing legacy raw-casing FTS5 db (with -wal/-shm sidecars) is
+  // migrated in place on first call. On Linux it's a no-op.
+  return resolveContentStorePath({ projectDir: getProjectDir(), contentDir: dir });
 }
 
 function getStore(): ContentStore {
@@ -228,6 +267,26 @@ function getStore(): ContentStore {
     // Server just opens whatever DB exists (or creates new if hook deleted it).
     const dbPath = getStorePath();
     _store = new ContentStore(dbPath);
+
+    // Wire deny-policy hook: store re-checks the Read deny list before
+    // re-reading any file_path during auto-refresh. Catches policy edits
+    // made after a file was originally indexed. See #442 round-3.
+    _store.setDenyChecker((filePath: string) => {
+      try {
+        const projectDir = getProjectDir();
+        const denyGlobs = readToolDenyPatterns("Read", projectDir);
+        const r = evaluateFilePath(
+          filePath,
+          denyGlobs,
+          process.platform === "win32",
+          projectDir,
+        );
+        return r.denied;
+      } catch {
+        // Fail-closed for refresh: skip on error rather than re-read.
+        return true;
+      }
+    });
 
     // One-time startup cleanup: remove stale content DBs (>14 days)
     try {
@@ -342,10 +401,14 @@ function healCacheMidSession(): void {
   if (_cacheHealDone) return;
   _cacheHealDone = true;
   try {
-    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    // Issue #460 round-3: honor $CLAUDE_CONFIG_DIR so users who relocate
+    // their CC config root don't have plugin cache healing operate against
+    // the wrong tree (and silently miss dangling-symlink cleanup).
+    const claudeRoot = resolveClaudeConfigDir();
+    const ipPath = resolve(claudeRoot, "plugins", "installed_plugins.json");
     if (!existsSync(ipPath)) return;
     const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
-    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    const cacheRoot = resolve(claudeRoot, "plugins", "cache");
     // Plugin root: build/ for tsc, plugin root for bundle
     const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
     for (const [key, entries] of Object.entries((ip.plugins ?? {}) as Record<string, Array<{ installPath?: string }>>)) {
@@ -397,12 +460,43 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   // setImmediate keeps this off the response hot path; the helper itself
   // is best-effort (never throws).
   setImmediate(() => persistToolCallCounter(getSessionDbPath(), toolName, bytes));
+
+  // D2 Phase 5/7 — sandbox-execute event emission. Tracks the bytes the
+  // user actually saw from sandboxed runs so getRealBytesStats() can
+  // replace the conservative `events × 256` estimate. Best-effort and
+  // off the hot path, same shape as persistToolCallCounter above.
+  if (
+    toolName === "ctx_execute"
+    || toolName === "ctx_execute_file"
+    || toolName === "ctx_batch_execute"
+  ) {
+    setImmediate(() =>
+      emitSandboxExecuteEvent({
+        sessionDbPath: getSessionDbPath(),
+        toolName,
+        bytesReturned: bytes,
+      })
+    );
+  }
+
   return response;
 }
 
-function trackIndexed(bytes: number): void {
+function trackIndexed(bytes: number, source: string = "unknown"): void {
   sessionStats.bytesIndexed += bytes;
   persistStats();
+  // D2 Phase 5/7 — index-write event emission. `bytes_avoided` because
+  // these are bytes that would have flooded context if the user had
+  // Read'd the source instead of indexing.
+  if (bytes > 0) {
+    setImmediate(() =>
+      emitIndexWriteEvent({
+        sessionDbPath: getSessionDbPath(),
+        source,
+        bytesAvoided: bytes,
+      })
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -940,7 +1034,7 @@ server.registerTool(
   "ctx_execute",
   {
     title: "Execute Code",
-    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.\n\nTHINK IN CODE: When you need to analyze, count, filter, compare, or process data — write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.\n\nWhen reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].`,
+    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.\n\nTHINK IN CODE: When you need to analyze, count, filter, compare, or process data — write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,
     inputSchema: z.object({
       language: z
         .enum([
@@ -1270,7 +1364,7 @@ server.registerTool(
   {
     title: "Execute File Processing",
     description:
-      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.\n\nTHINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript — no npm deps, try/catch, null-safe. Node.js + Bun compatible.\n\nWhen reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.\n\nTHINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript — no npm deps, try/catch, null-safe. Node.js + Bun compatible.",
     inputSchema: z.object({
       path: z
         .string()
@@ -1310,7 +1404,7 @@ server.registerTool(
   },
   async ({ path, language, code, timeout, intent }) => {
     // Security: check file path against Read deny patterns
-    const pathDenied = checkFilePathDenyPolicy(path, "execute_file");
+    const pathDenied = checkFilePathDenyPolicy(path, "ctx_execute_file");
     if (pathDenied) return pathDenied;
 
     // Security: check code parameter against Bash deny patterns
@@ -1462,6 +1556,15 @@ server.registerTool(
       });
     }
 
+    // Apply Read deny-policy to prevent indexing sensitive files into the
+    // FTS5 store, which would otherwise be queryable via ctx_search and
+    // exfiltrate content into the model's context (issue #442). Mirrors the
+    // check ctx_execute_file already performs.
+    if (path) {
+      const pathDenied = checkFilePathDenyPolicy(path, "ctx_index");
+      if (pathDenied) return pathDenied;
+    }
+
     try {
       const resolvedPath = path ? resolveProjectPath(path) : undefined;
       // Track the raw bytes being indexed (content or file)
@@ -1545,8 +1648,7 @@ server.registerTool(
       "Pass ALL search questions as queries array in ONE call. " +
       "File-backed sources are auto-refreshed when the source file changes.\n\n" +
       "TIPS: 2-4 specific terms per query. Use 'source' to scope results.\n\n" +
-      "SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.\n\n" +
-      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.",
     inputSchema: z.object({
       queries: z.preprocess(coerceJsonArray, z
         .array(z.string())
@@ -1652,14 +1754,15 @@ server.registerTool(
       if (sort === "timeline") {
         try {
           const sessionsDir = getSessionDir();
-          const dbFile = join(sessionsDir, `${hashProjectDir()}${getWorktreeSuffix()}.db`);
+          const projectDir = getProjectDir();
+          const dbFile = resolveSessionDbPath({ projectDir, sessionsDir });
           if (existsSync(dbFile)) {
             timelineDB = new SessionDB({ dbPath: dbFile });
           }
         } catch { /* SessionDB unavailable — search ContentStore + auto-memory only */ }
       }
 
-      const configDir = _detectedAdapter?.getConfigDir() ?? (process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"));
+      const configDir = _detectedAdapter?.getConfigDir() ?? resolveClaudeConfigRoot();
 
       try {
       for (const q of queryList) {
@@ -1776,16 +1879,150 @@ function resolveGfmPluginPath(): string {
 // Subprocess code that fetches a URL, detects Content-Type, and outputs a
 // __CM_CT__:<type> marker on the first line so the handler can route to the
 // appropriate indexing strategy.  HTML is converted to markdown via Turndown.
-function buildFetchCode(url: string, outputPath: string): string {
+export function buildFetchCode(url: string, outputPath: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
   const escapedOutputPath = JSON.stringify(outputPath);
+  // Embed classifyIp into the subprocess so the connect-time DNS lookup is
+  // re-validated with the same policy as ssrfGuard. Without this, an attacker
+  // can serve a public IP for the parent's pre-flight ssrfGuard lookup and
+  // then a blocked IP (e.g. 169.254.169.254 IMDS) for the subprocess fetch's
+  // own lookup — classic DNS rebinding across the parent/child boundary.
+  const classifyIpSrc = classifyIp.toString();
+  const strictMode = process.env.CTX_FETCH_STRICT === "1";
   return `
 const TurndownService = require(${turndownPath});
 const { gfm } = require(${gfmPath});
 const fs = require('fs');
+const dns = require('node:dns');
+const dnsPromises = require('node:dns/promises');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
+
+// Strip proxy env vars from this subprocess only. A configured outbound
+// proxy (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) would route fetch through
+// an arbitrary target — DNS resolution happens at the proxy and the
+// in-subprocess DNS rebinding guard never sees the rebound IP. The
+// sandbox fetch path has no legitimate need for an upstream proxy.
+delete process.env.HTTP_PROXY;
+delete process.env.HTTPS_PROXY;
+delete process.env.ALL_PROXY;
+delete process.env.http_proxy;
+delete process.env.https_proxy;
+delete process.env.all_proxy;
+delete process.env.npm_config_proxy;
+delete process.env.npm_config_https_proxy;
+
+${classifyIpSrc}
+
+const STRICT = ${JSON.stringify(strictMode)};
+
+// SSRF rebinding defense: every dns.lookup call inside this subprocess
+// (including the one undici performs to connect the fetch socket) is
+// re-validated against the same policy ssrfGuard runs in the parent.
+// Even if a hostname rebinds between the parent's pre-flight check and
+// the subprocess's actual connect, the connect-time lookup re-classifies
+// every returned record and aborts before TCP if any verdict is "block".
+const _origLookup = dns.lookup;
+dns.lookup = function patchedLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  if (typeof options === 'number') { options = { family: options }; }
+  const wantAll = options && options.all;
+  const opts = Object.assign({}, options || {}, { all: true, verbatim: true });
+  _origLookup(hostname, opts, function(err, records) {
+    if (err) return callback(err);
+    if (!Array.isArray(records)) {
+      records = [{ address: records, family: (options && options.family) || 4 }];
+    }
+    for (var i = 0; i < records.length; i++) {
+      var verdict = classifyIp(records[i].address);
+      if (verdict === 'block' || (STRICT && verdict === 'private')) {
+        return callback(new Error(
+          'SSRF blocked at connect-time: ' + hostname +
+          ' resolves to ' + records[i].address +
+          ' (' + verdict + ')'
+        ));
+      }
+    }
+    if (wantAll) callback(null, records);
+    else callback(null, records[0].address, records[0].family);
+  });
+};
+
+// dns/promises is a separate function reference. Patching dns.lookup does
+// NOT affect dnsPromises.lookup. Today undici's connect path uses callback
+// dns.lookup so default fetch is covered, but the invariant is fragile —
+// any future undici switch (or user code calling dnsPromises.lookup
+// directly) would bypass the guard. Patch both to keep the contract.
+const _origPromisesLookup = dnsPromises.lookup;
+dnsPromises.lookup = async function patchedPromisesLookup(hostname, options) {
+  const opts = Object.assign({}, options || {}, { all: true, verbatim: true });
+  const records = await _origPromisesLookup(hostname, opts);
+  const list = Array.isArray(records) ? records : [records];
+  for (var i = 0; i < list.length; i++) {
+    var verdict = classifyIp(list[i].address);
+    if (verdict === 'block' || (STRICT && verdict === 'private')) {
+      throw new Error(
+        'SSRF blocked at connect-time: ' + hostname +
+        ' resolves to ' + list[i].address + ' (' + verdict + ')'
+      );
+    }
+  }
+  return options && options.all
+    ? list
+    : { address: list[0].address, family: list[0].family };
+};
+
+// dns.resolve4 / dns.resolve6 use a different code path (no getaddrinfo,
+// no /etc/hosts) than dns.lookup — they must be patched separately or the
+// guard is trivially bypassed by any caller using dns.resolve* directly.
+['resolve4', 'resolve6'].forEach(function patchResolve(name) {
+  const _origResolve = dns[name];
+  dns[name] = function patchedResolve(hostname, options, cb) {
+    if (typeof options === 'function') { cb = options; options = undefined; }
+    _origResolve.call(dns, hostname, options || {}, function(err, addrs) {
+      if (err) return cb(err);
+      var withTtl = options && options.ttl;
+      for (var i = 0; i < addrs.length; i++) {
+        var ip = withTtl ? addrs[i].address : addrs[i];
+        var v = classifyIp(ip);
+        if (v === 'block' || (STRICT && v === 'private')) {
+          return cb(new Error(
+            'SSRF blocked at connect-time: ' + hostname +
+            ' resolves to ' + ip + ' (' + v + ')'
+          ));
+        }
+      }
+      cb(null, addrs);
+    });
+  };
+});
+
+// Generic dns.resolve is a polymorphic dispatcher (rrtype-driven). Internally
+// Node delegates to dns.resolve4/dns.resolve6 for A/AAAA, but the patches
+// above hook the *exported* references — Node's internal dispatcher holds
+// captured originals and bypasses our patch. Patch the wrapper explicitly:
+// classify A/AAAA records the same way; pass through CNAME/MX/TXT/SRV/etc.
+const _origResolveGeneric = dns.resolve;
+dns.resolve = function patchedResolveGeneric(hostname, rrtype, cb) {
+  if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
+  _origResolveGeneric.call(dns, hostname, rrtype, function(err, records) {
+    if (err) return cb(err);
+    if ((rrtype === 'A' || rrtype === 'AAAA') && Array.isArray(records)) {
+      for (var i = 0; i < records.length; i++) {
+        var ip = records[i];
+        var v = classifyIp(ip);
+        if (v === 'block' || (STRICT && v === 'private')) {
+          return cb(new Error(
+            'SSRF blocked at connect-time: ' + hostname +
+            ' resolves to ' + ip + ' (' + v + ')'
+          ));
+        }
+      }
+    }
+    cb(null, records);
+  });
+};
 
 function emit(ct, content) {
   // Write content to file to bypass executor stdout truncation (100KB limit).
@@ -1794,8 +2031,60 @@ function emit(ct, content) {
   console.log('__CM_CT__:' + ct);
 }
 
+// Manual redirect handling: a 3xx Location header can rebind the subprocess
+// fetch to an alternate host the parent's pre-flight ssrfGuard never saw.
+// Even with the connect-time DNS patch, a redirect target that is a literal
+// IP (e.g. http://169.254.169.254/) skips getaddrinfo entirely. Walk the
+// chain manually so every hop runs through classifyIp before the next fetch.
+const MAX_REDIRECTS = 5;
+async function fetchWithManualRedirect(initialUrl) {
+  let currentUrl = initialUrl;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    const resp = await fetch(currentUrl, { redirect: 'manual' });
+    if (resp.status < 300 || resp.status >= 400) return resp;
+    const location = resp.headers.get('location') || resp.headers.get('Location');
+    if (!location) return resp;
+    if (redirectCount === MAX_REDIRECTS) {
+      throw new Error('SSRF blocked: redirect chain exceeded ' + MAX_REDIRECTS + ' hops');
+    }
+    let nextParsed;
+    try { nextParsed = new URL(location, currentUrl); } catch (e) {
+      throw new Error('SSRF blocked: invalid redirect Location: ' + location);
+    }
+    if (nextParsed.protocol !== 'http:' && nextParsed.protocol !== 'https:') {
+      throw new Error('SSRF blocked: redirect to non-http(s) scheme ' + nextParsed.protocol);
+    }
+    // If the redirect target is a literal IP, classify it directly — no DNS
+    // lookup will fire and the connect-time guard would never see it.
+    const hostname = nextParsed.hostname.replace(/^\[|\]$/g, '');
+    const isIpLiteral = /^[0-9.]+$/.test(hostname) || hostname.includes(':');
+    if (isIpLiteral) {
+      const verdict = classifyIp(hostname);
+      if (verdict === 'block' || (STRICT && verdict === 'private')) {
+        throw new Error('SSRF blocked: redirect to ' + hostname + ' (' + verdict + ')');
+      }
+    } else {
+      // Hostname target: resolve and classify every record. The patched
+      // dns.lookup also fires on the next fetch's connect, but checking
+      // here gives a clearer error and short-circuits before TCP setup.
+      const records = await dnsPromises.lookup(hostname, { all: true, verbatim: true });
+      for (const rec of records) {
+        const verdict = classifyIp(rec.address);
+        if (verdict === 'block' || (STRICT && verdict === 'private')) {
+          throw new Error(
+            'SSRF blocked: redirect target ' + hostname +
+            ' resolves to ' + rec.address + ' (' + verdict + ')'
+          );
+        }
+      }
+    }
+    currentUrl = nextParsed.toString();
+  }
+  throw new Error('SSRF blocked: redirect chain exceeded ' + MAX_REDIRECTS + ' hops');
+}
+
 async function main() {
-  const resp = await fetch(url);
+  const resp = await fetchWithManualRedirect(url);
   if (!resp.ok) { console.error("HTTP " + resp.status); process.exit(1); }
   const contentType = resp.headers.get('content-type') || '';
 
@@ -1935,7 +2224,14 @@ async function ssrfGuard(rawUrl: string): Promise<FetchOneResult | null> {
  *
  * Exported (via the function name) so SSRF tests can exercise the matcher directly.
  */
-export function classifyIp(ip: string): "block" | "private" | "public" {
+export function classifyIp(rawIp: string): "block" | "private" | "public" {
+  // RFC 6874 zone identifiers (`fe80::1%eth0`, URL-encoded `%25eth0`) must
+  // be stripped BEFORE any prefix/equality classification. Without the strip,
+  // a loopback `::1%eth0` no longer matches `lower === "::1"` and falls
+  // through to "public" — silently bypassing the SSRF guard. Strip first,
+  // classify second.
+  const pctIdx = rawIp.indexOf("%");
+  const ip = pctIdx === -1 ? rawIp : rawIp.slice(0, pctIdx);
   const lower = ip.toLowerCase();
 
   // IPv6 takes priority — check for `:` first so IPv4-mapped addresses
@@ -2086,8 +2382,7 @@ server.registerTool(
       "  ✅ Use concurrency: 4-8 for: library docs sweep, multi-changelog scan, competitive pricing pages, multi-region docs, GitHub raw file pulls.\n" +
       "  ❌ Single URL → use the legacy {url, source} shape (concurrency irrelevant).\n" +
       "  Example: requests: [{url: 'https://react.dev/...', source: 'react'}, {url: 'https://vuejs.org/...', source: 'vue'}], concurrency: 5.\n" +
-      "  Indexing is serial regardless of concurrency — fetches race, FTS5 writes don't (avoids SQLite WAL contention).\n\n" +
-      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "  Fetches parallelize up to your concurrency setting; FTS5 indexing serializes the writes after (SQLite single-writer rule).",
     inputSchema: z.object({
       url: z.string().optional().describe("Single URL to fetch and index (legacy single-shape)"),
       source: z
@@ -2179,6 +2474,18 @@ server.registerTool(
       if (v.kind === "cached") {
         sessionStats.cacheHits++;
         sessionStats.cacheBytesSaved += v.estimatedBytes;
+        // D2 Phase 5/7 — cache-hit event emission. `bytes_avoided` is the
+        // size of the cached payload that would have re-entered context
+        // had the TTL window missed. Best-effort, off the hot path.
+        const cachedBytes = v.estimatedBytes;
+        const cachedLabel = v.label;
+        setImmediate(() =>
+          emitCacheHitEvent({
+            sessionDbPath: getSessionDbPath(),
+            source: cachedLabel,
+            bytesAvoided: cachedBytes,
+          })
+        );
         finalized.push({ kind: "cached", label: v.label, chunkCount: v.chunkCount, ageStr: v.ageStr });
       } else if (v.kind === "fetch_error") {
         finalized.push({ kind: "fetch_error", url: v.url, error: v.error, reason: v.reason });
@@ -2267,8 +2574,8 @@ server.registerTool(
     const cappedNote = capped
       ? ` cap=${effectiveConcurrency}/${cpus().length}cpu`
       : "";
-    // Caveman style — terse status line: counts + sections + size.
-    // Singular forms used at count=1 to avoid grammar drift ("1 errors" → "1 error").
+    // Status line: counts + sections + size, with singular/plural agreement
+    // (count=1 → "1 error" not "1 errors") so the line stays grammatical.
     const fmt = (n: number, sing: string, plur: string) => `${n} ${n === 1 ? sing : plur}`;
     const headerLine =
       `fetched ${batch.length} c=${effectiveConcurrency}${cappedNote}. ` +
@@ -2310,8 +2617,7 @@ server.registerTool(
       "  ❌ Keep concurrency: 1 for: npm test, build, lint, image processing (CPU-bound), or commands sharing state (ports, lock files, same-repo writes).\n" +
       "  Example: [gh issue view 1, gh issue view 2, gh issue view 3] → concurrency: 3.\n" +
       "  Speedup depends on workload — applies to I/O wait, not CPU work.\n\n" +
-      "THINK IN CODE — NON-NEGOTIABLE: When commands produce data you need to analyze, count, filter, compare, or transform — add a processing command that runs JavaScript and console.log() ONLY the answer. NEVER pull raw output into context to reason over. Concurrency parallelizes the FETCH; THINK IN CODE owns the PROCESSING. One programmed analysis replaces ten read-and-reason rounds. Pure JavaScript, Node.js built-ins (fs, path, child_process), try/catch, null-safe.\n\n" +
-      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "THINK IN CODE — NON-NEGOTIABLE: When commands produce data you need to analyze, count, filter, compare, or transform — add a processing command that runs JavaScript and console.log() ONLY the answer. NEVER pull raw output into context to reason over. Concurrency parallelizes the FETCH; THINK IN CODE owns the PROCESSING. One programmed analysis replaces ten read-and-reason rounds. Pure JavaScript, Node.js built-ins (fs, path, child_process), try/catch, null-safe.",
     inputSchema: z.object({
       commands: z.preprocess(coerceCommandsArray, z
         .array(
@@ -2493,12 +2799,16 @@ server.registerTool(
     // ONE call, ONE source — AnalyticsEngine.queryAll()
     let text: string;
     try {
-      const dbHash = hashProjectDir();
-      const worktreeSuffix = getWorktreeSuffix();
-      const sessionDbPath = join(
-        getSessionDir(),
-        `${dbHash}${worktreeSuffix}.db`
-      );
+      const projectDir = getProjectDir();
+      // Canonical hash + migration-aware path. The downstream
+      // getConversationStats / getRealBytesStats reconstruct the DB
+      // filename from worktreeHash; pass the SAME canonical hash that
+      // resolveSessionDbPath used so they hit the same file.
+      const dbHash = hashProjectDirCanonical(projectDir);
+      const sessionDbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: getSessionDir(),
+      });
 
       if (existsSync(sessionDbPath)) {
         const Database = loadDatabase();
@@ -2511,8 +2821,46 @@ server.registerTool(
           // Lifetime stats span every project's SessionDB + auto-memory dir
           // (Bugs #3/#4); failures are absorbed inside getLifetimeStats so a
           // corrupt sidecar can never break ctx_stats.
-          const lifetime = getLifetimeStats();
-          text = formatReport(report, VERSION, _latestVersion, { lifetime, mcpUsage });
+          // B3b Slice 3.1: scope to active adapter via getSessionDir() so
+          // non-Claude platforms (Cursor, OpenCode, JetBrains, ...) read
+          // from THEIR sessions dir — not the hardcoded ~/.claude/ default.
+          // Mirrors the statusline contract at src/server.ts:540.
+          const lifetime = getLifetimeStats({ sessionsDir: getSessionDir() });
+          // B3b Slices 3.2-3.6: cross-adapter aggregation so the renderer
+          // can show "Where it came from" + the "across N AI tools"
+          // headline. Best-effort — failures absorbed so a corrupt
+          // sidecar in any adapter dir cannot break ctx_stats.
+          let multiAdapter;
+          try { multiAdapter = getMultiAdapterLifetimeStats(); } catch { /* never block ctx_stats */ }
+          // F1: wire conversation + realBytes opts so formatReport renders the
+          // narrative 5-section "kitap gibi" layout (timeline, ladder, receipt,
+          // example cost, auto-memory). Without these, formatReport falls back
+          // to the legacy active-session header. Best-effort — failures absorbed.
+          // Resolve session_id: prefer env (CLAUDE_SESSION_ID), else most-recent
+          // UUID session_id from session_events in this DB.
+          let conversation;
+          let realBytes;
+          try {
+            let sid = process.env.CLAUDE_SESSION_ID;
+            if (!sid) {
+              const row = sdb.prepare(
+                "SELECT session_id FROM session_events WHERE session_id LIKE '________-____-____-____-____________' ORDER BY created_at DESC LIMIT 1"
+              ).get() as { session_id: string } | undefined;
+              sid = row?.session_id;
+            }
+            if (sid) {
+              conversation = getConversationStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
+              const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
+              const lifeReal = getRealBytesStats({ sessionsDir: getSessionDir() });
+              realBytes = { conversation: convReal, lifetime: lifeReal };
+            }
+          } catch { /* never block ctx_stats */ }
+          // v1.0.117: pass projectDir as cwd so the narrative renderer's
+          // "started in <path>" line matches the user's actual project, not
+          // the MCP server's chdir'd plugin install dir. getProjectDir()
+          // includes v1.0.115's transcript heuristic which reads the literal
+          // cwd from Claude Code's session jsonl.
+          text = formatReport(report, VERSION, _latestVersion, { lifetime, mcpUsage, multiAdapter, conversation, realBytes, cwd: projectDir });
         } finally {
           sdb.close();
         }
@@ -2521,16 +2869,20 @@ server.registerTool(
         // Lifetime still meaningful (other projects, auto-memory) so include it.
         const engine = new AnalyticsEngine(createMinimalDb());
         const report = engine.queryAll(sessionStats);
-        const lifetime = getLifetimeStats();
-        text = formatReport(report, VERSION, _latestVersion, { lifetime });
+        const lifetime = getLifetimeStats({ sessionsDir: getSessionDir() });
+        let multiAdapter;
+        try { multiAdapter = getMultiAdapterLifetimeStats(); } catch { /* never block ctx_stats */ }
+        text = formatReport(report, VERSION, _latestVersion, { lifetime, multiAdapter });
       }
     } catch {
       // Session DB not available or incompatible — build minimal report from runtime stats
       const engine = new AnalyticsEngine(createMinimalDb());
       const report = engine.queryAll(sessionStats);
       let lifetime;
-      try { lifetime = getLifetimeStats(); } catch { /* never block ctx_stats */ }
-      text = formatReport(report, VERSION, _latestVersion, lifetime ? { lifetime } : undefined);
+      try { lifetime = getLifetimeStats({ sessionsDir: getSessionDir() }); } catch { /* never block ctx_stats */ }
+      let multiAdapter;
+      try { multiAdapter = getMultiAdapterLifetimeStats(); } catch { /* never block ctx_stats */ }
+      text = formatReport(report, VERSION, _latestVersion, (lifetime || multiAdapter) ? { lifetime, multiAdapter } : undefined);
     }
 
     return trackResponse("ctx_stats", {
@@ -2613,12 +2965,29 @@ server.registerTool(
       }
     }
 
-    // Hook script
-    const hookPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
-    if (existsSync(hookPath)) {
-      lines.push(`[OK] Hook script: PASS — ${hookPath}`);
+    // Hooks
+    const diagnosticAdapter = await getDiagnosticAdapter();
+    if (diagnosticAdapter) {
+      for (const result of diagnosticAdapter.validateHooks(pluginRoot)) {
+        const prefix = result.status === "pass" ? "[OK]" : result.status === "warn" ? "[WARN]" : "[FAIL]";
+        const fix = result.fix ? ` — fix: ${result.fix}` : "";
+        lines.push(`${prefix} ${result.check}: ${result.message}${fix}`);
+      }
+
+      const hookScriptPaths = getHookScriptPaths(diagnosticAdapter, pluginRoot);
+      if (hookScriptPaths.length === 0) {
+        lines.push("[OK] Hook scripts: no direct .mjs script paths to verify");
+      }
+      for (const scriptPath of hookScriptPaths) {
+        const hookPath = resolve(pluginRoot, scriptPath);
+        if (existsSync(hookPath)) {
+          lines.push(`[OK] Hook script: PASS — ${hookPath}`);
+        } else {
+          lines.push(`[FAIL] Hook script: FAIL — not found at ${hookPath}`);
+        }
+      }
     } else {
-      lines.push(`[FAIL] Hook script: FAIL — not found at ${hookPath}`);
+      lines.push("[WARN] Hooks: adapter detection unavailable");
     }
 
     // Version
@@ -2653,14 +3022,11 @@ server.registerTool(
       const sessDir = getSessionDir();
       const insightCacheDir = join(dirname(sessDir), "insight-cache");
       if (existsSync(insightCacheDir)) {
-        // Kill any running insight server first
-        try {
-          if (process.platform === "win32") {
-            execSync('for /f "tokens=5" %a in (\'netstat -ano ^| findstr :4747\') do taskkill /F /PID %a', { stdio: "pipe" });
-          } else {
-            execSync("lsof -ti:4747 | xargs kill 2>/dev/null", { stdio: "pipe" });
-          }
-        } catch { /* no process to kill */ }
+        // Kill any running insight server first via the shared helper —
+        // this is locale-independent on Windows (PR #469) and isolates per-pid
+        // failures. We ignore the structured result: cache cleanup is
+        // best-effort and must never block ctx_upgrade.
+        killProcessOnPort(4747);
         rmSync(insightCacheDir, { recursive: true, force: true });
       }
     } catch { /* best effort — don't block upgrade */ }
@@ -2675,14 +3041,11 @@ server.registerTool(
       // Inline fallback: neither CLI file exists (e.g. marketplace installs).
       // Generate a self-contained node -e script that performs the upgrade.
       const repoUrl = "https://github.com/mksglu/context-mode.git";
-      const copyDirs = ["build", "hooks", "skills", "scripts", ".claude-plugin"];
-      const copyFiles = ["start.mjs", "server.bundle.mjs", "cli.bundle.mjs", "package.json"];
-
       // Write inline script to a temp .mjs file — avoids quote-escaping issues
       // across cmd.exe, PowerShell, and bash (node -e '...' breaks on Windows).
       const scriptLines = [
         `import{execFileSync}from"node:child_process";`,
-        `import{cpSync,rmSync,existsSync,mkdtempSync}from"node:fs";`,
+        `import{cpSync,rmSync,existsSync,mkdtempSync,readFileSync,writeFileSync}from"node:fs";`,
         `import{join}from"node:path";`,
         `import{tmpdir}from"node:os";`,
         `const P=${JSON.stringify(pluginRoot)};`,
@@ -2694,15 +3057,11 @@ server.registerTool(
         `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["install"],{cwd:T,stdio:"inherit",shell:process.platform==="win32"});`,
         `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["run","build"],{cwd:T,stdio:"inherit",shell:process.platform==="win32"});`,
         `console.log("- [x] Built from source");`,
-        ...copyDirs.map(
-          (d) =>
-            `if(existsSync(join(T,${JSON.stringify(d)})))cpSync(join(T,${JSON.stringify(d)}),join(P,${JSON.stringify(d)}),{recursive:true,force:true});`,
-        ),
-        ...copyFiles.map(
-          (f) =>
-            `if(existsSync(join(T,${JSON.stringify(f)})))cpSync(join(T,${JSON.stringify(f)}),join(P,${JSON.stringify(f)}),{force:true});`,
-        ),
-        `console.log("- [x] Copied build artifacts");`,
+        `const pkg=JSON.parse(readFileSync(join(T,"package.json"),"utf8"));`,
+        `const items=[...(Array.isArray(pkg.files)?pkg.files:[]),"src","package.json"];`,
+        `for(const item of items){const from=join(T,item);const to=join(P,item);if(existsSync(from)){rmSync(to,{recursive:true,force:true});cpSync(from,to,{recursive:true,force:true});}}`,
+        `writeFileSync(join(P,".mcp.json"),JSON.stringify({mcpServers:{"context-mode":{command:"node",args:["\${CLAUDE_PLUGIN_ROOT}/start.mjs"]}}},null,2)+"\\n");`,
+        `console.log("- [x] Copied package files");`,
         `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["install","--production"],{cwd:P,stdio:"inherit",shell:process.platform==="win32"});`,
         `console.log("- [x] Installed production dependencies");`,
         `console.log("## context-mode upgrade complete");`,
@@ -2774,54 +3133,38 @@ server.registerTool(
       });
     }
 
-    const deleted: string[] = [];
-
-    // 1. Wipe the persistent FTS5 content store
+    // Close the persistent FTS5 content store handle BEFORE delegating to
+    // purgeSession so the store's lock is released on Windows. The handle
+    // is recreated lazily on the next getStore() call.
+    let storePathForPurge: string | undefined;
+    try {
+      storePathForPurge = getStorePath();
+    } catch { /* best effort — store path may be unresolvable on fresh install */ }
     if (_store) {
-      let storeFound = false;
-      try { _store.cleanup(); storeFound = true; } catch { /* best effort */ }
+      try { _store.cleanup(); } catch { /* best effort */ }
       _store = null;
-      if (storeFound) deleted.push("knowledge base (FTS5)");
-    } else {
-      const dbPath = getStorePath();
-      let found = false;
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try { unlinkSync(dbPath + suffix); found = true; } catch { /* file may not exist */ }
-      }
-      if (found) deleted.push("knowledge base (FTS5)");
     }
 
-    // 2. Wipe legacy shared content DB (~/.context-mode/content/<hash>.db)
-    try {
-      const legacyPath = join(homedir(), ".context-mode", "content", `${hashProjectDir()}.db`);
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try { unlinkSync(legacyPath + suffix); } catch { /* ignore */ }
-      }
-    } catch { /* best effort */ }
+    // FTS5 store: pass contentDir so purgeSession sweeps BOTH canonical
+    // and legacy raw-casing variants (dual-hash, mirrors session events).
+    // storePath is also passed for the rare case where the resolver picked
+    // an absolute path that differs from the dual-hash pair (e.g. caller
+    // pre-migrated). Both paths are de-duped during unlink.
+    const contentDir = storePathForPurge ? dirname(storePathForPurge) : undefined;
+    const { deleted } = purgeSession({
+      projectDir: getProjectDir(),
+      sessionsDir: getSessionDir(),
+      storePath: storePathForPurge,
+      contentDir,
+      legacyContentDir: join(homedir(), ".context-mode", "content"),
+      // hashProjectDirLegacy mirrors the deployed (≤ v1.0.111) raw-casing
+      // hash that named files under ~/.context-mode/content/. Using the
+      // legacy hash here is correct: that pre-pre-legacy directory was
+      // never migrated and still uses raw casing.
+      contentHash: hashProjectDirLegacy(getProjectDir()),
+    });
 
-    // 3. Wipe session events DB (analytics, metadata, resume snapshots)
-    try {
-      const dbHash = hashProjectDir();
-      const worktreeSuffix = getWorktreeSuffix();
-      const sessDir = getSessionDir();
-      const sessDbPath = join(sessDir, `${dbHash}${worktreeSuffix}.db`);
-      const eventsPath = join(sessDir, `${dbHash}${worktreeSuffix}-events.md`);
-      const cleanupFlag = join(sessDir, `${dbHash}${worktreeSuffix}.cleanup`);
-
-      let sessDbFound = false;
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try { unlinkSync(sessDbPath + suffix); sessDbFound = true; } catch { /* ignore */ }
-      }
-      if (sessDbFound) deleted.push("session events DB");
-
-      let eventsFound = false;
-      try { unlinkSync(eventsPath); eventsFound = true; } catch { /* ignore */ }
-      if (eventsFound) deleted.push("session events markdown");
-
-      try { unlinkSync(cleanupFlag); } catch { /* ignore */ }
-    } catch { /* best effort */ }
-
-    // 3. Reset in-memory session stats
+    // Reset in-memory session stats
     sessionStats.calls = {};
     sessionStats.bytesReturned = {};
     sessionStats.bytesIndexed = 0;
@@ -2846,6 +3189,202 @@ server.registerTool(
   },
 );
 
+// ── ctx_insight process helpers ──────────────────────────────────────────────
+// Cross-platform process helpers used by ctx_insight (below) and the dashboard
+// launcher in cli.ts. All entry points use argv arrays — never `sh -c <string>`
+// — so caller-derived values cannot escape into shell context. See issue #441.
+//
+// `browserOpenArgv` is duplicated as a private 16-LOC copy in cli.ts to avoid
+// pulling server.ts top-level boot side effects into the cli bundle.
+
+export type SpawnSyncFn = (
+  cmd: string,
+  args: readonly string[],
+  opts?: SpawnSyncOptions,
+) => SpawnSyncReturns<string | Buffer>;
+
+export type BrowserOpenResult =
+  | { ok: true; method: string }
+  | { ok: false; method: "none"; reason: string };
+
+export type KillResult = {
+  killedPids: string[];
+  attemptedPids: string[];
+  errors: string[];
+};
+
+// Hard upper bound on every helper-internal spawnSync call. Caps tail-latency
+// when an external binary hangs (xdg-open waiting for an X11 session, lsof
+// stalling on /proc, taskkill blocking on an unresponsive process, etc.) so
+// the MCP tool surfaces a diagnostic instead of blocking the agent loop.
+// 5s is comfortably above the 99th-percentile completion of every command we
+// invoke; anything past that is hung.
+const HELPER_SPAWN_TIMEOUT_MS = 5000;
+
+// Returns the argv attempts for opening `url` on `platform`, in fall-back order.
+// Pure data — no I/O.
+export function browserOpenArgv(
+  url: string,
+  platform: NodeJS.Platform,
+): readonly { cmd: string; args: readonly string[] }[] {
+  if (platform === "darwin") return [{ cmd: "open", args: [url] }];
+  if (platform === "win32") {
+    // `start` is a cmd.exe builtin; the empty title arg ("") prevents the URL
+    // from being consumed as the window title.
+    return [{ cmd: "cmd", args: ["/c", "start", "", url] }];
+  }
+  // linux/bsd: try xdg-open, then sensible-browser (Debian/Ubuntu).
+  return [
+    { cmd: "xdg-open", args: [url] },
+    { cmd: "sensible-browser", args: [url] },
+  ];
+}
+
+// Opens a browser synchronously, waiting for each attempt to complete.
+// Returns a structured result so callers can surface auto-open failures
+// to the user instead of falsely reporting success.
+export function openBrowserSync(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  runner: SpawnSyncFn = spawnSync,
+): BrowserOpenResult {
+  const attempts = browserOpenArgv(url, platform);
+  const errors: string[] = [];
+  for (const { cmd, args } of attempts) {
+    try {
+      const r = runner(cmd, args, { stdio: "ignore", timeout: HELPER_SPAWN_TIMEOUT_MS });
+      // Treat signal-kill (status === null) and any non-zero status as failure
+      // so the next fallback fires.
+      if (!r.error && r.status === 0) return { ok: true, method: cmd };
+      const reason = r.error?.message ?? `status=${r.status === null ? "signaled" : r.status}`;
+      errors.push(`${cmd}: ${reason}`);
+    } catch (e) {
+      errors.push(`${cmd}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { ok: false, method: "none", reason: errors.join("; ") };
+}
+
+// Kills any process listening on `port`. Returns a structured result so
+// the caller can distinguish between (a) port was free, (b) kill succeeded,
+// (c) kill failed (perms, missing binary, or per-pid failure mid-loop).
+//
+// On Windows the netstat parser is locale-independent: the STATE column
+// ("LISTENING" / "ESTABLISHED" / ...) is translated on non-English Windows
+// (Windows-FR shows "À l'écoute", Windows-DE "ABHÖREN", etc.), but the REMOTE
+// ADDRESS column is not. A listening TCP socket always has remote
+// "0.0.0.0:0" (IPv4) or "[::]:0" (IPv6); a connected one has a real
+// addr:port. We therefore key off the remote column instead of the state
+// string. This also rules out the pre-fix bug where matching only the local
+// port number cross-matched a remote :port from an outbound connection and
+// taskkill'd an unrelated process.
+export function killProcessOnPort(
+  port: number,
+  platform: NodeJS.Platform = process.platform,
+  runner: SpawnSyncFn = spawnSync,
+): KillResult {
+  const result: KillResult = { killedPids: [], attemptedPids: [], errors: [] };
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    result.errors.push(`invalid port: ${port}`);
+    return result;
+  }
+
+  try {
+    if (platform === "win32") {
+      const r = runner("netstat", ["-ano"], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: HELPER_SPAWN_TIMEOUT_MS,
+      });
+      if (r.error) {
+        result.errors.push(`netstat: ${r.error.message}`);
+        return result;
+      }
+      if (r.status !== 0 || typeof r.stdout !== "string") return result;
+
+      const portSuffix = `:${port}`;
+      const pids = new Set<string>();
+      for (const rawLine of r.stdout.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const tokens = line.split(/\s+/);
+        // netstat -ano LISTENING row (en-US): "TCP  0.0.0.0:4747  0.0.0.0:0  LISTENING  1234"
+        // The STATE column is locale-translated and may itself contain spaces
+        // (Windows-FR `À l'écoute` splits into two tokens), so we cannot index
+        // STATE by position. PID is always the trailing column; PROTO/LOCAL/
+        // REMOTE are the first three. We anchor on those + a remote-wildcard
+        // check that's locale-independent.
+        if (tokens.length < 5) continue;
+        const proto = tokens[0];
+        const local = tokens[1];
+        const remote = tokens[2];
+        const pid = tokens[tokens.length - 1];
+        if (proto !== "TCP") continue;
+        if (!local.endsWith(portSuffix)) continue;
+        // Listening sockets carry a wildcard remote; anything else is a
+        // connection (and matching it would kill an unrelated process).
+        if (remote !== "0.0.0.0:0" && remote !== "[::]:0") continue;
+        if (!/^\d+$/.test(pid)) continue;
+        pids.add(pid);
+      }
+      for (const pid of pids) {
+        result.attemptedPids.push(pid);
+        try {
+          const k = runner("taskkill", ["/F", "/PID", pid], {
+            stdio: "ignore",
+            timeout: HELPER_SPAWN_TIMEOUT_MS,
+          });
+          if (k.error || k.status !== 0) {
+            result.errors.push(
+              `taskkill ${pid}: ${k.error?.message ?? `status=${k.status}`}`,
+            );
+          } else {
+            result.killedPids.push(pid);
+          }
+        } catch (e) {
+          result.errors.push(`taskkill ${pid}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    } else {
+      const r = runner("lsof", ["-ti", `:${port}`], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: HELPER_SPAWN_TIMEOUT_MS,
+      });
+      if (r.error) {
+        // ENOENT (lsof not installed) is a real diagnostic; surface it.
+        result.errors.push(`lsof: ${r.error.message}`);
+        return result;
+      }
+      // lsof exits 1 with empty stdout when the port is free — not an error.
+      if (r.status !== 0 || typeof r.stdout !== "string") return result;
+
+      const pids = r.stdout.split(/\r?\n/).filter(p => /^\d+$/.test(p));
+      for (const pid of pids) {
+        result.attemptedPids.push(pid);
+        try {
+          const k = runner("kill", [pid], {
+            stdio: "ignore",
+            timeout: HELPER_SPAWN_TIMEOUT_MS,
+          });
+          if (k.error || k.status !== 0) {
+            result.errors.push(
+              `kill ${pid}: ${k.error?.message ?? `status=${k.status}`}`,
+            );
+          } else {
+            result.killedPids.push(pid);
+          }
+        } catch (e) {
+          result.errors.push(`kill ${pid}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+  } catch (e) {
+    result.errors.push(e instanceof Error ? e.message : String(e));
+  }
+  return result;
+}
+
 // ── ctx-insight: analytics dashboard ──────────────────────────────────────────
 server.registerTool(
   "ctx_insight",
@@ -2857,7 +3396,7 @@ server.registerTool(
       "parallel work patterns, project focus, and actionable insights. " +
       "First run installs dependencies (~30s). Subsequent runs open instantly.",
     inputSchema: z.object({
-      port: z.coerce.number().optional().describe("Port to serve on (default: 4747)"),
+      port: z.coerce.number().int().min(1).max(65535).optional().describe("Port to serve on (default: 4747)"),
       sessionDir: z.string().optional().describe("Override INSIGHT_SESSION_DIR: directory containing context-mode session .db files"),
       contentDir: z.string().optional().describe("Override INSIGHT_CONTENT_DIR: directory containing context-mode content/index .db files"),
       insightSessionDir: z.string().optional().describe("Alias for sessionDir / INSIGHT_SESSION_DIR"),
@@ -2956,27 +3495,38 @@ server.registerTool(
       if (portOccupied && sourceUpdated) {
         // Source was updated but stale server is running on port — kill it so fresh code runs
         steps.push("Killing stale dashboard server (source updated)...");
-        try {
-          if (process.platform === "win32") {
-            execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port}') do taskkill /F /PID %a`, { stdio: "pipe" });
-          } else {
-            execSync(`lsof -ti:${port} | xargs kill 2>/dev/null`, { stdio: "pipe" });
-          }
-          await new Promise(r => setTimeout(r, 500)); // Wait for port to free
-        } catch { /* no process to kill — proceed anyway */ }
-        steps.push("Stale server killed.");
+        const kill = killProcessOnPort(port);
+        if (kill.attemptedPids.length > 0 && kill.killedPids.length === 0) {
+          // Tried to kill, every attempt failed (perms, race, missing binary).
+          // Surface so the agent doesn't loop on the same port forever.
+          return trackResponse("ctx_insight", {
+            content: [{
+              type: "text" as const,
+              text: `Could not free port ${port} (kill failed for ${kill.attemptedPids.join(", ")}: ${kill.errors.join("; ")}). Try ctx_insight({ port: ${port + 1} }) or stop the process manually.`,
+            }],
+          });
+        }
+        if (kill.errors.length > 0 && kill.attemptedPids.length === 0) {
+          // Couldn't even probe the port (e.g. lsof not installed).
+          return trackResponse("ctx_insight", {
+            content: [{
+              type: "text" as const,
+              text: `Cannot reclaim port ${port}: ${kill.errors.join("; ")}. Stop the process manually or pick another port.`,
+            }],
+          });
+        }
+        await new Promise(r => setTimeout(r, 500)); // Wait for port to free
+        steps.push(`Stale server killed (${kill.killedPids.length} pid${kill.killedPids.length === 1 ? "" : "s"}).`);
       } else if (portOccupied) {
         // Source unchanged, server is running fine — just open browser
         steps.push("Dashboard already running.");
         const url = `http://localhost:${port}`;
-        const platform = process.platform;
-        try {
-          if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-          else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-          else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-        } catch { /* browser open is best-effort */ }
+        const open = openBrowserSync(url);
+        const tail = open.ok
+          ? ""
+          : ` (auto-open failed: ${open.reason}; navigate manually)`;
         return trackResponse("ctx_insight", {
-          content: [{ type: "text" as const, text: `Dashboard already running at http://localhost:${port}` }],
+          content: [{ type: "text" as const, text: `Dashboard already running at ${url}${tail}` }],
         });
       }
 
@@ -3033,14 +3583,10 @@ server.registerTool(
 
       // Open browser (cross-platform)
       const url = `http://localhost:${port}`;
-      const platform = process.platform;
-      try {
-        if (platform === "darwin") execSync(`open "${url}"`, { stdio: "pipe" });
-        else if (platform === "win32") execSync(`start "" "${url}"`, { stdio: "pipe" });
-        else execSync(`xdg-open "${url}" 2>/dev/null || sensible-browser "${url}" 2>/dev/null`, { stdio: "pipe" });
-      } catch { /* browser open is best-effort */ }
+      const open = openBrowserSync(url);
+      const openTail = open.ok ? "" : ` (auto-open failed: ${open.reason}; navigate manually)`;
 
-      steps.push(`Dashboard running at ${url}`);
+      steps.push(`Dashboard running at ${url}${openTail}`);
 
       return trackResponse("ctx_insight", {
         content: [{

@@ -26,10 +26,27 @@ import {
   hasBunRuntime,
   getAvailableLanguages,
 } from "./runtime.js";
+import { getHookScriptPaths } from "./util/hook-config.js";
+import { resolveClaudeConfigDir } from "./util/claude-config.js";
+// Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
+// duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
+// Keep in sync — pure data, no I/O.
+function browserOpenArgv(
+  url: string,
+  platform: NodeJS.Platform,
+): readonly { cmd: string; args: readonly string[] }[] {
+  if (platform === "darwin") return [{ cmd: "open", args: [url] }];
+  if (platform === "win32") {
+    return [{ cmd: "cmd", args: ["/c", "start", "", url] }];
+  }
+  return [
+    { cmd: "xdg-open", args: [url] },
+    { cmd: "sensible-browser", args: [url] },
+  ];
+}
 
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
-import type { HookAdapter } from "./adapters/types.js";
 
 /* -------------------------------------------------------
  * Hook dispatcher — `context-mode hook <platform> <event>`
@@ -65,6 +82,7 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
   "codex": {
     pretooluse: "hooks/codex/pretooluse.mjs",
     posttooluse: "hooks/codex/posttooluse.mjs",
+    precompact: "hooks/codex/precompact.mjs",
     sessionstart: "hooks/codex/sessionstart.mjs",
     userpromptsubmit: "hooks/codex/userpromptsubmit.mjs",
     stop: "hooks/codex/stop.mjs",
@@ -117,7 +135,11 @@ const args = process.argv.slice(2);
 if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
-  upgrade();
+  upgrade().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    p.log.error(color.red(message));
+    process.exit(1);
+  });
 } else if (args[0] === "hook") {
   hookDispatch(args[1], args[2]);
 } else if (args[0] === "insight") {
@@ -191,28 +213,18 @@ export function openInBrowser(
   const hint = () =>
     console.error(`\nCould not auto-open browser. Open manually: ${url}`);
 
-  try {
-    if (platform === "darwin") {
-      runner("open", [url], opts);
-    } else if (platform === "win32") {
-      // `start` is a cmd.exe builtin; first arg after `start` is the
-      // window title — pass empty so the URL isn't consumed as a title.
-      runner("cmd", ["/c", "start", "", url], opts);
-    } else {
-      // linux/bsd: try xdg-open, fall back to sensible-browser.
-      try {
-        runner("xdg-open", [url], opts);
-      } catch {
-        try {
-          runner("sensible-browser", [url], opts);
-        } catch {
-          hint();
-        }
-      }
-    }
-  } catch {
-    hint();
+  // Platform→argv mapping is canonical in src/server.ts; mirrored privately
+  // above to avoid pulling server boot side effects into the cli bundle.
+  const attempts = browserOpenArgv(url, platform);
+  let opened = false;
+  for (const { cmd, args } of attempts) {
+    try {
+      runner(cmd, args as string[], opts);
+      opened = true;
+      break;
+    } catch { /* try next fallback */ }
   }
+  if (!opened) hint();
 }
 
 function defaultPluginRoot(): string {
@@ -390,6 +402,12 @@ async function doctor(): Promise<number> {
   for (const result of hookResults) {
     if (result.status === "pass") {
       p.log.success(color.green(`${result.check}: PASS`) + ` — ${result.message}`);
+    } else if (result.status === "warn") {
+      p.log.warn(
+        color.yellow(`${result.check}: WARN`) +
+          ` — ${result.message}` +
+          (result.fix ? color.dim(`\n  Run: ${result.fix}`) : ""),
+      );
     } else {
       p.log.error(
         color.red(`${result.check}: FAIL`) +
@@ -399,17 +417,24 @@ async function doctor(): Promise<number> {
     }
   }
 
-  // Hook script exists
-  p.log.step("Checking hook script...");
-  const hookScriptPath = resolve(pluginRoot, "hooks", "pretooluse.mjs");
-  try {
-    accessSync(hookScriptPath, constants.R_OK);
-    p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${hookScriptPath}`));
-  } catch {
-    p.log.error(
-      color.red("Hook script exists: FAIL") +
-        color.dim(` — not found at ${hookScriptPath}`),
-    );
+  // Hook scripts exist
+  p.log.step("Checking hook scripts...");
+  const hookScriptPaths = getHookScriptPaths(adapter, pluginRoot);
+  if (hookScriptPaths.length === 0) {
+    p.log.success(color.green("Hook scripts: PASS") + color.dim(" — no direct .mjs script paths to verify"));
+  } else {
+    for (const scriptPath of hookScriptPaths) {
+      const absolutePath = resolve(pluginRoot, scriptPath);
+      try {
+        accessSync(absolutePath, constants.R_OK);
+        p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${absolutePath}`));
+      } catch {
+        p.log.error(
+          color.red("Hook script exists: FAIL") +
+            color.dim(` — not found at ${absolutePath}`),
+        );
+      }
+    }
   }
 
   // Plugin registration — adapter-aware
@@ -670,7 +695,9 @@ async function upgrade() {
   // commit and CC keeps reporting the old version even after our cache dir is
   // updated — users then see "ctx-upgrade succeeded" but nothing actually
   // changed at the plugin-system level.
-  const marketplaceDir = resolve(homedir(), ".claude", "plugins", "marketplaces", "context-mode");
+  // Issue #460 round-3: route through resolveClaudeConfigDir so users who
+  // relocate their CC config root keep the marketplace clone in the same tree.
+  const marketplaceDir = resolve(resolveClaudeConfigDir(), "plugins", "marketplaces", "context-mode");
   if (existsSync(join(marketplaceDir, ".git"))) {
     s.start("Syncing marketplace clone");
     try {
@@ -726,179 +753,236 @@ async function upgrade() {
     if (newVersion === localVersion) {
       p.log.success(color.green("Already on latest") + ` — v${localVersion}`);
       rmSync(tmpDir, { recursive: true, force: true });
-      return;
     } else {
       p.log.info(
         `Update available: ${color.yellow("v" + localVersion)} → ${color.green("v" + newVersion)}`,
       );
-    }
+      // Step 2: Install dependencies + build
+      s.start("Installing dependencies & building");
+      npmExecFile(["install", "--no-audit", "--no-fund"], {
+        cwd: srcDir,
+        stdio: "pipe",
+        timeout: 120000,
+      });
+      npmExecFile(["run", "build"], {
+        cwd: srcDir,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+      s.stop("Built successfully");
 
-    // Step 2: Install dependencies + build
-    s.start("Installing dependencies & building");
-    npmExecFile(["install", "--no-audit", "--no-fund"], {
-      cwd: srcDir,
-      stdio: "pipe",
-      timeout: 120000,
-    });
-    npmExecFile(["run", "build"], {
-      cwd: srcDir,
-      stdio: "pipe",
-      timeout: 60000,
-    });
-    s.stop("Built successfully");
+      // Step 3: Update in-place
+      s.start("Updating files in-place");
 
-    // Step 3: Update in-place
-    s.start("Updating files in-place");
+      // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
+      // to avoid breaking active sessions that still reference them (#181).
 
-    // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)
-    // to avoid breaking active sessions that still reference them (#181).
-
-    // Read files list from cloned repo's package.json so new directories
-    // (like insight/) are automatically included without chicken-and-egg issues
-    // where the old CLI doesn't know about new directories.
-    const clonedPkg = JSON.parse(readFileSync(resolve(srcDir, "package.json"), "utf-8"));
-    const items = [
-      ...(clonedPkg.files || []),
-      "src", "package.json",
-    ];
-    for (const item of items) {
-      try {
-        rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
-        cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
-      } catch { /* some files may not exist in source */ }
-    }
-
-    // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
-    // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
-    // (#181) deletes after upgrade — breaking MCP server resolution. The literal
-    // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
-    // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
-    const mcpConfig = {
-      mcpServers: {
-        "context-mode": {
-          command: "node",
-          args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
-        },
-      },
-    };
-    writeFileSync(
-      resolve(pluginRoot, ".mcp.json"),
-      JSON.stringify(mcpConfig, null, 2) + "\n",
-    );
-
-    s.stop(color.green(`Updated in-place to v${newVersion}`));
-
-    // Fix registry — adapter-aware
-    adapter.updatePluginRegistry(pluginRoot, newVersion);
-    p.log.info(color.dim("  Registry synced to " + pluginRoot));
-
-    // Install production deps
-    s.start("Installing production dependencies");
-    npmExecFile(["install", "--production", "--no-audit", "--no-fund"], {
-      cwd: pluginRoot,
-      stdio: "pipe",
-      timeout: 60000,
-    });
-    s.stop("Dependencies ready");
-
-    if (detection.platform !== 'opencode' && detection.platform !== 'kilo') {
-      // Rebuild native addons for current Node.js ABI (fixes #131)
-      s.start("Rebuilding native addons");
-      const bsqBindingPath = resolve(
-        pluginRoot, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node",
-      );
-      // Skip rebuild when the binding from `npm install --production` is
-      // already present. Earlier code ran `npm rebuild better-sqlite3`
-      // unconditionally — its internal prebuild-install spawn raced with
-      // the prior install's tree-prune, intermittently failing to resolve
-      // `rc/index.js` and printing a scary "rebuild warning" even though
-      // the binding was healthy. Pre-check eliminates the race for the
-      // 99% case (binding survived install).
-      if (existsSync(bsqBindingPath)) {
-        s.stop(color.green("Native addons OK") + color.dim(" — binding present"));
-        changes.push("better-sqlite3 binding already present (no rebuild needed)");
-      } else {
-        // Binding actually missing — delegate to the shared 3-layer heal
-        // (scripts/heal-better-sqlite3.mjs, PR #410) instead of raw
-        // `npm rebuild`. Single source of truth across postinstall +
-        // ensure-deps + cli upgrade. Layer A spawns prebuild-install
-        // directly via process.execPath, bypassing PATH/MSVC and the
-        // npm-internal rc-resolution race that bit `npm rebuild`.
+      // Read files list from cloned repo's package.json so new directories
+      // (like insight/) are automatically included without chicken-and-egg issues
+      // where the old CLI doesn't know about new directories.
+      const clonedPkg = JSON.parse(readFileSync(resolve(srcDir, "package.json"), "utf-8"));
+      const items = [
+        ...(clonedPkg.files || []),
+        "src", "package.json",
+      ];
+      for (const item of items) {
         try {
-          const healUrl = pathToFileURL(
-            resolve(pluginRoot, "scripts", "heal-better-sqlite3.mjs"),
-          ).href;
-          const { healBetterSqlite3Binding } = await import(healUrl);
-          const result = healBetterSqlite3Binding(pluginRoot);
-          if (result?.healed) {
-            s.stop(color.green("Native addons healed") + color.dim(` (${result.reason})`));
-            changes.push(`Healed better-sqlite3 binding via ${result.reason}`);
-          } else {
-            s.stop(color.yellow("Native addon heal needs manual step"));
+          rmSync(resolve(pluginRoot, item), { recursive: true, force: true });
+          cpSync(resolve(srcDir, item), resolve(pluginRoot, item), { recursive: true });
+        } catch { /* some files may not exist in source */ }
+      }
+
+      // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
+      // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
+      // (#181) deletes after upgrade — breaking MCP server resolution. The literal
+      // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
+      // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
+      const mcpConfig = {
+        mcpServers: {
+          "context-mode": {
+            command: "node",
+            args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
+          },
+        },
+      };
+      writeFileSync(
+        resolve(pluginRoot, ".mcp.json"),
+        JSON.stringify(mcpConfig, null, 2) + "\n",
+      );
+
+      s.stop(color.green(`Updated in-place to v${newVersion}`));
+
+      // v1.0.114 hotfix — pre-flight: verify the in-place copy actually
+      // wrote a plugin.json carrying newVersion BEFORE we tell the
+      // registry that's the install path. If the manifest still reports
+      // the old version (rsync race, partial write, files-array drift),
+      // updating the registry would create the silent v1.0.113-class
+      // drift Mert hit. Bail out — the next /ctx-upgrade gets to retry.
+      const pluginManifest = resolve(pluginRoot, ".claude-plugin", "plugin.json");
+      let onDiskVersion: string | null = null;
+      try {
+        const pj = JSON.parse(readFileSync(pluginManifest, "utf-8"));
+        if (pj && typeof pj.version === "string") onDiskVersion = pj.version;
+      } catch { /* parse error → onDiskVersion stays null */ }
+      if (onDiskVersion !== newVersion) {
+        throw new Error(
+          `pluginRoot manifest version mismatch — disk says "${onDiskVersion ?? "<missing>"}" but newVersion is "${newVersion}". Refusing to bump registry.`,
+        );
+      }
+
+      // Fix registry — adapter-aware
+      adapter.updatePluginRegistry(pluginRoot, newVersion);
+      p.log.info(color.dim("  Registry synced to " + pluginRoot));
+
+      // v1.0.114 hotfix — post-write assertion: re-read installed_plugins.json
+      // and verify installPath/.claude-plugin/plugin.json's version matches
+      // the registry entry. Throws on mismatch — fails loudly so a future
+      // adapter regression surfaces here, not weeks later in user reports.
+      try {
+        const ipPath = resolve(resolveClaudeConfigDir(), "plugins", "installed_plugins.json");
+        if (existsSync(ipPath)) {
+          const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
+          const entries = ip?.plugins?.["context-mode@context-mode"];
+          if (Array.isArray(entries)) {
+            for (const entry of entries) {
+              const ip2 = entry?.installPath;
+              if (typeof ip2 !== "string" || !ip2) continue;
+              if (!existsSync(ip2)) {
+                throw new Error(`installPath does not exist on disk: ${ip2}`);
+              }
+              const pjPath = resolve(ip2, ".claude-plugin", "plugin.json");
+              if (!existsSync(pjPath)) {
+                throw new Error(`missing plugin.json manifest at ${pjPath}`);
+              }
+              const pj = JSON.parse(readFileSync(pjPath, "utf-8"));
+              if (pj?.version !== entry.version) {
+                throw new Error(
+                  `version mismatch — registry says "${entry.version}" but ${pjPath} says "${pj?.version}"`,
+                );
+              }
+            }
+          }
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Registry consistency check failed: ${message}`);
+      }
+
+      // v1.0.114 hotfix — marketplace post-pull assertion: clone (if
+      // present) MUST be on newVersion. Mert's case showed marketplace
+      // stuck at v1.0.89 — the sync block above swallowed that silently.
+      // Warn (don't throw) — npm-only users have no marketplace clone.
+      try {
+        const marketplaceManifest = resolve(marketplaceDir, ".claude-plugin", "plugin.json");
+        if (existsSync(marketplaceManifest)) {
+          const mpj = JSON.parse(readFileSync(marketplaceManifest, "utf-8"));
+          if (mpj?.version !== newVersion) {
             p.log.warn(
-              color.dim(`  Run: cd "${pluginRoot}" && npm install better-sqlite3`),
+              color.yellow("Marketplace clone version mismatch") +
+                ` — ${marketplaceDir} reports "${mpj?.version}" but expected "${newVersion}"`,
+            );
+            p.log.info(
+              color.dim(`  Run manually: git -C "${marketplaceDir}" fetch --tags origin && git -C "${marketplaceDir}" reset --hard origin/HEAD`),
+            );
+          }
+        }
+      } catch { /* best effort */ }
+
+      // Install production deps
+      s.start("Installing production dependencies");
+      npmExecFile(["install", "--production", "--no-audit", "--no-fund"], {
+        cwd: pluginRoot,
+        stdio: "pipe",
+        timeout: 60000,
+      });
+      s.stop("Dependencies ready");
+
+      if (detection.platform !== 'opencode' && detection.platform !== 'kilo') {
+        // Verify native addons through the same bootstrap start.mjs imports.
+        // On modern Node, the ABI-specific cache file is the compatibility marker;
+        // the active binding alone may be stale from a previous Node ABI.
+        s.start("Verifying native addon ABI");
+        const bsqAbiCachePath = resolve(
+          pluginRoot,
+          "node_modules",
+          "better-sqlite3",
+          "build",
+          "Release",
+          `better_sqlite3.abi${process.versions.modules}.node`,
+        );
+        try {
+          const ensureDepsPath = resolve(pluginRoot, "hooks", "ensure-deps.mjs");
+          if (!existsSync(ensureDepsPath)) {
+            throw new Error(`missing ${ensureDepsPath}`);
+          }
+          await import(`${pathToFileURL(ensureDepsPath).href}?upgrade=${Date.now()}`);
+          if (existsSync(bsqAbiCachePath)) {
+            s.stop(color.green("Native addons OK") + color.dim(" — ABI cache present"));
+            changes.push(`better-sqlite3 ABI ${process.versions.modules} cache ready`);
+          } else {
+            s.stop(color.yellow("Native addon ABI cache missing"));
+            p.log.warn(
+              color.dim(`  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
             );
           }
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
-          s.stop(color.yellow("Native addon heal unavailable"));
+          s.stop(color.yellow("Native addon ABI bootstrap unavailable"));
           p.log.warn(
-            color.yellow("better-sqlite3 heal helper missing") +
+            color.yellow("better-sqlite3 ABI repair did not run") +
               ` — ${message}` +
               color.dim(`\n  Try manually: cd "${pluginRoot}" && npm rebuild better-sqlite3`),
           );
         }
       }
-    }
-    
-    // Update global npm
-    s.start("Updating npm global package");
-    try {
-      npmExecFile(["install", "-g", pluginRoot, "--no-audit", "--no-fund"], {
-        stdio: "pipe",
-        timeout: 30000,
-      });
-      s.stop(color.green("npm global updated"));
-      changes.push("Updated npm global package");
-    } catch {
-      s.stop(color.yellow("npm global update skipped"));
-      p.log.info(color.dim("  Could not update global npm — may need sudo or standalone install"));
-    }
+      
+      // Update global npm
+      s.start("Updating npm global package");
+      try {
+        npmExecFile(["install", "-g", pluginRoot, "--no-audit", "--no-fund"], {
+          stdio: "pipe",
+          timeout: 30000,
+        });
+        s.stop(color.green("npm global updated"));
+        changes.push("Updated npm global package");
+      } catch {
+        s.stop(color.yellow("npm global update skipped"));
+        p.log.info(color.dim("  Could not update global npm — may need sudo or standalone install"));
+      }
 
-    // Cleanup
-    rmSync(tmpDir, { recursive: true, force: true });
+      // Cleanup
+      rmSync(tmpDir, { recursive: true, force: true });
 
-    // Sync skills to the active install path from installed_plugins.json (#228).
-    // Only targets the ACTUAL directory Claude Code reads from — not spraying everywhere.
-    try {
-      const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-      if (existsSync(registryPath)) {
-        const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
-        const entries = registry?.plugins?.["context-mode@context-mode"];
-        if (Array.isArray(entries)) {
-          for (const entry of entries) {
-            const installPath = entry.installPath;
-            if (installPath && installPath !== pluginRoot && existsSync(installPath)) {
-              const srcSkills = resolve(srcDir, "skills");
-              if (existsSync(srcSkills)) {
-                cpSync(srcSkills, resolve(installPath, "skills"), { recursive: true });
-                changes.push(`Synced skills to active install path`);
+      // Sync skills to the active install path from installed_plugins.json (#228).
+      // Only targets the ACTUAL directory Claude Code reads from — not spraying everywhere.
+      // Issue #460 round-3: honor $CLAUDE_CONFIG_DIR so the registry lookup
+      // tracks relocated CC config trees.
+      try {
+        const registryPath = resolve(resolveClaudeConfigDir(), "plugins", "installed_plugins.json");
+        if (existsSync(registryPath)) {
+          const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+          const entries = registry?.plugins?.["context-mode@context-mode"];
+          if (Array.isArray(entries)) {
+            for (const entry of entries) {
+              const installPath = entry.installPath;
+              if (installPath && installPath !== pluginRoot && existsSync(installPath)) {
+                const srcSkills = resolve(srcDir, "skills");
+                if (existsSync(srcSkills)) {
+                  cpSync(srcSkills, resolve(installPath, "skills"), { recursive: true });
+                  changes.push(`Synced skills to active install path`);
+                }
               }
             }
           }
         }
-      }
-    } catch { /* best effort — registry may not exist or be malformed */ }
+      } catch { /* best effort — registry may not exist or be malformed */ }
 
-    changes.push(
-      newVersion !== localVersion
-        ? `Updated v${localVersion} → v${newVersion}`
-        : `Reinstalled v${localVersion} from GitHub`,
-    );
-    p.log.success(
-      color.green("Plugin reinstalled from GitHub!") +
-        color.dim(` — v${newVersion}`),
-    );
+      changes.push(`Updated v${localVersion} → v${newVersion}`);
+      p.log.success(
+        color.green("Plugin reinstalled from GitHub!") +
+          color.dim(` — v${newVersion}`),
+      );
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     s.stop(color.red("Update failed"));
@@ -924,12 +1008,17 @@ async function upgrade() {
 
   // Step 4: Configure hooks — adapter-aware
   p.log.step(`Configuring ${adapter.name} hooks...`);
-  const hookChanges = adapter.configureAllHooks(pluginRoot);
-  for (const change of hookChanges) {
-    p.log.info(color.dim(`  ${change}`));
-    changes.push(change);
+  try {
+    const hookChanges = adapter.configureAllHooks(pluginRoot);
+    for (const change of hookChanges) {
+      p.log.info(color.dim(`  ${change}`));
+      changes.push(change);
+    }
+    p.log.success(color.green("Hooks configured") + color.dim(` — ${adapter.name}`));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Hook configuration failed: ${message}`);
   }
-  p.log.success(color.green("Hooks configured") + color.dim(` — ${adapter.name}`));
 
   // Step 5: Set hook script permissions — adapter-aware
   p.log.step("Setting hook script permissions...");
@@ -1007,15 +1096,18 @@ function statuslineForward(): void {
   // marketplace clone (#418-synced, stable across upgrades) and to the path
   // Claude Code itself loads from (installed_plugins.json) keeps the bar
   // alive instead of silently going blank.
+  // Issue #460 round-3: marketplace + registry paths must follow
+  // $CLAUDE_CONFIG_DIR so relocated CC trees still find the statusline binary.
+  const claudeRoot = resolveClaudeConfigDir();
   const candidates: string[] = [
     resolve(getPluginRoot(), "bin", "statusline.mjs"),
-    resolve(homedir(), ".claude", "plugins", "marketplaces", "context-mode", "bin", "statusline.mjs"),
+    resolve(claudeRoot, "plugins", "marketplaces", "context-mode", "bin", "statusline.mjs"),
   ];
 
   // installed_plugins.json may list one or more install paths CC actually
   // loads from. Prefer those if they exist.
   try {
-    const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const registryPath = resolve(claudeRoot, "plugins", "installed_plugins.json");
     if (existsSync(registryPath)) {
       const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
       const entries = registry?.plugins?.["context-mode@context-mode"];
@@ -1042,4 +1134,3 @@ function statuslineForward(): void {
     process.exit(0);
   });
 }
-

@@ -1,10 +1,10 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { QwenCodeAdapter } from "../../src/adapters/qwen-code/index.js";
+import { hashProjectDirCanonical, resolveSessionDbPath } from "../../src/session/db.js";
 import { fakeHome, realHome } from "../setup-home";
 
 describe("QwenCodeAdapter", () => {
@@ -156,13 +156,15 @@ describe("QwenCodeAdapter", () => {
       expect(sessionDir.startsWith(join(realHome, ".qwen", "context-mode"))).toBe(false);
     });
 
-    it("DB path uses sha256 hash of projectDir", () => {
+    // C2 narrowing: per-project DB path is composed by callers via
+    // resolveSessionDbPath + adapter.getSessionDir().
+    it("DB path uses canonical hash of projectDir", () => {
       const projectDir = "/my/project";
-      const hash = createHash("sha256")
-        .update(projectDir)
-        .digest("hex")
-        .slice(0, 16);
-      const dbPath = adapter.getSessionDBPath(projectDir);
+      const hash = hashProjectDirCanonical(projectDir);
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: adapter.getSessionDir(),
+      });
       expect(dbPath).toBe(
         join(homedir(), ".qwen", "context-mode", "sessions", `${hash}.db`),
       );

@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { KiroAdapter } from "../../src/adapters/kiro/index.js";
+import { hashProjectDirCanonical, resolveSessionDbPath } from "../../src/session/db.js";
 import {
   PRE_TOOL_USE_MATCHER_PATTERN,
   PRE_TOOL_USE_MATCHERS,
@@ -253,14 +254,24 @@ describe("KiroAdapter", () => {
       );
     });
 
+    // C2 narrowing: per-project DB path is computed by callers via
+    // resolveSessionDbPath + adapter.getSessionDir(). Test pins that the
+    // composition lands the file inside Kiro's sessionDir (~/.kiro/...).
     it("session DB path contains project hash", () => {
-      const dbPath = adapter.getSessionDBPath("/test/project");
+      const dbPath = resolveSessionDbPath({
+        projectDir: "/test/project",
+        sessionsDir: adapter.getSessionDir(),
+      });
       expect(dbPath).toMatch(/[a-f0-9]{16}\.db$/);
       expect(dbPath).toContain(".kiro");
     });
 
     it("session events path contains project hash with -events.md suffix", () => {
-      const eventsPath = adapter.getSessionEventsPath("/test/project");
+      // events.md sidecar shape mirrors server.ts/hooks: <sessionDir>/<hash>-events.md
+      const eventsPath = join(
+        adapter.getSessionDir(),
+        `${hashProjectDirCanonical("/test/project")}-events.md`,
+      );
       expect(eventsPath).toMatch(/[a-f0-9]{16}-events\.md$/);
       expect(eventsPath).toContain(".kiro");
     });
