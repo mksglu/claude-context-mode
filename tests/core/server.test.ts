@@ -4413,3 +4413,28 @@ describe("analytics homedir() import is alive (#43c63cb regression guard)", () =
     expect(dirs.every((d) => d.sessionsDir.startsWith(home))).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// Startup banner suppression in stdio transport mode.
+// When the server runs as a child process (stdin is not a TTY), the banner
+// must not appear on stderr — Pi and other hosts render stderr in their UI.
+// ─────────────────────────────────────────────────────────
+describe("startup banner suppressed in stdio transport mode", () => {
+  test("no banner on stderr when stdin is not a TTY (child process)", async () => {
+    const bundlePath = resolve(__dirname, "../../server.bundle.mjs");
+    if (!existsSync(bundlePath)) return;
+
+    const stderr = await new Promise<string>((res) => {
+      const proc = spawn(process.execPath, [bundlePath], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1" },
+      });
+      let data = "";
+      proc.stderr.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      setTimeout(() => { proc.kill(); res(data); }, 300);
+    });
+
+    expect(stderr).not.toContain("Context Mode MCP server");
+    expect(stderr).not.toContain("Detected runtimes:");
+  });
+});

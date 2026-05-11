@@ -3708,13 +3708,15 @@ async function main() {
   // statusline staleness threshold is 30min (cliff is 30 missed ticks away).
   setInterval(() => persistStats(), 60_000).unref();
 
-  console.error(`Context Mode MCP server v${VERSION} running on stdio`);
-  console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
-  if (!hasBunRuntime()) {
-    console.error(
-      "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
-    );
-    console.error("  curl -fsSL https://bun.sh/install | bash");
+  if (process.stdin.isTTY) {
+    console.error(`Context Mode MCP server v${VERSION} running on stdio`);
+    console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
+    if (!hasBunRuntime()) {
+      console.error(
+        "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
+      );
+      console.error("  curl -fsSL https://bun.sh/install | bash");
+    }
   }
 }
 
