@@ -19,13 +19,12 @@
     "playwright",
     "context7"
   ],
-  "mcpServers": {
-    "context-mode": {
-      "command": "node",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/start.mjs"
-      ]
-    }
-  },
-  "skills": "./skills/"
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "context-mode",
+    "shortDescription": "98% context window savings via FTS5 + sandboxed execution",
+    "developerName": "Mert Koseoğlu",
+    "category": "Productivity"
+  }
 }

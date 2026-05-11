@@ -14,7 +14,7 @@ import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { healBetterSqlite3Binding } from "./heal-better-sqlite3.mjs";
-import { healInstalledPlugins, healSettingsEnabledPlugins } from "./heal-installed-plugins.mjs";
+import { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers } from "./heal-installed-plugins.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
@@ -95,6 +95,40 @@ if (isGlobalInstall()) {
       process.stderr.write(`context-mode: healed settings.json (${r.healed.join(", ")})\n`);
     }
     // skipped/error: silent — already covered by the prior heal's stderr line.
+  } catch { /* never block install */ }
+
+  // v1.0.119: Layer 5b (Issue #523). Heal .claude-plugin/plugin.json's
+  // mcpServers["context-mode"].args[0] when /ctx-upgrade left a tmpdir-prefixed
+  // path baked in. Iterates EVERY installed cache entry's installPath so
+  // already-broken users self-recover the next time `npm install -g context-mode`
+  // runs. Best effort, never blocks install.
+  try {
+    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    if (existsSync(ipPath)) {
+      const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
+      const entries = (ip && ip.plugins && ip.plugins["context-mode@context-mode"]) || [];
+      let healedAny = false;
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          const installPath = entry && entry.installPath;
+          if (typeof installPath !== "string" || !installPath) continue;
+          try {
+            const r = healPluginJsonMcpServers({
+              pluginRoot: installPath,
+              pluginCacheRoot: cacheRoot,
+              pluginKey: "context-mode@context-mode",
+            });
+            if (r && Array.isArray(r.healed) && r.healed.length > 0) {
+              healedAny = true;
+            }
+          } catch { /* per-entry best effort */ }
+        }
+      }
+      if (healedAny) {
+        process.stderr.write("context-mode: healed plugin.json mcpServers args (Issue #523)\n");
+      }
+    }
   } catch { /* never block install */ }
 }
 

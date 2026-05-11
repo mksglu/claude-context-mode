@@ -261,6 +261,77 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
   });
 });
 
+describe("Bash structurally-bounded allowlist: extended commands (#517)", () => {
+  // Issue #517 extends the allowlist with `uname / id / realpath / ln`.
+  // These are short-output system probes / fs ops that were omitted from
+  // the original #463/#470 batch — restoring parity with the documented
+  // "system probes + silent fs ops" buckets.
+  const SID = "issue-517-tests";
+  beforeEach(() => resetGuidanceThrottle(SID));
+
+  it("uname / uname -a — no nudge", () => {
+    for (const command of ["uname", "uname -a", "uname -srm"]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("id / id <user> — no nudge", () => {
+    for (const command of ["id", "id mksglu", "id -u"]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("realpath ./foo — no nudge", () => {
+    for (const command of ["realpath ./foo", "realpath /etc/hosts", "realpath -s ./bar"]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+  });
+
+  it("regression guard — operator composition still trips on new commands", () => {
+    // Defense-in-depth (#470): the SHELL_CONTROL_OPERATORS gate must still
+    // disqualify any of the new #517 commands when composed with an
+    // unbounded sink (pipe, redirect, &&, ;, single &, $(...), heredoc-less
+    // command sub, newline injection). Without this gate, an attacker could
+    // wrap a flood behind an allowlisted command (`uname -a | tee
+    // /tmp/leak`).
+    const cases = [
+      "uname -a | tee /tmp/x",
+      "id > /tmp/leak",
+      "realpath /etc/hosts && cat /var/log/syslog",
+      "ln -s a b ; find /",
+      "uname -a\nfind /",
+      "id $(find /)",
+    ];
+    for (const command of cases) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision?.action, `expected nudge for ${JSON.stringify(command)}`).toBe("context");
+    }
+  });
+
+  it("ln -s a b → no nudge; ln -v a b → still nudged (verbose floods)", () => {
+    // Mirrors cp/mv/rm discipline (#470 defense): ln is silent on success,
+    // but `-v` / `--verbose` prints one line per link — flooding on bulk
+    // symlink operations. The "silent" invariant only holds without -v.
+    for (const command of ["ln -s a b", "ln a b", "ln -sf /src /dst"]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision, `expected null for ${command}`).toBeNull();
+    }
+    for (const command of ["ln -v a b", "ln -sv a b", "ln --verbose a b"]) {
+      resetGuidanceThrottle(SID);
+      const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
+      expect(decision?.action, `expected nudge for ${command}`).toBe("context");
+    }
+  });
+});
+
 describe("Bash structurally-bounded allowlist: newline injection (#470)", () => {
   // Bash treats newline as a statement separator (equivalent to `;`). A safe
   // first line followed by an unbounded sink on line 2 must NOT be allowlisted —

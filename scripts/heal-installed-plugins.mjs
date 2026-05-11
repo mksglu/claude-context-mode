@@ -179,3 +179,107 @@ export function healSettingsEnabledPlugins({ settingsPath, pluginKey }) {
 
   return { healed };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #523 (v1.0.119) — Layer 5 heal: plugin.json mcpServers args
+//
+// /ctx-upgrade in v1.0.118 wrote `.mcp.json` with the literal
+// `${CLAUDE_PLUGIN_ROOT}` placeholder (#411) but did NOT touch
+// `.claude-plugin/plugin.json`. On Windows, start.mjs's `normalizeHooksOnStartup`
+// (#378) rewrites that file's `mcpServers["context-mode"].args[0]` to an
+// absolute path. If `pluginRoot` happens to be the upgrade tmpdir at the time
+// of normalization (or an earlier upgrade left absolute paths in place), the
+// resulting plugin.json carries a `<tmpdir>/context-mode-upgrade-<epoch>/start.mjs`
+// path. After Node tmpdir cleanup, MCP fails to spawn with ENOENT and the user
+// has no /ctx-upgrade escape hatch.
+//
+// This heal is the sibling of #411's `.mcp.json` fix:
+//   - Detects tmpdir-prefixed args[0] (epoch-pattern, OS-agnostic)
+//   - Rewrites to literal `${CLAUDE_PLUGIN_ROOT}/start.mjs` placeholder
+//   - Never touches sibling mcpServers entries (only `pluginKey`'s server)
+//   - Refuses to write outside `pluginCacheRoot` (path-traversal guard)
+//
+// Single source of truth shared by:
+//   - `start.mjs` HEAL 5b (every MCP boot)
+//   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+//   - `src/cli.ts` upgrade() (post-bump)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Matches `<sep>context-mode-upgrade-<digits><sep>`. OS-agnostic. */
+const TMPDIR_UPGRADE_RE = /[/\\]context-mode-upgrade-\d+[/\\]/;
+const PLACEHOLDER_ARG = "${CLAUDE_PLUGIN_ROOT}/start.mjs";
+
+/**
+ * Heal `<pluginRoot>/.claude-plugin/plugin.json` mcpServers args.
+ *
+ * @param {{
+ *   pluginRoot: string,
+ *   pluginCacheRoot: string,
+ *   pluginKey: string,
+ * }} opts
+ * @returns {HealResult}
+ */
+export function healPluginJsonMcpServers({ pluginRoot, pluginCacheRoot, pluginKey }) {
+  if (!pluginRoot || !pluginCacheRoot || !pluginKey) {
+    return { healed: [], skipped: "missing-args" };
+  }
+
+  // Path-traversal guard: refuse to touch a plugin root that escapes the
+  // declared cache root. Mirrors HEAL 3's guard.
+  const resolvedRoot = resolve(pluginRoot);
+  const cacheRootWithSep = resolve(pluginCacheRoot) + sep;
+  if (!resolvedRoot.startsWith(cacheRootWithSep)) {
+    return { healed: [], skipped: "outside-cache-root" };
+  }
+
+  const pluginJsonPath = resolve(pluginRoot, ".claude-plugin", "plugin.json");
+  if (!existsSync(pluginJsonPath)) {
+    return { healed: [], skipped: "no-plugin-json" };
+  }
+
+  let raw;
+  try { raw = readFileSync(pluginJsonPath, "utf-8"); }
+  catch (err) { return { healed: [], error: `read-failed: ${(err && err.message) || err}` }; }
+
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (err) { return { healed: [], error: `parse-failed: ${(err && err.message) || err}` }; }
+
+  const servers = parsed && parsed.mcpServers;
+  if (!servers || typeof servers !== "object") {
+    return { healed: [], skipped: "no-mcp-servers" };
+  }
+
+  // Derive our server name from pluginKey ("context-mode@context-mode" → "context-mode").
+  const ourServerName = pluginKey.split("@")[0];
+  const ours = servers[ourServerName];
+  if (!ours || typeof ours !== "object" || !Array.isArray(ours.args)) {
+    return { healed: [], skipped: "no-our-server" };
+  }
+
+  /** @type {string[]} */
+  const healed = [];
+  const before = ours.args;
+  const after = before.map((a) => {
+    if (typeof a !== "string") return a;
+    // Detect tmpdir-prefixed `context-mode-upgrade-<digits>` paths and
+    // rewrite to the literal placeholder that survives upgrades. Only
+    // rewrites when the trailing component is `start.mjs` (our entrypoint).
+    if (TMPDIR_UPGRADE_RE.test(a) && /[/\\]start\.mjs$/.test(a)) {
+      return PLACEHOLDER_ARG;
+    }
+    return a;
+  });
+  const changed = after.some((v, i) => v !== before[i]);
+  if (changed) {
+    ours.args = after;
+    healed.push("plugin-json-args");
+    try {
+      writeFileSync(pluginJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+    } catch (err) {
+      return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
+    }
+  }
+
+  return { healed };
+}

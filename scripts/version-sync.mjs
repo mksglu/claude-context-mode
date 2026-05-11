@@ -13,6 +13,8 @@ const targets = [
   ".claude-plugin/plugin.json",
   ".claude-plugin/marketplace.json",
   ".cursor-plugin/plugin.json",
+  ".codex-plugin/plugin.json",
+  ".codex-plugin/marketplace.json",
   ".openclaw-plugin/openclaw.plugin.json",
   ".openclaw-plugin/package.json",
   "openclaw.plugin.json",

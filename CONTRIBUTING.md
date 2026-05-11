@@ -259,10 +259,12 @@ After rebuilding, restart your Claude Code session. The MCP server reloads on se
 
 We follow test-driven development. Every PR must include tests.
 
-**We strongly recommend installing the context-mode-ops skill** — it includes TDD enforcement, issue triage, PR review, and release automation with parallel subagent orchestration:
+**We strongly recommend installing the context-mode-ops skill** — it includes TDD enforcement, issue triage, PR review, and release automation with parallel subagent orchestration.
+
+The skill lives under `.claude/skills/context-mode-ops/` in this repo (moved from the deprecated `skills/` location in #439). Install via the direct path:
 
 ```bash
-npx skills add mksglu/context-mode --skill context-mode-ops
+npx skills add https://github.com/mksglu/context-mode/tree/main/.claude/skills/context-mode-ops
 ```
 
 ### Red-Green-Refactor

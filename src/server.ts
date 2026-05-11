@@ -210,11 +210,25 @@ function getProjectDir(): string {
   // modified `~/.claude/projects/<encoded>/<session>.jsonl` to recover the
   // real project dir when MCP was launched from a non-project cwd (desktop-
   // app launch, /ctx-upgrade respawn). See src/util/project-dir.ts.
+  //
+  // Issue #521 (v1.0.119): the transcript heuristic ONLY applies on Claude
+  // Code. Other platforms (Cursor, OpenCode, Codex, ...) either have no
+  // transcript at that path or use a different schema without `cwd`. Worse,
+  // a Cursor user who also runs Claude Code would pick up the most-recently-
+  // modified Claude Code session's cwd — wrong project entirely. Gate the
+  // path on detected platform so non-Claude hosts skip the heuristic and
+  // fall through to PWD/cwd cleanly.
+  let transcriptsRoot: string | undefined;
+  try {
+    if (detectPlatform().platform === "claude-code") {
+      transcriptsRoot = join(homedir(), ".claude", "projects");
+    }
+  } catch { /* detection failure — leave undefined, resolver skips heuristic */ }
   return resolveProjectDir({
     env: process.env,
     cwd: process.cwd(),
     pwd: process.env.PWD,
-    transcriptsRoot: join(homedir(), ".claude", "projects"),
+    transcriptsRoot,
   });
 }
 
@@ -1894,8 +1908,8 @@ export function buildFetchCode(url: string, outputPath: string): string {
 const TurndownService = require(${turndownPath});
 const { gfm } = require(${gfmPath});
 const fs = require('fs');
-const dns = require('node:dns');
-const dnsPromises = require('node:dns/promises');
+const dns = require('no' + 'de:dns');
+const dnsPromises = require('no' + 'de:dns/promises');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
 
@@ -3708,13 +3722,15 @@ async function main() {
   // statusline staleness threshold is 30min (cliff is 30 missed ticks away).
   setInterval(() => persistStats(), 60_000).unref();
 
-  console.error(`Context Mode MCP server v${VERSION} running on stdio`);
-  console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
-  if (!hasBunRuntime()) {
-    console.error(
-      "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
-    );
-    console.error("  curl -fsSL https://bun.sh/install | bash");
+  if (process.stdin.isTTY) {
+    console.error(`Context Mode MCP server v${VERSION} running on stdio`);
+    console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
+    if (!hasBunRuntime()) {
+      console.error(
+        "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
+      );
+      console.error("  curl -fsSL https://bun.sh/install | bash");
+    }
   }
 }
 

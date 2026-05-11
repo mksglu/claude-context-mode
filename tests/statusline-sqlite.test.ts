@@ -34,6 +34,8 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
+import { buildIsolatedEnvObject } from "./util/isolated-env.js";
+
 
 const _hashCanonical = (p: string) => createHash("sha256").update(
   (process.platform === "darwin" || process.platform === "win32") ? p.toLowerCase() : p
@@ -41,10 +43,22 @@ const _hashCanonical = (p: string) => createHash("sha256").update(
 
 const STATUSLINE = resolve(process.cwd(), "bin", "statusline.mjs");
 
+// Isolate the spawned statusline's env so getMultiAdapterLifetimeStats()
+// (and OpenCode's APPDATA/XDG_CONFIG_HOME paths on Windows) cannot leak data
+// from concurrently-running tests or the developer's real adapter dirs into
+// render decisions. Multi-adapter tests below explicitly pass their own
+// HOME/USERPROFILE in `env` to override this isolation (last spread wins).
+// On Windows, scoping HOME/USERPROFILE alone is insufficient —
+// APPDATA/LOCALAPPDATA/XDG_* must also be redirected, which was PR #515's
+// BRAND_NEW failure mode.
+function isolatedHomeEnv(): Record<string, string> {
+  return buildIsolatedEnvObject().env;
+}
+
 function runStatusline(env: Record<string, string>) {
   const result = spawnSync("node", [STATUSLINE], {
     input: "{}",
-    env: { ...process.env, NO_COLOR: "1", ...env },
+    env: { ...process.env, NO_COLOR: "1", ...isolatedHomeEnv(), ...env },
     encoding: "utf-8",
   });
   return {
@@ -176,12 +190,18 @@ describe("statusline.mjs — SessionDB-backed reads", () => {
     });
 
     assert.match(stdout, /context-mode/, "brand visible");
-    // 1MB avoided ÷ 4 bytes/token = 256K tokens × $15/1M = $3.84 (and bytes_returned=0)
-    // Substantively positive lifetime $ — proves SessionDB is the source.
+    // Post-v1.0.118: statusline is byte-based (no $). 1MB avoided over
+    // ~100 events seeds a non-trivial kb()-formatted block — proving
+    // SessionDB rows were read and aggregated.
     assert.match(
       stdout,
-      /\$([1-9]\d*|0\.\d*[1-9])/,
-      "non-zero $ derived from SessionDB rows",
+      /\d+(\.\d+)?\s*(B|KB|MB|GB)/,
+      "non-zero byte total derived from SessionDB rows",
+    );
+    assert.match(
+      stdout,
+      /(this chat|kept out|lifetime)/,
+      "byte-based render template is in effect",
     );
     assert.doesNotMatch(stdout, /NaN/);
   });

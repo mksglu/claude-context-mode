@@ -122,7 +122,7 @@ if (cacheMatch) {
 // truth) so users who fix themselves via `npm install -g context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
 try {
-  const { healInstalledPlugins, healSettingsEnabledPlugins } =
+  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
   const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
@@ -135,6 +135,30 @@ try {
   // disable state is repaired before next /reload-plugins.
   try { healSettingsEnabledPlugins({ settingsPath, pluginKey }); }
   catch { /* best effort */ }
+  // v1.0.119 — Layer 5b (Issue #523): heal .claude-plugin/plugin.json's
+  // mcpServers["context-mode"].args[0] when /ctx-upgrade left a tmpdir-prefixed
+  // path baked in. Iterates EVERY installed cache entry's installPath so
+  // multi-version installs all self-recover. Each call is independently wrapped
+  // because one poisoned entry must not block heals on the others. Best effort.
+  try {
+    if (existsSync(registryPath)) {
+      const ip = JSON.parse(readFileSync(registryPath, "utf-8"));
+      const entries = (ip && ip.plugins && ip.plugins[pluginKey]) || [];
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          const installPath = entry && entry.installPath;
+          if (typeof installPath !== "string" || !installPath) continue;
+          try {
+            healPluginJsonMcpServers({
+              pluginRoot: installPath,
+              pluginCacheRoot,
+              pluginKey,
+            });
+          } catch { /* best effort — per-entry */ }
+        }
+      }
+    }
+  } catch { /* best effort */ }
 } catch { /* best effort — never block MCP boot */ }
 
 // ── Self-heal Layer 4: Deploy global SessionStart hook + register in settings.json ──

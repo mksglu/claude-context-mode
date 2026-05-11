@@ -33,6 +33,8 @@ import { join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
 
+import { buildIsolatedEnvObject } from "./util/isolated-env.js";
+
 const STATUSLINE = resolve(
   process.cwd(),
   "bin",
@@ -106,10 +108,23 @@ function seedDb(opts: {
   return dbPath;
 }
 
+// Isolate the spawned statusline's env so getMultiAdapterLifetimeStats()
+// (which scans `~/.{adapter}/context-mode/sessions/`) and OpenCode's
+// getConfigDir (which reads APPDATA / XDG_CONFIG_HOME) cannot leak data from
+// concurrently-running tests (or the developer's real adapter dirs) into
+// render decisions. Crucially we set APPDATA/LOCALAPPDATA/XDG_* alongside
+// HOME/USERPROFILE — on Windows the latter alone was insufficient and PR
+// #515's BRAND_NEW assertion fell through. Tests that intentionally seed a
+// multi-adapter homedir pass their own HOME/USERPROFILE in `env` to override
+// this baseline (last spread in spawn `env` wins).
+function isolatedHomeEnv(): Record<string, string> {
+  return buildIsolatedEnvObject().env;
+}
+
 function runStatusline(env: Record<string, string>) {
   const result = spawnSync("node", [STATUSLINE], {
     input: "{}",
-    env: { ...process.env, NO_COLOR: "1", ...env },
+    env: { ...process.env, NO_COLOR: "1", ...isolatedHomeEnv(), ...env },
     encoding: "utf-8",
   });
   return result.stdout.trim();
@@ -118,7 +133,7 @@ function runStatusline(env: Record<string, string>) {
 function runStatuslineFull(env: Record<string, string>) {
   const result = spawnSync("node", [STATUSLINE], {
     input: "{}",
-    env: { ...process.env, NO_COLOR: "1", ...env },
+    env: { ...process.env, NO_COLOR: "1", ...isolatedHomeEnv(), ...env },
     encoding: "utf-8",
   });
   return {
@@ -247,15 +262,16 @@ esac
       CLAUDE_SESSION_ID: "",
     });
 
-    // The session $ block surfaces only when conversation matches the
-    // resolved session_id. "saved this session" proves the walk landed
-    // on pid-90001 and getRealBytesStats found those events.
+    // The "this chat" block surfaces only when conversation matches the
+    // resolved session_id (sessionBytes > 0 → ACTIVE branch in render).
+    // Its presence proves the walk landed on pid-90001 and
+    // getRealBytesStats found those events. The post-v1.0.118 statusline
+    // is byte-based (no $), so we assert on the byte-render token.
     assert.match(
       out,
-      /\$[0-9]/,
+      /this chat/,
       "resolver landed on pid-90001 → SessionDB had matching events",
     );
-    assert.match(out, /saved this session/);
   });
 
   // linux: walk via /proc/<pid>/status. CTX_TEST_PROC_DIR points at a
@@ -286,8 +302,7 @@ esac
       CLAUDE_SESSION_ID: "",
     });
 
-    assert.match(out, /\$[0-9]/, "resolver landed on pid-70001 via /proc walk");
-    assert.match(out, /saved this session/);
+    assert.match(out, /this chat/, "resolver landed on pid-70001 via /proc walk");
   });
 
   // win32: degraded fallback to process.ppid + one-shot stderr warning so
@@ -303,7 +318,7 @@ esac
       CLAUDE_SESSION_ID: "",
     });
 
-    assert.match(stdout, /\$[0-9]/, "fell back to ppid-based session_id");
+    assert.match(stdout, /this chat/, "fell back to ppid-based session_id");
     assert.match(
       stderr,
       /Windows process-tree walk unsupported/i,
@@ -333,7 +348,6 @@ describe("statusline.mjs — CONTEXT_MODE_SESSION_DIR override", () => {
       CLAUDE_SESSION_ID: "any-id",
     });
     assert.match(out, /context-mode/);
-    assert.match(out, /\$[0-9]/, "render reflects override-dir SessionDB");
-    assert.match(out, /saved this session/);
+    assert.match(out, /this chat/, "render reflects override-dir SessionDB");
   });
 });

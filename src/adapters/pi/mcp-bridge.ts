@@ -21,11 +21,93 @@
  * No external dependencies — pure node:child_process + JSON line frames.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { detectRuntimes } from "../../runtime.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+}
+
+// ── Fork-bomb prevention (#516) ──────────────────────────────────────
+//
+// Original bug: `spawn(process.execPath, [serverScript])` recursively
+// re-executed the Pi binary on Bun-only systems where `process.execPath`
+// IS pi itself. Each spawn re-loaded context-mode → spawned again →
+// took the box down.
+//
+// Defence in depth:
+//   1. resolveJsRuntimeForBridge() refuses pi-named binaries even when
+//      detectRuntimes() returns one, falling back to PATH-resolved
+//      node/bun.
+//   2. Spawn passes CONTEXT_MODE_BRIDGE_DEPTH=1 in child env so any
+//      transitive bridge load can detect the recursion via env counter.
+//   3. bootstrapMCPTools() aborts if CONTEXT_MODE_BRIDGE_DEPTH > 0 in
+//      its own env — catches recursion that bypasses the binary-name
+//      check (e.g. a `node` shim that re-execs Pi).
+
+const PI_BINARY_BASENAME = /^pi(\.exe)?$/i;
+const BRIDGE_DEPTH_ENV = "CONTEXT_MODE_BRIDGE_DEPTH";
+const isWindows = process.platform === "win32";
+
+function basename(p: string): string {
+  const segs = p.split(/[\\/]/);
+  return segs[segs.length - 1] ?? "";
+}
+
+function whichOnPath(cmd: string): string | null {
+  try {
+    const probe = isWindows ? `where ${cmd}` : `command -v ${cmd}`;
+    const out = execSync(probe, { encoding: "utf-8", stdio: "pipe" })
+      .trim()
+      .split(/\r?\n/)[0]
+      ?.trim();
+    return out && out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ResolveDeps {
+  detect?: () => { javascript: string | null };
+  which?: (cmd: string) => string | null;
+  execPath?: string;
+}
+
+/**
+ * Resolve a JS runtime safe to spawn the MCP server with.
+ *
+ * Returns `null` when no real runtime is reachable (caller must skip
+ * the bridge gracefully — see bootstrapMCPTools). Pi-named binaries are
+ * explicitly rejected at every step to prevent the #516 fork bomb.
+ */
+export function resolveJsRuntimeForBridge(deps: ResolveDeps = {}): string | null {
+  const detect = deps.detect ?? (() => detectRuntimes());
+  const which = deps.which ?? whichOnPath;
+  const execPath = deps.execPath ?? process.execPath;
+
+  const isPi = (p: string | null | undefined): boolean =>
+    !!p && PI_BINARY_BASENAME.test(basename(p));
+
+  // 1. Prefer detectRuntimes().javascript when it is NOT pi.
+  let candidate: string | null = null;
+  try {
+    candidate = detect().javascript ?? null;
+  } catch {
+    candidate = null;
+  }
+  if (candidate && !isPi(candidate)) return candidate;
+
+  // 2. Fall back to PATH-resolved node, then bun.
+  for (const cmd of ["node", "bun"]) {
+    const resolved = which(cmd);
+    if (resolved && !isPi(resolved)) return resolved;
+  }
+
+  // 3. Last resort: process.execPath only if it is not pi.
+  if (execPath && !isPi(execPath)) return execPath;
+
+  return null;
 }
 
 export interface MCPTool {
@@ -63,23 +145,44 @@ export class MCPStdioClient {
   private buffer = "";
   private initialized = false;
   private exited = false;
+  /**
+   * Live env passed to the spawned child — exposed (read-only intent)
+   * so tests can pin the fork-bomb-prevention env counter (#516)
+   * without needing to attach a process-tree probe.
+   */
+  _spawnEnv: NodeJS.ProcessEnv | null = null;
 
   constructor(
     private readonly serverScript: string,
     private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly runtimeOverride: string | null = null,
   ) {}
 
   /** Spawn the MCP child. Idempotent. */
   start(): void {
     if (this.child) return;
     this.exited = false;
-    this.child = spawn(process.execPath, [this.serverScript], {
+    // Pick a JS runtime that is NOT the host process (#516). When Pi
+    // is the host binary, process.execPath would re-exec Pi and fork
+    // bomb the box. resolveJsRuntimeForBridge prefers bun/node and
+    // explicitly rejects pi-named binaries.
+    const runtime =
+      this.runtimeOverride ?? resolveJsRuntimeForBridge() ?? process.execPath;
+    // Increment the depth counter so any transitive bridge load inside
+    // the child can short-circuit before spawning yet another server.
+    const depth = Number.parseInt(this.env[BRIDGE_DEPTH_ENV] ?? "0", 10);
+    const childEnv: NodeJS.ProcessEnv = {
+      ...this.env,
+      [BRIDGE_DEPTH_ENV]: String(Number.isFinite(depth) ? depth + 1 : 1),
+    };
+    this._spawnEnv = childEnv;
+    this.child = spawn(runtime, [this.serverScript], {
       // Pipe stderr (#472 round-3): swallowing it via "ignore" hides
       // server crash diagnostics — the user only saw "ctx_* tools will
       // not be callable" with no clue WHY. Forwarding to process.stderr
       // with a [mcp-bridge] prefix lets ops grep across session noise.
       stdio: ["pipe", "pipe", "pipe"],
-      env: this.env,
+      env: childEnv,
     });
     this.child.stdout?.on("data", (chunk) => this.onData(chunk));
     this.child.stderr?.on("data", (chunk: Buffer) => {
@@ -264,12 +367,59 @@ export interface BridgeHandle {
  * `execute()` callback — Pi's contract is "throw to mark the tool call
  * failed", which lets the LLM see and adapt.
  */
+export interface BootstrapOptions {
+  env?: NodeJS.ProcessEnv;
+  /** DI hook for tests: override the runtime resolver entirely. */
+  _resolveJsRuntime?: () => string | null;
+}
+
+/**
+ * Empty-but-valid handle returned when bootstrap is skipped (#516).
+ * Keeps the shutdown contract intact so callers do not need null checks.
+ */
+function skippedBridge(): BridgeHandle {
+  return {
+    tools: [],
+    shutdown: () => {
+      /* nothing to shut down */
+    },
+    client: new MCPStdioClient("/dev/null"),
+  };
+}
+
 export async function bootstrapMCPTools(
   pi: PiLikeAPI,
   serverScript: string,
-  options: { env?: NodeJS.ProcessEnv } = {},
+  options: BootstrapOptions = {},
 ): Promise<BridgeHandle> {
-  const client = new MCPStdioClient(serverScript, options.env);
+  const env = options.env ?? process.env;
+
+  // Recursion guard (#516): if an ancestor bridge already incremented
+  // the depth counter, refuse to spawn another child — even if the
+  // binary-name check would let us through. Catches `node` shims that
+  // re-exec Pi and other host swaps that bypass basename detection.
+  const depth = Number.parseInt(env[BRIDGE_DEPTH_ENV] ?? "0", 10);
+  if (Number.isFinite(depth) && depth > 0) {
+    process.stderr.write(
+      `[context-mode] WARNING: skipping MCP bridge — ${BRIDGE_DEPTH_ENV}=${depth} ` +
+        `indicates recursion (fork-bomb guard, #516). ctx_* tools will not be callable.\n`,
+    );
+    return skippedBridge();
+  }
+
+  // Runtime guard (#516): when neither node nor bun is on PATH and the
+  // host process is pi, there is no safe binary to spawn. Log once and
+  // return an empty handle — the rest of the extension keeps working.
+  const runtime = (options._resolveJsRuntime ?? resolveJsRuntimeForBridge)();
+  if (runtime === null) {
+    process.stderr.write(
+      `[context-mode] WARNING: no JS runtime found (need node or bun on PATH). ` +
+        `Skipping MCP bridge to avoid fork bomb (#516). ctx_* tools will not be callable.\n`,
+    );
+    return skippedBridge();
+  }
+
+  const client = new MCPStdioClient(serverScript, env, runtime);
   client.start();
   await client.initialize();
   const tools = await client.listTools();

@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   isPluginInstallPath,
   resolveProjectDir,
@@ -9,6 +11,8 @@ import {
 } from "../../src/util/project-dir.js";
 
 const cleanup: string[] = [];
+const bunAvailable = spawnSync("bun", ["--version"], { stdio: "ignore" }).status === 0;
+
 afterEach(() => {
   while (cleanup.length) {
     const p = cleanup.pop();
@@ -34,6 +38,27 @@ function writeTranscript(root: string, encodedDir: string, sessionId: string, cw
   writeFileSync(file, lines.join("\n") + "\n");
   if (mtime) utimesSync(file, mtime, mtime);
   return file;
+}
+
+function compiledResolverScript(): string {
+  const moduleUrl = pathToFileURL(join(process.cwd(), "build/util/project-dir.js")).href;
+  return `
+    import { resolveProjectDir } from ${JSON.stringify(moduleUrl)};
+    const result = resolveProjectDir({
+      env: {},
+      cwd: "/Users/x/fallback",
+      pwd: undefined,
+      transcriptsRoot: "/nonexistent/transcripts"
+    });
+    console.log(result);
+  `;
+}
+
+function runCompiledResolver(command: string, args: string[]): string {
+  return execFileSync(command, args, {
+    encoding: "utf-8",
+    env: { ...process.env, PWD: "" },
+  }).trim();
 }
 
 describe("isPluginInstallPath", () => {
@@ -124,6 +149,29 @@ describe("resolveProjectDir", () => {
       cwd: "/x", pwd: undefined,
     })).toBe("/i/proj");
   });
+
+  // Issue #521 Slice 1: CURSOR_CWD is honored when Cursor (or the user) sets
+  // it as an MCP env override. The cursor adapter already trusts CURSOR_CWD
+  // for hook input resolution (src/adapters/cursor/index.ts:581) — extend the
+  // same trust to the global resolver so ctx_stats / SessionDB / hash hit the
+  // workspace path instead of the chdir'd plugin install dir.
+  it("respects CURSOR_CWD when set (Cursor MCP env override or user workaround)", () => {
+    const result = resolveProjectDir({
+      env: { CURSOR_CWD: "/Users/x/cursor-proj" },
+      cwd: "/Users/x/.claude/plugins/cache/foo/foo/1.0.0", // plugin path → rejected
+      pwd: undefined,
+    });
+    expect(result).toBe("/Users/x/cursor-proj");
+  });
+
+  it("rejects CURSOR_CWD when it points at a plugin install path", () => {
+    const result = resolveProjectDir({
+      env: { CURSOR_CWD: "/Users/x/.claude/plugins/cache/foo/foo/1.0.0" },
+      cwd: "/x",
+      pwd: "/Users/x/realproj",
+    });
+    expect(result).toBe("/Users/x/realproj"); // PWD wins, CURSOR_CWD rejected as poisoned
+  });
 });
 
 describe("resolveProjectDirFromTranscript", () => {
@@ -182,5 +230,21 @@ describe("resolveProjectDirFromTranscript", () => {
       transcriptsRoot: "/nonexistent/transcripts",
     });
     expect(result).toBe("/Users/x/proj");
+  });
+
+  it("compiled ESM resolver runs under Node without CommonJS require", () => {
+    const output = runCompiledResolver(process.execPath, [
+      "--input-type=module",
+      "-e",
+      compiledResolverScript(),
+    ]);
+
+    expect(output).toBe("/Users/x/fallback");
+  });
+
+  it.runIf(bunAvailable)("compiled ESM resolver runs under Bun without CommonJS require", () => {
+    const output = runCompiledResolver("bun", ["-e", compiledResolverScript()]);
+
+    expect(output).toBe("/Users/x/fallback");
   });
 });

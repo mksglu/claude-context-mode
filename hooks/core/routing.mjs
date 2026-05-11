@@ -157,6 +157,12 @@ const SAFE_COMMAND_PATTERNS = [
   /^pwd$/,
   /^whoami$/,
   /^hostname(?:\s+-[a-zA-Z]+)?$/,
+  // uname (#517): short-flag probes only (`-a`, `-srm`). No path operands —
+  // uname doesn't take any, and refusing them keeps the pattern strict.
+  /^uname(?:\s+-[a-zA-Z]+)?$/,
+  // id (#517): bare `id`, single short flag (`-u`, `-g`), or single user
+  // operand (`id mksglu`). Output is one line — bounded by definition.
+  /^id(?:\s+\S+)?$/,
   /^date(?:\s+[^\r\n]+)?$/,
   /^echo\s/,
   /^printf\s/,
@@ -166,6 +172,10 @@ const SAFE_COMMAND_PATTERNS = [
   /^readlink(?:\s+[^\r\n]+)?$/,
   /^basename(?:\s+[^\r\n]+)?$/,
   /^dirname(?:\s+[^\r\n]+)?$/,
+  // realpath (#517): canonical path resolution prints one line per operand.
+  // Same shape as readlink — single-line `[^\r\n]+` to mirror the operator-gate
+  // defense-in-depth from #470.
+  /^realpath(?:\s+[^\r\n]+)?$/,
   // Filesystem ops (silent on success, errors on stderr only).
   // For cp / mv / rm we explicitly refuse `-v` / `--verbose`: verbose
   // mode prints one line per file and can flood on big trees
@@ -177,6 +187,9 @@ const SAFE_COMMAND_PATTERNS = [
   /^mv(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   /^cp(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   /^rm(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  // ln (#517): silent on success — same `-v` / `--verbose` carve-out as
+  // cp/mv/rm. Bulk symlink operations with -v flood one line per link.
+  /^ln(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   // ls — refuse recursive (-R / --recursive) to keep output bounded.
   /^ls(?!\s+-[a-zA-Z]*R)(?!\s+--recursive)(?:\s+[^\r\n]+)?$/,
   // git read-only / status subcommands

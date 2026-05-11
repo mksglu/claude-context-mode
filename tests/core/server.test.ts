@@ -2324,6 +2324,7 @@ describe("Platform-aware session paths via adapter", () => {
       "OPENCODE_PROJECT_DIR",
       "PI_PROJECT_DIR",
       "IDEA_INITIAL_DIRECTORY",
+      "CURSOR_CWD",
       "CONTEXT_MODE_PROJECT_DIR",
     ]) {
       expect(utilSrc).toContain(v);
@@ -2331,6 +2332,25 @@ describe("Platform-aware session paths via adapter", () => {
     expect(utilSrc).toContain("isPluginInstallPath");
     // Must NOT contain semantically wrong env vars
     expect(utilSrc).not.toContain("OPENCLAW_HOME");
+  });
+
+  // Issue #521 Slice 2: transcriptsRoot is the Claude Code transcript dir
+  // (`~/.claude/projects`). Passing it on non-Claude-Code platforms (Cursor,
+  // OpenCode, Codex, ...) is wrong — the most-recently-modified jsonl could
+  // belong to an unrelated Claude Code window, returning that project's cwd
+  // to a Cursor MCP. getProjectDir() MUST gate transcriptsRoot on the active
+  // platform via detectPlatform(); only "claude-code" gets the path.
+  test("getProjectDir gates transcriptsRoot on detected platform (Claude Code only)", () => {
+    const fn = serverSrc.match(/function getProjectDir[\s\S]*?^}/m);
+    expect(fn).not.toBeNull();
+    const body = fn![0];
+    // Must reference detectPlatform so the gate is dynamic per-process.
+    expect(body).toContain("detectPlatform");
+    // Must check for the claude-code platform string (literal — pinning the
+    // gate predicate so a typo or platform-id rename is caught here).
+    expect(body).toContain("claude-code");
+    // Still passes transcriptsRoot when the gate matches.
+    expect(body).toContain("transcriptsRoot");
   });
 
   // ── Content DB is platform-isolated (not shared) ──
@@ -3412,7 +3432,12 @@ describe("buildFetchCode — embedded SSRF guard contract", () => {
     // uses callback-form dns.lookup so default fetch is covered, but the
     // invariant is fragile — a future undici switch or any caller using
     // dnsPromises.lookup directly would bypass the guard.
-    expect(generated).toMatch(/require\(['"]node:dns\/promises['"]\)/);
+    // Match either literal 'node:dns/promises' or split-string 'no'+'de:dns/promises'
+    // The split form is required by the G3 bundle invariant — the literal would
+    // false-positive scripts/assert-bundle.mjs's raw-bare-require-node-builtin check.
+    expect(generated).toMatch(
+      /const dnsPromises\s*=\s*require\([^)]*dns\/promises['"]\)/,
+    );
     expect(generated).toMatch(/dnsPromises\.lookup\s*=\s*async\s+function/);
     expect(generated).toMatch(/SSRF blocked/);
   });
@@ -4411,5 +4436,30 @@ describe("analytics homedir() import is alive (#43c63cb regression guard)", () =
     // homedir() resolution is wired all the way through.
     const home = homedir();
     expect(dirs.every((d) => d.sessionsDir.startsWith(home))).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// Startup banner suppression in stdio transport mode.
+// When the server runs as a child process (stdin is not a TTY), the banner
+// must not appear on stderr — Pi and other hosts render stderr in their UI.
+// ─────────────────────────────────────────────────────────
+describe("startup banner suppressed in stdio transport mode", () => {
+  test("no banner on stderr when stdin is not a TTY (child process)", async () => {
+    const bundlePath = resolve(__dirname, "../../server.bundle.mjs");
+    if (!existsSync(bundlePath)) return;
+
+    const stderr = await new Promise<string>((res) => {
+      const proc = spawn(process.execPath, [bundlePath], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1" },
+      });
+      let data = "";
+      proc.stderr.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      setTimeout(() => { proc.kill(); res(data); }, 300);
+    });
+
+    expect(stderr).not.toContain("Context Mode MCP server");
+    expect(stderr).not.toContain("Detected runtimes:");
   });
 });

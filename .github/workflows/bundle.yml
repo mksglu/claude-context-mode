@@ -28,6 +28,9 @@ jobs:
 
       - run: npm run bundle
 
+      - name: Assert bundle invariants (G3 — Issue #511 guardrail)
+        run: npm run assert-bundle
+
       - name: Commit bundle
         run: |
           git config user.name "github-actions[bot]"

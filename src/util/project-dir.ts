@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 /**
  * Project-dir resolution helpers — shared between `start.mjs` (the MCP entry
  * point) and `src/server.ts getProjectDir()` (the consumer).
@@ -55,12 +58,6 @@ export function isPluginInstallPath(p: string): boolean {
 export function resolveProjectDirFromTranscript(opts: {
   projectsRoot: string;
 }): string | undefined {
-  // Inline imports kept private to this function — keeps the module test-
-  // friendly when fs is stubbed at the call sites that don't use this path.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fs = require("node:fs") as typeof import("node:fs");
-  const path = require("node:path") as typeof import("node:path");
-
   if (!fs.existsSync(opts.projectsRoot)) return undefined;
 
   let bestPath: string | undefined;
@@ -145,6 +142,13 @@ export function resolveProjectDir(opts: {
     env.OPENCODE_PROJECT_DIR,
     env.PI_PROJECT_DIR,
     env.IDEA_INITIAL_DIRECTORY,
+    // Issue #521: Cursor MCP env override. The cursor adapter already
+    // trusts CURSOR_CWD for hook input resolution (adapters/cursor/index.ts:581);
+    // mirror that trust here so ctx_stats / SessionDB / hash see the workspace
+    // path on Cursor. Whether Cursor itself sets this on MCP child spawn is
+    // unconfirmed — but documenting it as a supported override gives users a
+    // documented escape hatch (`~/.cursor/mcp.json` env: { CURSOR_CWD: "..." }).
+    env.CURSOR_CWD,
     env.CONTEXT_MODE_PROJECT_DIR,
   ];
   for (const c of candidates) {
