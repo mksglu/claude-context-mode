@@ -271,11 +271,22 @@ try { healBetterSqlite3Binding(pkgRoot); } catch { /* best effort — don't bloc
 // PATH lookup failure). start.mjs normalizes on every MCP boot, but normalizing
 // here too closes the gap for the very first hook fire after a fresh install
 // (before any MCP server has run).
-try {
-  const { normalizeHooksOnStartup } = await import("../hooks/normalize-hooks.mjs");
-  normalizeHooksOnStartup({
-    pluginRoot: pkgRoot,
-    nodePath: process.execPath,
-    platform: process.platform,
-  });
-} catch { /* best effort — never block install */ }
+//
+// Guard: /ctx-upgrade clones the repo to `<tmpdir>/context-mode-upgrade-<epoch>/`
+// and runs `npm install` there before `cpSync`-ing files into the real pluginRoot
+// (src/cli.ts). If we normalize here, pkgRoot is the tmpdir → hooks.json gets
+// the tmpdir's absolute paths baked in → cpSync copies that poisoned hooks.json
+// into the real plugin dir → tmpdir is later cleaned → every hook fires with
+// `MODULE_NOT_FOUND`. Detect the upgrade staging path and skip; start.mjs will
+// normalize correctly on the next MCP boot from the real pluginRoot.
+const TMPDIR_UPGRADE_RE = /[/\\]context-mode-upgrade-\d+[/\\]?$/;
+if (!TMPDIR_UPGRADE_RE.test(pkgRoot)) {
+  try {
+    const { normalizeHooksOnStartup } = await import("../hooks/normalize-hooks.mjs");
+    normalizeHooksOnStartup({
+      pluginRoot: pkgRoot,
+      nodePath: process.execPath,
+      platform: process.platform,
+    });
+  } catch { /* best effort — never block install */ }
+}

@@ -233,6 +233,65 @@ describe("postinstall — global install, user not on Claude Code", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Slice 7b — running from an /ctx-upgrade tmpdir staging path MUST NOT
+// normalize hooks.json. /ctx-upgrade clones the repo to
+// `<tmpdir>/context-mode-upgrade-<epoch>/` and runs `npm install` there
+// before `cpSync`-ing into the real pluginRoot. If postinstall normalized
+// hooks.json here, the absolute tmpdir paths would get baked in and then
+// copied to the real plugin dir — every subsequent hook fire would fail
+// with MODULE_NOT_FOUND once the tmpdir is cleaned up.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("postinstall — /ctx-upgrade tmpdir staging guard", () => {
+  it("does NOT mutate hooks.json when pkgRoot matches context-mode-upgrade-<digits>", () => {
+    // Lay out a package dir with the exact name shape /ctx-upgrade uses.
+    const parent = makeTmp("ctx-postinstall-tmproot-");
+    const packageDir = join(parent, `context-mode-upgrade-${Date.now()}`);
+    const scriptsDir = join(packageDir, "scripts");
+    const hooksDir = join(packageDir, "hooks");
+    mkdirSync(scriptsDir, { recursive: true });
+    mkdirSync(hooksDir, { recursive: true });
+    copyFileSync(REPO_POSTINSTALL, join(scriptsDir, "postinstall.mjs"));
+    copyFileSync(REPO_HEAL_IP, join(scriptsDir, "heal-installed-plugins.mjs"));
+    copyFileSync(REPO_HEAL_SQLITE3, join(scriptsDir, "heal-better-sqlite3.mjs"));
+    // Use the REAL normalize-hooks.mjs so we can detect a (buggy) mutation.
+    copyFileSync(
+      resolve(REPO_ROOT, "hooks", "normalize-hooks.mjs"),
+      join(hooksDir, "normalize-hooks.mjs"),
+    );
+
+    // Plant a hooks.json with the placeholder + bare `node`. If postinstall
+    // failed to guard, the literal `${CLAUDE_PLUGIN_ROOT}` would be replaced
+    // by the tmpdir packageDir path.
+    const hooksJsonPath = join(hooksDir, "hooks.json");
+    const placeholderHooks =
+      `{\n  "hooks": {\n    "SessionStart": [{\n      "matcher": "",\n      "hooks": [{\n        "type": "command",\n        "command": "node \\"\${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\\""\n      }]\n    }]\n  }\n}\n`;
+    writeFileSync(hooksJsonPath, placeholderHooks, "utf-8");
+
+    const home = makeTmp("ctx-postinstall-home-tmproot-");
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      USERPROFILE: home,
+    };
+    const r = spawnSync(process.execPath, [join(scriptsDir, "postinstall.mjs")], {
+      cwd: packageDir,
+      env,
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+    expect(r.status === 0 || r.status === null).toBe(true);
+
+    // Placeholder MUST survive — the guard prevented mutation. Equivalently:
+    // tmpdir absolute paths MUST NOT appear in the file.
+    const after = readFileSync(hooksJsonPath, "utf-8");
+    expect(after).toContain("${CLAUDE_PLUGIN_ROOT}");
+    expect(after).not.toContain(packageDir.replace(/\\/g, "/"));
+    expect(after).not.toContain(packageDir);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Slice 8 — registry already healthy: "no heal needed" line
 // ─────────────────────────────────────────────────────────────────────────
 
