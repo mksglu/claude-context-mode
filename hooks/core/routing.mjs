@@ -372,6 +372,7 @@ function isExternalMcpTool(toolName) {
   const raw = String(toolName ?? "");
   if (!raw.startsWith(MCP_PREFIX)) return false;
   const server = raw.slice(MCP_PREFIX.length).split("__")[0];
+  if (!server) return false;
   return !server.includes(CONTEXT_MODE_MCP_SUBSTRING);
 }
 

@@ -10,6 +10,7 @@ import {
   PRE_TOOL_USE_MATCHERS,
   POST_TOOL_USE_MATCHERS,
   POST_TOOL_USE_MATCHER_PATTERN,
+  EXTERNAL_MCP_MATCHER_PATTERN,
 } from "../../src/adapters/claude-code/hooks.js";
 
 describe("ClaudeCodeAdapter", () => {
@@ -778,6 +779,57 @@ describe("ClaudeCodeAdapter", () => {
 
     it("PRE_TOOL_USE_MATCHERS contains 'Agent' for subagent routing", () => {
       expect(PRE_TOOL_USE_MATCHERS).toContain("Agent");
+    });
+
+    // ── External MCP routing (#529) ─────────────────────
+    it("PRE_TOOL_USE_MATCHERS contains EXTERNAL_MCP_MATCHER_PATTERN (#529)", () => {
+      expect(PRE_TOOL_USE_MATCHERS).toContain(EXTERNAL_MCP_MATCHER_PATTERN);
+    });
+
+    it("EXTERNAL_MCP_MATCHER_PATTERN regex matches external MCP tools but not context-mode's own (#529)", () => {
+      const re = new RegExp(EXTERNAL_MCP_MATCHER_PATTERN);
+
+      // External MCP namespaces — MUST match
+      expect(re.test("mcp__slack__list_channels")).toBe(true);
+      expect(re.test("mcp__plugin_telegram__list_messages")).toBe(true);
+      expect(re.test("mcp__claude_ai_Google_Drive__search")).toBe(true);
+      expect(re.test("mcp__notion__query_database")).toBe(true);
+      // Tool part mentions "context-mode" but server doesn't — still external
+      expect(re.test("mcp__notion__search_context-mode_notes")).toBe(true);
+
+      // context-mode's own MCP — MUST NOT match (negative lookahead)
+      expect(re.test("mcp__plugin_context-mode_context-mode__ctx_execute")).toBe(false);
+      expect(re.test("mcp__plugin_context-mode_context-mode__ctx_search")).toBe(false);
+      expect(re.test("mcp__plugin_context-mode_anything__foo")).toBe(false);
+
+      // Non-MCP tools — MUST NOT match
+      expect(re.test("Bash")).toBe(false);
+      expect(re.test("Read")).toBe(false);
+    });
+
+    it("generateHookConfig includes the external MCP matcher entry (#529)", () => {
+      const config = adapter.generateHookConfig("/some/plugin/root") as Record<
+        string,
+        Array<{ matcher: string }>
+      >;
+      const matchers = config.PreToolUse.map((entry) => entry.matcher);
+      expect(matchers).toContain(EXTERNAL_MCP_MATCHER_PATTERN);
+      // Must match the canonical list 1:1 — no drift between adapter source and
+      // the runtime config object.
+      expect(matchers).toEqual([...PRE_TOOL_USE_MATCHERS]);
+    });
+
+    it("hooks/hooks.json PreToolUse matchers match PRE_TOOL_USE_MATCHERS (#529 drift guard)", () => {
+      const repoRoot = resolve(__dirname, "..", "..");
+      const hooksJsonPath = join(repoRoot, "hooks", "hooks.json");
+      const parsed = JSON.parse(readFileSync(hooksJsonPath, "utf8")) as {
+        hooks: { PreToolUse: Array<{ matcher: string }> };
+      };
+      const jsonMatchers = parsed.hooks.PreToolUse.map((entry) => entry.matcher);
+      // hooks.json is the runtime source of truth consumed by Claude Code;
+      // PRE_TOOL_USE_MATCHERS is the build-time source of truth used by
+      // ClaudeCodeAdapter.generateHookConfig. They MUST stay in sync.
+      expect(jsonMatchers).toEqual([...PRE_TOOL_USE_MATCHERS]);
     });
 
     it("POST_TOOL_USE_MATCHERS contains all tools that extractEvents handles", () => {

@@ -671,6 +671,19 @@ describe("routePreToolUse", () => {
         expect(result!.additionalContext).toContain("External MCP tools");
       }
     });
+
+    it("does NOT trip on degenerate tool names (empty / bare prefix / null)", () => {
+      // String() coerces these to non-MCP names — must pass through silently.
+      for (const tool of ["", "mcp__", null as unknown as string, undefined as unknown as string]) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, {});
+        // Either null (passthrough) or NOT external-MCP guidance — never the
+        // external-MCP branch.
+        if (result !== null) {
+          expect(result.additionalContext ?? "").not.toContain("External MCP tools");
+        }
+      }
+    });
   });
 });
 
