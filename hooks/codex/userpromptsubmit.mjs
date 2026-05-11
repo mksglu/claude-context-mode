@@ -7,6 +7,7 @@ import "../ensure-deps.mjs";
 
 import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, CODEX_OPTS } from "../session-helpers.mjs";
 import { createSessionLoaders, attributeAndInsertEvents } from "../session-loaders.mjs";
+import { isMemoryGovernorEnabled } from "./memory-governor.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -63,16 +64,18 @@ try {
       db.insertEvent(sessionId, userEvents[i], "UserPromptSubmit", userAttributions[i]);
     }
 
-    db.insertEvent(sessionId, {
-      type: "current_goal",
-      category: "memory-governor",
-      data: trimmed.length > 1200 ? `${trimmed.slice(0, 1197)}...` : trimmed,
-      priority: 5,
-    }, "UserPromptSubmit", {
-      projectDir: savedLastKnown || lastKnownProjectDir || projectDir,
-      source: "user_prompt",
-      confidence: 0.9,
-    });
+    if (isMemoryGovernorEnabled()) {
+      db.insertEvent(sessionId, {
+        type: "current_goal",
+        category: "memory-governor",
+        data: trimmed.length > 1200 ? `${trimmed.slice(0, 1197)}...` : trimmed,
+        priority: 5,
+      }, "UserPromptSubmit", {
+        projectDir: savedLastKnown || lastKnownProjectDir || projectDir,
+        source: "user_prompt",
+        confidence: 0.9,
+      });
+    }
 
     db.close();
   }

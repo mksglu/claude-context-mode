@@ -5,6 +5,10 @@ import {
   renderTaskState,
   type StoredEvent,
 } from "../../src/session/snapshot.js";
+import {
+  buildContinuousMemoryCapsule,
+  getLatestContinuousMemoryCapsule,
+} from "../../src/session/memory-governor.js";
 
 // ── Helpers ──
 function makeEvent(overrides: Partial<StoredEvent> & Pick<StoredEvent, "type" | "category">): StoredEvent {
@@ -587,5 +591,61 @@ describe("Role Events in Snapshot", () => {
   test("Role events with no role data omit roles section", () => {
     const xml = buildResumeSnapshot([]);
     assert.ok(!xml.includes("<roles"), "should not include roles with no events");
+  });
+});
+
+describe("Continuous Memory Governor capsule", () => {
+  test("builds a bounded working-state capsule with recall handles", () => {
+    const events: StoredEvent[] = [
+      makeEvent({ type: "current_goal", category: "memory-governor", data: "Implement ctx_curate and ctx_recall" }),
+      makeEvent({ type: "file_edit", category: "file", data: "src/server.ts" }),
+      makeEvent({ type: "decision", category: "decision", data: "Keep this experimental and local-first" }),
+      makeEvent({ type: "stderr", category: "error", data: "typecheck failed before import fix" }),
+      makeEvent({ type: "working_state_capsule", category: "memory-governor", data: "<continuous_memory source=\"old\">stale</continuous_memory>" }),
+    ];
+
+    const capsule = buildContinuousMemoryCapsule(events, {
+      source: "test",
+      searchTool: "ctx_search",
+      maxBytes: 2000,
+    });
+
+    assert.ok(capsule.includes("<continuous_memory"));
+    assert.ok(capsule.includes("Implement ctx_curate and ctx_recall"));
+    assert.ok(capsule.includes("src/server.ts"));
+    assert.ok(capsule.includes("ctx_search"));
+    assert.ok(!capsule.includes("source=&quot;old&quot;"), "previous capsules should not be nested");
+    assert.ok(Buffer.byteLength(capsule, "utf8") <= 2000);
+  });
+
+  test("returns the latest stored continuous memory capsule", () => {
+    const events: StoredEvent[] = [
+      makeEvent({ type: "working_state_capsule", category: "memory-governor", data: "<continuous_memory source=\"old\">old</continuous_memory>" }),
+      makeEvent({ type: "file_edit", category: "file", data: "src/server.ts" }),
+      makeEvent({ type: "working_state_capsule", category: "memory-governor", data: "<continuous_memory source=\"new\">new</continuous_memory>" }),
+    ];
+
+    assert.equal(
+      getLatestContinuousMemoryCapsule(events),
+      "<continuous_memory source=\"new\">new</continuous_memory>",
+    );
+  });
+
+  test("hook and TypeScript capsule builders stay in sync", async () => {
+    const hookBuilder = await import("../../hooks/codex/memory-governor.mjs") as {
+      buildContinuousMemoryCapsule: typeof buildContinuousMemoryCapsule;
+    };
+    const events: StoredEvent[] = [
+      makeEvent({ type: "current_goal", category: "memory-governor", data: "Keep Codex compactless memory coherent" }),
+      makeEvent({ type: "file_edit", category: "file", data: "src/server.ts" }),
+      makeEvent({ type: "decision", category: "decision", data: "Prefer Stop-hook curation over transcript mutation." }),
+      makeEvent({ type: "error", category: "error", data: "Benchmark must seed the server-resolved DB path." }),
+    ];
+    const opts = { source: "golden", searchTool: "ctx_search", maxBytes: 2000 };
+
+    assert.equal(
+      hookBuilder.buildContinuousMemoryCapsule(events, opts),
+      buildContinuousMemoryCapsule(events, opts),
+    );
   });
 });

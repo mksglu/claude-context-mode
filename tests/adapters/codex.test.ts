@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
-import { resolveSessionDbPath, SessionDB } from "../../src/session/db.js";
+import { resolveSessionDbPath, resolveSessionPath, SessionDB } from "../../src/session/db.js";
 
 describe("CodexAdapter", () => {
   let adapter: CodexAdapter;
@@ -567,7 +567,7 @@ describe("Codex userpromptsubmit hook script", () => {
         }),
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: { ...process.env, CODEX_HOME: codexHome, CONTEXT_MODE_MEMORY_GOVERNOR: "1" },
       });
 
       const parsed = JSON.parse(stdout.trim());
@@ -641,6 +641,12 @@ describe("Codex stop hook script", () => {
         data: "NOISY_RAW_OUTPUT ".repeat(400),
         priority: 1,
       }, "PostToolUse");
+      db.insertEvent(sessionId, {
+        type: "working_state_capsule",
+        category: "memory-governor",
+        data: "<continuous_memory source=\"old\">stale capsule</continuous_memory>",
+        priority: 5,
+      }, "Stop", { projectDir, source: "test", confidence: 1 });
       db.close();
 
       const stdout = execFileSync(process.execPath, [hookScript], {
@@ -657,22 +663,25 @@ describe("Codex stop hook script", () => {
         }),
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: { ...process.env, CODEX_HOME: codexHome, CONTEXT_MODE_MEMORY_GOVERNOR: "1" },
       });
 
       expect(JSON.parse(stdout.trim())).toEqual({});
 
       const verifyDb = new SessionDB({ dbPath });
-      const capsule = verifyDb
+      const capsules = verifyDb
         .getEvents(sessionId)
-        .find((event) => event.type === "working_state_capsule" && event.category === "memory-governor");
+        .filter((event) => event.type === "working_state_capsule" && event.category === "memory-governor");
       verifyDb.close();
+      const capsule = capsules[0];
 
+      expect(capsules).toHaveLength(1);
       expect(capsule?.data).toContain("<continuous_memory");
       expect(capsule?.data).toContain("Continuous Memory Governor");
       expect(capsule?.data).toContain("hooks/codex/stop.mjs");
       expect(capsule?.data).toContain("Stop curation");
       expect(capsule?.data).not.toContain("NOISY_RAW_OUTPUT");
+      expect(capsule?.data).not.toContain("stale capsule");
       expect(Buffer.byteLength(capsule?.data ?? "", "utf8")).toBeLessThan(5000);
     } finally {
       if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -717,7 +726,7 @@ describe("Codex precompact hook script", () => {
         }),
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: { ...process.env, CODEX_HOME: codexHome, CONTEXT_MODE_MEMORY_GOVERNOR: "1" },
       });
 
       expect(JSON.parse(stdout.trim())).toEqual({});
@@ -774,7 +783,7 @@ describe("Codex sessionstart hook script", () => {
         }),
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: { ...process.env, CODEX_HOME: codexHome, CONTEXT_MODE_MEMORY_GOVERNOR: "1" },
       });
 
       const parsed = JSON.parse(stdout.trim());
@@ -822,6 +831,12 @@ describe("Codex sessionstart hook script", () => {
         data: "src/noisy.ts",
         priority: 1,
       }, "PostToolUse");
+      db.insertEvent(sessionId, {
+        type: "plan_approved",
+        category: "plan",
+        data: "The prior plan was approved and executed.",
+        priority: 4,
+      }, "PostToolUse");
       db.close();
 
       const stdout = execFileSync(process.execPath, [hookScript], {
@@ -833,13 +848,17 @@ describe("Codex sessionstart hook script", () => {
         }),
         encoding: "utf-8",
         timeout: 10000,
-        env: { ...process.env, CODEX_HOME: codexHome },
+        env: { ...process.env, CODEX_HOME: codexHome, CONTEXT_MODE_MEMORY_GOVERNOR: "1" },
       });
 
       const parsed = JSON.parse(stdout.trim());
       const additionalContext = String(parsed.hookSpecificOutput.additionalContext);
       expect(additionalContext).toContain("restore via Stop capsule");
-      expect(additionalContext).not.toContain("src/noisy.ts");
+      expect(additionalContext).toContain("Plan Mode");
+      expect(additionalContext).toContain("Do NOT re-enter plan mode");
+      const eventsPath = resolveSessionPath({ projectDir, sessionsDir: new CodexAdapter().getSessionDir(), ext: "-events.md" });
+      expect(existsSync(eventsPath)).toBe(true);
+      expect(readFileSync(eventsPath, "utf8")).toContain("src/noisy.ts");
     } finally {
       if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = savedCodexHome;

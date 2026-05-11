@@ -15,7 +15,7 @@ import {
   buildSessionDirective,
   getSessionEvents,
 } from "../session-directive.mjs";
-import { getLatestContinuousMemoryCapsule } from "./memory-governor.mjs";
+import { getLatestContinuousMemoryCapsule, isMemoryGovernorEnabled } from "./memory-governor.mjs";
 import {
   readStdin,
   parseStdin,
@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 const HOOK_DIR = fileURLToPath(new URL(".", import.meta.url));
 const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
+const MEMORY_GOVERNOR_ENABLED = isMemoryGovernorEnabled();
 
 let additionalContext = ROUTING_BLOCK;
 
@@ -64,15 +65,16 @@ try {
     // cross-session bleed when a different session started after this one
     // and before the resume.
     const events = sessionId ? getSessionEvents(db, sessionId) : [];
-    const memoryCapsule = getLatestContinuousMemoryCapsule(events);
+    const memoryCapsule = MEMORY_GOVERNOR_ENABLED ? getLatestContinuousMemoryCapsule(events) : "";
+    if (events.length > 0) {
+      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
+      additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
+    }
     if (resumeSnapshot) {
       additionalContext += `\n\n${resumeSnapshot}`;
       db.markResumeConsumed(sessionId);
     } else if (memoryCapsule) {
       additionalContext += `\n\n${memoryCapsule}`;
-    } else if (events.length > 0) {
-      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
-      additionalContext += buildSessionDirective(source, eventMeta, toolNamer);
     }
 
     db.close();

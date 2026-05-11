@@ -373,6 +373,7 @@ const S = {
   getResume: "getResume",
   markResumeConsumed: "markResumeConsumed",
   claimLatestUnconsumedResume: "claimLatestUnconsumedResume",
+  deleteWorkingStateCapsules: "deleteWorkingStateCapsules",
   deleteEvents: "deleteEvents",
   deleteMeta: "deleteMeta",
   deleteResume: "deleteResume",
@@ -626,6 +627,11 @@ export class SessionDB extends SQLiteBase {
        RETURNING session_id, snapshot`);
 
     // ── Delete ──
+    p(S.deleteWorkingStateCapsules,
+      `DELETE FROM session_events
+       WHERE session_id = ?
+         AND category = 'memory-governor'
+         AND type = 'working_state_capsule'`);
     p(S.deleteEvents, `DELETE FROM session_events WHERE session_id = ?`);
     p(S.deleteMeta, `DELETE FROM session_meta WHERE session_id = ?`);
     p(S.deleteResume, `DELETE FROM session_resume WHERE session_id = ?`);
@@ -866,6 +872,34 @@ export class SessionDB extends SQLiteBase {
       return this.stmt(S.getEventsByPriority).all(sessionId, minPriority, limit) as StoredEvent[];
     }
     return this.stmt(S.getEvents).all(sessionId, limit) as StoredEvent[];
+  }
+
+  /**
+   * Retrieve one event by its DB id, optionally scoped to a project directory.
+   * Best-effort helper for MCP recall paths; returns null on missing/corrupt rows.
+   */
+  getEventById(id: number, projectDir?: string): StoredEvent | null {
+    try {
+      const select = `SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE id = ?`;
+      const row = projectDir
+        ? this.db.prepare(`${select} AND project_dir = ? LIMIT 1`).get(id, projectDir)
+        : this.db.prepare(`${select} LIMIT 1`).get(id);
+      return (row as StoredEvent | undefined) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remove generated continuous-memory capsule rows before writing a fresh one.
+   * Raw events remain the source of truth for future curation and recall.
+   */
+  deleteWorkingStateCapsules(sessionId: string): void {
+    this.stmt(S.deleteWorkingStateCapsules).run(sessionId);
   }
 
   /**

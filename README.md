@@ -1036,6 +1036,8 @@ When the context window fills up, the agent compacts the conversation — droppi
 
 Context Mode captures every meaningful event during your session and persists them in a per-project SQLite database. When the conversation compacts (or you resume with `--continue`, `--resume`, or `/resume`), your working state is rebuilt automatically — the model continues from your last prompt without asking you to repeat anything.
 
+Experimental memory-governor tools for Codex (`ctx_curate` / `ctx_recall`) are available behind `CONTEXT_MODE_MEMORY_GOVERNOR=1`. See [`docs/experimental/memory-governor.md`](docs/experimental/memory-governor.md); they are not counted in the stable 11-tool MCP surface yet.
+
 > Resuming a non-latest session via `/resume <picker>` works the same way: the SessionStart hook detects the empty live-event table for the freshly issued session id and falls back to the most recent unconsumed snapshot for the project (`session_resume` table). The picker selects the conversation; context-mode rehydrates the prior working state.
 
 Session continuity requires 5 hooks working together:

@@ -435,7 +435,7 @@ export function buildSessionDirective(source, eventMeta, toolNamer) {
 export function getSessionEvents(db, sessionId) {
   return db.db.prepare(
     `SELECT session_id, type, category, priority, data, source_hook, created_at
-     FROM session_events WHERE session_id = ? ORDER BY created_at ASC`
+     FROM session_events WHERE session_id = ? ORDER BY created_at ASC, id ASC`
   ).all(sessionId);
 }
 

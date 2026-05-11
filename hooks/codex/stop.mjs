@@ -7,7 +7,7 @@ import "../ensure-deps.mjs";
 
 import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, CODEX_OPTS } from "../session-helpers.mjs";
 import { createSessionLoaders } from "../session-loaders.mjs";
-import { buildContinuousMemoryCapsule } from "./memory-governor.mjs";
+import { buildContinuousMemoryCapsule, isMemoryGovernorEnabled } from "./memory-governor.mjs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,7 @@ try {
   const raw = await readStdin();
   const input = parseStdin(raw);
   const projectDir = getInputProjectDir(input, OPTS);
+  const memoryGovernorEnabled = isMemoryGovernorEnabled();
 
   const { SessionDB } = await loadSessionDB();
   const dbPath = getSessionDBPath(OPTS, projectDir);
@@ -39,22 +40,25 @@ try {
     priority: 2,
   }, "Stop");
 
-  const events = db.getEvents(sessionId);
-  const capsule = buildContinuousMemoryCapsule(events, {
-    source: "stop",
-    searchTool: "ctx_search",
-  });
-  if (capsule) {
-    db.insertEvent(sessionId, {
-      type: "working_state_capsule",
-      category: "memory-governor",
-      data: capsule,
-      priority: 5,
-    }, "Stop", {
-      projectDir,
+  if (memoryGovernorEnabled) {
+    db.deleteWorkingStateCapsules(sessionId);
+    const events = db.getEvents(sessionId);
+    const capsule = buildContinuousMemoryCapsule(events, {
       source: "stop",
-      confidence: 1,
+      searchTool: "ctx_search",
     });
+    if (capsule) {
+      db.insertEvent(sessionId, {
+        type: "working_state_capsule",
+        category: "memory-governor",
+        data: capsule,
+        priority: 5,
+      }, "Stop", {
+        projectDir,
+        source: "stop",
+        confidence: 1,
+      });
+    }
   }
 
   db.close();

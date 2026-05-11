@@ -98,6 +98,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "npx tsx tests/benchmark.ts",
+    "benchmark:memory-governor": "npx tsx benchmarks/memory-governor.ts",
     "test:use-cases": "npx tsx tests/use-cases.ts",
     "test:compare": "npx tsx tests/context-comparison.ts",
     "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",

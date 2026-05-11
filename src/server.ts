@@ -28,8 +28,21 @@ import {
 } from "./runtime.js";
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
-import { hashProjectDirCanonical, hashProjectDirLegacy, resolveContentStorePath, resolveSessionDbPath, SessionDB } from "./session/db.js";
+import {
+  hashProjectDirCanonical,
+  hashProjectDirLegacy,
+  resolveContentStorePath,
+  resolveSessionDbPath,
+  SessionDB,
+  type StoredEvent,
+} from "./session/db.js";
 import { purgeSession } from "./session/purge.js";
+import {
+  buildContinuousMemoryCapsule,
+  getLatestContinuousMemoryCapsule,
+  isMemoryGovernorEnabled,
+  type MemoryGovernorEvent,
+} from "./session/memory-governor.js";
 import {
   emitCacheHitEvent,
   emitIndexWriteEvent,
@@ -253,6 +266,65 @@ function getSessionDbPath(): string {
     projectDir: getProjectDir(),
     sessionsDir: getSessionDir(),
   });
+}
+
+function getCurrentSessionId(db: SessionDB): string | null {
+  const fromEnv = process.env.CLAUDE_SESSION_ID
+    || process.env.CONTEXT_MODE_SESSION_ID
+    || process.env.CODEX_SESSION_ID
+    || process.env.SESSION_ID;
+  const trimmed = fromEnv?.trim();
+  return trimmed || db.getLatestSessionId();
+}
+
+function clampPositiveInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function limitUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let out = text;
+  while (Buffer.byteLength(out, "utf8") > Math.max(0, maxBytes - 30) && out.length > 0) {
+    out = out.slice(0, Math.floor(out.length * 0.85));
+  }
+  return `${out}\n...[truncated]`;
+}
+
+function eventPreview(value: unknown, max = 500): string {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length <= max ? text : `${text.slice(0, max - 3)}...`;
+}
+
+function formatRecallEvents(
+  events: Array<Pick<StoredEvent, "id" | "session_id" | "category" | "type" | "data" | "created_at">>,
+  format: "summary" | "chunks" | "raw",
+  maxBytes: number,
+): string {
+  const rendered = events.map((event) => {
+    const header = `event:${event.id} session:${event.session_id} ${event.created_at} ${event.category}/${event.type}`;
+    if (format === "raw") {
+      return `--- ${header}\n${event.data}`;
+    }
+    if (format === "chunks") {
+      return `### ${header}\n\n${event.data}`;
+    }
+    return `- ${header}\n  ${eventPreview(event.data)}`;
+  }).join("\n\n");
+  return limitUtf8(rendered, maxBytes);
+}
+
+function getProjectEventById(
+  db: SessionDB,
+  id: string,
+  projectDir: string,
+): Pick<StoredEvent, "id" | "session_id" | "category" | "type" | "data" | "created_at"> | null {
+  return db.getEventById(Number(id), projectDir);
+}
+
+function isWorkingStateCapsuleEvent(event: Pick<StoredEvent, "category" | "type">): boolean {
+  return event.category === "memory-governor" && event.type === "working_state_capsule";
 }
 
 /**
@@ -1866,6 +1938,329 @@ server.registerTool(
 // ─────────────────────────────────────────────────────────
 // Turndown path resolution (external dep, like better-sqlite3)
 // ─────────────────────────────────────────────────────────
+
+if (isMemoryGovernorEnabled()) {
+server.registerTool(
+  "ctx_curate",
+  {
+    title: "Curate Continuous Memory",
+    description:
+      "Experimental: distill the current session events into a bounded working-state capsule. " +
+      "Use this to refresh compactless session memory before a risky handoff, long run, or context-heavy task.",
+    inputSchema: z.object({
+      mode: z
+        .enum(["turn", "session", "project"])
+        .optional()
+        .default("session")
+        .describe("Curate scope. The current implementation writes a session capsule."),
+      budgetTokens: z
+        .number()
+        .optional()
+        .default(1200)
+        .describe("Approximate capsule budget. Converted to bytes at about 4 chars/token."),
+      focus: z.preprocess(coerceJsonArray, z
+        .array(z.string())
+        .optional()
+        .describe("Optional focus terms, active files, or task labels to bias the capsule.")),
+      retain: z.preprocess(coerceJsonArray, z
+        .array(z.string())
+        .optional()
+        .describe("Optional facts or source labels that should remain recallable.")),
+      demoteBelow: z
+        .number()
+        .optional()
+        .describe("Reserved experimental relevance threshold. Reported but not enforced yet."),
+      dryRun: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Preview the capsule without writing it into SessionDB."),
+    }),
+  },
+  async (params) => {
+    const raw = params as {
+      mode?: "turn" | "session" | "project";
+      budgetTokens?: number;
+      focus?: string[];
+      retain?: string[];
+      demoteBelow?: number;
+      dryRun?: boolean;
+    };
+    const toolName = "ctx_curate";
+    const projectDir = getProjectDir();
+    const dbPath = getSessionDbPath();
+    const fromEnv = process.env.CLAUDE_SESSION_ID
+      || process.env.CONTEXT_MODE_SESSION_ID
+      || process.env.CODEX_SESSION_ID
+      || process.env.SESSION_ID;
+
+    if (!existsSync(dbPath) && !fromEnv) {
+      return trackResponse(toolName, {
+        content: [{
+          type: "text" as const,
+          text: "No SessionDB exists for this project yet. Run a hook-captured turn first, then call ctx_curate.",
+        }],
+        isError: true,
+      });
+    }
+
+    let db: SessionDB | null = null;
+    try {
+      db = new SessionDB({ dbPath });
+      const sessionId = getCurrentSessionId(db);
+      if (!sessionId) {
+        return trackResponse(toolName, {
+          content: [{
+            type: "text" as const,
+            text: "No active or recent session_id found. Run a hook-captured turn first, then call ctx_curate.",
+          }],
+          isError: true,
+        });
+      }
+
+      db.ensureSession(sessionId, projectDir);
+      const events: MemoryGovernorEvent[] = db.getEvents(sessionId, { limit: 5000 });
+      const focus = (raw.focus ?? []).filter(Boolean);
+      const retain = (raw.retain ?? []).filter(Boolean);
+      const hintEvents: Array<MemoryGovernorEvent & { priority: number }> = [];
+      if (focus.length > 0) {
+        hintEvents.push({
+          type: "current_goal",
+          category: "memory-governor",
+          data: `Focus: ${focus.join("; ")}`,
+          priority: 5,
+        });
+      }
+      if (retain.length > 0) {
+        hintEvents.push({
+          type: "decision",
+          category: "decision",
+          data: `Retain: ${retain.join("; ")}`,
+          priority: 4,
+        });
+      }
+      events.push(...hintEvents);
+
+      const budgetTokens = clampPositiveInt(raw.budgetTokens, 1200, 100, 20_000);
+      const maxBytes = budgetTokens * 4;
+      const capsule = buildContinuousMemoryCapsule(events, {
+        source: "ctx_curate",
+        searchTool: "ctx_search",
+        maxBytes,
+      });
+      if (!capsule) {
+        return trackResponse(toolName, {
+          content: [{
+            type: "text" as const,
+            text: "No useful session events found to curate yet.",
+          }],
+          isError: true,
+        });
+      }
+
+      const rawEventBytes = events.reduce((sum, event) => sum + Buffer.byteLength(String(event.data ?? ""), "utf8"), 0);
+      const capsuleBytes = Buffer.byteLength(capsule, "utf8");
+      if (!raw.dryRun) {
+        db.deleteWorkingStateCapsules(sessionId);
+        for (const hintEvent of hintEvents) {
+          db.insertEvent(
+            sessionId,
+            hintEvent,
+            "ctx_curate",
+            { projectDir, source: "env", confidence: 1 },
+          );
+        }
+        db.insertEvent(
+          sessionId,
+          {
+            type: "working_state_capsule",
+            category: "memory-governor",
+            data: capsule,
+            priority: 5,
+          },
+          "ctx_curate",
+          { projectDir, source: "env", confidence: 1 },
+          { bytesAvoided: Math.max(0, rawEventBytes - capsuleBytes) },
+        );
+      }
+
+      const lines = [
+        `ctx_curate ${raw.dryRun ? "previewed" : "stored"} continuous memory capsule`,
+        `session: ${sessionId}`,
+        `mode: ${raw.mode ?? "session"}`,
+        `events scanned: ${events.length}`,
+        `durable hints: ${raw.dryRun ? 0 : hintEvents.length}`,
+        `capsule bytes: ${capsuleBytes}`,
+        `approx tokens: ${Math.ceil(capsuleBytes / 4)}`,
+        `demoteBelow: ${raw.demoteBelow ?? "not enforced"}`,
+        `recall: ctx_recall(id: "latest")`,
+        "",
+        raw.dryRun ? "Capsule:" : "Preview:",
+        limitUtf8(capsule, raw.dryRun ? Math.min(maxBytes, 12_000) : 1400),
+      ];
+
+      return trackResponse(toolName, {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return trackResponse(toolName, {
+        content: [{ type: "text" as const, text: `ctx_curate error: ${message}` }],
+        isError: true,
+      });
+    } finally {
+      try { db?.close(); } catch {}
+    }
+  },
+);
+
+server.registerTool(
+  "ctx_recall",
+  {
+    title: "Recall Continuous Memory",
+    description:
+      "Experimental: retrieve the latest continuous memory capsule or bounded session-event details by id/query. " +
+      "Use this after ctx_curate or when a capsule lists recall handles.",
+    inputSchema: z.object({
+      id: z
+        .coerce.string()
+        .optional()
+        .default("latest")
+        .describe("Event id to recall, or 'latest' for the newest working-state capsule. Non-numeric values are treated as a query."),
+      query: z
+        .string()
+        .optional()
+        .describe("Optional search query. Overrides non-latest id text when provided."),
+      format: z
+        .enum(["summary", "chunks", "raw"])
+        .optional()
+        .default("summary")
+        .describe("Return summary lines, chunk-style blocks, or raw event data."),
+      maxBytes: z
+        .number()
+        .optional()
+        .default(6000)
+        .describe("Maximum bytes returned to the model."),
+      limit: z
+        .number()
+        .optional()
+        .default(5)
+        .describe("Maximum event matches for query recall."),
+    }),
+  },
+  async (params) => {
+    const raw = params as {
+      id?: string;
+      query?: string;
+      format?: "summary" | "chunks" | "raw";
+      maxBytes?: number;
+      limit?: number;
+    };
+    const toolName = "ctx_recall";
+    const dbPath = getSessionDbPath();
+    if (!existsSync(dbPath)) {
+      return trackResponse(toolName, {
+        content: [{
+          type: "text" as const,
+          text: "No SessionDB exists for this project yet. Run ctx_curate after a hook-captured turn first.",
+        }],
+        isError: true,
+      });
+    }
+
+    let db: SessionDB | null = null;
+    try {
+      db = new SessionDB({ dbPath });
+      const sessionId = getCurrentSessionId(db);
+      if (!sessionId) {
+        return trackResponse(toolName, {
+          content: [{ type: "text" as const, text: "No active or recent session_id found." }],
+          isError: true,
+        });
+      }
+
+      const id = String(raw.id ?? "latest").trim() || "latest";
+      const format = raw.format ?? "summary";
+      const maxBytes = clampPositiveInt(raw.maxBytes, 6000, 500, 50_000);
+      const limit = clampPositiveInt(raw.limit, 5, 1, 25);
+      const events = db.getEvents(sessionId, { limit: 5000 });
+
+      if (id === "latest" && !raw.query) {
+        const capsule = getLatestContinuousMemoryCapsule(events);
+        if (!capsule) {
+          return trackResponse(toolName, {
+            content: [{
+              type: "text" as const,
+              text: "No continuous memory capsule found. Run ctx_curate first or wait for the Codex Stop hook to create one.",
+            }],
+            isError: true,
+          });
+        }
+        return trackResponse(toolName, {
+          content: [{ type: "text" as const, text: limitUtf8(capsule, maxBytes) }],
+        });
+      }
+
+      const lookup = String(raw.query ?? id).trim();
+      let matches: Array<Pick<StoredEvent, "id" | "session_id" | "category" | "type" | "data" | "created_at">> = [];
+
+      if (/^\d+$/.test(id) && !raw.query) {
+        matches = events.filter((event) => String(event.id) === id);
+        if (matches.length === 0) {
+          const projectMatch = getProjectEventById(db, id, getProjectDir());
+          if (projectMatch) matches = [projectMatch];
+        }
+      } else if (lookup) {
+        const lower = lookup.toLowerCase();
+        const currentMatches = events
+          .filter((event) => !isWorkingStateCapsuleEvent(event))
+          .filter((event) =>
+            String(event.data ?? "").toLowerCase().includes(lower)
+            || event.category.toLowerCase().includes(lower)
+            || event.type.toLowerCase().includes(lower)
+          )
+          .slice(-limit);
+        const projectMatches = db.searchEvents(lookup, limit, getProjectDir())
+          .map((event) => ({
+            id: event.id,
+            session_id: event.session_id,
+            category: event.category,
+            type: event.type,
+            data: event.data,
+            created_at: event.created_at,
+          }))
+          .filter((event) => !isWorkingStateCapsuleEvent(event));
+        const seen = new Set<number>();
+        for (const event of [...currentMatches, ...projectMatches]) {
+          if (seen.has(event.id)) continue;
+          seen.add(event.id);
+          matches.push(event);
+          if (matches.length >= limit) break;
+        }
+      }
+
+      if (matches.length === 0) {
+        return trackResponse(toolName, {
+          content: [{ type: "text" as const, text: `No recall matches for: ${lookup || id}` }],
+        });
+      }
+
+      const output = formatRecallEvents(matches, format, maxBytes);
+      return trackResponse(toolName, {
+        content: [{ type: "text" as const, text: output }],
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return trackResponse(toolName, {
+        content: [{ type: "text" as const, text: `ctx_recall error: ${message}` }],
+        isError: true,
+      });
+    } finally {
+      try { db?.close(); } catch {}
+    }
+  },
+);
+}
 
 let _turndownPath: string | null = null;
 let _gfmPluginPath: string | null = null;

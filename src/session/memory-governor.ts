@@ -1,19 +1,33 @@
 /**
- * Codex Continuous Memory Governor.
+ * Continuous Memory Governor helpers.
  *
- * Experimental Codex-first continuity path: curate a bounded working-state
- * capsule from SessionDB events on Stop, then let SessionStart restore that
- * capsule when no PreCompact resume snapshot is available.
+ * Pure functions only. The Codex hooks and MCP tools use this shape to keep a
+ * bounded working-state capsule available without relying on PreCompact.
  */
 
 const DEFAULT_MAX_BYTES = 5000;
 const ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 
-export function isMemoryGovernorEnabled(env = process.env) {
+export function isMemoryGovernorEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return ENABLED_VALUES.has(String(env.CONTEXT_MODE_MEMORY_GOVERNOR ?? "").trim().toLowerCase());
 }
 
-function escapeXml(value) {
+export interface MemoryGovernorEvent {
+  id?: number;
+  type: string;
+  category: string;
+  priority?: number;
+  data: string;
+  created_at?: string;
+}
+
+export interface BuildContinuousMemoryCapsuleOpts {
+  source?: string;
+  searchTool?: string;
+  maxBytes?: number;
+}
+
+function escapeXml(value: unknown): string {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -22,15 +36,15 @@ function escapeXml(value) {
     .replace(/'/g, "&apos;");
 }
 
-function cleanText(value, max = 280) {
+function cleanText(value: unknown, max = 280): string {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
   if (text.length <= max) return text;
   return `${text.slice(0, max - 3)}...`;
 }
 
-function uniqueLatest(items, max) {
-  const seen = new Set();
-  const out = [];
+function uniqueLatest(items: unknown[], max: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (let i = items.length - 1; i >= 0 && out.length < max; i--) {
     const item = String(items[i] ?? "").trim();
     if (!item || seen.has(item)) continue;
@@ -40,37 +54,45 @@ function uniqueLatest(items, max) {
   return out;
 }
 
-function latestEvent(events, predicate) {
+function latestEvent(
+  events: MemoryGovernorEvent[],
+  predicate: (event: MemoryGovernorEvent) => boolean,
+): MemoryGovernorEvent | null {
   for (let i = events.length - 1; i >= 0; i--) {
     if (predicate(events[i])) return events[i];
   }
   return null;
 }
 
-function fileLabel(data) {
+function fileLabel(data: unknown): string {
   const text = String(data ?? "").trim();
   const path = text.includes(" in ") ? text.split(" in ").pop() : text;
   return path?.trim() ?? text;
 }
 
-function renderTasks(events) {
-  const creates = [];
-  const updates = {};
+function renderTasks(events: MemoryGovernorEvent[]): string[] {
+  const creates: string[] = [];
+  const updates: Record<string, string> = {};
   for (const ev of events) {
     try {
-      const parsed = JSON.parse(String(ev.data ?? ""));
+      const parsed = JSON.parse(String(ev.data ?? "")) as {
+        subject?: unknown;
+        taskId?: unknown;
+        status?: unknown;
+      };
       if (typeof parsed.subject === "string") creates.push(parsed.subject);
       else if (typeof parsed.taskId === "string" && typeof parsed.status === "string") {
         updates[parsed.taskId] = parsed.status;
       }
     } catch {
-      if (String(ev.data ?? "").trim()) creates.push(String(ev.data));
+      const raw = String(ev.data ?? "").trim();
+      if (raw) creates.push(raw);
     }
   }
 
   const done = new Set(["completed", "deleted", "failed"]);
   const sortedIds = Object.keys(updates).sort((a, b) => Number(a) - Number(b));
-  const pending = [];
+  const pending: string[] = [];
   for (let i = 0; i < creates.length; i++) {
     const matchedId = sortedIds[i];
     const status = matchedId ? updates[matchedId] ?? "pending" : "pending";
@@ -79,13 +101,13 @@ function renderTasks(events) {
   return uniqueLatest(pending, 5);
 }
 
-function section(tag, values) {
-  if (!values || values.length === 0) return "";
+function section(tag: string, values: string[]): string {
+  if (values.length === 0) return "";
   const body = values.map((value) => `    <item>${escapeXml(cleanText(value))}</item>`).join("\n");
   return `  <${tag}>\n${body}\n  </${tag}>`;
 }
 
-function buildRecallSection(searchTool, queries) {
+function buildRecallSection(searchTool: string, queries: unknown[]): string {
   const uniqueQueries = uniqueLatest(queries.map((q) => cleanText(q, 120)), 4);
   if (uniqueQueries.length === 0) return "";
   const queryItems = uniqueQueries
@@ -98,7 +120,7 @@ function buildRecallSection(searchTool, queries) {
   ].join("\n");
 }
 
-function capSections(header, sections, footer, maxBytes) {
+function capSections(header: string, sections: string[], footer: string, maxBytes: number): string {
   const out = [header];
   for (const part of sections) {
     if (!part) continue;
@@ -110,7 +132,10 @@ function capSections(header, sections, footer, maxBytes) {
   return out.join("\n\n");
 }
 
-export function buildContinuousMemoryCapsule(events, opts = {}) {
+export function buildContinuousMemoryCapsule(
+  events: MemoryGovernorEvent[],
+  opts: BuildContinuousMemoryCapsuleOpts = {},
+): string {
   const source = opts.source ?? "stop";
   const searchTool = opts.searchTool ?? "ctx_search";
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -169,7 +194,7 @@ export function buildContinuousMemoryCapsule(events, opts = {}) {
   return capSections(header, sections, footer, maxBytes);
 }
 
-export function getLatestContinuousMemoryCapsule(events) {
+export function getLatestContinuousMemoryCapsule(events: MemoryGovernorEvent[]): string {
   const latest = latestEvent(
     events,
     (ev) => ev.category === "memory-governor"

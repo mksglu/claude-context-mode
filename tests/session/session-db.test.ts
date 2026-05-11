@@ -231,6 +231,45 @@ describe("Filter by type", () => {
     assert.equal(gitEvents.length, 1);
     assert.equal(gitEvents[0].data, "commit");
   });
+
+  test("getEventById can scope exact id lookup to project_dir", () => {
+    const db = createTestDB();
+    const sid = "sess-event-by-id";
+
+    db.insertEvent(sid, makeEvent({ type: "decision", data: "project scoped recall" }), "PostToolUse", {
+      projectDir: "/project-a",
+      source: "test",
+      confidence: 1,
+    });
+    const [event] = db.getEvents(sid);
+
+    assert.equal(db.getEventById(event.id, "/project-a")?.data, "project scoped recall");
+    assert.equal(db.getEventById(event.id, "/project-b"), null);
+  });
+
+  test("deleteWorkingStateCapsules removes generated capsules without deleting raw evidence", () => {
+    const db = createTestDB();
+    const sid = "sess-capsule-prune";
+
+    db.insertEvent(sid, makeEvent({ type: "file_edit", category: "file", data: "src/raw.ts", priority: 1 }));
+    db.insertEvent(sid, makeEvent({
+      type: "working_state_capsule",
+      category: "memory-governor",
+      data: "<continuous_memory>old</continuous_memory>",
+      priority: 5,
+    }));
+    db.insertEvent(sid, makeEvent({
+      type: "working_state_capsule",
+      category: "memory-governor",
+      data: "<continuous_memory>new</continuous_memory>",
+      priority: 5,
+    }));
+
+    db.deleteWorkingStateCapsules(sid);
+
+    const events = db.getEvents(sid);
+    assert.deepEqual(events.map((event) => event.data), ["src/raw.ts"]);
+  });
 });
 
 // ════════════════════════════════════════════

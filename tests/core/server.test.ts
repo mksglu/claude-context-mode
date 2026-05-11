@@ -24,6 +24,8 @@ import { classifyNonZeroExit } from "../../src/exit-classify.js";
 import { PolyglotExecutor } from "../../src/executor.js";
 import { detectRuntimes } from "../../src/runtime.js";
 import { ContentStore } from "../../src/store.js";
+import { MCPStdioClient } from "../../src/adapters/pi/mcp-bridge.js";
+import { resolveSessionDbPath, SessionDB } from "../../src/session/db.js";
 import { ROUTING_BLOCK } from "../../hooks/routing-block.mjs";
 
 // ─── Shared setup ───────────────────────────────────────────────────────────
@@ -4529,4 +4531,157 @@ describe("startup banner suppressed in stdio transport mode", () => {
     expect(stderr).not.toContain("Context Mode MCP server");
     expect(stderr).not.toContain("Detected runtimes:");
   });
+});
+
+describe("continuous memory governor MCP wiring", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+
+  test("registers ctx_curate and ctx_recall tools", () => {
+    expect(serverSrc).toMatch(/registerTool\(\s*"ctx_curate"/);
+    expect(serverSrc).toMatch(/registerTool\(\s*"ctx_recall"/);
+  });
+
+  test("ctx_curate writes working_state_capsule events via the shared capsule builder", () => {
+    expect(serverSrc).toContain("buildContinuousMemoryCapsule(events");
+    expect(serverSrc).toContain('type: "working_state_capsule"');
+    expect(serverSrc).toContain('category: "memory-governor"');
+    expect(serverSrc).toContain('"ctx_curate"');
+  });
+
+  test("ctx_recall latest retrieves the stored continuous memory capsule", () => {
+    expect(serverSrc).toContain("getLatestContinuousMemoryCapsule(events)");
+    expect(serverSrc).toContain('id === "latest"');
+    expect(serverSrc).toContain('text: limitUtf8(capsule, maxBytes)');
+  });
+
+  test("does not expose experimental memory-governor tools unless enabled", async () => {
+    const env = { ...process.env };
+    delete env.CONTEXT_MODE_MEMORY_GOVERNOR;
+    const client = new MCPStdioClient(resolve(__dirname, "../../server.bundle.mjs"), env);
+
+    try {
+      client.start();
+      await client.initialize();
+      const tools = await client.listTools();
+      expect(tools.some((tool) => tool.name === "ctx_curate")).toBe(false);
+      expect(tools.some((tool) => tool.name === "ctx_recall")).toBe(false);
+    } finally {
+      client.shutdown();
+    }
+  }, 30_000);
+
+  test("ctx_curate and ctx_recall round-trip through an isolated MCP subprocess", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ctx-memory-governor-mcp-"));
+    const codexHome = join(root, "codex-home");
+    const sessionsDir = join(codexHome, "context-mode", "sessions");
+    const projectDir = join(root, "project");
+    const sessionId = "ctx-memory-governor-roundtrip";
+    const olderSessionId = "ctx-memory-governor-older";
+    let olderProjectEventId = 0;
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(sessionsDir, { recursive: true });
+
+    const dbPath = resolveSessionDbPath({ projectDir, sessionsDir });
+    const db = new SessionDB({ dbPath });
+    try {
+      db.ensureSession(sessionId, projectDir);
+      db.insertEvent(sessionId, {
+        type: "current_goal",
+        category: "memory-governor",
+        data: "Round-trip continuous memory through MCP",
+        priority: 5,
+      }, "test", { projectDir, source: "test", confidence: 1 });
+      db.insertEvent(sessionId, {
+        type: "file_edit",
+        category: "file",
+        data: "src/server.ts",
+        priority: 4,
+      }, "test", { projectDir, source: "test", confidence: 1 });
+      db.insertEvent(sessionId, {
+        type: "decision",
+        category: "decision",
+        data: "Persist retain hints so the Stop hook does not erase them.",
+        priority: 4,
+      }, "test", { projectDir, source: "test", confidence: 1 });
+      db.ensureSession(olderSessionId, projectDir);
+      db.insertEvent(olderSessionId, {
+        type: "decision",
+        category: "decision",
+        data: "Older project-scoped recall evidence survives session boundaries.",
+        priority: 4,
+      }, "test", { projectDir, source: "test", confidence: 1 });
+      olderProjectEventId = db.getEvents(olderSessionId)[0].id;
+    } finally {
+      db.close();
+    }
+
+    const client = new MCPStdioClient(resolve(__dirname, "../../server.bundle.mjs"), {
+      ...process.env,
+      CONTEXT_MODE_PLATFORM: "codex",
+      CONTEXT_MODE_MEMORY_GOVERNOR: "1",
+      CODEX_HOME: codexHome,
+      CONTEXT_MODE_PROJECT_DIR: projectDir,
+      CONTEXT_MODE_SESSION_ID: sessionId,
+      CONTEXT_MODE_SESSION_SUFFIX: "",
+    });
+
+    try {
+      client.start();
+      await client.initialize();
+      const tools = await client.listTools();
+      expect(tools.some((tool) => tool.name === "ctx_curate")).toBe(true);
+      expect(tools.some((tool) => tool.name === "ctx_recall")).toBe(true);
+      const curate = await client.callTool("ctx_curate", {
+        budgetTokens: 1200,
+        retain: ["durable review constraint"],
+      });
+      const curateText = (curate.content ?? []).map((part) => part.text ?? "").join("\n");
+      expect(curateText).toContain("events scanned: 4");
+      expect(curateText).toContain("durable hints: 1");
+      expect(curateText).toContain("Round-trip continuous memory through MCP");
+
+      const recall = await client.callTool("ctx_recall", { id: "latest", maxBytes: 4800 });
+      const recallText = (recall.content ?? []).map((part) => part.text ?? "").join("\n");
+      expect(recallText).toContain("Round-trip continuous memory through MCP");
+      expect(recallText).toContain("durable review constraint");
+
+      const secondCurate = await client.callTool("ctx_curate", {
+        budgetTokens: 1200,
+        retain: ["second durable review constraint"],
+      });
+      const secondCurateText = (secondCurate.content ?? []).map((part) => part.text ?? "").join("\n");
+      expect(secondCurateText).toContain("ctx_curate stored continuous memory capsule");
+
+      const queryRecall = await client.callTool("ctx_recall", {
+        query: "durable review constraint",
+        format: "raw",
+        limit: 10,
+      });
+      const queryRecallText = (queryRecall.content ?? []).map((part) => part.text ?? "").join("\n");
+      expect(queryRecallText).toContain("Retain: durable review constraint");
+      expect(queryRecallText).not.toContain("<continuous_memory");
+
+      const numericRecall = await client.callTool("ctx_recall", {
+        id: olderProjectEventId,
+        format: "raw",
+      });
+      const numericRecallText = (numericRecall.content ?? []).map((part) => part.text ?? "").join("\n");
+      expect(numericRecallText).toContain("Older project-scoped recall evidence survives session boundaries.");
+
+      const verifyDb = new SessionDB({ dbPath });
+      try {
+        const events = verifyDb.getEvents(sessionId, { limit: 100 });
+        expect(events.filter((event) => event.type === "working_state_capsule")).toHaveLength(1);
+        expect(events.some((event) => event.data.includes("durable review constraint"))).toBe(true);
+      } finally {
+        verifyDb.close();
+      }
+    } finally {
+      client.shutdown();
+      try { rmSync(root, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
+    }
+  }, 30_000);
 });
