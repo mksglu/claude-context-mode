@@ -233,6 +233,223 @@ describe("postinstall — global install, user not on Claude Code", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Slice 7b — running from an /ctx-upgrade tmpdir staging path MUST NOT
+// normalize hooks.json. /ctx-upgrade clones the repo to
+// `<tmpdir>/context-mode-upgrade-<epoch>/` and runs `npm install` there
+// before `cpSync`-ing into the real pluginRoot. If postinstall normalized
+// hooks.json here, the absolute tmpdir paths would get baked in and then
+// copied to the real plugin dir — every subsequent hook fire would fail
+// with MODULE_NOT_FOUND once the tmpdir is cleaned up.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("postinstall — /ctx-upgrade tmpdir staging guard", () => {
+  it("does NOT mutate hooks.json when pkgRoot matches context-mode-upgrade-<digits>", () => {
+    // Lay out a package dir with the exact name shape /ctx-upgrade uses.
+    const parent = makeTmp("ctx-postinstall-tmproot-");
+    const packageDir = join(parent, `context-mode-upgrade-${Date.now()}`);
+    const scriptsDir = join(packageDir, "scripts");
+    const hooksDir = join(packageDir, "hooks");
+    mkdirSync(scriptsDir, { recursive: true });
+    mkdirSync(hooksDir, { recursive: true });
+    copyFileSync(REPO_POSTINSTALL, join(scriptsDir, "postinstall.mjs"));
+    copyFileSync(REPO_HEAL_IP, join(scriptsDir, "heal-installed-plugins.mjs"));
+    copyFileSync(REPO_HEAL_SQLITE3, join(scriptsDir, "heal-better-sqlite3.mjs"));
+    // Use the REAL normalize-hooks.mjs so we can detect a (buggy) mutation.
+    copyFileSync(
+      resolve(REPO_ROOT, "hooks", "normalize-hooks.mjs"),
+      join(hooksDir, "normalize-hooks.mjs"),
+    );
+
+    // Plant a hooks.json with the placeholder + bare `node`. If postinstall
+    // failed to guard, the literal `${CLAUDE_PLUGIN_ROOT}` would be replaced
+    // by the tmpdir packageDir path.
+    const hooksJsonPath = join(hooksDir, "hooks.json");
+    const placeholderHooks =
+      `{\n  "hooks": {\n    "SessionStart": [{\n      "matcher": "",\n      "hooks": [{\n        "type": "command",\n        "command": "node \\"\${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\\""\n      }]\n    }]\n  }\n}\n`;
+    writeFileSync(hooksJsonPath, placeholderHooks, "utf-8");
+
+    const home = makeTmp("ctx-postinstall-home-tmproot-");
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      USERPROFILE: home,
+    };
+    const r = spawnSync(process.execPath, [join(scriptsDir, "postinstall.mjs")], {
+      cwd: packageDir,
+      env,
+      encoding: "utf-8",
+      timeout: 30_000,
+    });
+    expect(r.status === 0 || r.status === null).toBe(true);
+
+    // Placeholder MUST survive — the guard prevented mutation. Equivalently:
+    // tmpdir absolute paths MUST NOT appear in the file.
+    const after = readFileSync(hooksJsonPath, "utf-8");
+    expect(after).toContain("${CLAUDE_PLUGIN_ROOT}");
+    expect(after).not.toContain(packageDir.replace(/\\/g, "/"));
+    expect(after).not.toContain(packageDir);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slice 7c — /ctx-upgrade post-cpSync re-normalize against the REAL plugin
+// dir (issue #528 gap-fill).
+//
+// The postinstall guard above prevents tmpdir paths from being baked DURING
+// `npm install` inside the tmpdir. But for the upgrade flow to actually work
+// on Windows we ALSO need cli.ts to call normalizeHooksOnStartup AGAINST THE
+// REAL plugin dir after the in-place cpSync. Without this:
+//   - postinstall correctly skips → hooks.json keeps placeholders → ok
+//   - cpSync from tmpdir copies the (now unhealed) placeholder file to real
+//     plugin dir → ok
+//   - But for Windows users on the FIRST hook fire after upgrade,
+//     normalize-hooks.mjs's MCP-boot-time pass hasn't run yet, so the
+//     placeholder is still literal `${CLAUDE_PLUGIN_ROOT}` — Claude Code's
+//     hook runner cannot resolve it and the hook crashes.
+// The cli.ts post-cpSync call closes this window so the FIRST hook fire
+// after `/ctx-upgrade` works without waiting for the next MCP boot.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("normalize-hooks — /ctx-upgrade post-cpSync sequence (issue #528)", () => {
+  it("rewrites placeholders to the REAL pluginRoot, not the tmpdir", async () => {
+    const realPluginRoot = makeTmp("ctx-real-plugin-root-");
+    const realHooksDir = join(realPluginRoot, "hooks");
+    mkdirSync(realHooksDir, { recursive: true });
+    copyFileSync(
+      resolve(REPO_ROOT, "hooks", "normalize-hooks.mjs"),
+      join(realHooksDir, "normalize-hooks.mjs"),
+    );
+    // Plant a clean placeholder hooks.json — this is what cpSync from the
+    // tmpdir (with the postinstall guard active) deposits into the real
+    // plugin dir.
+    const hooksJsonPath = join(realHooksDir, "hooks.json");
+    writeFileSync(
+      hooksJsonPath,
+      `{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "node \\"\${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\\""
+      }]
+    }]
+  }
+}
+`,
+      "utf-8",
+    );
+
+    // Drive normalizeHooksOnStartup as cli.ts does — but force platform:"win32"
+    // so the Windows-only rewrite path fires on the macOS/Linux CI runner.
+    const realNormalize = resolve(REPO_ROOT, "hooks", "normalize-hooks.mjs");
+    const { normalizeHooksOnStartup } = await import(realNormalize);
+    normalizeHooksOnStartup({
+      pluginRoot: realPluginRoot,
+      nodePath: "/usr/local/bin/node",
+      platform: "win32",
+    });
+
+    const after = readFileSync(hooksJsonPath, "utf-8");
+    // The REAL plugin dir path MUST be baked in.
+    const realFwd = realPluginRoot.replace(/\\/g, "/");
+    expect(after).toContain(realFwd);
+    // Placeholder must be gone — the rewrite happened.
+    expect(after).not.toContain("${CLAUDE_PLUGIN_ROOT}");
+    // No tmpdir-shaped poison sneaked in via the wrong pluginRoot.
+    expect(after).not.toMatch(/[/\\]context-mode-upgrade-\d+[/\\]/);
+  });
+
+  it("self-heals a legacy-poisoned hooks.json by cpSync-overwrite then renormalize", async () => {
+    // Two roots: simulate the cli.ts upgrade scenario where the tmpdir
+    // staging area has a CLEAN placeholder hooks.json (postinstall guard
+    // worked) and the real plugin dir has a POISONED hooks.json from an
+    // older buggy upgrade.
+    const tmpStageRoot = makeTmp("ctx-tmpdir-stage-");
+    const tmpHooksDir = join(tmpStageRoot, "hooks");
+    mkdirSync(tmpHooksDir, { recursive: true });
+    const tmpHooksJson = join(tmpHooksDir, "hooks.json");
+    writeFileSync(
+      tmpHooksJson,
+      `{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "node \\"\${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\\""
+      }]
+    }]
+  }
+}
+`,
+      "utf-8",
+    );
+
+    const realPluginRoot = makeTmp("ctx-real-plugin-root-poisoned-");
+    const realHooksDir = join(realPluginRoot, "hooks");
+    mkdirSync(realHooksDir, { recursive: true });
+    copyFileSync(
+      resolve(REPO_ROOT, "hooks", "normalize-hooks.mjs"),
+      join(realHooksDir, "normalize-hooks.mjs"),
+    );
+    // Plant a LEGACY-POISONED hooks.json — left over from a v1.0.112-1.0.120
+    // upgrade where postinstall's tmpdir normalize baked an old epoch path.
+    const poisonedTmp = join(
+      tmpdir(),
+      "context-mode-upgrade-1700000000000",
+    );
+    const poisonedFwd = poisonedTmp.replace(/\\/g, "/");
+    const hooksJsonPath = join(realHooksDir, "hooks.json");
+    writeFileSync(
+      hooksJsonPath,
+      `{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "\\"/usr/local/bin/node\\" \\"${poisonedFwd}/hooks/sessionstart.mjs\\""
+      }]
+    }]
+  }
+}
+`,
+      "utf-8",
+    );
+
+    // Step 1: cpSync the clean placeholder file from tmpdir → real plugin
+    // dir (this is exactly what cli.ts upgrade() does after npm install).
+    copyFileSync(tmpHooksJson, hooksJsonPath);
+
+    // After cpSync, the poisoned content is gone — replaced by the
+    // placeholder version. Verify the intermediate state.
+    const afterCp = readFileSync(hooksJsonPath, "utf-8");
+    expect(afterCp).toContain("${CLAUDE_PLUGIN_ROOT}");
+    expect(afterCp).not.toContain(poisonedFwd);
+
+    // Step 2: normalize against the REAL pluginRoot — this is the cli.ts
+    // post-cpSync call that PR #528 adds.
+    const realNormalize = resolve(REPO_ROOT, "hooks", "normalize-hooks.mjs");
+    const { normalizeHooksOnStartup } = await import(realNormalize);
+    normalizeHooksOnStartup({
+      pluginRoot: realPluginRoot,
+      nodePath: "/usr/local/bin/node",
+      platform: "win32",
+    });
+
+    const after = readFileSync(hooksJsonPath, "utf-8");
+    // Real plugin dir path MUST be baked in.
+    const realFwd = realPluginRoot.replace(/\\/g, "/");
+    expect(after).toContain(realFwd);
+    // Legacy poison MUST NOT survive — both the literal epoch path and
+    // the generic tmpdir-upgrade shape.
+    expect(after).not.toContain(poisonedFwd);
+    expect(after).not.toMatch(/[/\\]context-mode-upgrade-1700000000000[/\\]/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // Slice 8 — registry already healthy: "no heal needed" line
 // ─────────────────────────────────────────────────────────────────────────
 

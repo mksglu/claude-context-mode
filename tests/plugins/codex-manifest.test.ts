@@ -87,18 +87,11 @@ describe(".codex-plugin/plugin.json", () => {
   });
 });
 
-describe(".codex-plugin/marketplace.json", () => {
-  const marketplace = readJson(".codex-plugin/marketplace.json") as {
-    metadata?: { version?: string };
-    plugins?: Array<{ version?: string }>;
-  };
-  const pkg = readJson("package.json");
-
-  it("metadata.version matches package.json", () => {
-    expect(marketplace.metadata?.version).toBe(pkg.version);
-  });
-
-  it("plugin entry version matches package.json", () => {
-    expect(marketplace.plugins?.[0]?.version).toBe(pkg.version);
-  });
-});
+// `.codex-plugin/marketplace.json` was intentionally removed — Codex CLI's
+// MARKETPLACE_MANIFEST_RELATIVE_PATHS at
+// refs/platforms/codex/codex-rs/core-plugins/src/marketplace.rs:21 lists
+// only `.agents/plugins/marketplace.json` and `.claude-plugin/marketplace.json`.
+// Shipping under `.codex-plugin/` was dead weight that never resolved a
+// plugin and historically misled contributors. The Codex-discoverable
+// marketplace now lives at `.agents/plugins/marketplace.json`, and its
+// layout contract is pinned in `tests/codex/marketplace-layout.test.ts`.

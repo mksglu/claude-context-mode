@@ -844,6 +844,24 @@ async function upgrade() {
         JSON.stringify(mcpConfig, null, 2) + "\n",
       );
 
+      // Normalize hooks.json + plugin.json against the REAL pluginRoot now that
+      // files have been copied. Two reasons:
+      //   1. If a prior buggy postinstall (or any future regression) baked the
+      //      tmpdir path into hooks.json, this rewrites it to pluginRoot before
+      //      the next hook fires.
+      //   2. Closes the same gap #414 closed for fresh installs — the first
+      //      hook fire after upgrade now works without waiting for MCP boot.
+      try {
+        const mod: { normalizeHooksOnStartup: (opts: { pluginRoot: string; nodePath: string; platform: string }) => void } =
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (await import("../hooks/normalize-hooks.mjs" as any)) as any;
+        mod.normalizeHooksOnStartup({
+          pluginRoot,
+          nodePath: process.execPath,
+          platform: process.platform,
+        });
+      } catch { /* best effort — never block upgrade */ }
+
       s.stop(color.green(`Updated in-place to v${newVersion}`));
 
       // v1.0.114 hotfix — pre-flight: verify the in-place copy actually
