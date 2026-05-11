@@ -1,0 +1,20 @@
+{
+  "name": "context-mode",
+  "interface": {
+    "displayName": "context-mode"
+  },
+  "plugins": [
+    {
+      "name": "context-mode",
+      "source": {
+        "source": "local",
+        "path": "./plugins/context-mode"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
