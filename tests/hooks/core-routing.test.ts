@@ -653,6 +653,24 @@ describe("routePreToolUse", () => {
       const result = routePreToolUse("Glob", { pattern: "**/*.ts" });
       expect(result).toBeNull();
     });
+
+    it("treats external MCP tools whose tool part contains 'context-mode' as external", () => {
+      // Guards against the substring-on-full-name false negative: only the
+      // server segment (first chunk after the mcp__ prefix) is checked, so a
+      // notion / slack / etc tool that happens to mention context-mode in its
+      // tool name still receives the external-MCP guidance.
+      const externals = [
+        "mcp__notion__search_context-mode_notes",
+        "mcp__slack__post_to_context-mode_channel",
+      ];
+      for (const tool of externals) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, {});
+        expect(result, `expected guidance for ${tool}`).not.toBeNull();
+        expect(result!.action).toBe("context");
+        expect(result!.additionalContext).toContain("External MCP tools");
+      }
+    });
   });
 });
 

@@ -371,7 +371,8 @@ const CONTEXT_MODE_MCP_SUBSTRING = "context-mode";
 function isExternalMcpTool(toolName) {
   const raw = String(toolName ?? "");
   if (!raw.startsWith(MCP_PREFIX)) return false;
-  return !raw.includes(CONTEXT_MODE_MCP_SUBSTRING);
+  const server = raw.slice(MCP_PREFIX.length).split("__")[0];
+  return !server.includes(CONTEXT_MODE_MCP_SUBSTRING);
 }
 
 /**
