@@ -2,9 +2,12 @@
 /**
  * context-mode status line — Claude Code statusLine integration.
  *
- * Reads the persisted stats file written by the MCP server and prints a
- * single-line, value-first status string designed for enterprise dev
- * surfaces (Loom demos, Slack screen shares, over-the-shoulder closes).
+ * Reads stats DIRECTLY from SessionDB (`session_events` + `session_resume`),
+ * mirroring the `ctx_stats` MCP handler at src/server.ts:2807-2891 so the
+ * statusline and ctx_stats never drift. The legacy per-PID sidecar JSON
+ * (`stats-pid-*.json`) is no longer the source of truth — sidecars were
+ * eventually-consistent (500ms+30s throttles) and PID-scoped (multiple
+ * Claude sessions colliding on the same shell ppid).
  *
  * Discipline (Datadog / Stripe / Vercel pattern):
  *   - "context-mode" full brand label, never abbreviated
@@ -13,32 +16,46 @@
  *   - No counts (calls / tokens / events) — only $ and % pass the
  *     value-per-pixel test
  *
- * Wire it up in ~/.claude/settings.json (path-free — uses the bundled CLI
- * forwarder so users don't have to know the absolute install path):
+ * Wire it up in ~/.claude/settings.json:
  *   {
  *     "statusLine": {
  *       "type": "command",
  *       "command": "context-mode statusline"
  *     }
  *   }
- *
- * Or, if you prefer to skip the CLI shim, point directly at this file:
- *     "command": "node /absolute/path/to/context-mode/bin/statusline.mjs"
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 
-// ── Schema versioning ───────────────────────────────────────────────────
-// Bumped by the MCP writer (src/server.ts) when the persisted stats payload
-// shape changes. Statusline reads `schemaVersion` from the payload:
-//   - missing  → legacy v1.0.103 era, proceed with sensible defaults
-//   - <= KNOWN → safe to render fully
-//   - >  KNOWN → newer writer than this reader; warn once + render what we
-//                still understand (graceful degrade rather than blank bar)
-const KNOWN_SCHEMA_VERSION = 1;
+// ── Analytics import — resolved relative to this script ─────────────────
+// statusline.mjs ships in `bin/`; the compiled analytics module lives in
+// `build/session/analytics.js`. Import lazily so a missing build doesn't
+// crash the renderer — degrade to the substantiated headline instead.
+//
+// The dynamic import target MUST be a `file://` URL on Windows. Node's
+// ESM loader rejects absolute drive-letter paths (`C:\...`) with
+// ERR_UNSUPPORTED_ESM_URL_SCHEME — which the catch below silently
+// swallows, leaving `_analytics = null` and rendering the empty-state
+// headline forever. Convert to a file URL so Windows accepts it.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const ANALYTICS_PATH = resolve(__dirname, "..", "build", "session", "analytics.js");
+const ANALYTICS_URL = pathToFileURL(ANALYTICS_PATH).href;
+
+let _analytics = null;
+async function loadAnalytics() {
+  if (_analytics) return _analytics;
+  try {
+    _analytics = await import(ANALYTICS_URL);
+  } catch {
+    _analytics = null;
+  }
+  return _analytics;
+}
 
 // Test seams — keep production behaviour identical when env vars unset.
 //   CTX_TEST_PLATFORM — override process.platform for cross-OS resolver tests
@@ -69,7 +86,7 @@ const yellow = (t) => ansi("33", t);     // degraded dot
 const red = (t) => ansi("31", t);        // stale dot
 const SEP = dim("·");
 
-// ── Stats file lookup ────────────────────────────────────────────────────
+// ── Stdin drain ─────────────────────────────────────────────────────────
 function readStdinJson() {
   try {
     const raw = readFileSync(0, "utf-8");
@@ -100,7 +117,7 @@ function resolveSessionDir() {
  *   - win32: degraded — process.ppid only, with a one-shot stderr warning
  *
  * Without this walk, multiple concurrent Claude sessions all see the same
- * shell ppid and collide on the fuzzy mtime fallback in findStatsFile.
+ * shell ppid and collide on per-PID stats lookup.
  */
 function findClaudePid() {
   const plat = platform();
@@ -137,7 +154,6 @@ function findClaudePidDarwin() {
   let pid = process.ppid;
   for (let i = 0; i < 8 && pid && pid > 1; i++) {
     try {
-      // `ps -o ppid=,comm= -p <pid>` → "  12345 /path/to/claude"
       const out = execFileSync(
         "ps",
         ["-o", "ppid=,comm=", "-p", String(pid)],
@@ -148,7 +164,6 @@ function findClaudePidDarwin() {
       if (!m) return process.ppid;
       const parentPid = Number(m[1]);
       const comm = m[2].trim();
-      // comm may be a path; check basename for claude
       const base = comm.split("/").pop() || comm;
       if (/claude/i.test(base)) return pid;
       pid = parentPid;
@@ -164,158 +179,167 @@ function resolveSessionId() {
   return `pid-${findClaudePid()}`;
 }
 
-function findStatsFile(sessionDir, sessionId) {
-  const direct = join(sessionDir, `stats-${sessionId}.json`);
-  if (existsSync(direct)) return direct;
-
-  try {
-    const candidates = readdirSync(sessionDir)
-      .filter((f) => f.startsWith("stats-") && f.endsWith(".json"))
-      .map((f) => {
-        const full = join(sessionDir, f);
-        try {
-          return { full, mtime: statSync(full).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.mtime - a.mtime);
-
-    // Only fall back to a file modified within the last 30 minutes —
-    // older files almost always belong to a stopped MCP server.
-    const fresh = candidates.find(
-      (c) => Date.now() - c.mtime < 30 * 60 * 1000,
-    );
-    if (fresh) return fresh.full;
-  } catch { /* ignore — sessionDir might not exist yet */ }
-
-  return null;
-}
-
-function loadStats(path) {
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf-8"));
-    if (parsed && typeof parsed === "object") {
-      // schemaVersion is optional — legacy v1.0.103 payloads omit it.
-      // Default to 0 so unknown-newer detection still has a clean compare.
-      const version = Number.isFinite(parsed.schemaVersion)
-        ? parsed.schemaVersion
-        : 0;
-      if (version > KNOWN_SCHEMA_VERSION) {
-        try {
-          process.stderr.write(
-            `context-mode statusline: stats schemaVersion=${version} newer than known=${KNOWN_SCHEMA_VERSION}; rendering known fields only. Upgrade context-mode to suppress this warning.\n`,
-          );
-        } catch { /* ignore */ }
-      }
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 // ── Formatters ───────────────────────────────────────────────────────────
 function fmtUsd(n) {
   const safe = Number.isFinite(n) && n >= 0 ? n : 0;
   if (safe >= 100) return `$${safe.toFixed(0)}`;
-  if (safe >= 10) return `$${safe.toFixed(2)}`;
   return `$${safe.toFixed(2)}`;
 }
 
-function fmtUptime(ms) {
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m`;
-  const hr = Math.floor(min / 60);
-  const remMin = min % 60;
-  return remMin > 0 ? `${hr}h${remMin}m` : `${hr}h`;
-}
-
 // ── Status dot — the ONE accent ──────────────────────────────────────────
-function statusDot(pct, isStale) {
-  if (isStale) return red("●");
+function statusDot(pct) {
   if (pct >= 50) return green("●");
   if (pct >= 1) return yellow("●");
   return green("●");
 }
 
 // ── Main render ──────────────────────────────────────────────────────────
-function main() {
+async function main() {
   readStdinJson(); // drain stdin even if unused, keeps Claude Code happy
-  const sessionDir = resolveSessionDir();
+  const sessionsDir = resolveSessionDir();
   const sessionId = resolveSessionId();
-  const statsFile = findStatsFile(sessionDir, sessionId);
 
-  // BRAND-NEW — no stats file. Use only the substantiated README headline
-  // claim ("saves ~98% of context window"). No fabricated $/dev/month or
-  // social-proof numbers we cannot back with data.
-  if (!statsFile) {
+  const analytics = await loadAnalytics();
+
+  // BRAND-NEW / build missing — substantiated headline only
+  if (!analytics) {
     process.stdout.write(
       `${brand("context-mode")}  ${green("●")}  ${dim("saves ~98% of context window")}`,
     );
     return;
   }
 
-  const stats = loadStats(statsFile);
-  if (!stats) {
+  const {
+    getRealBytesStats,
+    getMultiAdapterLifetimeStats,
+    kb,
+  } = analytics;
+
+  // Sessions dir doesn't exist yet — first ever launch
+  if (!existsSync(sessionsDir)) {
     process.stdout.write(
       `${brand("context-mode")}  ${green("●")}  ${dim("saves ~98% of context window")}`,
     );
     return;
   }
 
-  // STALE — stats file >30min old, MCP likely stopped
-  const ageMs = Date.now() - (stats.updated_at || 0);
-  const stale = ageMs > 30 * 60 * 1000;
-  if (stale) {
+  // Lifetime real-bytes across this adapter's sessions dir.
+  // Mirrors src/server.ts:2860 — the same call ctx_stats uses.
+  let lifetime;
+  try {
+    lifetime = getRealBytesStats({ sessionsDir });
+  } catch {
+    lifetime = null;
+  }
+
+  // Per-conversation real-bytes for the session $ KPI.
+  // Statusline doesn't know the worktree hash, so scan every db in the
+  // dir and let getRealBytesStats filter by sessionId.
+  let conversation;
+  try {
+    conversation = getRealBytesStats({ sessionsDir, sessionId });
+  } catch {
+    conversation = null;
+  }
+
+  // Cross-adapter lifetime — drives the "across N tools" headline when
+  // 2+ real adapters are present. Mirrors src/server.ts:2840.
+  let multi;
+  try {
+    multi = getMultiAdapterLifetimeStats();
+  } catch {
+    multi = null;
+  }
+
+  // v1.0.118: drop the $ math — ctx_stats's narrative renderer is the source
+  // of truth and uses byte-based metrics. Statusline mirrors the same
+  // formulas so the two displays never diverge again.
+  //
+  // Lifetime bytes — multi-adapter aggregate when present, else local-DB
+  // real bytes. Mirrors src/session/analytics.ts:1684 narrative renderer.
+  const lifetimeBytes = (multi?.totalBytes && multi.totalBytes > 0)
+    ? multi.totalBytes
+    : (lifetime?.totalSavedTokens ?? 0) * 4;
+
+  // This-chat bytes — real bytes accounting (data + bytes-avoided + snapshot).
+  const sessionBytes = conversation
+    ? ((conversation.eventDataBytes ?? 0)
+       + (conversation.bytesAvoided ?? 0)
+       + (conversation.snapshotBytes ?? 0))
+    : 0;
+
+  // Per-day average — same lifetime-day computation ctx_stats opener uses.
+  const sinceMs = lifetime?.firstEventMs ?? multi?.perAdapter?.[0]?.firstMs ?? 0;
+  const lifetimeDays = sinceMs > 0
+    ? Math.max(1, Math.round((Date.now() - sinceMs) / 86_400_000))
+    : 0;
+  const perDayBytes = lifetimeDays > 0 ? lifetimeBytes / lifetimeDays : 0;
+
+  // Reduction % — same as before (bytes-avoided + snapshot vs returned).
+  const totalReturned = lifetime?.bytesReturned ?? 0;
+  const totalKept =
+    (lifetime?.bytesAvoided ?? 0)
+    + (lifetime?.snapshotBytes ?? 0)
+    + (lifetime?.eventDataBytes ?? 0);
+  const totalProcessed = totalKept + totalReturned;
+  const pct = totalProcessed > 0
+    ? Math.round((totalKept / totalProcessed) * 100)
+    : 0;
+
+  const dot = statusDot(pct);
+
+  // Cross-tool count — used in the headline when 2+ real adapters detected.
+  const realAdapters = (multi?.perAdapter ?? []).filter((a) => a?.isReal);
+  const showMultiAdapter = realAdapters.length >= 2;
+
+  // BRAND-NEW: no data at all → marketing headline.
+  if (lifetimeBytes === 0 && sessionBytes === 0) {
     process.stdout.write(
-      `${brand("context-mode")}  ${red("●")}  ${dim("stale — restart to resume saving")}`,
+      `${brand("context-mode")}  ${green("●")}  ${dim("saves ~98% of context window")}`,
     );
     return;
   }
 
-  const sessionUsd = stats.dollars_saved_session ?? 0;
-  const lifetimeUsd = stats.dollars_saved_lifetime ?? 0;
-  const pct = stats.reduction_pct ?? 0;
-  const uptime = fmtUptime(stats.uptime_ms ?? 0);
-  const dot = statusDot(pct, false);
-
-  // FRESH — no session $ yet, lead with persistence value
-  if (sessionUsd === 0) {
-    if (lifetimeUsd > 0) {
-      // Lifetime $ exists — persistence as primary value, brand-poem echo
-      process.stdout.write(
-        `${brand("context-mode")}  ${dot}  ${bold(fmtUsd(lifetimeUsd))} ${dim("saved across sessions")}  ${SEP}  ${dim("preserved across compact, restart & upgrade")}`,
-      );
-    } else {
-      // First-ever session, no lifetime data yet — substantiated headline only
-      process.stdout.write(
-        `${brand("context-mode")}  ${dot}  ${dim("ready — saves ~98% of context window")}`,
-      );
+  // FRESH session, no this-chat data yet — lead with lifetime number.
+  if (sessionBytes === 0 && lifetimeBytes > 0) {
+    const blocks = [`${bold(kb(lifetimeBytes))} ${dim("kept out")}`];
+    if (perDayBytes > 0) {
+      blocks.push(`${bold(kb(perDayBytes) + "/day")}`);
     }
+    if (showMultiAdapter) {
+      blocks.push(`${dim(`across ${realAdapters.length} tools`)}`);
+    }
+    blocks.push(dim("preserved across compact, restart & upgrade"));
+    process.stdout.write(
+      `${brand("context-mode")}  ${dot}  ${blocks.join(`  ${SEP}  `)}`,
+    );
     return;
   }
 
-  // ACTIVE / DEGRADED — session $ · [lifetime $ when present] · % efficient · uptime
-  // Status dot color encodes degraded vs healthy via pct.
-  // Lifetime block is conditional: persistStats omits dollars_saved_lifetime
-  // when no analytics aggregator is available, so we degrade gracefully to
-  // a session-only render rather than printing "$0.00 saved across sessions".
+  // ACTIVE: this-chat · lifetime · [N tools] · % efficient
   const valueBlocks = [
-    `${bold(fmtUsd(sessionUsd))} ${dim("saved this session")}`,
+    `${bold(kb(sessionBytes))} ${dim("this chat")}`,
   ];
-  if (lifetimeUsd > 0) {
-    valueBlocks.push(`${bold(fmtUsd(lifetimeUsd))} ${dim("saved across sessions")}`);
+  if (lifetimeBytes > 0) {
+    valueBlocks.push(`${bold(kb(lifetimeBytes))} ${dim("lifetime")}`);
   }
-  valueBlocks.push(`${bold(`${pct}%`)} ${dim("efficient")}`);
-  valueBlocks.push(dim(uptime));
+  if (showMultiAdapter) {
+    valueBlocks.push(`${dim(`across ${realAdapters.length} tools`)}`);
+  }
+  if (pct > 0) {
+    valueBlocks.push(`${bold(`${pct}%`)} ${dim("kept out")}`);
+  }
 
   const head = `${brand("context-mode")}  ${dot}  `;
   const tail = valueBlocks.join(`  ${SEP}  `);
   process.stdout.write(head + tail);
 }
 
-main();
+main().catch(() => {
+  // Last-resort fallback — a thrown error must never produce a blank statusline.
+  try {
+    process.stdout.write(
+      `${brand("context-mode")}  ${green("●")}  ${dim("saves ~98% of context window")}`,
+    );
+  } catch { /* ignore */ }
+});

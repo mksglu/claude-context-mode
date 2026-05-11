@@ -2,8 +2,8 @@ import "../setup-home";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
-import { createHash } from "node:crypto";
 import { JetBrainsCopilotAdapter } from "../../src/adapters/jetbrains-copilot/index.js";
+import { hashProjectDirCanonical, resolveSessionDbPath } from "../../src/session/db.js";
 
 describe("JetBrainsCopilotAdapter", () => {
   let adapter: JetBrainsCopilotAdapter;
@@ -60,17 +60,18 @@ describe("JetBrainsCopilotAdapter", () => {
     });
   });
 
-  // ── getSessionDBPath ──────────────────────────────────
+  // ── per-project DB path (C2 narrowing) ────────────────
+  // BaseAdapter no longer exposes getSessionDBPath; callers go through
+  // resolveSessionDbPath + adapter.getSessionDir(). These pins assert that
+  // composition lands the .db inside JetBrains' sessionDir with the
+  // canonical project hash.
 
-  describe("getSessionDBPath", () => {
+  describe("per-project DB path via resolveSessionDbPath", () => {
     it("produces correct hash-based path", () => {
       const projectDir = "/home/user/my-project";
-      const dbPath = adapter.getSessionDBPath(projectDir);
+      const dbPath = resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() });
 
-      const expectedHash = createHash("sha256")
-        .update(projectDir)
-        .digest("hex")
-        .slice(0, 16);
+      const expectedHash = hashProjectDirCanonical(projectDir);
 
       expect(dbPath).toContain(expectedHash);
       expect(dbPath).toMatch(/\.db$/);
@@ -79,8 +80,8 @@ describe("JetBrainsCopilotAdapter", () => {
     });
 
     it("produces different paths for different project dirs", () => {
-      const path1 = adapter.getSessionDBPath("/project/a");
-      const path2 = adapter.getSessionDBPath("/project/b");
+      const path1 = resolveSessionDbPath({ projectDir: "/project/a", sessionsDir: adapter.getSessionDir() });
+      const path2 = resolveSessionDbPath({ projectDir: "/project/b", sessionsDir: adapter.getSessionDir() });
       expect(path1).not.toBe(path2);
     });
   });

@@ -55,6 +55,9 @@ jobs:
       - name: Bundle
         run: npm run bundle
 
+      - name: Assert bundle invariants (G3 — Issue #511 guardrail)
+        run: npm run assert-bundle
+
       - name: Run all tests
         shell: bash
         run: |

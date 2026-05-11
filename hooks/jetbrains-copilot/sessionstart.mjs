@@ -20,7 +20,7 @@ const ROUTING_BLOCK = createRoutingBlock(toolNamer);
 import { writeSessionEventsFile, buildSessionDirective, getSessionEvents } from "../session-directive.mjs";
 import {
   readStdin, parseStdin, getSessionId, getSessionDBPath, getSessionEventsPath, getCleanupFlagPath,
-  getProjectDir, JETBRAINS_OPTS,
+  getInputProjectDir, JETBRAINS_OPTS,
 } from "../session-helpers.mjs";
 import { join } from "node:path";
 import { readFileSync, unlinkSync } from "node:fs";
@@ -37,10 +37,11 @@ try {
   const raw = await readStdin();
   const input = parseStdin(raw);
   const source = input.source ?? "startup";
+  const projectDir = getInputProjectDir(input, OPTS);
 
   if (source === "compact") {
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath(OPTS);
+    const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
     const sessionId = getSessionId(input, OPTS);
     const resume = db.getResume(sessionId);
@@ -51,16 +52,16 @@ try {
 
     const events = getSessionEvents(db, sessionId);
     if (events.length > 0) {
-      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS));
+      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
       additionalContext += buildSessionDirective("compact", eventMeta, toolNamer);
     }
 
     db.close();
   } else if (source === "resume") {
-    try { unlinkSync(getCleanupFlagPath(OPTS)); } catch { /* no flag */ }
+    try { unlinkSync(getCleanupFlagPath(OPTS, projectDir)); } catch { /* no flag */ }
 
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath(OPTS);
+    const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
 
     // Filter events to the session being resumed. Falling back to
@@ -70,22 +71,21 @@ try {
     const sessionId = getSessionId(input, OPTS);
     const events = sessionId ? getSessionEvents(db, sessionId) : [];
     if (events.length > 0) {
-      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS));
+      const eventMeta = writeSessionEventsFile(events, getSessionEventsPath(OPTS, projectDir));
       additionalContext += buildSessionDirective("resume", eventMeta, toolNamer);
     }
 
     db.close();
   } else if (source === "startup") {
     const { SessionDB } = await loadSessionDB();
-    const dbPath = getSessionDBPath(OPTS);
+    const dbPath = getSessionDBPath(OPTS, projectDir);
     const db = new SessionDB({ dbPath });
-    try { unlinkSync(getSessionEventsPath(OPTS)); } catch { /* no stale file */ }
+    try { unlinkSync(getSessionEventsPath(OPTS, projectDir)); } catch { /* no stale file */ }
 
     db.cleanupOldSessions(7);
     db.db.exec(`DELETE FROM session_events WHERE session_id NOT IN (SELECT session_id FROM session_meta)`);
 
     const sessionId = getSessionId(input, OPTS);
-    const projectDir = getProjectDir(OPTS);
     db.ensureSession(sessionId, projectDir);
 
     const ruleFilePaths = [

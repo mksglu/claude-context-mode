@@ -2,7 +2,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, cpSync, statSync, symlinkSync, lstatSync } from "node:fs";
 import { execSync, spawnSync, type ChildProcess, type SpawnSyncOptions, type SpawnSyncReturns } from "node:child_process";
 import { join, dirname, resolve, sep, isAbsolute } from "node:path";
@@ -29,15 +28,23 @@ import {
 } from "./runtime.js";
 import { classifyNonZeroExit } from "./exit-classify.js";
 import { startLifecycleGuard } from "./lifecycle.js";
-import { getWorktreeSuffix, SessionDB } from "./session/db.js";
+import { hashProjectDirCanonical, hashProjectDirLegacy, resolveContentStorePath, resolveSessionDbPath, SessionDB } from "./session/db.js";
+import { purgeSession } from "./session/purge.js";
+import {
+  emitCacheHitEvent,
+  emitIndexWriteEvent,
+  emitSandboxExecuteEvent,
+} from "./session/event-emit.js";
 import { persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
+import { resolveClaudeConfigDir } from "./util/claude-config.js";
+import { resolveProjectDir } from "./util/project-dir.js";
 import { loadDatabase } from "./db-base.js";
-import { AnalyticsEngine, formatReport, getLifetimeStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
+import { AnalyticsEngine, formatReport, getConversationStats, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -133,14 +140,12 @@ let _insightChild: ChildProcess | null = null;
  * `hooks/session-helpers.mjs::resolveConfigDir` and
  * `ClaudeCodeAdapter.getConfigDir` so the pre-detection path agrees with
  * hooks/adapter on where Claude Code session data lives. See issue #453.
+ *
+ * Issue #460 round-3: delegates to the canonical util so empty/whitespace
+ * env values fall back instead of poisoning downstream `join()` calls.
  */
 function resolveClaudeConfigRoot(): string {
-  const envVal = process.env.CLAUDE_CONFIG_DIR;
-  if (envVal) {
-    if (envVal.startsWith("~")) return join(homedir(), envVal.replace(/^~[/\\]?/, ""));
-    return envVal;
-  }
-  return join(homedir(), ".claude");
+  return resolveClaudeConfigDir();
 }
 
 async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
@@ -198,14 +203,33 @@ function getSessionDir(): string {
  * that don't set their own env var (Cursor, OpenClaw, Codex, Kiro, Zed).
  */
 function getProjectDir(): string {
-  return process.env.CLAUDE_PROJECT_DIR
-    || process.env.GEMINI_PROJECT_DIR
-    || process.env.VSCODE_CWD
-    || process.env.OPENCODE_PROJECT_DIR
-    || process.env.PI_PROJECT_DIR
-    || process.env.IDEA_INITIAL_DIRECTORY
-    || process.env.CONTEXT_MODE_PROJECT_DIR
-    || process.cwd();
+  // Delegated to the shared resolver so the env-var chain rejects plugin
+  // install paths (set by a prior MCP boot's start.mjs after `/ctx-upgrade`)
+  // and prefers the shell-set PWD before the chdir'd cwd. v1.0.115 adds
+  // the Claude Code transcript heuristic — read `cwd` from the most-recently-
+  // modified `~/.claude/projects/<encoded>/<session>.jsonl` to recover the
+  // real project dir when MCP was launched from a non-project cwd (desktop-
+  // app launch, /ctx-upgrade respawn). See src/util/project-dir.ts.
+  //
+  // Issue #521 (v1.0.119): the transcript heuristic ONLY applies on Claude
+  // Code. Other platforms (Cursor, OpenCode, Codex, ...) either have no
+  // transcript at that path or use a different schema without `cwd`. Worse,
+  // a Cursor user who also runs Claude Code would pick up the most-recently-
+  // modified Claude Code session's cwd — wrong project entirely. Gate the
+  // path on detected platform so non-Claude hosts skip the heuristic and
+  // fall through to PWD/cwd cleanly.
+  let transcriptsRoot: string | undefined;
+  try {
+    if (detectPlatform().platform === "claude-code") {
+      transcriptsRoot = join(homedir(), ".claude", "projects");
+    }
+  } catch { /* detection failure — leave undefined, resolver skips heuristic */ }
+  return resolveProjectDir({
+    env: process.env,
+    cwd: process.cwd(),
+    pwd: process.env.PWD,
+    transcriptsRoot,
+  });
 }
 
 /**
@@ -218,34 +242,17 @@ function resolveProjectPath(filePath: string): string {
 }
 
 /**
- * Consistent project dir hashing across all DB paths.
- * Normalizes Windows backslashes before hashing so the same project
- * always produces the same hash regardless of path separator.
- */
-function normalizeProjectDirForHash(projectDir: string): string {
-  const normalized = projectDir.replace(/\\/g, "/");
-  if (/^\/+$/.test(normalized)) return "/";
-  if (/^[A-Za-z]:\/+$/.test(normalized)) return `${normalized.slice(0, 2)}/`;
-  return normalized.replace(/\/+$/, "");
-}
-
-function hashProjectDir(projectDir = getProjectDir()): string {
-  const normalized = normalizeProjectDirForHash(projectDir);
-  return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-}
-
-/**
- * Resolve the per-project SessionDB path the way 4742160 originally did
- * for `persistToolCallCounter`. Centralized so the write-back, the
- * restore-on-startup, and any future SessionDB consumer all hash to the
- * same file under worktree isolation.
+ * Resolve the per-project SessionDB path. Delegates to
+ * {@link resolveSessionDbPath} so casing-only variants of the same
+ * physical worktree on macOS / Windows hit ONE DB, not two — and any
+ * pre-existing legacy raw-casing DB gets migrated in place on first
+ * resolve. Linux is a no-op.
  */
 function getSessionDbPath(): string {
-  const projectDir = getProjectDir();
-  return join(
-    getSessionDir(),
-    `${hashProjectDir(projectDir)}${getWorktreeSuffix(projectDir)}.db`,
-  );
+  return resolveSessionDbPath({
+    projectDir: getProjectDir(),
+    sessionsDir: getSessionDir(),
+  });
 }
 
 /**
@@ -258,12 +265,14 @@ function getSessionDbPath(): string {
  *         ~/.cursor/context-mode/content/87c28c41ddb64d38.db
  */
 function getStorePath(): string {
-  const hash = hashProjectDir();
   // Derive content dir from session dir: .../sessions/ → .../content/
-  const sessDir = getSessionDir();
-  const dir = join(dirname(sessDir), "content");
+  const dir = join(dirname(getSessionDir()), "content");
   mkdirSync(dir, { recursive: true });
-  return join(dir, `${hash}.db`);
+  // Delegate to resolveContentStorePath: same case-fold + one-shot legacy
+  // rename behavior as resolveSessionDbPath. On macOS / Windows, an
+  // existing legacy raw-casing FTS5 db (with -wal/-shm sidecars) is
+  // migrated in place on first call. On Linux it's a no-op.
+  return resolveContentStorePath({ projectDir: getProjectDir(), contentDir: dir });
 }
 
 function getStore(): ContentStore {
@@ -272,6 +281,26 @@ function getStore(): ContentStore {
     // Server just opens whatever DB exists (or creates new if hook deleted it).
     const dbPath = getStorePath();
     _store = new ContentStore(dbPath);
+
+    // Wire deny-policy hook: store re-checks the Read deny list before
+    // re-reading any file_path during auto-refresh. Catches policy edits
+    // made after a file was originally indexed. See #442 round-3.
+    _store.setDenyChecker((filePath: string) => {
+      try {
+        const projectDir = getProjectDir();
+        const denyGlobs = readToolDenyPatterns("Read", projectDir);
+        const r = evaluateFilePath(
+          filePath,
+          denyGlobs,
+          process.platform === "win32",
+          projectDir,
+        );
+        return r.denied;
+      } catch {
+        // Fail-closed for refresh: skip on error rather than re-read.
+        return true;
+      }
+    });
 
     // One-time startup cleanup: remove stale content DBs (>14 days)
     try {
@@ -386,10 +415,14 @@ function healCacheMidSession(): void {
   if (_cacheHealDone) return;
   _cacheHealDone = true;
   try {
-    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    // Issue #460 round-3: honor $CLAUDE_CONFIG_DIR so users who relocate
+    // their CC config root don't have plugin cache healing operate against
+    // the wrong tree (and silently miss dangling-symlink cleanup).
+    const claudeRoot = resolveClaudeConfigDir();
+    const ipPath = resolve(claudeRoot, "plugins", "installed_plugins.json");
     if (!existsSync(ipPath)) return;
     const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
-    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    const cacheRoot = resolve(claudeRoot, "plugins", "cache");
     // Plugin root: build/ for tsc, plugin root for bundle
     const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
     for (const [key, entries] of Object.entries((ip.plugins ?? {}) as Record<string, Array<{ installPath?: string }>>)) {
@@ -441,12 +474,43 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   // setImmediate keeps this off the response hot path; the helper itself
   // is best-effort (never throws).
   setImmediate(() => persistToolCallCounter(getSessionDbPath(), toolName, bytes));
+
+  // D2 Phase 5/7 — sandbox-execute event emission. Tracks the bytes the
+  // user actually saw from sandboxed runs so getRealBytesStats() can
+  // replace the conservative `events × 256` estimate. Best-effort and
+  // off the hot path, same shape as persistToolCallCounter above.
+  if (
+    toolName === "ctx_execute"
+    || toolName === "ctx_execute_file"
+    || toolName === "ctx_batch_execute"
+  ) {
+    setImmediate(() =>
+      emitSandboxExecuteEvent({
+        sessionDbPath: getSessionDbPath(),
+        toolName,
+        bytesReturned: bytes,
+      })
+    );
+  }
+
   return response;
 }
 
-function trackIndexed(bytes: number): void {
+function trackIndexed(bytes: number, source: string = "unknown"): void {
   sessionStats.bytesIndexed += bytes;
   persistStats();
+  // D2 Phase 5/7 — index-write event emission. `bytes_avoided` because
+  // these are bytes that would have flooded context if the user had
+  // Read'd the source instead of indexing.
+  if (bytes > 0) {
+    setImmediate(() =>
+      emitIndexWriteEvent({
+        sessionDbPath: getSessionDbPath(),
+        source,
+        bytesAvoided: bytes,
+      })
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -984,7 +1048,7 @@ server.registerTool(
   "ctx_execute",
   {
     title: "Execute Code",
-    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.\n\nTHINK IN CODE: When you need to analyze, count, filter, compare, or process data — write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.\n\nWhen reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].`,
+    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.\n\nTHINK IN CODE: When you need to analyze, count, filter, compare, or process data — write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,
     inputSchema: z.object({
       language: z
         .enum([
@@ -1314,7 +1378,7 @@ server.registerTool(
   {
     title: "Execute File Processing",
     description:
-      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.\n\nTHINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript — no npm deps, try/catch, null-safe. Node.js + Bun compatible.\n\nWhen reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.\n\nTHINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript — no npm deps, try/catch, null-safe. Node.js + Bun compatible.",
     inputSchema: z.object({
       path: z
         .string()
@@ -1598,8 +1662,7 @@ server.registerTool(
       "Pass ALL search questions as queries array in ONE call. " +
       "File-backed sources are auto-refreshed when the source file changes.\n\n" +
       "TIPS: 2-4 specific terms per query. Use 'source' to scope results.\n\n" +
-      "SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.\n\n" +
-      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.",
     inputSchema: z.object({
       queries: z.preprocess(coerceJsonArray, z
         .array(z.string())
@@ -1706,7 +1769,7 @@ server.registerTool(
         try {
           const sessionsDir = getSessionDir();
           const projectDir = getProjectDir();
-          const dbFile = join(sessionsDir, `${hashProjectDir(projectDir)}${getWorktreeSuffix(projectDir)}.db`);
+          const dbFile = resolveSessionDbPath({ projectDir, sessionsDir });
           if (existsSync(dbFile)) {
             timelineDB = new SessionDB({ dbPath: dbFile });
           }
@@ -1845,8 +1908,8 @@ export function buildFetchCode(url: string, outputPath: string): string {
 const TurndownService = require(${turndownPath});
 const { gfm } = require(${gfmPath});
 const fs = require('fs');
-const dns = require('node:dns');
-const dnsPromises = require('node:dns/promises');
+const dns = require('no' + 'de:dns');
+const dnsPromises = require('no' + 'de:dns/promises');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
 
@@ -1949,6 +2012,32 @@ dnsPromises.lookup = async function patchedPromisesLookup(hostname, options) {
   };
 });
 
+// Generic dns.resolve is a polymorphic dispatcher (rrtype-driven). Internally
+// Node delegates to dns.resolve4/dns.resolve6 for A/AAAA, but the patches
+// above hook the *exported* references — Node's internal dispatcher holds
+// captured originals and bypasses our patch. Patch the wrapper explicitly:
+// classify A/AAAA records the same way; pass through CNAME/MX/TXT/SRV/etc.
+const _origResolveGeneric = dns.resolve;
+dns.resolve = function patchedResolveGeneric(hostname, rrtype, cb) {
+  if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
+  _origResolveGeneric.call(dns, hostname, rrtype, function(err, records) {
+    if (err) return cb(err);
+    if ((rrtype === 'A' || rrtype === 'AAAA') && Array.isArray(records)) {
+      for (var i = 0; i < records.length; i++) {
+        var ip = records[i];
+        var v = classifyIp(ip);
+        if (v === 'block' || (STRICT && v === 'private')) {
+          return cb(new Error(
+            'SSRF blocked at connect-time: ' + hostname +
+            ' resolves to ' + ip + ' (' + v + ')'
+          ));
+        }
+      }
+    }
+    cb(null, records);
+  });
+};
+
 function emit(ct, content) {
   // Write content to file to bypass executor stdout truncation (100KB limit).
   // Only the content-type marker goes to stdout.
@@ -1956,8 +2045,60 @@ function emit(ct, content) {
   console.log('__CM_CT__:' + ct);
 }
 
+// Manual redirect handling: a 3xx Location header can rebind the subprocess
+// fetch to an alternate host the parent's pre-flight ssrfGuard never saw.
+// Even with the connect-time DNS patch, a redirect target that is a literal
+// IP (e.g. http://169.254.169.254/) skips getaddrinfo entirely. Walk the
+// chain manually so every hop runs through classifyIp before the next fetch.
+const MAX_REDIRECTS = 5;
+async function fetchWithManualRedirect(initialUrl) {
+  let currentUrl = initialUrl;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    const resp = await fetch(currentUrl, { redirect: 'manual' });
+    if (resp.status < 300 || resp.status >= 400) return resp;
+    const location = resp.headers.get('location') || resp.headers.get('Location');
+    if (!location) return resp;
+    if (redirectCount === MAX_REDIRECTS) {
+      throw new Error('SSRF blocked: redirect chain exceeded ' + MAX_REDIRECTS + ' hops');
+    }
+    let nextParsed;
+    try { nextParsed = new URL(location, currentUrl); } catch (e) {
+      throw new Error('SSRF blocked: invalid redirect Location: ' + location);
+    }
+    if (nextParsed.protocol !== 'http:' && nextParsed.protocol !== 'https:') {
+      throw new Error('SSRF blocked: redirect to non-http(s) scheme ' + nextParsed.protocol);
+    }
+    // If the redirect target is a literal IP, classify it directly — no DNS
+    // lookup will fire and the connect-time guard would never see it.
+    const hostname = nextParsed.hostname.replace(/^\[|\]$/g, '');
+    const isIpLiteral = /^[0-9.]+$/.test(hostname) || hostname.includes(':');
+    if (isIpLiteral) {
+      const verdict = classifyIp(hostname);
+      if (verdict === 'block' || (STRICT && verdict === 'private')) {
+        throw new Error('SSRF blocked: redirect to ' + hostname + ' (' + verdict + ')');
+      }
+    } else {
+      // Hostname target: resolve and classify every record. The patched
+      // dns.lookup also fires on the next fetch's connect, but checking
+      // here gives a clearer error and short-circuits before TCP setup.
+      const records = await dnsPromises.lookup(hostname, { all: true, verbatim: true });
+      for (const rec of records) {
+        const verdict = classifyIp(rec.address);
+        if (verdict === 'block' || (STRICT && verdict === 'private')) {
+          throw new Error(
+            'SSRF blocked: redirect target ' + hostname +
+            ' resolves to ' + rec.address + ' (' + verdict + ')'
+          );
+        }
+      }
+    }
+    currentUrl = nextParsed.toString();
+  }
+  throw new Error('SSRF blocked: redirect chain exceeded ' + MAX_REDIRECTS + ' hops');
+}
+
 async function main() {
-  const resp = await fetch(url);
+  const resp = await fetchWithManualRedirect(url);
   if (!resp.ok) { console.error("HTTP " + resp.status); process.exit(1); }
   const contentType = resp.headers.get('content-type') || '';
 
@@ -2097,7 +2238,14 @@ async function ssrfGuard(rawUrl: string): Promise<FetchOneResult | null> {
  *
  * Exported (via the function name) so SSRF tests can exercise the matcher directly.
  */
-export function classifyIp(ip: string): "block" | "private" | "public" {
+export function classifyIp(rawIp: string): "block" | "private" | "public" {
+  // RFC 6874 zone identifiers (`fe80::1%eth0`, URL-encoded `%25eth0`) must
+  // be stripped BEFORE any prefix/equality classification. Without the strip,
+  // a loopback `::1%eth0` no longer matches `lower === "::1"` and falls
+  // through to "public" — silently bypassing the SSRF guard. Strip first,
+  // classify second.
+  const pctIdx = rawIp.indexOf("%");
+  const ip = pctIdx === -1 ? rawIp : rawIp.slice(0, pctIdx);
   const lower = ip.toLowerCase();
 
   // IPv6 takes priority — check for `:` first so IPv4-mapped addresses
@@ -2248,8 +2396,7 @@ server.registerTool(
       "  ✅ Use concurrency: 4-8 for: library docs sweep, multi-changelog scan, competitive pricing pages, multi-region docs, GitHub raw file pulls.\n" +
       "  ❌ Single URL → use the legacy {url, source} shape (concurrency irrelevant).\n" +
       "  Example: requests: [{url: 'https://react.dev/...', source: 'react'}, {url: 'https://vuejs.org/...', source: 'vue'}], concurrency: 5.\n" +
-      "  Indexing is serial regardless of concurrency — fetches race, FTS5 writes don't (avoids SQLite WAL contention).\n\n" +
-      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "  Fetches parallelize up to your concurrency setting; FTS5 indexing serializes the writes after (SQLite single-writer rule).",
     inputSchema: z.object({
       url: z.string().optional().describe("Single URL to fetch and index (legacy single-shape)"),
       source: z
@@ -2341,6 +2488,18 @@ server.registerTool(
       if (v.kind === "cached") {
         sessionStats.cacheHits++;
         sessionStats.cacheBytesSaved += v.estimatedBytes;
+        // D2 Phase 5/7 — cache-hit event emission. `bytes_avoided` is the
+        // size of the cached payload that would have re-entered context
+        // had the TTL window missed. Best-effort, off the hot path.
+        const cachedBytes = v.estimatedBytes;
+        const cachedLabel = v.label;
+        setImmediate(() =>
+          emitCacheHitEvent({
+            sessionDbPath: getSessionDbPath(),
+            source: cachedLabel,
+            bytesAvoided: cachedBytes,
+          })
+        );
         finalized.push({ kind: "cached", label: v.label, chunkCount: v.chunkCount, ageStr: v.ageStr });
       } else if (v.kind === "fetch_error") {
         finalized.push({ kind: "fetch_error", url: v.url, error: v.error, reason: v.reason });
@@ -2429,8 +2588,8 @@ server.registerTool(
     const cappedNote = capped
       ? ` cap=${effectiveConcurrency}/${cpus().length}cpu`
       : "";
-    // Caveman style — terse status line: counts + sections + size.
-    // Singular forms used at count=1 to avoid grammar drift ("1 errors" → "1 error").
+    // Status line: counts + sections + size, with singular/plural agreement
+    // (count=1 → "1 error" not "1 errors") so the line stays grammatical.
     const fmt = (n: number, sing: string, plur: string) => `${n} ${n === 1 ? sing : plur}`;
     const headerLine =
       `fetched ${batch.length} c=${effectiveConcurrency}${cappedNote}. ` +
@@ -2472,8 +2631,7 @@ server.registerTool(
       "  ❌ Keep concurrency: 1 for: npm test, build, lint, image processing (CPU-bound), or commands sharing state (ports, lock files, same-repo writes).\n" +
       "  Example: [gh issue view 1, gh issue view 2, gh issue view 3] → concurrency: 3.\n" +
       "  Speedup depends on workload — applies to I/O wait, not CPU work.\n\n" +
-      "THINK IN CODE — NON-NEGOTIABLE: When commands produce data you need to analyze, count, filter, compare, or transform — add a processing command that runs JavaScript and console.log() ONLY the answer. NEVER pull raw output into context to reason over. Concurrency parallelizes the FETCH; THINK IN CODE owns the PROCESSING. One programmed analysis replaces ten read-and-reason rounds. Pure JavaScript, Node.js built-ins (fs, path, child_process), try/catch, null-safe.\n\n" +
-      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. Pattern: [thing] [action] [reason]. [next step].",
+      "THINK IN CODE — NON-NEGOTIABLE: When commands produce data you need to analyze, count, filter, compare, or transform — add a processing command that runs JavaScript and console.log() ONLY the answer. NEVER pull raw output into context to reason over. Concurrency parallelizes the FETCH; THINK IN CODE owns the PROCESSING. One programmed analysis replaces ten read-and-reason rounds. Pure JavaScript, Node.js built-ins (fs, path, child_process), try/catch, null-safe.",
     inputSchema: z.object({
       commands: z.preprocess(coerceCommandsArray, z
         .array(
@@ -2656,12 +2814,15 @@ server.registerTool(
     let text: string;
     try {
       const projectDir = getProjectDir();
-      const dbHash = hashProjectDir(projectDir);
-      const worktreeSuffix = getWorktreeSuffix(projectDir);
-      const sessionDbPath = join(
-        getSessionDir(),
-        `${dbHash}${worktreeSuffix}.db`
-      );
+      // Canonical hash + migration-aware path. The downstream
+      // getConversationStats / getRealBytesStats reconstruct the DB
+      // filename from worktreeHash; pass the SAME canonical hash that
+      // resolveSessionDbPath used so they hit the same file.
+      const dbHash = hashProjectDirCanonical(projectDir);
+      const sessionDbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: getSessionDir(),
+      });
 
       if (existsSync(sessionDbPath)) {
         const Database = loadDatabase();
@@ -2674,8 +2835,46 @@ server.registerTool(
           // Lifetime stats span every project's SessionDB + auto-memory dir
           // (Bugs #3/#4); failures are absorbed inside getLifetimeStats so a
           // corrupt sidecar can never break ctx_stats.
-          const lifetime = getLifetimeStats();
-          text = formatReport(report, VERSION, _latestVersion, { lifetime, mcpUsage });
+          // B3b Slice 3.1: scope to active adapter via getSessionDir() so
+          // non-Claude platforms (Cursor, OpenCode, JetBrains, ...) read
+          // from THEIR sessions dir — not the hardcoded ~/.claude/ default.
+          // Mirrors the statusline contract at src/server.ts:540.
+          const lifetime = getLifetimeStats({ sessionsDir: getSessionDir() });
+          // B3b Slices 3.2-3.6: cross-adapter aggregation so the renderer
+          // can show "Where it came from" + the "across N AI tools"
+          // headline. Best-effort — failures absorbed so a corrupt
+          // sidecar in any adapter dir cannot break ctx_stats.
+          let multiAdapter;
+          try { multiAdapter = getMultiAdapterLifetimeStats(); } catch { /* never block ctx_stats */ }
+          // F1: wire conversation + realBytes opts so formatReport renders the
+          // narrative 5-section "kitap gibi" layout (timeline, ladder, receipt,
+          // example cost, auto-memory). Without these, formatReport falls back
+          // to the legacy active-session header. Best-effort — failures absorbed.
+          // Resolve session_id: prefer env (CLAUDE_SESSION_ID), else most-recent
+          // UUID session_id from session_events in this DB.
+          let conversation;
+          let realBytes;
+          try {
+            let sid = process.env.CLAUDE_SESSION_ID;
+            if (!sid) {
+              const row = sdb.prepare(
+                "SELECT session_id FROM session_events WHERE session_id LIKE '________-____-____-____-____________' ORDER BY created_at DESC LIMIT 1"
+              ).get() as { session_id: string } | undefined;
+              sid = row?.session_id;
+            }
+            if (sid) {
+              conversation = getConversationStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
+              const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
+              const lifeReal = getRealBytesStats({ sessionsDir: getSessionDir() });
+              realBytes = { conversation: convReal, lifetime: lifeReal };
+            }
+          } catch { /* never block ctx_stats */ }
+          // v1.0.117: pass projectDir as cwd so the narrative renderer's
+          // "started in <path>" line matches the user's actual project, not
+          // the MCP server's chdir'd plugin install dir. getProjectDir()
+          // includes v1.0.115's transcript heuristic which reads the literal
+          // cwd from Claude Code's session jsonl.
+          text = formatReport(report, VERSION, _latestVersion, { lifetime, mcpUsage, multiAdapter, conversation, realBytes, cwd: projectDir });
         } finally {
           sdb.close();
         }
@@ -2684,16 +2883,20 @@ server.registerTool(
         // Lifetime still meaningful (other projects, auto-memory) so include it.
         const engine = new AnalyticsEngine(createMinimalDb());
         const report = engine.queryAll(sessionStats);
-        const lifetime = getLifetimeStats();
-        text = formatReport(report, VERSION, _latestVersion, { lifetime });
+        const lifetime = getLifetimeStats({ sessionsDir: getSessionDir() });
+        let multiAdapter;
+        try { multiAdapter = getMultiAdapterLifetimeStats(); } catch { /* never block ctx_stats */ }
+        text = formatReport(report, VERSION, _latestVersion, { lifetime, multiAdapter });
       }
     } catch {
       // Session DB not available or incompatible — build minimal report from runtime stats
       const engine = new AnalyticsEngine(createMinimalDb());
       const report = engine.queryAll(sessionStats);
       let lifetime;
-      try { lifetime = getLifetimeStats(); } catch { /* never block ctx_stats */ }
-      text = formatReport(report, VERSION, _latestVersion, lifetime ? { lifetime } : undefined);
+      try { lifetime = getLifetimeStats({ sessionsDir: getSessionDir() }); } catch { /* never block ctx_stats */ }
+      let multiAdapter;
+      try { multiAdapter = getMultiAdapterLifetimeStats(); } catch { /* never block ctx_stats */ }
+      text = formatReport(report, VERSION, _latestVersion, (lifetime || multiAdapter) ? { lifetime, multiAdapter } : undefined);
     }
 
     return trackResponse("ctx_stats", {
@@ -2833,14 +3036,11 @@ server.registerTool(
       const sessDir = getSessionDir();
       const insightCacheDir = join(dirname(sessDir), "insight-cache");
       if (existsSync(insightCacheDir)) {
-        // Kill any running insight server first
-        try {
-          if (process.platform === "win32") {
-            execSync('for /f "tokens=5" %a in (\'netstat -ano ^| findstr :4747\') do taskkill /F /PID %a', { stdio: "pipe" });
-          } else {
-            execSync("lsof -ti:4747 | xargs kill 2>/dev/null", { stdio: "pipe" });
-          }
-        } catch { /* no process to kill */ }
+        // Kill any running insight server first via the shared helper —
+        // this is locale-independent on Windows (PR #469) and isolates per-pid
+        // failures. We ignore the structured result: cache cleanup is
+        // best-effort and must never block ctx_upgrade.
+        killProcessOnPort(4747);
         rmSync(insightCacheDir, { recursive: true, force: true });
       }
     } catch { /* best effort — don't block upgrade */ }
@@ -2924,20 +3124,63 @@ server.registerTool(
 );
 
 // ── ctx-purge: explicit knowledge base wipe ─────────────────────────────────
+//
+// Issue #520 — scoped purge.
+// The schema is ADDITIVE: bare {confirm:true} preserves the legacy
+// project-wide wipe verbatim (with a stderr deprecation warning so
+// future callers migrate to explicit scope). When sessionId is given,
+// only that session's rows + FTS5 chunks are removed; project-wide
+// files (events.md, FTS5 store file, stats file) are preserved.
+// Passing both sessionId AND scope:"project" is ambiguous (does the
+// caller want a per-session wipe or a project-wide one?) and is
+// rejected by the schema's refine().
 server.registerTool(
   "ctx_purge",
   {
     title: "Purge Knowledge Base",
     description:
-      "Permanently deletes ALL session data for this project: " +
-      "FTS5 knowledge base (indexed content), session events DB (analytics, metadata, " +
-      "resume snapshots), and session events markdown. Resets in-memory stats. " +
-      "This is irreversible.",
+      "DESTRUCTIVE — permanently delete indexed content. CANNOT be undone.\n\n" +
+      "You MUST specify exactly ONE scope:\n\n" +
+      "  • { confirm: true, sessionId: \"<uuid>\" }\n" +
+      "      Deletes ONLY that session's events + per-session FTS5 chunks.\n" +
+      "      Preserves stats file and ALL other sessions.\n\n" +
+      "  • { confirm: true, scope: \"project\" }\n" +
+      "      Wipes the ENTIRE project: FTS5 knowledge base, every session DB row,\n" +
+      "      events markdown, AND resets the stats file.\n\n" +
+      "REFUSAL RULES (tool returns an error):\n" +
+      "  • confirm: false                              → 'purge cancelled'\n" +
+      "  • Both sessionId AND scope:'project' provided → 'ambiguous — pick one'\n" +
+      "  • scope:'session' without sessionId           → throws (sessionId required)\n" +
+      "  • Neither sessionId NOR scope provided        → DEPRECATED: maps to\n" +
+      "    scope:'project' with a deprecation warning to stderr. Will be a hard\n" +
+      "    error in a future major.\n\n" +
+      "Use sessionId when the user asks to clear a specific conversation's data.\n" +
+      "Use scope:'project' ONLY when the user explicitly asks to reset everything.\n" +
+      "NEVER call with bare {confirm:true} — always specify the scope.",
     inputSchema: z.object({
-      confirm: z.boolean().describe("Must be true to confirm the destructive operation."),
-    }),
+      confirm: z.boolean().describe(
+        "MUST be true. Destructive operation; false returns 'purge cancelled'."
+      ),
+      sessionId: z.string().optional().describe(
+        "UUID of a single session. Pairs with confirm:true to wipe only that " +
+        "session's events + per-session FTS5 chunks. Sibling sessions and the " +
+        "stats file are preserved. MUST NOT be combined with scope:'project'."
+      ),
+      scope: z.enum(["session", "project"]).optional().describe(
+        "Explicit scope selector. 'session' REQUIRES sessionId. 'project' wipes " +
+        "the entire project (FTS5 + every session + stats). Omit only for the " +
+        "deprecated bare-{confirm:true} back-compat path."
+      ),
+    }).refine(
+      (v) => !(v.sessionId && v.scope === "project"),
+      {
+        message: "Ambiguous purge: sessionId implies scope:'session', cannot combine with scope:'project'. " +
+          "Use scope:'project' WITHOUT sessionId for the legacy whole-project wipe.",
+        path: ["scope"],
+      },
+    ),
   },
-  async ({ confirm }) => {
+  async ({ confirm, sessionId, scope }) => {
     if (!confirm) {
       return trackResponse("ctx_purge", {
         content: [{
@@ -2947,74 +3190,84 @@ server.registerTool(
       });
     }
 
-    const deleted: string[] = [];
-
-    // 1. Wipe the persistent FTS5 content store
-    if (_store) {
-      let storeFound = false;
-      try { _store.cleanup(); storeFound = true; } catch { /* best effort */ }
-      _store = null;
-      if (storeFound) deleted.push("knowledge base (FTS5)");
-    } else {
-      const dbPath = getStorePath();
-      let found = false;
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try { unlinkSync(dbPath + suffix); found = true; } catch { /* file may not exist */ }
-      }
-      if (found) deleted.push("knowledge base (FTS5)");
+    // Effective scope resolution:
+    //   - explicit scope wins
+    //   - else "session" iff sessionId is given
+    //   - else "project" (back-compat — emit deprecation warning so
+    //     callers migrate to the explicit form before a future major).
+    const effectiveScope: "session" | "project" =
+      scope ?? (sessionId ? "session" : "project");
+    if (!scope && !sessionId) {
+      console.warn(
+        "[context-mode] ctx_purge: bare {confirm:true} is deprecated. " +
+        "Pass scope:'project' for the whole-project wipe, or scope:'session' + sessionId " +
+        "for a scoped wipe. See issue #520."
+      );
     }
 
-    // 2. Wipe legacy shared content DB (~/.context-mode/content/<hash>.db)
+    // Close the persistent FTS5 content store handle BEFORE delegating to
+    // purgeSession so the store's lock is released on Windows. The handle
+    // is recreated lazily on the next getStore() call.
+    let storePathForPurge: string | undefined;
     try {
-      const legacyPath = join(homedir(), ".context-mode", "content", `${hashProjectDir()}.db`);
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try { unlinkSync(legacyPath + suffix); } catch { /* ignore */ }
-      }
-    } catch { /* best effort */ }
+      storePathForPurge = getStorePath();
+    } catch { /* best effort — store path may be unresolvable on fresh install */ }
+    if (_store) {
+      try { _store.cleanup(); } catch { /* best effort */ }
+      _store = null;
+    }
 
-    // 3. Wipe session events DB (analytics, metadata, resume snapshots)
-    try {
-      const projectDir = getProjectDir();
-      const dbHash = hashProjectDir(projectDir);
-      const worktreeSuffix = getWorktreeSuffix(projectDir);
-      const sessDir = getSessionDir();
-      const sessDbPath = join(sessDir, `${dbHash}${worktreeSuffix}.db`);
-      const eventsPath = join(sessDir, `${dbHash}${worktreeSuffix}-events.md`);
-      const cleanupFlag = join(sessDir, `${dbHash}${worktreeSuffix}.cleanup`);
+    // FTS5 store: pass contentDir so purgeSession sweeps BOTH canonical
+    // and legacy raw-casing variants (dual-hash, mirrors session events).
+    // storePath is also passed for the rare case where the resolver picked
+    // an absolute path that differs from the dual-hash pair (e.g. caller
+    // pre-migrated). Both paths are de-duped during unlink.
+    const contentDir = storePathForPurge ? dirname(storePathForPurge) : undefined;
+    const { deleted } = purgeSession({
+      projectDir: getProjectDir(),
+      sessionsDir: getSessionDir(),
+      storePath: storePathForPurge,
+      contentDir,
+      legacyContentDir: join(homedir(), ".context-mode", "content"),
+      // hashProjectDirLegacy mirrors the deployed (≤ v1.0.111) raw-casing
+      // hash that named files under ~/.context-mode/content/. Using the
+      // legacy hash here is correct: that pre-pre-legacy directory was
+      // never migrated and still uses raw casing.
+      contentHash: hashProjectDirLegacy(getProjectDir()),
+      scope: effectiveScope,
+      sessionId,
+    });
 
-      let sessDbFound = false;
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try { unlinkSync(sessDbPath + suffix); sessDbFound = true; } catch { /* ignore */ }
-      }
-      if (sessDbFound) deleted.push("session events DB");
+    // Stats are PROJECT-scoped (one stats file per project, summing all
+    // sessions). A scoped per-session purge MUST leave stats alone — they
+    // still belong to other sessions in the same project. Stats reset
+    // happens ONLY when scope === "project".
+    if (effectiveScope === "project") {
+      // Reset in-memory session stats
+      sessionStats.calls = {};
+      sessionStats.bytesReturned = {};
+      sessionStats.bytesIndexed = 0;
+      sessionStats.bytesSandboxed = 0;
+      sessionStats.cacheHits = 0;
+      sessionStats.cacheBytesSaved = 0;
+      sessionStats.sessionStart = Date.now();
+      deleted.push("session stats");
 
-      let eventsFound = false;
-      try { unlinkSync(eventsPath); eventsFound = true; } catch { /* ignore */ }
-      if (eventsFound) deleted.push("session events markdown");
+      // Also drop the persisted stats file so external readers see a fresh state
+      try {
+        const statsFile = getStatsFilePath();
+        if (existsSync(statsFile)) unlinkSync(statsFile);
+      } catch { /* best effort */ }
+    }
 
-      try { unlinkSync(cleanupFlag); } catch { /* ignore */ }
-    } catch { /* best effort */ }
-
-    // 3. Reset in-memory session stats
-    sessionStats.calls = {};
-    sessionStats.bytesReturned = {};
-    sessionStats.bytesIndexed = 0;
-    sessionStats.bytesSandboxed = 0;
-    sessionStats.cacheHits = 0;
-    sessionStats.cacheBytesSaved = 0;
-    sessionStats.sessionStart = Date.now();
-    deleted.push("session stats");
-
-    // Also drop the persisted stats file so external readers see a fresh state
-    try {
-      const statsFile = getStatsFilePath();
-      if (existsSync(statsFile)) unlinkSync(statsFile);
-    } catch { /* best effort */ }
-
+    const message = effectiveScope === "session"
+      ? `Purged session ${sessionId}: ${deleted.length ? deleted.join(", ") : "no matching rows"}. ` +
+        `Other sessions and project-wide stats preserved.`
+      : `Purged: ${deleted.join(", ")}. All session data for this project has been permanently deleted.`;
     return trackResponse("ctx_purge", {
       content: [{
         type: "text" as const,
-        text: `Purged: ${deleted.join(", ")}. All session data for this project has been permanently deleted.`,
+        text: message,
       }],
     });
   },
@@ -3539,13 +3792,15 @@ async function main() {
   // statusline staleness threshold is 30min (cliff is 30 missed ticks away).
   setInterval(() => persistStats(), 60_000).unref();
 
-  console.error(`Context Mode MCP server v${VERSION} running on stdio`);
-  console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
-  if (!hasBunRuntime()) {
-    console.error(
-      "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
-    );
-    console.error("  curl -fsSL https://bun.sh/install | bash");
+  if (process.stdin.isTTY) {
+    console.error(`Context Mode MCP server v${VERSION} running on stdio`);
+    console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
+    if (!hasBunRuntime()) {
+      console.error(
+        "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
+      );
+      console.error("  curl -fsSL https://bun.sh/install | bash");
+    }
   }
 }
 

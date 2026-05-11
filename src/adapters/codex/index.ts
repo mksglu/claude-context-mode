@@ -22,12 +22,10 @@ import {
   constants,
   mkdirSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BaseAdapter } from "../base.js";
-import { getWorktreeSuffix, normalizeWorktreePath } from "../../session/db.js";
 import { resolveCodexConfigDir } from "./paths.js";
 
 import {
@@ -313,17 +311,12 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     return dir;
   }
 
-  getSessionDBPath(projectDir: string): string {
-    const normalized = normalizeWorktreePath(projectDir);
-    const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-    return join(this.getSessionDir(), `${hash}${getWorktreeSuffix(normalized)}.db`);
-  }
-
-  getSessionEventsPath(projectDir: string): string {
-    const normalized = normalizeWorktreePath(projectDir);
-    const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
-    return join(this.getSessionDir(), `${hash}${getWorktreeSuffix(normalized)}-events.md`);
-  }
+  // C2 narrowing (2026-05): the historical `getSessionDBPath` /
+  // `getSessionEventsPath` overrides were removed. Both delegated to the
+  // same canonical helpers (`resolveSessionDbPath` / `hashProjectDirCanonical`
+  // + `getWorktreeSuffix`) which already normalize the path internally —
+  // the explicit `normalizeWorktreePath` here was a no-op. Callers now reach
+  // the helpers directly through `adapter.getSessionDir()`.
 
   getInstructionFiles(): string[] {
     // Codex CLI honors AGENTS.md plus an optional override file.

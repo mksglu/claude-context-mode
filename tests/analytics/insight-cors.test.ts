@@ -54,7 +54,9 @@ function seedFixtureDBs(baseDir: string): { sessionsDir: string; contentDir: str
       consumed INTEGER
     );
   `);
-  sessionDb.prepare("INSERT INTO session_meta VALUES (?, ?, ?, ?, ?, ?)").run(
+  sessionDb.prepare(
+    "INSERT INTO session_meta (session_id, project_dir, started_at, last_event_at, event_count, compact_count) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(
     "sess-1",
     "/secret/project",
     "2026-04-16T00:00:00Z",
@@ -62,7 +64,9 @@ function seedFixtureDBs(baseDir: string): { sessionsDir: string; contentDir: str
     1,
     0,
   );
-  sessionDb.prepare("INSERT INTO session_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+  sessionDb.prepare(
+    "INSERT INTO session_events (id, session_id, type, category, priority, data, source_hook, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
     1,
     "sess-1",
     "user_prompt",
@@ -72,7 +76,9 @@ function seedFixtureDBs(baseDir: string): { sessionsDir: string; contentDir: str
     "sessionstart",
     "2026-04-16T00:01:00Z",
   );
-  sessionDb.prepare("INSERT INTO session_resume VALUES (?, ?, ?, ?)").run(
+  sessionDb.prepare(
+    "INSERT INTO session_resume (session_id, snapshot, event_count, consumed) VALUES (?, ?, ?, ?)",
+  ).run(
     "sess-1",
     "resume snapshot secret",
     1,

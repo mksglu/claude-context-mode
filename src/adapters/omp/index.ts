@@ -1,25 +1,28 @@
 /**
  * adapters/omp — Oh My Pi (OMP) platform adapter.
  *
- * Implements HookAdapter for OMP's MCP-only paradigm.
- *
- * OMP hook specifics:
- *   - NO hook support (MCP-only — OMP integrates via MCP, not stdin hooks)
- *   - Config: ~/.omp/agent/mcp_config.json (JSON format)
- *   - MCP: full support via mcpServers in mcp_config.json
- *   - All capabilities are false — MCP is the only integration path
- *   - Session dir: ~/.omp/context-mode/sessions/  (parallel to ~/.claude/, ~/.pi/)
- *   - Routing file: PI.md (OMP is Pi-compatible — same instruction filename)
+ * OMP integration facts (verified against can1357/oh-my-pi @ v3.20.1):
+ *   - MCP config: `~/.omp/agent/mcp.json` (global) or `<project>/.omp/mcp.json`
+ *     (project), per `packages/utils/src/dirs.ts` `getMCPConfigPath()` and
+ *     `docs/mcp-config.md` "Preferred config locations".
+ *   - Agent-dir env override: `PI_CODING_AGENT_DIR` — `packages/utils/src/dirs.ts`:
+ *     `let dirs = new DirResolver(process.env.PI_CODING_AGENT_DIR);`
+ *     (No `OMP_*` runtime env exists; `.env`-file `OMP_*` keys are mirrored to
+ *     `PI_*` BEFORE process.env is read.)
+ *   - System-prompt file: `SYSTEM.md` (project `.omp/SYSTEM.md` precedence,
+ *     global `~/.omp/agent/SYSTEM.md` fallback). NOT `PI.md` — no `PI.md`
+ *     loader exists upstream. OMP also auto-discovers `AGENTS.md` via
+ *     `packages/coding-agent/src/discovery/agents-md.ts`.
+ *   - Hook surface: OMP DOES expose pre/post tool-call hooks
+ *     (`~/.omp/agent/hooks/{pre,post}/*.ts`, `omp.on("tool_call", ...)`).
+ *     This adapter ships MCP-only delivery for now; wiring native OMP
+ *     hooks is future work tracked separately.
  *
  * Why a dedicated adapter rather than reusing pi:
  *   OMP and Pi share a runtime surface but different storage roots
  *   (`~/.omp/agent/` vs `~/.pi/`). Without an OMP adapter, OMP users
  *   running through a Claude-installed harness silently land their
  *   context-mode data under `~/.claude/context-mode/` (issue #473).
- *
- * Sources:
- *   - OMP source: https://github.com/can1357/oh-my-pi
- *   - OMP_PROCESSING_AGENT_DIR config root override (defaults to ~/.omp/agent)
  */
 
 import {
@@ -75,19 +78,19 @@ export class OMPAdapter extends BaseAdapter implements HookAdapter {
   // interface contract but will throw if called.
 
   parsePreToolUseInput(_raw: unknown): PreToolUseEvent {
-    throw new Error("OMP does not support hooks");
+    throw new Error("OMP hooks not wired by this adapter (MCP-only delivery)");
   }
 
   parsePostToolUseInput(_raw: unknown): PostToolUseEvent {
-    throw new Error("OMP does not support hooks");
+    throw new Error("OMP hooks not wired by this adapter (MCP-only delivery)");
   }
 
   parsePreCompactInput(_raw: unknown): PreCompactEvent {
-    throw new Error("OMP does not support hooks");
+    throw new Error("OMP hooks not wired by this adapter (MCP-only delivery)");
   }
 
   parseSessionStartInput(_raw: unknown): SessionStartEvent {
-    throw new Error("OMP does not support hooks");
+    throw new Error("OMP hooks not wired by this adapter (MCP-only delivery)");
   }
 
   // ── Response formatting ────────────────────────────────
@@ -112,16 +115,17 @@ export class OMPAdapter extends BaseAdapter implements HookAdapter {
   // ── Configuration ──────────────────────────────────────
 
   /**
-   * Resolve OMP agent root, honoring `OMP_PROCESSING_AGENT_DIR` when set
-   * (the upstream OMP convention) and falling back to `~/.omp/agent`.
+   * Resolve OMP agent root, honoring `PI_CODING_AGENT_DIR` when set
+   * (the upstream OMP convention — see `packages/utils/src/dirs.ts`)
+   * and falling back to `~/.omp/agent`.
    */
   private getAgentDir(): string {
-    return process.env.OMP_PROCESSING_AGENT_DIR
+    return process.env.PI_CODING_AGENT_DIR
       ?? resolve(homedir(), ".omp", "agent");
   }
 
   getSettingsPath(): string {
-    return resolve(this.getAgentDir(), "mcp_config.json");
+    return resolve(this.getAgentDir(), "mcp.json");
   }
 
   /**
@@ -133,7 +137,10 @@ export class OMPAdapter extends BaseAdapter implements HookAdapter {
   }
 
   getInstructionFiles(): string[] {
-    return ["PI.md"];
+    // SYSTEM.md is the OMP-native system-prompt file (see
+    // can1357/oh-my-pi README "Custom System Prompt"). AGENTS.md is also
+    // auto-discovered by the universal discovery layer.
+    return ["SYSTEM.md", "AGENTS.md"];
   }
 
   generateHookConfig(_pluginRoot: string): HookRegistration {
@@ -163,8 +170,8 @@ export class OMPAdapter extends BaseAdapter implements HookAdapter {
         check: "Hook support",
         status: "warn",
         message:
-          "OMP does not support hooks. " +
-          "Only MCP integration is available.",
+          "context-mode delivers via MCP for OMP. " +
+          "Native OMP pre/post tool-call hooks are not yet wired by this adapter.",
       },
     ];
   }
@@ -224,7 +231,7 @@ export class OMPAdapter extends BaseAdapter implements HookAdapter {
   }
 
   updatePluginRegistry(_pluginRoot: string, _version: string): void {
-    // OMP plugin registry is managed via mcp_config.json
+    // OMP MCP server registry is managed via mcp.json
   }
 
   getRoutingInstructions(): string {

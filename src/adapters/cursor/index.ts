@@ -20,6 +20,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { resolveClaudeConfigDir } from "../../util/claude-config.js";
 
 import type {
   HookAdapter,
@@ -463,6 +464,20 @@ export class CursorAdapter extends BaseAdapter implements HookAdapter {
       }
     }
 
+    // #489 round-3 — pure plugin install (Marketplace) bundles MCP registration
+    // inside the plugin package. No native mcp.json exists, but the plugin
+    // manifest under ~/.cursor/plugins/{local,cache}/<name>/.cursor-plugin/plugin.json
+    // is enough to consider context-mode registered. Without this, doctor
+    // self-contradicts: `Plugin install: pass` alongside `MCP registration: warn`.
+    const pluginInstalls = this.detectPluginInstalls();
+    if (pluginInstalls.length > 0) {
+      return {
+        check: "MCP registration",
+        status: "pass",
+        message: `context-mode registered via plugin manifest at ${pluginInstalls[0]}`,
+      };
+    }
+
     return {
       check: "MCP registration",
       status: "warn",
@@ -591,10 +606,13 @@ export class CursorAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private hasClaudeCompatibilityHooks(): boolean {
+    // Issue #460 round-3: probe the resolved CC config dir (honors
+    // $CLAUDE_CONFIG_DIR) instead of the literal ~/.claude so users
+    // who relocated their CC config still trigger the compat path.
     const compatPaths = [
       resolve(".claude", "settings.json"),
       resolve(".claude", "settings.local.json"),
-      join(homedir(), ".claude", "settings.json"),
+      join(resolveClaudeConfigDir(), "settings.json"),
     ];
 
     return compatPaths.some((configPath) => existsSync(configPath));

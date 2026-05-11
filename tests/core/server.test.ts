@@ -1842,7 +1842,16 @@ describe("Hook Injection", () => {
     const parsed = JSON.parse(output);
     const prompt = parsed.hookSpecificOutput.updatedInput.prompt;
     assert.ok(prompt.includes("<output_constraints>"), "Should inject output_constraints");
-    assert.ok(prompt.includes("Terse like caveman"), "Should mention concise communication style");
+    // Pillar 4 (caveman/Output Compression) retired in #482. Routing block
+    // must NOT push a prose-style directive — assert the negative.
+    assert.ok(
+      !prompt.toLowerCase().includes("terse like caveman"),
+      "Routing block must not contain caveman/terse style directive",
+    );
+    assert.ok(
+      !prompt.includes("<communication_style>"),
+      "Routing block must not contain communication_style block",
+    );
     assert.ok(
       prompt.includes("<tool_selection_hierarchy>"),
       "Should inject tool_selection_hierarchy",
@@ -2134,6 +2143,51 @@ describe("ctx_upgrade tool: inline fallback for missing CLI", () => {
     // There should be an else/fallback branch after checking both paths
     expect(serverSrc).toMatch(/existsSync\(fallbackPath\)/);
   });
+
+  // ── #469 follow-up: insight-cache cleanup must route through the shared
+  //    locale-independent helper, not the original inline `for /f`/`findstr`
+  //    block (which was the exact bug PR #469 fixed for ctx_insight). The
+  //    orphan call site at the top of the ctx_upgrade handler still carried
+  //    the broken pattern. Lock that down here.
+  describe("ctx_upgrade insight-cache cleanup uses killProcessOnPort (#469 follow-up)", () => {
+    // Scope assertions to the ctx_upgrade tool registration body so we don't
+    // accidentally match the shared killProcessOnPort helper definition or
+    // its tests below in the same file.
+    const upgradeMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_upgrade"[\s\S]*?^\);/m,
+    );
+    const upgradeBody = upgradeMatch ? upgradeMatch[0] : "";
+
+    test("ctx_upgrade tool block was located in source", () => {
+      expect(upgradeMatch).not.toBeNull();
+    });
+
+    test("ctx_upgrade does NOT contain the broken inline 'for /f' netstat parser", () => {
+      // The locale-broken Windows pattern PR #469 already removed from
+      // killProcessOnPort. Reintroducing it anywhere in ctx_upgrade is a
+      // regression on non-English Windows.
+      expect(upgradeBody).not.toMatch(/for\s+\/f\s+"tokens=5"/);
+      expect(upgradeBody).not.toMatch(/findstr\s+:4747/);
+    });
+
+    test("ctx_upgrade does NOT shell out to taskkill / lsof directly", () => {
+      // All port-cleanup must go through the shared helper. The handler
+      // itself must not hand-roll either Windows or POSIX kill commands.
+      expect(upgradeBody).not.toMatch(/taskkill/);
+      expect(upgradeBody).not.toMatch(/lsof\s+-ti:4747/);
+    });
+
+    test("ctx_upgrade routes insight-cache cleanup through killProcessOnPort(4747)", () => {
+      // Positive assertion: the handler must call the shared helper.
+      expect(upgradeBody).toMatch(/killProcessOnPort\(\s*4747\s*\)/);
+    });
+
+    test("ctx_upgrade preserves best-effort semantics (cleanup wrapped in try/catch)", () => {
+      // Cleanup failure must not block the upgrade — the try/catch at the
+      // top of the handler with the "best effort" comment must remain.
+      expect(upgradeBody).toMatch(/best effort/i);
+    });
+  });
 });
 
 // ─── ctx_purge is the ONLY reset mechanism ──────────────────────────────────
@@ -2188,19 +2242,20 @@ describe("ctx_purge is the sole reset/wipe mechanism", () => {
     );
     expect(purgeMatch).not.toBeNull();
     const purgeBody = purgeMatch![0];
-    // 1. Wipes FTS5 knowledge base
+    // 1. Closes the FTS5 knowledge base BEFORE wiping (releases Windows lock)
     expect(purgeBody).toContain("_store.cleanup()");
     expect(purgeBody).toContain("_store = null");
-    // 2. Wipes session events DB
-    expect(purgeBody).toContain("sessDbPath");
-    expect(purgeBody).toContain("session events DB");
-    // 3. Wipes session events markdown
-    expect(purgeBody).toContain("eventsPath");
-    expect(purgeBody).toContain("-events.md");
-    // 4. Resets in-memory stats
+    // 2. Delegates the on-disk wipe to the purgeSession deep module so all
+    //    file-kind sweeps (session DB, events.md, cleanup flag, FTS5 store,
+    //    legacy content) flow through ONE code path with uniform dual-hash.
+    expect(purgeBody).toContain("purgeSession({");
+    expect(purgeBody).toContain("projectDir: getProjectDir()");
+    expect(purgeBody).toContain("sessionsDir: getSessionDir()");
+    expect(purgeBody).toContain("storePath: storePathForPurge");
+    // 3. Resets in-memory stats
     expect(purgeBody).toContain("sessionStats.calls = {}");
     expect(purgeBody).toContain("sessionStats.sessionStart = Date.now()");
-    // Confirms with list of deleted items
+    // 4. Confirms with list of deleted items
     expect(purgeBody).toContain("Purged:");
   });
 });
@@ -2237,28 +2292,65 @@ describe("Platform-aware session paths via adapter", () => {
     expect(statsMatch![0]).not.toMatch(/["']\.claude["']/);
   });
 
-  // ── Adapter methods used for session paths ──
-  test("session paths derived from adapter.getSessionDir or getSessionDBPath", () => {
-    // Either directly uses adapter methods or a helper that delegates to them
-    expect(serverSrc).toMatch(/getSessionDir\(\)|getSessionDBPath\(/);
+  // ── Adapter methods used for session paths (post-C2 narrowing) ──
+  test("session paths derived from adapter.getSessionDir + resolveSessionDbPath", () => {
+    // C2 narrowing (2026-05): adapter no longer exposes getSessionDBPath /
+    // getSessionEventsPath. server.ts must derive per-project DB paths via
+    // resolveSessionDbPath while reading the adapter ONLY for the platform
+    // sessionDir. Pin both calls so an accidental regression to a missing
+    // helper or a deleted adapter method is caught at the test boundary.
+    expect(serverSrc).toMatch(/getSessionDir\(/);
+    expect(serverSrc).toMatch(/resolveSessionDbPath\(/);
   });
 
   // ── Comprehensive projectDir detection ──
-  test("getProjectDir checks verified platform env vars", () => {
+  test("getProjectDir delegates to resolveProjectDir; chain lives in util/project-dir.ts", () => {
     const fn = serverSrc.match(/function getProjectDir[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
     const body = fn![0];
-    // Only env vars verified to be set by host IDEs before MCP server spawn
-    expect(body).toContain("CLAUDE_PROJECT_DIR");
-    expect(body).toContain("GEMINI_PROJECT_DIR");
-    expect(body).toContain("VSCODE_CWD");
-    expect(body).toContain("OPENCODE_PROJECT_DIR");
-    expect(body).toContain("PI_PROJECT_DIR");
-    // Universal fallback set by start.mjs for ALL platforms (Cursor, OpenClaw, etc.)
-    expect(body).toContain("CONTEXT_MODE_PROJECT_DIR");
-    expect(body).toContain("process.cwd()");
+    // Server.ts MUST delegate so the env-var chain + plugin-path rejection
+    // is unified with start.mjs (see v1.0.113 hotfix).
+    expect(body).toContain("resolveProjectDir");
+    expect(body).toContain("process.env.PWD");
+    // Env-var chain itself moved to the shared resolver — pin its contract there.
+    const utilSrc = readFileSync(
+      resolve(__dirname, "../../src/util/project-dir.ts"),
+      "utf-8",
+    );
+    for (const v of [
+      "CLAUDE_PROJECT_DIR",
+      "GEMINI_PROJECT_DIR",
+      "VSCODE_CWD",
+      "OPENCODE_PROJECT_DIR",
+      "PI_PROJECT_DIR",
+      "IDEA_INITIAL_DIRECTORY",
+      "CURSOR_CWD",
+      "CONTEXT_MODE_PROJECT_DIR",
+    ]) {
+      expect(utilSrc).toContain(v);
+    }
+    expect(utilSrc).toContain("isPluginInstallPath");
     // Must NOT contain semantically wrong env vars
-    expect(body).not.toContain("OPENCLAW_HOME"); // install dir, not project dir
+    expect(utilSrc).not.toContain("OPENCLAW_HOME");
+  });
+
+  // Issue #521 Slice 2: transcriptsRoot is the Claude Code transcript dir
+  // (`~/.claude/projects`). Passing it on non-Claude-Code platforms (Cursor,
+  // OpenCode, Codex, ...) is wrong — the most-recently-modified jsonl could
+  // belong to an unrelated Claude Code window, returning that project's cwd
+  // to a Cursor MCP. getProjectDir() MUST gate transcriptsRoot on the active
+  // platform via detectPlatform(); only "claude-code" gets the path.
+  test("getProjectDir gates transcriptsRoot on detected platform (Claude Code only)", () => {
+    const fn = serverSrc.match(/function getProjectDir[\s\S]*?^}/m);
+    expect(fn).not.toBeNull();
+    const body = fn![0];
+    // Must reference detectPlatform so the gate is dynamic per-process.
+    expect(body).toContain("detectPlatform");
+    // Must check for the claude-code platform string (literal — pinning the
+    // gate predicate so a typo or platform-id rename is caught here).
+    expect(body).toContain("claude-code");
+    // Still passes transcriptsRoot when the gate matches.
+    expect(body).toContain("transcriptsRoot");
   });
 
   // ── Content DB is platform-isolated (not shared) ──
@@ -2281,23 +2373,28 @@ describe("Project dir hash consistency", () => {
     "utf-8",
   );
 
-  test("shared hashProjectDir helper exists and normalizes backslashes", () => {
-    const normalizeFn = serverSrc.match(/function normalizeProjectDirForHash[\s\S]*?^}/m);
-    expect(normalizeFn).not.toBeNull();
-    expect(normalizeFn![0]).toMatch(/replace\(.*\\\\.*\/.*\)/);
-
-    const fn = serverSrc.match(/function hashProjectDir[\s\S]*?^}/m);
-    expect(fn).not.toBeNull();
-    const body = fn![0];
-    expect(body).toContain("normalizeProjectDirForHash");
-    expect(body).toContain("createHash");
+  test("server.ts imports canonical hash + path resolvers from session/db.js", () => {
+    // After the case-fold migration + content-store migration, all DB
+    // path computation lives in src/session/db.ts. The server MUST import
+    // resolveSessionDbPath + resolveContentStorePath rather than rolling
+    // its own hash + join inline.
+    expect(serverSrc).toMatch(
+      /import\s*\{[^}]*resolveSessionDbPath[^}]*\}\s*from\s*"\.\/session\/db\.js"/,
+    );
+    expect(serverSrc).toMatch(
+      /import\s*\{[^}]*resolveContentStorePath[^}]*\}\s*from\s*"\.\/session\/db\.js"/,
+    );
+    // The deleted local helpers MUST be gone — guards against accidental
+    // re-introduction that would split the case-fold contract.
+    expect(serverSrc).not.toMatch(/^function hashProjectDir\(/m);
+    expect(serverSrc).not.toMatch(/^function normalizeProjectDirForHash\(/m);
   });
 
-  test("getStorePath uses hashProjectDir, not inline hashing", () => {
+  test("getStorePath delegates to resolveContentStorePath (auto case-fold migration)", () => {
     const fn = serverSrc.match(/function getStorePath[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
-    expect(fn![0]).toContain("hashProjectDir");
-    // Must NOT have its own inline createHash call
+    expect(fn![0]).toContain("resolveContentStorePath");
+    // Must NOT have its own inline createHash call.
     expect(fn![0]).not.toContain("createHash");
   });
 
@@ -2318,6 +2415,37 @@ describe("Project dir hash consistency", () => {
     expect(purgeMatch![0]).toContain("hashProjectDir");
     expect(purgeMatch![0]).not.toContain("createHash");
   });
+
+  // ── B3b Slice 3.1: ctx_stats must scope getLifetimeStats to the active
+  //    adapter via getSessionDir(), not the hardcoded ~/.claude/ default.
+  //    Bug evidence: src/server.ts:2602/2612/2620 currently call
+  //    `getLifetimeStats()` with no args, so non-Claude platforms (Cursor,
+  //    OpenCode, JetBrains, ...) silently aggregate from the wrong dir.
+  //    Statusline at src/server.ts:540 already passes
+  //    `{ sessionsDir: getSessionDir() }` — the three ctx_stats sites must
+  //    mirror that contract exactly. Note: `getMultiAdapterLifetimeStats`
+  //    is NOT covered by this test because it takes `{ home }` and
+  //    intentionally defaults to homedir() to scan every adapter dir; the
+  //    bare-call form is correct for that helper.
+  test("ctx_stats scopes lifetime aggregation to the active adapter sessionsDir", () => {
+    const statsMatch = serverSrc.match(
+      /server\.registerTool\(\s*"ctx_stats"[\s\S]*?^\);/m,
+    );
+    expect(statsMatch).not.toBeNull();
+    const body = statsMatch![0];
+    // Every `getLifetimeStats(` invocation inside ctx_stats MUST be argumented
+    // (sessionsDir-aware). A bare `()` call falls back to the hardcoded
+    // ~/.claude/context-mode/sessions default and silently mis-attributes
+    // lifetime counts on non-Claude platforms. Use a negative lookbehind to
+    // exclude `getMultiAdapterLifetimeStats(` whose default is intentional.
+    const bareCalls = body.match(
+      /(?<!MultiAdapter)getLifetimeStats\(\s*\)/g,
+    );
+    expect(bareCalls, "ctx_stats must not call getLifetimeStats() with no args").toBeNull();
+    // Should pass an object literal containing `sessionsDir` (mirrors the
+    // statusline contract at src/server.ts:540).
+    expect(body).toMatch(/getLifetimeStats\(\s*\{\s*sessionsDir:\s*getSessionDir\(\)/);
+  });
 });
 
 // ─── Purge deleted array honesty ─────────────────────────────────────────────
@@ -2329,27 +2457,104 @@ describe("ctx_purge deleted array is honest", () => {
   );
 
   test("every deleted.push in ctx_purge is guarded by a success check", () => {
-    const purgeMatch = serverSrc.match(
+    // After the purgeSession() deep-module extraction, the per-file-kind
+    // success guards live in src/session/purge.ts. The handler itself only
+    // ever pushes "session stats" — which is the always-truthful in-memory
+    // reset and explicitly exempted from the guard rule. The deep module
+    // is independently covered by tests/session/purge-session.test.ts which
+    // proves each label appears only when at least one file was unlinked.
+    const purgeBody = serverSrc.match(
       /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
-    );
-    expect(purgeMatch).not.toBeNull();
-    const body = purgeMatch![0];
-
-    // Find all deleted.push calls and check each one
-    const pushes = [...body.matchAll(/deleted\.push\("([^"]+)"\)/g)];
-    expect(pushes.length).toBeGreaterThanOrEqual(4);
-
+    )![0];
+    const pushes = [...purgeBody.matchAll(/deleted\.push\("([^"]+)"\)/g)];
     for (const push of pushes) {
-      const label = push[1];
-      if (label === "session stats") continue; // always truthful (in-memory)
-
-      // Get the 120 chars before this push — must contain a conditional guard
-      const idx = push.index!;
-      const context = body.slice(Math.max(0, idx - 120), idx);
-      const isGuarded = /if\s*\(\s*\w*[Ff]ound/.test(context)
-        || /if\s*\(_store\)/.test(context);
-      expect(isGuarded, `"${label}" push must be guarded by a found/success check`).toBe(true);
+      expect(push[1]).toBe("session stats");
     }
+
+    // Issue #520: scoped per-session purge must NOT push "session stats"
+    // (stats are project-scoped). The push remains the only string-literal
+    // push, but it must be gated on scope === "project".
+    expect(purgeBody).toMatch(/scope\s*===\s*["']project["']/);
+
+    const moduleSrc = readFileSync(
+      resolve(__dirname, "../../src/session/purge.ts"),
+      "utf-8",
+    );
+    // Each user-facing label inside purgeSession() must be conditionally
+    // pushed (success check).  We grep every push and verify the 120 chars
+    // before it contain a guard.
+    const modulePushes = [...moduleSrc.matchAll(/deleted\.push\("([^"]+)"\)/g)];
+    expect(modulePushes.length).toBeGreaterThanOrEqual(2);
+    for (const push of modulePushes) {
+      const idx = push.index!;
+      const context = moduleSrc.slice(Math.max(0, idx - 160), idx);
+      const isGuarded = /if\s*\(\s*\w*[Ff]ound/.test(context)
+        || /if\s*\(\s*removed\s*\)/.test(context)
+        || /if\s*\(\s*_store\s*\)/.test(context);
+      expect(isGuarded, `"${push[1]}" in purge.ts must be guarded by a success check`).toBe(true);
+    }
+  });
+});
+
+// ─── Issue #520: scoped ctx_purge handler/schema contract ──────────────────
+//
+// The HANDLER (not the deep module) owns the schema, the stats reset, and
+// the back-compat deprecation warning. The deep module stays pure and
+// is covered by tests/session/purge-session.test.ts. These tests assert
+// the additive contract WITHOUT booting the MCP server.
+
+describe("ctx_purge scoped handler (issue #520)", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+  const purgeBody = serverSrc.match(
+    /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
+  )![0];
+
+  // Slice 4 — stats file & in-memory reset gated on scope === "project".
+  // A scoped per-session purge must leave the persisted stats file alone
+  // (other sessions in the project still own those bytes).
+  test("slice 4: persisted stats file unlink is gated on scope === 'project'", () => {
+    const statsBlockMatch = purgeBody.match(/getStatsFilePath\(\)[\s\S]{0,300}/);
+    expect(statsBlockMatch, "stats unlink block must exist in handler").not.toBeNull();
+    // The whole stats reset (in-memory + file unlink) must live under a
+    // `if (... === "project")` branch — verified by ensuring the stats
+    // unlink is NOT at the top level of the handler.
+    const statsIdx = purgeBody.indexOf("getStatsFilePath()");
+    const beforeStats = purgeBody.slice(0, statsIdx);
+    expect(beforeStats).toMatch(/scope\s*===\s*["']project["']/);
+  });
+
+  // Slice 5 — back-compat: bare {confirm:true} keeps verbatim behavior.
+  // The handler must map missing scope/sessionId → scope:"project" and
+  // delegate to purgeSession exactly as before. The schema must accept
+  // bare {confirm:true} as it always did.
+  test("slice 5: bare {confirm:true} handler still calls purgeSession with project scope", () => {
+    // Either explicit scope:"project" is passed, OR the deep module's
+    // own default-resolution kicks in. The handler MUST NOT throw on
+    // bare {confirm:true}.
+    expect(purgeBody).toMatch(/purgeSession\(/);
+    expect(purgeBody).not.toMatch(/throw new (?:Error|TypeError)\([^)]*sessionId/);
+  });
+
+  // Slice 6 — schema rejects {confirm, sessionId, scope:"project"} (ambiguous).
+  test("slice 6: schema refuses ambiguous {sessionId + scope:'project'}", () => {
+    // Implemented via z.object(...).refine(...) on the inputSchema.
+    expect(purgeBody).toMatch(/\.refine\(/);
+  });
+
+  // Slice 7 — schema accepts {confirm:true, sessionId:"<uuid>"}.
+  test("slice 7: schema declares optional sessionId and scope", () => {
+    expect(purgeBody).toMatch(/sessionId:\s*z\.string\(\)\.optional\(\)/);
+    expect(purgeBody).toMatch(/scope:\s*z\.enum\(\[["']session["'],\s*["']project["']\]\)\.optional\(\)/);
+  });
+
+  // Slice 8 — bare {confirm:true} (no sessionId, no scope) emits a
+  // deprecation warning to stderr exactly once. The warn lives in the
+  // handler — not the deep module — to keep purge.ts pure.
+  test("slice 8: handler emits deprecation warning when scope+sessionId both omitted", () => {
+    expect(purgeBody).toMatch(/console\.warn\([^)]*deprecat/i);
   });
 });
 
@@ -2435,22 +2640,36 @@ describe("ContentStore purge behavior", () => {
   });
 
   test("ctx_purge handler deletes DB file even when _store is null (--continue scenario)", () => {
-    // This tests the server.ts logic: when _store is null, ctx_purge should
-    // still delete the DB file on disk using getStorePath()
+    // After the purgeSession() extraction (src/session/purge.ts) the
+    // _store-is-null branch lives there: the handler ALWAYS resolves
+    // getStorePath() and passes it as `storePath`, regardless of whether
+    // _store was open.  purgeSession unlinks the file unconditionally,
+    // which is exactly the --continue scenario this test was created for.
+    // Behavioral coverage: tests/session/purge-session.test.ts slice 5.
     const serverSrc = readFileSync(
       resolve(__dirname, "../../src/server.ts"),
       "utf-8",
     );
-    const purgeMatch = serverSrc.match(
+    const purgeBody = serverSrc.match(
       /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
-    );
-    expect(purgeMatch).not.toBeNull();
-    const purgeBody = purgeMatch![0];
+    )![0];
 
-    // Must have an else branch for when _store is null
-    expect(purgeBody).toContain("} else {");
-    expect(purgeBody).toContain("getStorePath()");
-    expect(purgeBody).toContain("unlinkSync");
+    // Handler resolves storePath BEFORE the optional _store.cleanup() so
+    // the disk wipe runs whether _store was open or not.
+    const storePathIdx = purgeBody.indexOf("getStorePath()");
+    const storeCleanupIdx = purgeBody.indexOf("_store.cleanup()");
+    expect(storePathIdx).toBeGreaterThan(-1);
+    expect(storePathIdx).toBeLessThan(storeCleanupIdx === -1 ? Infinity : storeCleanupIdx);
+    // Handler always passes storePath into the deep module — that is what
+    // makes the wipe unconditional.
+    expect(purgeBody).toContain("storePath: storePathForPurge");
+
+    // Deep module is the one calling unlinkSync on the FTS5 store path.
+    const moduleSrc = readFileSync(
+      resolve(__dirname, "../../src/session/purge.ts"),
+      "utf-8",
+    );
+    expect(moduleSrc).toContain("unlinkSync");
   });
 });
 
@@ -3090,7 +3309,7 @@ describe("ctx_fetch_and_index batch refactor", () => {
 
   test("capped-concurrency note appears only when capped", () => {
     expect(fetchHandlerSrc).toMatch(/cappedNote\s*=\s*capped\s*\?/);
-    // Caveman style — `cap=N/Mcpu` instead of "capped from N to M; M cores available".
+    // Compact form `cap=N/Mcpu` (replaces verbose "capped from N to M; M cores available").
     expect(fetchHandlerSrc).toContain("cap=${effectiveConcurrency}/${cpus().length}cpu");
   });
 
@@ -3111,13 +3330,13 @@ describe("ctx_fetch_and_index batch refactor", () => {
   });
 
   test("batch header uses singular form for count=1 (review F5 plural fix)", () => {
-    // Per CLAUDE.md "Terse like caveman" + grammar correctness:
-    // "1 errors" → "1 error" via the fmt() helper.
+    // Grammar correctness in the compact status line: "1 errors" → "1 error"
+    // via the fmt() helper, so the line stays grammatical at any count.
     expect(fetchHandlerSrc).toContain('const fmt = (n: number, sing: string, plur: string)');
     expect(fetchHandlerSrc).toContain('n === 1 ? sing : plur');
   });
 
-  test("batch header uses caveman style (review F5 terse format)", () => {
+  test("batch header uses compact format (review F5)", () => {
     // Old: "Batch fetched N URLs at concurrency=X (capped from Y to X; Z cores available): a fetched, b cached, c errors. d new sections (eKB total)."
     // New: "fetched N c=X cap=X/Zcpu. ok=a cache=b err=c. d sections eKB."
     expect(fetchHandlerSrc).toContain("`fetched ${batch.length} c=${effectiveConcurrency}");
@@ -3280,7 +3499,12 @@ describe("buildFetchCode — embedded SSRF guard contract", () => {
     // uses callback-form dns.lookup so default fetch is covered, but the
     // invariant is fragile — a future undici switch or any caller using
     // dnsPromises.lookup directly would bypass the guard.
-    expect(generated).toMatch(/require\(['"]node:dns\/promises['"]\)/);
+    // Match either literal 'node:dns/promises' or split-string 'no'+'de:dns/promises'
+    // The split form is required by the G3 bundle invariant — the literal would
+    // false-positive scripts/assert-bundle.mjs's raw-bare-require-node-builtin check.
+    expect(generated).toMatch(
+      /const dnsPromises\s*=\s*require\([^)]*dns\/promises['"]\)/,
+    );
     expect(generated).toMatch(/dnsPromises\.lookup\s*=\s*async\s+function/);
     expect(generated).toMatch(/SSRF blocked/);
   });
@@ -3291,6 +3515,55 @@ describe("buildFetchCode — embedded SSRF guard contract", () => {
     // trivially bypassed by any caller using dns.resolve* directly.
     expect(generated).toMatch(/['"]resolve4['"]\s*,\s*['"]resolve6['"]/);
     expect(generated).toMatch(/dns\[name\]\s*=\s*function/);
+  });
+
+  describe("buildFetchCode — redirect chain rebinding", () => {
+    // SSRF rebinding via HTTP redirect chain bypasses the parent's pre-flight
+    // ssrfGuard: a 302 to http://attacker/ (or an IPv4-mapped IMDS literal)
+    // sends the subprocess fetch to an alternate host the parent never
+    // classified. The connect-time DNS guard catches some cases, but a
+    // direct-IP redirect target may not trigger getaddrinfo at all. Mitigate
+    // at the HTTP layer: emit `redirect: 'manual'` in the generated source,
+    // re-validate every Location header against ssrfGuard's classifier, and
+    // cap the redirect chain so an attacker cannot exhaust the loop.
+    const generated = buildFetchCode("https://example.com/x", "/tmp/x");
+
+    test("generated source uses redirect: 'manual' (no follow default)", () => {
+      // The default `redirect: 'follow'` lets undici chase a 3xx Location
+      // BEFORE the in-subprocess DNS guard sees the target hostname (and even
+      // when it does, a direct IPv4-literal redirect skips getaddrinfo). The
+      // generated subprocess source MUST opt out of automatic following so
+      // every hop is re-validated by classifyIp before another fetch fires.
+      expect(generated).toMatch(/redirect:\s*['"]manual['"]/);
+    });
+
+    test("manual redirect handler validates Location host via classifyIp", () => {
+      // After receiving a 3xx, the subprocess must parse the Location header,
+      // resolve its host, and run the same classifyIp policy as ssrfGuard
+      // before issuing the next fetch. Without this re-check, an attacker can
+      // redirect to http://169.254.169.254/ or any rebinding-friendly host.
+      expect(generated).toMatch(/Location/);
+      expect(generated).toMatch(/classifyIp\s*\(/);
+      // The redirect handler specifically must invoke classifyIp on the
+      // redirect target — not just the parent's pre-flight call site.
+      expect(generated).toMatch(/redirect[\s\S]{0,400}classifyIp/);
+    });
+
+    test("redirect chain is capped (no unbounded follow)", () => {
+      // An attacker controlling redirect responses could otherwise loop the
+      // subprocess forever or chain enough hops to amortize a slow rebinding
+      // attack. Cap at 5 — the standard browser limit — and abort cleanly.
+      expect(generated).toMatch(/(maxRedirects|MAX_REDIRECTS|redirectCount\s*[<>]=?\s*5|<\s*5|<=\s*5)/);
+    });
+
+    test("non-3xx response path still emits content (preserves 200 semantics)", () => {
+      // Manual redirect handling must not break the happy path: a 200 OK
+      // still flows through emit() with the right content-type branch. Pin
+      // the existing emit() call sites so a refactor that drops them fails.
+      expect(generated).toMatch(/emit\(['"]json['"]/);
+      expect(generated).toMatch(/emit\(['"]html['"]/);
+      expect(generated).toMatch(/emit\(['"]text['"]/);
+    });
   });
 
   test("classifyIp embeds without references to module scope", () => {
@@ -3321,6 +3594,44 @@ describe("buildFetchCode — embedded SSRF guard contract", () => {
     expect(fn("169.254.169.254")).toBe("block");
     expect(fn("8.8.8.8")).toBe("public");
     expect(fn("10.0.0.1")).toBe("private");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// buildFetchCode — IPv6 zone-id + generic dns.resolve (#476 round-3)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("buildFetchCode — IPv6 zone-id + generic dns.resolve", () => {
+  test("classifyIp strips IPv6 zone-id before classification (link-local)", () => {
+    // fe80::/10 link-local with %eth0 zone suffix must still be blocked.
+    // Today the lowercase prefix check `fe8`/`fe9`/`fea`/`feb` accidentally
+    // catches link-local even with a zone suffix — but only because the
+    // suffix is appended *after* the prefix. Pin the behavior explicitly so
+    // a future refactor cannot regress.
+    expect(classifyIp("fe80::1%eth0")).toBe("block");
+    expect(classifyIp("fe80::1%25eth0")).toBe("block"); // URL-encoded zone
+  });
+
+  test("classifyIp strips IPv6 zone-id before classification (non-link-local)", () => {
+    // RFC 6874 permits zone identifiers on any IPv6 address (not just
+    // link-local). Without zone stripping, a loopback `::1%eth0` would NOT
+    // match the strict equality `lower === "::1"` and would leak through as
+    // "public". Pin every class so the strip happens before classification.
+    expect(classifyIp("::1%eth0")).toBe("private");        // loopback w/ zone
+    expect(classifyIp("fc00::1%eth0")).toBe("private");    // ULA w/ zone
+    expect(classifyIp("ff00::1%eth0")).toBe("block");      // multicast w/ zone
+    expect(classifyIp("2001:db8::1%eth0")).toBe("public"); // doc range w/ zone
+  });
+
+  test("buildFetchCode patches generic dns.resolve (not just resolve4/resolve6)", () => {
+    // dns.resolve is the polymorphic entrypoint that dispatches on rrtype.
+    // Today only resolve4/resolve6 are patched; a caller using
+    // `dns.resolve(host, 'A', cb)` or default rrtype goes through an
+    // un-guarded code path. Patch the generic wrapper so every A/AAAA
+    // record runs through classifyIp.
+    const generated = buildFetchCode("https://example.com/x", "/tmp/x");
+    expect(generated).toMatch(/dns\.resolve\s*=\s*function/);
+    expect(generated).toMatch(/classifyIp/);
   });
 });
 
@@ -4107,5 +4418,115 @@ describe("killProcessOnPort — Windows non-English locale (#441 follow-up)", ()
 
     expect(r.attemptedPids).toEqual([]);
     expect(calls).toHaveLength(1); // netstat only — no taskkill issued
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Prose-style policy (issue #482)
+// ═══════════════════════════════════════════════════════════════════════════
+// Decision: context-mode keeps raw data out of context but does not dictate
+// how the model writes its final answer. Aggressive brevity prompts have been
+// shown to degrade coding/reasoning benchmarks (Moonshot AI on kimi-k2.5).
+// Any caveman/terse-style language in shipped artifacts is a regression.
+
+describe("prose-style policy (#482)", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+  const routingBlock = readFileSync(
+    resolve(__dirname, "../../hooks/routing-block.mjs"),
+    "utf-8",
+  );
+
+  test("no caveman/terse directive lands in any MCP tool description", () => {
+    expect(serverSrc).not.toMatch(/terse like caveman/i);
+    expect(serverSrc).not.toMatch(/only fluff die/i);
+  });
+
+  test("routing-block has no <communication_style> or <response_format> blocks", () => {
+    expect(routingBlock).not.toMatch(/<communication_style>/);
+    expect(routingBlock).not.toMatch(/<response_format>/);
+    expect(routingBlock).not.toMatch(/terse like caveman/i);
+  });
+
+  test("README does not advertise an Output Compression pillar", () => {
+    const readme = readFileSync(
+      resolve(__dirname, "../../README.md"),
+      "utf-8",
+    );
+    expect(readme).not.toMatch(/\*\*Output Compression\*\*/);
+    expect(readme).not.toMatch(/terse like caveman/i);
+  });
+
+  test("committed bundles (cli/server/hooks) carry no caveman strings", () => {
+    // Defense-in-depth: src/* is stripped, but the npm-shipped bundles are
+    // built artifacts that could lag if a future release rebuilds from a
+    // dirty tree. Lock the deletion to the actually-published files too
+    // (round-5 finding).
+    const bundlePaths = [
+      "../../server.bundle.mjs",
+      "../../cli.bundle.mjs",
+      "../../hooks/session-extract.bundle.mjs",
+      "../../hooks/session-snapshot.bundle.mjs",
+      "../../hooks/session-db.bundle.mjs",
+    ];
+    for (const rel of bundlePaths) {
+      const p = resolve(__dirname, rel);
+      try {
+        const content = readFileSync(p, "utf-8");
+        expect(content).not.toMatch(/terse like caveman/i);
+        expect(content).not.toMatch(/only fluff die/i);
+      } catch (err) {
+        // Bundle missing on this checkout (e.g., fresh clone before
+        // `npm run bundle`). That is fine — CI's Build step generates
+        // them; this test only asserts negative when the file exists.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// homedir() import smoke test (round-5 finding from cluster C+E+G).
+// The merge at 43c63cb dropped this import; b8ca35e restored it. A future
+// merge could lose it again silently. Pin the contract: enumerateAdapterDirs
+// must work with a stubbed home and resolve to a path under that home.
+// ─────────────────────────────────────────────────────────
+describe("analytics homedir() import is alive (#43c63cb regression guard)", () => {
+  test("enumerateAdapterDirs() resolves a sessionsDir under the host home", async () => {
+    const { enumerateAdapterDirs } = await import("../../src/session/analytics.js");
+    const { homedir } = await import("node:os");
+    const dirs = enumerateAdapterDirs();
+    expect(dirs.length).toBeGreaterThan(0);
+    // At least one entry must mention the actual home directory — proves
+    // homedir() resolution is wired all the way through.
+    const home = homedir();
+    expect(dirs.every((d) => d.sessionsDir.startsWith(home))).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// Startup banner suppression in stdio transport mode.
+// When the server runs as a child process (stdin is not a TTY), the banner
+// must not appear on stderr — Pi and other hosts render stderr in their UI.
+// ─────────────────────────────────────────────────────────
+describe("startup banner suppressed in stdio transport mode", () => {
+  test("no banner on stderr when stdin is not a TTY (child process)", async () => {
+    const bundlePath = resolve(__dirname, "../../server.bundle.mjs");
+    if (!existsSync(bundlePath)) return;
+
+    const stderr = await new Promise<string>((res) => {
+      const proc = spawn(process.execPath, [bundlePath], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1" },
+      });
+      let data = "";
+      proc.stderr.on("data", (chunk: Buffer) => { data += chunk.toString(); });
+      setTimeout(() => { proc.kill(); res(data); }, 300);
+    });
+
+    expect(stderr).not.toContain("Context Mode MCP server");
+    expect(stderr).not.toContain("Detected runtimes:");
   });
 });

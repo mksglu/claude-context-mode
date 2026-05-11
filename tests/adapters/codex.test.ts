@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../../src/adapters/codex/index.js";
-import { SessionDB } from "../../src/session/db.js";
+import { resolveSessionDbPath, SessionDB } from "../../src/session/db.js";
 
 describe("CodexAdapter", () => {
   let adapter: CodexAdapter;
@@ -605,7 +605,10 @@ describe("Codex precompact hook script", () => {
     process.env.CODEX_HOME = codexHome;
 
     try {
-      const dbPath = new CodexAdapter().getSessionDBPath(projectDir);
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: new CodexAdapter().getSessionDir(),
+      });
       const db = new SessionDB({ dbPath });
       db.ensureSession(sessionId, projectDir);
       db.insertEvent(sessionId, {
@@ -664,7 +667,10 @@ describe("Codex sessionstart hook script", () => {
     process.env.CODEX_HOME = codexHome;
 
     try {
-      const dbPath = new CodexAdapter().getSessionDBPath(projectDir);
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: new CodexAdapter().getSessionDir(),
+      });
       const db = new SessionDB({ dbPath });
       db.ensureSession(sessionId, projectDir);
       db.upsertResume(sessionId, snapshot, 1);
@@ -695,5 +701,57 @@ describe("Codex sessionstart hook script", () => {
       else process.env.CODEX_HOME = savedCodexHome;
       try { rmSync(codexHome, { recursive: true, force: true }); } catch { /* Windows may release SQLite handles late */ }
     }
+  });
+});
+
+// Pins the #492 follow-up invariants:
+//   1. configs/codex/hooks.json PreToolUse matcher equals
+//      PRE_TOOL_USE_MATCHER_PATTERN in src/adapters/codex/index.ts
+//   2. configs/codex/hooks.json declares a PreCompact entry that routes
+//      to `context-mode hook codex precompact`
+//   3. README.md documents the same matcher (JSON-escaped form)
+describe("Codex matcher parity + config integrity", () => {
+  const repoRoot = resolve(__dirname, "..", "..");
+  const adapterSrcPath = join(repoRoot, "src", "adapters", "codex", "index.ts");
+  const hooksConfigPath = join(repoRoot, "configs", "codex", "hooks.json");
+  const readmePath = join(repoRoot, "README.md");
+
+  function readMatcherConstant(): string {
+    const src = readFileSync(adapterSrcPath, "utf8");
+    const m = src.match(/PRE_TOOL_USE_MATCHER_PATTERN\s*=\s*"([^"]+)"/);
+    if (!m) throw new Error("PRE_TOOL_USE_MATCHER_PATTERN constant not found in adapter source");
+    // TS source uses \\ for a literal backslash. Convert to runtime string
+    // value so it can be compared against a parsed JSON string.
+    return m[1].replace(/\\\\/g, "\\");
+  }
+
+  it("hooks.json PreToolUse matcher equals the adapter constant", () => {
+    const constant = readMatcherConstant();
+    const parsed = JSON.parse(readFileSync(hooksConfigPath, "utf8")) as {
+      hooks: { PreToolUse: Array<{ matcher: string }> };
+    };
+    const cfgMatcher = parsed.hooks.PreToolUse[0]?.matcher;
+    expect(cfgMatcher).toBe(constant);
+  });
+
+  it("hooks.json declares PreCompact wired to the precompact hook command", () => {
+    const parsed = JSON.parse(readFileSync(hooksConfigPath, "utf8")) as {
+      hooks: { PreCompact?: Array<{ hooks: Array<{ type: string; command: string }> }> };
+    };
+    expect(parsed.hooks.PreCompact).toBeDefined();
+    const entry = parsed.hooks.PreCompact?.[0];
+    expect(entry?.hooks?.[0]?.command).toBe("context-mode hook codex precompact");
+  });
+
+  it("README documents the same Codex PreToolUse matcher as the adapter", () => {
+    const constant = readMatcherConstant();
+    const readme = readFileSync(readmePath, "utf8");
+    const blockRe = /"PreToolUse":\s*\[\{\s*"matcher":\s*"([^"]+)"/g;
+    const documented: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = blockRe.exec(readme)) !== null) {
+      documented.push(m[1].replace(/\\\\/g, "\\"));
+    }
+    expect(documented).toContain(constant);
   });
 });

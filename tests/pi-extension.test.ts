@@ -1149,4 +1149,275 @@ describe("Pi MCP bridge (#426)", () => {
       await wireApi._trigger("session_shutdown");
     }, 30_000);
   });
+
+  // ── Pi bridge resilience (#472 round-3) ───────────────────────────
+  //
+  // Three reliability gaps verified on PR #472 round-3 review:
+  //   1. stdio[2] = "ignore" silently swallows server crash logs — when
+  //      the MCP child dies during bootstrap the user sees nothing in
+  //      stderr, only "ctx_* tools will not be callable from this
+  //      session" with no diagnostic of WHY.
+  //   2. shutdown() sends SIGTERM and immediately nulls the child handle.
+  //      A child that ignores SIGTERM (or hangs on cleanup) becomes a
+  //      zombie because no SIGKILL fallback ever fires.
+  //   3. session_shutdown does not await `_mcpBridgeReady`. If shutdown
+  //      fires while bootstrap is still in flight, `_mcpBridge` is null
+  //      → the freshly-spawned MCP child is orphaned once bootstrap
+  //      eventually resolves.
+  //
+  // These tests pin the resilience contract: stderr piped, SIGKILL
+  // bounded at 5s, shutdown awaits bridge bootstrap up to 2s.
+
+  describe("Pi bridge resilience (#472 round-3)", () => {
+    it("captures child stderr instead of swallowing it (case 1: crash diagnostics)", async () => {
+      // Server writes a diagnostic line to stderr then exits non-zero,
+      // mimicking a real crash during initialize. With stdio[2] = "ignore"
+      // the diagnostic vanishes; with "pipe" it must reach process.stderr.
+      const fakePath = writeFakeServer(`
+        process.stderr.write("FAKE_MCP_CRASH_DIAG: bundle corrupted at line 42\\n");
+        process.exit(1);
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+
+      const captured: string[] = [];
+      const origWrite = process.stderr.write.bind(process.stderr);
+      // @ts-expect-error monkeypatch
+      process.stderr.write = (chunk: any, ...rest: any[]) => {
+        captured.push(typeof chunk === "string" ? chunk : chunk.toString("utf-8"));
+        return origWrite(chunk, ...rest);
+      };
+
+      try {
+        client.start();
+        // Give the child time to write its diag line and exit.
+        await new Promise((r) => setTimeout(r, 300));
+      } finally {
+        // @ts-expect-error restore
+        process.stderr.write = origWrite;
+        client.shutdown();
+      }
+
+      const all = captured.join("");
+      expect(all).toMatch(/FAKE_MCP_CRASH_DIAG/);
+      // Prefix lets ops grep across the noise of a real session.
+      expect(all).toMatch(/\[mcp-bridge\]/);
+    }, 10_000);
+
+    it.skipIf(process.platform === "win32")("escalates to SIGKILL when SIGTERM is ignored (case 2: bounded shutdown)", async () => {
+      // Windows has no POSIX signal delivery: child.kill('SIGTERM') maps to
+      // TerminateProcess (unblockable), and child.kill('SIGKILL') hits the
+      // same syscall. The fake server's `process.on('SIGTERM', ...)` handler
+      // never fires, so the SIGKILL-escalation contract that this test pins
+      // is fundamentally unobservable on win32. POSIX (Linux/macOS) coverage
+      // is sufficient for the resilience guarantee.
+      // Child explicitly ignores SIGTERM and refuses to exit. Without a
+      // SIGKILL fallback the process leaks indefinitely.
+      // Also ignore stdin 'end'/'close' so closing the pipe doesn't end
+      // the process — only SIGKILL should be able to terminate this.
+      // Emit "READY" on stdout once handlers are registered so the test
+      // does not race the spawn (otherwise SIGTERM arrives during Node
+      // bootstrap before our handler is registered → default terminate).
+      const fakePath = writeFakeServer(`
+        process.on("SIGTERM", () => { /* deliberately ignore */ });
+        process.on("SIGINT", () => { /* deliberately ignore */ });
+        process.on("SIGHUP", () => { /* deliberately ignore */ });
+        process.stdin.on("end", () => { /* stay alive */ });
+        process.stdin.on("close", () => { /* stay alive */ });
+        process.stdin.on("data", () => {});
+        setInterval(() => {}, 1000);
+        process.stdout.write("READY\\n");
+      `);
+      const { MCPStdioClient } = await import("../src/adapters/pi/mcp-bridge.js");
+      const client = new MCPStdioClient(fakePath);
+      client.start();
+
+      // Reach into the private child handle for the assertion. Tests
+      // already do this elsewhere and the field is the only way to
+      // observe the OS-level lifecycle without a polling sentinel.
+      const childRef: any = (client as any).child;
+      expect(childRef).toBeTruthy();
+      expect(childRef.killed).toBe(false);
+
+      // Wait for "READY" — confirms SIGTERM handler is installed.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("child never READY")), 3000);
+        childRef.stdout.on("data", (chunk: Buffer) => {
+          if (chunk.toString("utf-8").includes("READY")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      });
+
+      const exitPromise = new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+        childRef.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+          resolve({ code, signal });
+        });
+      });
+
+      const t0 = Date.now();
+      client.shutdown();
+
+      // Bounded by the 5s SIGKILL timer — give it a small grace window.
+      const result = await Promise.race([
+        exitPromise.then((r) => ({ ...r, timedOut: false })),
+        new Promise<{ code: null; signal: null; timedOut: true }>((r) =>
+          setTimeout(() => r({ code: null, signal: null, timedOut: true }), 7500),
+        ),
+      ]);
+      const elapsedMs = Date.now() - t0;
+
+      // Must NOT have timed out — that would mean no SIGKILL fallback.
+      expect(result.timedOut).toBe(false);
+      // Killed by signal (SIGKILL) — Node's behavior across platforms:
+      // signal field populated when killed by signal.
+      expect(result.signal).toBe("SIGKILL");
+      // Bounded at ~5s — assert lower bound (escalation, not immediate)
+      // and upper bound (not hung beyond the 5s ceiling + grace).
+      expect(elapsedMs).toBeGreaterThanOrEqual(4500);
+      expect(elapsedMs).toBeLessThan(7000);
+    }, 15_000);
+
+    it.skipIf(process.platform === "win32")("session_shutdown awaits bridge bootstrap so child is not orphaned (case 3: race)", async () => {
+      // Windows ChildProcess.killed/exitCode/signalCode lifecycle for
+      // tsx-spawned MCP children races with TerminateProcess in CI in a way
+      // that produces a false-negative for the dead-child assertion. The
+      // shutdown-await contract this test pins is platform-agnostic logic
+      // (the await on _mcpBridgeReady) — POSIX coverage exercises the race.
+      // Repro: trigger session_shutdown WHILE bootstrap is still in
+      // flight. Without an await on `_mcpBridgeReady`, _mcpBridge is
+      // null at shutdown time → the bootstrap eventually resolves and
+      // a live MCP child stays orphaned for the rest of the process.
+      //
+      // Instrument bootstrapMCPTools by patching the bridge module's
+      // `bootstrapMCPTools` to capture the resolved BridgeHandle, then
+      // check its underlying client.child after shutdown completes.
+      const wireApi = createMockPiApi();
+
+      const bridgeMod = await import("../src/adapters/pi/mcp-bridge.js");
+      const handles: any[] = [];
+      const origBootstrap = bridgeMod.bootstrapMCPTools;
+      const spy = vi
+        .spyOn(bridgeMod, "bootstrapMCPTools")
+        .mockImplementation(async (...args: any[]) => {
+          const handle = await (origBootstrap as any)(...args);
+          handles.push(handle);
+          return handle;
+        });
+
+      try {
+        await registerPiExtension(wireApi, { projectDir: tempDir });
+
+        const mod = await import("../src/adapters/pi/extension.js");
+
+        // Fire shutdown immediately — bootstrap is still in flight.
+        await wireApi._trigger("session_shutdown");
+
+        // Wait for the in-flight bootstrap to settle. By this point the
+        // child has been spawned. If session_shutdown did NOT await
+        // _mcpBridgeReady, the bridge handle resolves AFTER shutdown
+        // returned → the child is alive and orphaned.
+        await mod._mcpBridgeReady;
+        await new Promise((r) => setTimeout(r, 300));
+
+        expect(handles.length).toBeGreaterThan(0);
+        for (const handle of handles) {
+          const child = (handle.client as any).child;
+          // After session_shutdown, the bridge child must be dead OR
+          // the bridge handle's internal child reference must be null
+          // (already cleaned via shutdown()). If it's a live ChildProcess
+          // with no exit signal, the orphan bug is present.
+          if (child) {
+            const dead =
+              child.killed ||
+              child.exitCode !== null ||
+              child.signalCode !== null;
+            expect(dead).toBe(true);
+          }
+        }
+      } finally {
+        spy.mockRestore();
+        for (const handle of handles) {
+          try {
+            handle.shutdown();
+          } catch {
+            /* best effort */
+          }
+        }
+      }
+    }, 30_000);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #473 round-3: extension MUST route session dir through PiAdapter
+// rather than re-encoding the ~/.pi/context-mode/sessions literal. Any
+// drift (e.g., PiAdapter changes the segment list) would silently desync
+// otherwise — extension keeps writing to ~/.pi while the rest of the
+// harness reads from the new location.
+// ────────────────────────────────────────────────────────────────────────
+
+describe("Pi extension respects PiAdapter session dir (#473 round-3)", () => {
+  let scratch: string;
+  let mockedSessionDir: string;
+
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), "pi-ext-r3-"));
+    mockedSessionDir = join(scratch, "custom-pi-sess");
+    mkdirSync(mockedSessionDir, { recursive: true });
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+    vi.doUnmock("../src/adapters/pi/index.js");
+    vi.resetModules();
+  });
+
+  it("opens SessionDB at the path returned by PiAdapter.getSessionDir, not at ~/.pi literal", async () => {
+    vi.doMock("../src/adapters/pi/index.js", () => {
+      class MockPiAdapter {
+        getSessionDir() {
+          return mockedSessionDir;
+        }
+      }
+      return { PiAdapter: MockPiAdapter };
+    });
+
+    const projectDir = join(scratch, "project");
+    mkdirSync(projectDir, { recursive: true });
+    process.env.PI_PROJECT_DIR = projectDir;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    const localApi = createMockPiApi();
+    const mod = await import("../src/adapters/pi/extension.js");
+    await mod.default(localApi);
+
+    await localApi._trigger("session_start", {}, {});
+
+    // DB file must be created under the mocked dir — proof that the
+    // extension routes through PiAdapter rather than the hardcoded
+    // ~/.pi/context-mode/sessions literal.
+    const expectedDbPath = join(mockedSessionDir, "context-mode.db");
+    const { existsSync: fileExists } = await import("node:fs");
+    expect(fileExists(expectedDbPath)).toBe(true);
+
+    // Also assert the doctor command surfaces the mocked path so
+    // future contributors do not silently regress (it reads getDBPath()).
+    const doctor = localApi._getCommand("ctx-doctor");
+    expect(doctor?.handler).toBeDefined();
+    const result = await doctor!.handler!({}, { hasUI: false });
+    const text = String((result as { text?: string } | undefined)?.text ?? "");
+    expect(text).toContain(mockedSessionDir);
+
+    await localApi._trigger("session_shutdown");
+
+    delete process.env.PI_PROJECT_DIR;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  });
 });

@@ -26,6 +26,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { ClaudeCodeBaseAdapter, type ClaudeCodeWireInput } from "../claude-code-base.js";
+import { resolveClaudeConfigDir } from "../../util/claude-config.js";
 
 import type {
   HookAdapter,
@@ -84,16 +85,13 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
    * normalize relative paths to absolute against cwd; the hook helper
    * intentionally leaves them raw, but the adapter contract guarantees an
    * absolute path (BaseAdapter.getConfigDir docstring).
+   *
+   * Issue #460 round-3: routed through the canonical
+   * `resolveClaudeConfigDir` util so server, CLI, security, and adapter
+   * agree byte-for-byte (incl. empty/whitespace-only env fallback).
    */
   getConfigDir(_projectDir?: string): string {
-    const envVal = process.env.CLAUDE_CONFIG_DIR;
-    if (envVal) {
-      if (envVal.startsWith("~")) {
-        return resolve(homedir(), envVal.replace(/^~[/\\]?/, ""));
-      }
-      return resolve(envVal);
-    }
-    return resolve(homedir(), ".claude");
+    return resolveClaudeConfigDir();
   }
 
   getSessionDir(): string {
@@ -341,10 +339,14 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
       /* fallback below */
     }
 
-    // Fallback: scan common plugin cache locations
+    // Fallback: scan common plugin cache locations.
+    // `resolveClaudeConfigDir` honors $CLAUDE_CONFIG_DIR; the literal
+    // `~/.claude` is also retained as a hard floor so environments that
+    // misconfigure the env still find the canonical dir if it exists.
     const bases = Array.from(
       new Set([
         this.getConfigDir(),
+        resolveClaudeConfigDir(),
         resolve(homedir(), ".claude"),
         resolve(homedir(), ".config", "claude"),
       ]),

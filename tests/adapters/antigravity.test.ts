@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { AntigravityAdapter } from "../../src/adapters/antigravity/index.js";
+import { hashProjectDirCanonical, resolveSessionDbPath } from "../../src/session/db.js";
 
 describe("AntigravityAdapter", () => {
   let adapter: AntigravityAdapter;
@@ -134,13 +135,13 @@ describe("AntigravityAdapter", () => {
     });
 
     it("session DB path contains project hash", () => {
-      const dbPath = adapter.getSessionDBPath("/test/project");
+      const dbPath = resolveSessionDbPath({ projectDir: "/test/project", sessionsDir: adapter.getSessionDir() });
       expect(dbPath).toMatch(/[a-f0-9]{16}\.db$/);
       expect(dbPath).toContain(".gemini");
     });
 
     it("session events path contains project hash with -events.md suffix", () => {
-      const eventsPath = adapter.getSessionEventsPath("/test/project");
+      const eventsPath = join(adapter.getSessionDir(), `${hashProjectDirCanonical("/test/project")}-events.md`);
       expect(eventsPath).toMatch(/[a-f0-9]{16}-events\.md$/);
       expect(eventsPath).toContain(".gemini");
     });

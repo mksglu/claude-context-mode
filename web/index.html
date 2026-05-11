@@ -4,21 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>context-mode — Save 98% of your AI coding agent's context window</title>
-<meta name="description" content="MCP plugin for Claude Code, Cursor, Copilot, and 14 platforms. Sandbox tool output, index it into FTS5, search on demand. 66,000+ developers. Open source.">
+<meta name="description" content="MCP plugin for Claude Code, Cursor, Copilot, and 15 platforms. Sandbox tool output, index it into FTS5, search on demand. 66,000+ developers. Open source.">
 <meta name="keywords" content="claude code context window, ai coding agent limit, context window optimization, mcp plugin, think in code, claude code limit fix, cursor context, copilot context">
 <link rel="canonical" href="https://context-mode.com">
 
 <!-- Open Graph -->
 <meta property="og:type" content="website">
 <meta property="og:title" content="context-mode — The other half of the context problem">
-<meta property="og:description" content="Your AI coding agent burns through context in 20 minutes. context-mode keeps 98% of tool output out of the conversation. 66,000+ developers across 14 platforms.">
+<meta property="og:description" content="Your AI coding agent burns through context in 20 minutes. context-mode keeps 98% of tool output out of the conversation. 66,000+ developers across 15 platforms.">
 <meta property="og:url" content="https://context-mode.com">
 <meta property="og:site_name" content="context-mode">
 
 <!-- Twitter Card -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="context-mode — Save 98% of your AI coding agent's context window">
-<meta name="twitter:description" content="MCP plugin that sandboxes tool output and indexes it into FTS5. Your limit lasts 30x longer. Open source, 14 platforms.">
+<meta name="twitter:description" content="MCP plugin that sandboxes tool output and indexes it into FTS5. Your limit lasts 30x longer. Open source, 15 platforms.">
 <meta name="twitter:creator" content="@AcikAnaliz">
 
 <!-- Structured Data -->
@@ -146,7 +146,7 @@ code{font-family:var(--mono);font-size:.88em;background:var(--bg-code);color:var
     <div class="hero-stat"><div class="val" id="stat-users">—</div><div class="lbl">users</div></div>
     <div class="hero-stat"><div class="val" id="stat-npm">—</div><div class="lbl">npm</div></div>
     <div class="hero-stat"><div class="val" id="stat-marketplace">—</div><div class="lbl">marketplace</div></div>
-    <div class="hero-stat"><div class="val">14</div><div class="lbl">platforms</div></div>
+    <div class="hero-stat"><div class="val">15</div><div class="lbl">platforms</div></div>
     <div class="hero-stat"><div class="val" id="stat-stars">—</div><div class="lbl">GitHub stars</div></div>
   </div>
   <div class="hero-cta">
@@ -275,7 +275,7 @@ code{font-family:var(--mono);font-size:.88em;background:var(--bg-code);color:var
 
   <p class="body-text">That handles the output side. Tool results stay in the sandbox. But there was still a problem with input. When the agent wants to analyze 47 files, it calls <code>Read()</code> on each one. Every file enters context. Every file stays there.</p>
 
-  <p class="body-text">v1.0.64 made this a rule, not a suggestion. We call it Think in Code. It's mandatory across all 14 platform configs. The idea fits in one sentence: <strong>if you need to analyze, count, filter, or process data, write code that does it.</strong> Stop pulling raw data into context to process mentally.</p>
+  <p class="body-text">v1.0.64 made this a rule, not a suggestion. We call it Think in Code. It's mandatory across all 15 platform configs. The idea fits in one sentence: <strong>if you need to analyze, count, filter, or process data, write code that does it.</strong> Stop pulling raw data into context to process mentally.</p>
 
 <div class="code-block"><span class="c">// Before: 47 files × Read() = 700 KB in context</span>
 <span class="c">// After: 1 ctx_execute() = 3.6 KB in context</span>
@@ -297,34 +297,9 @@ code{font-family:var(--mono);font-size:.88em;background:var(--bg-code);color:var
 
 <hr class="sep">
 
-<!-- Ch 4b -->
-<section class="chapter rev">
-  <p class="section-label">Output</p>
-  <h2 class="section-title">Output compression</h2>
-  <div class="rule"></div>
-
-  <p class="body-text">Context saving handles the input side. But the agent wastes output tokens too — filler words, pleasantries, verbose explanations, hedging. "Sure! I'd be happy to help you with that. Let me take a look at the file and see what we can do." That's 30 tokens of nothing.</p>
-
-  <p class="body-text">context-mode enforces output compression across all 14 platforms. Technical substance stays exact. Only fluff dies.</p>
-
-  <div style="background:var(--bg-alt);border:1px solid var(--border-light);border-radius:6px;padding:22px 24px;margin:1.5rem 0">
-    <p style="font-size:15px;color:var(--text);font-weight:600;margin-bottom:10px">The rules</p>
-    <p style="font-size:14px;color:var(--text-2);line-height:1.8;margin:0">Drop: articles, filler (just/really/basically), pleasantries, hedging.<br>Fragments OK. Short synonyms. Code unchanged.<br>Pattern: <code>[thing] [action] [reason]. [next step].</code><br>Auto-expand for: security warnings, irreversible actions, user confusion.</p>
-  </div>
-
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:1.5rem 0">
-    <div style="padding:16px 18px;border:1px solid var(--border-light);border-radius:6px">
-      <p style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">Before</p>
-      <p style="font-size:13.5px;color:var(--text-3);line-height:1.6;margin:0;font-style:italic">"Sure, I'd be happy to help! I've looked at the database connection pooling configuration and it appears that the issue is related to the maximum idle timeout setting being set too low for your workload. Let me walk you through the fix."</p>
-    </div>
-    <div style="padding:16px 18px;border:1px solid var(--accent);border-radius:6px;background:var(--accent-light)">
-      <p style="font-size:11px;font-weight:600;color:var(--accent-dark);letter-spacing:.06em;text-transform:uppercase;margin-bottom:8px">After</p>
-      <p style="font-size:13.5px;color:var(--text);line-height:1.6;margin:0">"DB pool idle timeout too low for workload. Set <code>max_idle_ms: 30000</code> in config. Fix:"</p>
-    </div>
-  </div>
-
-  <p class="body-text">~65-75% output token reduction. Full technical accuracy. The agent says the same thing in fewer words. Your context window lasts longer from both sides.</p>
-</section>
+<!-- Ch 4b removed: prose-style enforcement was retired (issue #482).
+     context-mode now keeps raw data out of context but does not dictate
+     how the model writes its final answer. -->
 
 <hr class="sep">
 
@@ -380,13 +355,13 @@ code{font-family:var(--mono);font-size:.88em;background:var(--bg-code);color:var
 <!-- Ch 6 -->
 <section class="chapter rev">
   <p class="section-label">Platforms</p>
-  <h2 class="section-title">14 platforms, one plugin</h2>
+  <h2 class="section-title">15 platforms, one plugin</h2>
   <div class="rule"></div>
 
-  <p class="body-text">Works on Claude Code, Cursor, Copilot, Codex, Gemini CLI, and nine more. Platforms with hook support get automatic routing. The rest use instruction-based rules. Same plugin everywhere.</p>
+  <p class="body-text">Works on Claude Code, Cursor, Copilot, Codex, Gemini CLI, and ten more. Platforms with hook support get automatic routing. The rest use instruction-based rules. Same plugin everywhere.</p>
 
   <div style="display:flex;flex-wrap:wrap;gap:6px;margin:1.2rem 0">
-    <span class="tag">Claude Code</span><span class="tag">Cursor</span><span class="tag">Codex CLI</span><span class="tag">VS Code Copilot</span><span class="tag">JetBrains Copilot</span><span class="tag">Gemini CLI</span><span class="tag">Qwen Code</span><span class="tag">Kiro</span><span class="tag">OpenCode</span><span class="tag">KiloCode</span><span class="tag">Zed</span><span class="tag">OpenClaw</span><span class="tag">Pi</span><span class="tag">Antigravity</span>
+    <span class="tag">Claude Code</span><span class="tag">Cursor</span><span class="tag">Codex CLI</span><span class="tag">VS Code Copilot</span><span class="tag">JetBrains Copilot</span><span class="tag">Gemini CLI</span><span class="tag">Qwen Code</span><span class="tag">Kiro</span><span class="tag">OpenCode</span><span class="tag">KiloCode</span><span class="tag">Zed</span><span class="tag">OpenClaw</span><span class="tag">Pi</span><span class="tag">Oh My Pi</span><span class="tag">Antigravity</span>
   </div>
 </section>
 
@@ -462,7 +437,7 @@ code{font-family:var(--mono);font-size:.88em;background:var(--bg-code);color:var
     <a href="https://mksg.lu/blog/context-mode-v1-release" target="_blank" style="display:block;padding:24px;border:1px solid var(--border);border-radius:8px;transition:.15s;text-decoration:none">
       <p style="font-size:11px;font-weight:600;color:var(--text-4);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">mksg.lu</p>
       <p style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:6px;line-height:1.3">context-mode v1 Release</p>
-      <p style="font-size:14px;color:var(--text-3);line-height:1.6;margin:0">The story behind building an MCP server that saves 98% of your AI coding agent's context window. Architecture decisions, benchmarks, and lessons from 14 platform adapters.</p>
+      <p style="font-size:14px;color:var(--text-3);line-height:1.6;margin:0">The story behind building an MCP server that saves 98% of your AI coding agent's context window. Architecture decisions, benchmarks, and lessons from 15 platform adapters.</p>
     </a>
   </div>
 </section>

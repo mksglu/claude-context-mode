@@ -15,6 +15,7 @@
 
 import {
   readFileSync,
+  writeFileSync,
   existsSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
@@ -134,7 +135,11 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
   }
 
   writeSettings(settings: Record<string, unknown>): void {
-    const { writeFileSync } = require("node:fs");
+    // Issue #511: use top-level static import (line 18) — never inline
+    // `require("node:fs")` in ESM-bundled sources. esbuild rewrites them to
+    // a `__require` shim that throws `Dynamic require of "node:fs" is not
+    // supported` under Node ESM/Bun (this adapter is pulled into both
+    // server.bundle.mjs and cli.bundle.mjs via adapter detect).
     writeFileSync(this.getSettingsPath(), JSON.stringify(settings, null, 2));
   }
 

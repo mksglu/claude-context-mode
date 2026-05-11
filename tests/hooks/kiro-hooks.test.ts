@@ -15,6 +15,11 @@ import { mkdtempSync, rmSync, existsSync, unlinkSync, writeFileSync, realpathSyn
 import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
 
+
+const _hashCanonical = (p: string) => createHash("sha256").update(
+  (process.platform === "darwin" || process.platform === "win32") ? p.toLowerCase() : p
+).digest("hex").slice(0, 16);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = join(__dirname, "..", "..", "hooks", "kiro");
 
@@ -59,7 +64,7 @@ describe("Kiro hooks", () => {
     // macOS symlinks /var -> /private/var: subprocess process.cwd() returns the
     // realpath, so hash the realpath here too or DB lookup hashes will diverge.
     tempDir = realpathSync(mkdtempSync(join(tmpdir(), "kiro-hook-test-")));
-    const hash = createHash("sha256").update(normalizeProjectPathForSessionHash(tempDir)).digest("hex").slice(0, 16);
+    const hash = _hashCanonical(normalizeProjectPathForSessionHash(tempDir));
     const sessionsDir = join(homedir(), ".kiro", "context-mode", "sessions");
     dbPath = join(sessionsDir, `${hash}.db`);
   });

@@ -1,0 +1,30 @@
+{
+  "name": "context-mode",
+  "version": "1.0.120",
+  "description": "MCP server that saves 98% of your context window with session continuity. Sandboxed code execution in 11 languages, FTS5 knowledge base with BM25 ranking, and automatic state restore across compactions.",
+  "author": {
+    "name": "Mert Koseoğlu",
+    "url": "https://github.com/mksglu"
+  },
+  "homepage": "https://github.com/mksglu/context-mode#readme",
+  "repository": "https://github.com/mksglu/context-mode",
+  "license": "Elastic-2.0",
+  "keywords": [
+    "mcp",
+    "context-window",
+    "sandbox",
+    "code-execution",
+    "fts5",
+    "bm25",
+    "playwright",
+    "context7"
+  ],
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "context-mode",
+    "shortDescription": "98% context window savings via FTS5 + sandboxed execution",
+    "developerName": "Mert Koseoğlu",
+    "category": "Productivity"
+  }
+}

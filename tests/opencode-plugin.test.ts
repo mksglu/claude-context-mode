@@ -622,29 +622,35 @@ describe("ContextModePlugin", () => {
 
     it("OC-1: skips routing block when system prompt already contains context-mode instructions", async () => {
       const plugin = await createTestPlugin(join(tempDir, "oc1-dedup"));
-      // Simulate AGENTS.md already loaded by the host — contains routing markers
+      // Simulate AGENTS.md already loaded by the host — contains routing markers.
+      // Post-#487: markers are <context_window_protection>, ctx_search, ctx_index
+      // (non-overlapping). Quorum requires 2-of-3 distinct.
       const agentsContent = [
         "# context-mode rules",
-        "Use ctx_execute for analysis",
-        "Use ctx_batch_execute for commands",
-        "Use ctx_fetch_and_index for URLs",
+        "<context_window_protection> applies to this project.",
+        "Use ctx_search for memory recall.",
+        "Use ctx_index to store new content.",
       ].join("\n");
       const out = { system: ["HEADER", agentsContent] };
       await plugin["experimental.chat.system.transform"](
         { sessionID: "oc1-dedup-sess", model: {} } as any,
         out,
       );
-      // system unchanged — no routing block injected (2+ markers detected)
+      // system unchanged — no routing block injected (2+ markers detected).
+      // Length stays 2 (HEADER + the existing AGENTS.md entry); the fixture
+      // itself contains <context_window_protection>, so we assert by structure
+      // (no new entry spliced in) rather than substring absence.
       expect(out.system.length).toBe(2);
       expect(out.system[0]).toBe("HEADER");
       expect(out.system[1]).toBe(agentsContent);
-      expect(out.system.join("\n")).not.toContain("<context_window_protection>");
     });
 
     it("OC-1: injects routing block when only one marker present (below quorum)", async () => {
       const plugin = await createTestPlugin(join(tempDir, "oc1-below-quorum"));
-      // Only one marker — below the 2-of-3 quorum — routing block still injects
-      const partialContent = "Some text mentioning ctx_execute but nothing else";
+      // Only one marker — below the 2-of-3 quorum — routing block still injects.
+      // Post-#487: the active markers are <context_window_protection>, ctx_search,
+      // ctx_index. Use exactly one to assert below-quorum behavior.
+      const partialContent = "Some text mentioning ctx_search but nothing else";
       const out = { system: ["HEADER", partialContent] };
       await plugin["experimental.chat.system.transform"](
         { sessionID: "oc1-quorum-sess", model: {} } as any,
@@ -652,6 +658,35 @@ describe("ContextModePlugin", () => {
       );
       expect(out.system.length).toBe(3); // HEADER + routing + partialContent
       expect(out.system[1]).toContain("<context_window_protection>");
+    });
+  });
+
+  // ── OC-1 quorum substring overlap (#487) ────────────────
+  // RED proof: the marker set ["ctx_execute", "ctx_batch_execute", ...] uses
+  // overlapping substrings. `text.includes("ctx_execute")` matches ALSO on any
+  // `ctx_batch_execute` occurrence, so a SINGLE user paste mentioning
+  // ctx_batch_execute satisfies the 2-of-3 quorum and suppresses the routing
+  // block for the entire session. The fix replaces the markers with
+  // non-overlapping tokens (or word-boundary regex) while preserving the
+  // ≥2 distinct markers semantic.
+  describe("OC-1 quorum: single marker substring overlap", () => {
+    it("returns false for text mentioning ctx_batch_execute exactly once", async () => {
+      const { systemHasRoutingInstructions } = await import("../src/adapters/opencode/plugin.js");
+      const text = "what does ctx_batch_execute do?";
+      // 1 distinct marker → below quorum → false
+      expect(systemHasRoutingInstructions([text])).toBe(false);
+    });
+
+    it("returns true when two distinct (non-overlapping) markers are present", async () => {
+      const { systemHasRoutingInstructions } = await import("../src/adapters/opencode/plugin.js");
+      const text = "ctx_search and ctx_index help";
+      expect(systemHasRoutingInstructions([text])).toBe(true);
+    });
+
+    it("returns true when the routing-block XML tag is present alongside one tool", async () => {
+      const { systemHasRoutingInstructions } = await import("../src/adapters/opencode/plugin.js");
+      const text = "<context_window_protection> applies. use ctx_search.";
+      expect(systemHasRoutingInstructions([text])).toBe(true);
     });
   });
 
@@ -673,10 +708,10 @@ describe("ContextModePlugin", () => {
       );
 
       // Verify SessionDB has the event
-      const { SessionDB } = await import("../src/session/db.js");
+      const { resolveSessionDbPath, SessionDB } = await import("../src/session/db.js");
       const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
       const adapter = new OpenCodeAdapter("opencode");
-      const db = new SessionDB({ dbPath: adapter.getSessionDBPath(projectDir) });
+      const db = new SessionDB({ dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }) });
       const events = db.getEvents("oc2-sess") as any[];
       db.close();
       const userPromptEvent = events.find((e: any) => e.type === "user_prompt");
@@ -695,10 +730,10 @@ describe("ContextModePlugin", () => {
         { message: { role: "user" } as any, parts: [{ type: "text", text: synthetic }] } as any,
       );
 
-      const { SessionDB } = await import("../src/session/db.js");
+      const { resolveSessionDbPath, SessionDB } = await import("../src/session/db.js");
       const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
       const adapter = new OpenCodeAdapter("opencode");
-      const db = new SessionDB({ dbPath: adapter.getSessionDBPath(projectDir) });
+      const db = new SessionDB({ dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }) });
       const events = db.getEvents("oc2-skip") as any[];
       db.close();
       const userPromptEvent = events.find((e: any) => e.type === "user_prompt");
@@ -751,6 +786,124 @@ describe("ContextModePlugin", () => {
     });
   });
 
+  // ── OC-4 follow-up (#487 regression): AGENTS.md → rule_content ──
+  // PR #487 removed captureAgentsMd trusting host to deliver AGENTS.md
+  // events. But snapshot.ts:172 + analytics.ts:152 consume `rule_content`
+  // events that the OpenCode host does NOT auto-emit. Net effect: AGENTS.md
+  // never lands in snapshot/auto-memory for OpenCode users — silent
+  // regression. Restore capture path with idempotent per-session-id guard.
+  describe("OC-4 AGENTS.md capture restored", () => {
+    it("fires rule + rule_content events when AGENTS.md exists in project dir on first hook", async () => {
+      const projectDir = join(tempDir, "oc4-agents-md");
+      mkdirSync(projectDir, { recursive: true });
+      const agentsContent = "# Project rules\n- always prefer typescript\n- use tdd\n";
+      writeFileSync(join(projectDir, "AGENTS.md"), agentsContent);
+
+      const plugin = await createTestPlugin(projectDir);
+
+      // Trigger any hook that drives capture — using tool.execute.after is canonical
+      await plugin["tool.execute.after"](
+        { tool: "Read", sessionID: "oc4-sess-1", callID: "c1", args: { file_path: "/x.ts" } },
+        { title: "Read", output: "x", metadata: {} },
+      );
+
+      const { resolveSessionDbPath, SessionDB } = await import("../src/session/db.js");
+      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
+      const adapter = new OpenCodeAdapter("opencode");
+      const db = new SessionDB({ dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }) });
+      const events = db.getEvents("oc4-sess-1") as any[];
+      db.close();
+
+      const ruleEvents = events.filter((e: any) => e.type === "rule");
+      const ruleContentEvents = events.filter((e: any) => e.type === "rule_content");
+      expect(ruleEvents.length).toBeGreaterThanOrEqual(1);
+      expect(ruleContentEvents.length).toBeGreaterThanOrEqual(1);
+      // rule event payload references AGENTS.md path; rule_content carries body
+      expect(ruleEvents.some((e: any) => String(e.data).endsWith("AGENTS.md"))).toBe(true);
+      expect(ruleContentEvents.some((e: any) => String(e.data).includes("always prefer typescript"))).toBe(true);
+    });
+
+    it("is idempotent — second hook invocation does NOT re-fire rule events", async () => {
+      const projectDir = join(tempDir, "oc4-agents-idempotent");
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, "AGENTS.md"), "# rules\n- one\n");
+
+      const plugin = await createTestPlugin(projectDir);
+
+      await plugin["tool.execute.after"](
+        { tool: "Read", sessionID: "oc4-idem", callID: "c1", args: { file_path: "/a.ts" } },
+        { title: "Read", output: "a", metadata: {} },
+      );
+      await plugin["tool.execute.after"](
+        { tool: "Read", sessionID: "oc4-idem", callID: "c2", args: { file_path: "/b.ts" } },
+        { title: "Read", output: "b", metadata: {} },
+      );
+
+      const { resolveSessionDbPath, SessionDB } = await import("../src/session/db.js");
+      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
+      const adapter = new OpenCodeAdapter("opencode");
+      const db = new SessionDB({ dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }) });
+      const events = db.getEvents("oc4-idem") as any[];
+      db.close();
+
+      const ruleEvents = events.filter((e: any) => e.type === "rule");
+      const ruleContentEvents = events.filter((e: any) => e.type === "rule_content");
+      // Exactly one rule + one rule_content from AGENTS.md (no fallback files exist)
+      expect(ruleEvents.length).toBe(1);
+      expect(ruleContentEvents.length).toBe(1);
+    });
+
+    it("does NOT fire events when AGENTS.md / CLAUDE.md / CONTEXT.md all absent", async () => {
+      const projectDir = join(tempDir, "oc4-agents-missing");
+      mkdirSync(projectDir, { recursive: true });
+      // intentionally do NOT write any markdown rule files
+
+      const plugin = await createTestPlugin(projectDir);
+
+      // Should not throw when files absent
+      await expect(
+        plugin["tool.execute.after"](
+          { tool: "Read", sessionID: "oc4-missing", callID: "c1", args: { file_path: "/z.ts" } },
+          { title: "Read", output: "z", metadata: {} },
+        ),
+      ).resolves.toBeUndefined();
+
+      const { resolveSessionDbPath, SessionDB } = await import("../src/session/db.js");
+      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
+      const adapter = new OpenCodeAdapter("opencode");
+      const db = new SessionDB({ dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }) });
+      const events = db.getEvents("oc4-missing") as any[];
+      db.close();
+
+      const ruleEvents = events.filter((e: any) => e.type === "rule" || e.type === "rule_content");
+      expect(ruleEvents.length).toBe(0);
+    });
+
+    it("falls back to CLAUDE.md when AGENTS.md absent", async () => {
+      const projectDir = join(tempDir, "oc4-claude-fallback");
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, "CLAUDE.md"), "# claude rules\n- be terse\n");
+
+      const plugin = await createTestPlugin(projectDir);
+
+      await plugin["tool.execute.after"](
+        { tool: "Read", sessionID: "oc4-claude", callID: "c1", args: { file_path: "/c.ts" } },
+        { title: "Read", output: "c", metadata: {} },
+      );
+
+      const { resolveSessionDbPath, SessionDB } = await import("../src/session/db.js");
+      const { OpenCodeAdapter } = await import("../src/adapters/opencode/index.js");
+      const adapter = new OpenCodeAdapter("opencode");
+      const db = new SessionDB({ dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }) });
+      const events = db.getEvents("oc4-claude") as any[];
+      db.close();
+
+      const ruleContentEvents = events.filter((e: any) => e.type === "rule_content");
+      expect(ruleContentEvents.length).toBeGreaterThanOrEqual(1);
+      expect(ruleContentEvents.some((e: any) => String(e.data).includes("be terse"))).toBe(true);
+    });
+  });
+
   // ── Integration: blocked tool flow ────────────────────
 
   describe("end-to-end flow (blocked)", () => {
@@ -786,6 +939,101 @@ describe("ContextModePlugin", () => {
         compactOutput,
       );
       expect(snapshot).toBe("");
+    });
+  });
+
+  // ── #448: debug-logger rejection must NOT break the turn ──
+  // OPENCODE_DEBUG=1 + a transport-rejecting `ctx.client.app.log` previously
+  // caused unhandled rejection from chat.system.transform → potential turn
+  // break. All `await logger(...)` sites in the OPENCODE_DEBUG branch must
+  // be wrapped so the handler still resolves and the routing block is still
+  // spliced into output.system.
+  describe("OPENCODE_DEBUG=1 + rejecting logger does not break the turn", () => {
+    async function createPluginWithRejectingLog(tempDir: string) {
+      const { ContextModePlugin } = await import("../src/adapters/opencode/plugin.js");
+      return ContextModePlugin({
+        directory: tempDir,
+        client: {
+          app: {
+            log: async () => {
+              throw new Error("transport");
+            },
+          },
+        },
+      });
+    }
+
+    let prevDebug: string | undefined;
+    beforeEach(() => {
+      prevDebug = process.env.OPENCODE_DEBUG;
+      process.env.OPENCODE_DEBUG = "1";
+    });
+    afterEach(() => {
+      if (prevDebug === undefined) delete process.env.OPENCODE_DEBUG;
+      else process.env.OPENCODE_DEBUG = prevDebug;
+    });
+
+    it("#448: rejecting logger on routing-block injection resolves and still injects", async () => {
+      const plugin = await createPluginWithRejectingLog(join(tempDir, "issue-448-routing"));
+      const out = { system: ["HEADER", "BODY"] };
+
+      // Must resolve — no rejection propagated to OpenCode core
+      await expect(
+        plugin["experimental.chat.system.transform"](
+          { sessionID: "issue-448-routing-sess", model: {} } as any,
+          out,
+        ),
+      ).resolves.not.toThrow();
+
+      // Routing block still spliced at index 1 (turn-break would skip this)
+      expect(out.system[0]).toBe("HEADER");
+      expect(out.system.join("\n")).toContain("<context_window_protection>");
+    });
+
+    it("#448: rejecting logger on compaction snapshot resolves and still pushes context", async () => {
+      const projectDir = join(tempDir, "issue-448-compact");
+      mkdirSync(projectDir, { recursive: true });
+      const plugin = await createPluginWithRejectingLog(projectDir);
+
+      // Seed an event so the snapshot path runs (events.length > 0)
+      const sessionID = "issue-448-compact-sess";
+      await plugin["chat.message"](
+        { sessionID, agent: "build", messageID: "m1" } as any,
+        { message: { role: "user" } as any, parts: [{ type: "text", text: "seed prompt for snapshot" }] } as any,
+      );
+
+      const compactOutput = { context: [] as string[], prompt: undefined };
+      await expect(
+        plugin["experimental.session.compacting"](
+          { sessionID } as any,
+          compactOutput,
+        ),
+      ).resolves.not.toThrow();
+
+      // Snapshot still pushed despite rejecting logger
+      expect(compactOutput.context.length).toBeGreaterThan(0);
+    });
+
+    it("#448: rejecting logger on dedup-skip branch still resolves", async () => {
+      const plugin = await createPluginWithRejectingLog(join(tempDir, "issue-448-dedup"));
+      const agentsContent = [
+        "# context-mode rules",
+        "<context_window_protection>",
+        "Use ctx_search for queries",
+        "Use ctx_index for indexing",
+      ].join("\n");
+      const out = { system: ["HEADER", agentsContent] };
+
+      await expect(
+        plugin["experimental.chat.system.transform"](
+          { sessionID: "issue-448-dedup-sess", model: {} } as any,
+          out,
+        ),
+      ).resolves.not.toThrow();
+
+      // Dedup branch unchanged (skipped routing block)
+      expect(out.system.length).toBe(2);
+      expect(out.system[1]).toBe(agentsContent);
     });
   });
 });

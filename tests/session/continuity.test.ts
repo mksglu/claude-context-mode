@@ -102,10 +102,20 @@ describe("SessionStart Hook", () => {
     const result = runHook({});
     const parsed = JSON.parse(result.stdout);
     const ctx = parsed.hookSpecificOutput.additionalContext;
-    assert.ok(ctx.includes("Terse like caveman"), "Expected communication style directive");
+    // Pillar 4 ("Output Compression"/caveman) was retired in #482 — the
+    // routing block must keep the artifact-policy block but MUST NOT push a
+    // prose-style directive on the model.
     assert.ok(
       ctx.includes("Write artifacts"),
       "Expected artifact policy",
+    );
+    assert.ok(
+      !ctx.toLowerCase().includes("terse like caveman"),
+      "Routing block must not contain caveman/terse style directive",
+    );
+    assert.ok(
+      !ctx.includes("<communication_style>"),
+      "Routing block must not contain communication_style block",
     );
   });
 });

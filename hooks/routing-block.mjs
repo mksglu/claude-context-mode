@@ -58,26 +58,10 @@ export function createRoutingBlock(t, options = {}) {
   </file_writing_policy>
 
   <output_constraints>
-    <communication_style>
-      Terse like caveman. Technical substance exact. Only fluff die.
-      Use fragments when clear. Short synonyms (fix not "implement a solution for").
-      Technical terms exact. Code blocks unchanged.
-      Expand to full prose only for:
-        - Security warnings
-        - Irreversible actions
-        - User signals confusion: repeated questions or explicit "I don't understand".
-          "Confusion" is not license to pad — expand only the unclear part.
-    </communication_style>
     <artifact_policy>
       Write artifacts (code, configs, PRDs) to FILES. NEVER inline.
       Return only: file path + 1-line description.
     </artifact_policy>
-    <response_format>
-      Concise summary:
-      - Actions taken (2-3 bullets)
-      - File paths created/modified
-      - Key findings
-    </response_format>
   </output_constraints>
 
   <session_continuity>

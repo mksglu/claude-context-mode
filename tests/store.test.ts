@@ -1904,3 +1904,75 @@ describe("nodeSqliteHasFts5 — FTS5 capability probe (#461)", () => {
     assert.equal(nodeSqliteHasFts5(DatabaseSync), directOK);
   });
 });
+
+describe("ctx_index TOCTOU symlink swap (#442 round-3)", () => {
+  test("index() rejects non-regular files (e.g. /dev/null) via fd-bound fstat", () => {
+    // RED proof: prior to the fix, `readFileSync('/dev/null', 'utf-8')`
+    // returned "" so the index call silently produced 0 chunks instead
+    // of rejecting. After the fix, openSync + fstat + isFile() check
+    // throws because /dev/null is a character device, not a regular
+    // file. This invariant closes the swap-mid-flight window: any
+    // post-gate path swap to a non-regular target fails fstat.
+    if (process.platform === "win32") return; // /dev/null differs on win32
+    const charDev = "/dev/null";
+    const store = createStore();
+    try {
+      assert.throws(
+        () => store.index({ path: charDev, source: "chardev" }),
+        /not a regular file/,
+        "non-regular files must be rejected by fd-bound fstat",
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  test("index() rejects non-regular files via fd-bound fstat (directory)", () => {
+    // If the path is swapped to a directory between gate and read,
+    // fstat on the opened fd reveals it and the read is rejected.
+    const dirPath = join(
+      tmpdir(),
+      `ctx-toctou-dir-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    const requireFn = createRequire(import.meta.url);
+    const fsSync = requireFn("node:fs");
+    fsSync.mkdirSync(dirPath);
+
+    try {
+      const store = createStore();
+      assert.throws(
+        () => store.index({ path: dirPath, source: "dir" }),
+        /not a regular file|EISDIR/,
+        "directory must not be readable through index()",
+      );
+      store.close();
+    } finally {
+      try { fsSync.rmdirSync(dirPath); } catch { /* ignore */ }
+    }
+  });
+
+  test("index() reads file content via fd (regression: normal indexing still works)", () => {
+    // After fd-bound read fix, normal file indexing must still produce
+    // the same chunks/content as before. Validates the GREEN path.
+    const requireFn = createRequire(import.meta.url);
+    const fsSync = requireFn("node:fs");
+    const safePath = join(
+      tmpdir(),
+      `ctx-toctou-safe-${Date.now()}-${Math.random().toString(36).slice(2)}.md`,
+    );
+    fsSync.writeFileSync(
+      safePath,
+      "# Safe Doc\n\nfd-bound read should produce normal chunks.\n",
+    );
+
+    try {
+      const store = createStore();
+      const result = store.index({ path: safePath, source: "safe-fd" });
+      assert.ok(result.totalChunks > 0, "fd-bound read indexed content");
+      assert.equal(result.label, "safe-fd");
+      store.close();
+    } finally {
+      try { fsSync.unlinkSync(safePath); } catch { /* ignore */ }
+    }
+  });
+});

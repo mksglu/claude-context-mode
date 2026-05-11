@@ -26,7 +26,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { execSync, spawnSync } from "node:child_process";
+import { execSync, execFileSync, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { createRequire } from "node:module";
 
@@ -39,16 +39,63 @@ import { createRequire } from "node:module";
 export function healBetterSqlite3Binding(pkgRoot) {
   try {
     const bsqRoot = resolve(pkgRoot, "node_modules", "better-sqlite3");
-    if (!existsSync(bsqRoot)) {
-      // No package at all — caller (ensure-deps install branch) handles this.
-      return { healed: false, reason: "package-missing" };
-    }
     const bindingPath = resolve(bsqRoot, "build", "Release", "better_sqlite3.node");
+    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+
+    if (!existsSync(bsqRoot)) {
+      // ── Package itself missing (#514) ───────────────────────────────
+      // npm@7+ silently drops optionalDependencies whose engines field
+      // does not match the running Node version (Node 26 vs
+      // better-sqlite3@12.x → silent skip, package never written).
+      // Even after promoting the package back to dependencies, an
+      // existing install where the package directory was previously
+      // skipped will still have an empty slot. Take ownership and
+      // install the package by name with --no-optional, which forces
+      // npm to install the named package even if it would otherwise
+      // be filtered out as an optional dep.
+      try {
+        execFileSync(
+          npmBin,
+          [
+            "install",
+            "better-sqlite3",
+            "--no-optional",
+            "--no-save",
+            "--no-audit",
+            "--no-fund",
+          ],
+          {
+            cwd: pkgRoot,
+            stdio: "pipe",
+            timeout: 180000,
+            shell: process.platform === "win32",
+          },
+        );
+      } catch {
+        // Install failed — surface the cause via the manual-required
+        // exit so the caller (cli.ts upgrade verifier) reports it.
+        return { healed: false, reason: "package-missing" };
+      }
+      // Re-check after install. If npm wrote the package AND its
+      // postinstall produced the binding, we're done. Otherwise fall
+      // through into the binding-missing flow below.
+      if (existsSync(bindingPath)) {
+        return { healed: true, reason: "package-installed" };
+      }
+      if (!existsSync(bsqRoot)) {
+        // npm reported success but the directory is still absent.
+        // This indicates the engine-mismatch silent-skip is still in
+        // effect (e.g. npm < 7 or pnpm without --shamefully-hoist).
+        return { healed: false, reason: "package-missing" };
+      }
+      // Package present but binding still missing — recurse into
+      // the existing 3-layer heal that owns prebuild-install / npm
+      // install / actionable-stderr.
+    }
+
     if (existsSync(bindingPath)) {
       return { healed: true, reason: "binding-present" };
     }
-
-    const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 
     // ── Layer A: spawn prebuild-install directly via process.execPath ──
     // Bypasses cmd.exe PATH and MSVC requirement.

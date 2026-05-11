@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
-import { homedir } from "node:os";
+import { resolveClaudeConfigDir } from "../util/claude-config.js";
 
 const DEBUG = process.env.DEBUG?.includes("context-mode");
 
@@ -61,9 +61,11 @@ export function searchAutoMemory(
   // over the historical Claude defaults.
   const instructionFiles = adapter?.getInstructionFiles() ?? ["CLAUDE.md"];
   const adapterConfigDir = adapter?.getConfigDir();
-  const effectiveConfigDir = adapterConfigDir
-    ? resolveAgainst(projectDir, adapterConfigDir)
-    : (configDir || join(homedir(), ".claude"));
+  // Issue #460 round-3: legacy fallback honors $CLAUDE_CONFIG_DIR via the
+  // canonical util so callers without an adapter still respect relocated
+  // CC config trees (and empty/whitespace env doesn't poison the path).
+  const adapterRelative = adapterConfigDir ? resolveAgainst(projectDir, adapterConfigDir) : null;
+  const effectiveConfigDir = adapterRelative ?? configDir ?? resolveClaudeConfigDir();
   const adapterMemoryDir = adapter?.getMemoryDir();
   const memoryDir = adapterMemoryDir
     ? resolveAgainst(projectDir, adapterMemoryDir)

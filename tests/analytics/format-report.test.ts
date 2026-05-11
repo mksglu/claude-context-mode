@@ -354,9 +354,13 @@ describe("formatReport", () => {
       const lines = output.split("\n");
       const fileLine = lines.findIndex((l: string) => l.includes("Files tracked"));
       const gitLine = lines.findIndex((l: string) => l.includes("Git operations"));
-      // Top-2 cap (Bug #5): "Errors caught" rolls into "1 more category".
+      const errorLine = lines.findIndex((l: string) => l.includes("Errors caught"));
+      // Slice 5 — Mert: "honest, no tease". The legacy "+ N more category"
+      // overflow line is gone; ALL categories render in DESC order. Assert
+      // the sort order survives + the overflow line never appears.
       expect(fileLine).toBeLessThan(gitLine);
-      expect(output).toContain("1 more categor");
+      expect(gitLine).toBeLessThan(errorLine);
+      expect(output).not.toMatch(/\d+ more categor/);
     });
 
     it("hides project memory when no events", () => {

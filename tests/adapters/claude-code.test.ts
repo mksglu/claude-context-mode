@@ -1,10 +1,10 @@
 import "../setup-home";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { ClaudeCodeAdapter } from "../../src/adapters/claude-code/index.js";
+import { hashProjectDirCanonical, resolveSessionDbPath } from "../../src/session/db.js";
 import { fakeHome, realHome } from "../setup-home";
 import {
   PRE_TOOL_USE_MATCHERS,
@@ -231,13 +231,15 @@ describe("ClaudeCodeAdapter", () => {
       expect(sessionDir.startsWith(join(realHome, ".claude", "context-mode"))).toBe(false);
     });
 
-    it("DB path uses sha256 hash of projectDir", () => {
+    // C2 narrowing: per-project DB path is composed by callers via
+    // resolveSessionDbPath + adapter.getSessionDir().
+    it("DB path uses canonical hash of projectDir", () => {
       const projectDir = "/my/project";
-      const hash = createHash("sha256")
-        .update(projectDir)
-        .digest("hex")
-        .slice(0, 16);
-      const dbPath = adapter.getSessionDBPath(projectDir);
+      const hash = hashProjectDirCanonical(projectDir);
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: adapter.getSessionDir(),
+      });
       expect(dbPath).toBe(
         join(homedir(), ".claude", "context-mode", "sessions", `${hash}.db`),
       );
@@ -267,20 +269,25 @@ describe("ClaudeCodeAdapter", () => {
       rmSync(customDir, { recursive: true, force: true });
     });
 
-    it("getSessionDBPath lands the DB under $CLAUDE_CONFIG_DIR (not ~/.claude)", () => {
+    // C2 narrowing (2026-05): the test now composes the DB path through
+    // resolveSessionDbPath + adapter.getSessionDir() — this is the SAME
+    // composition production callers (server.ts, opencode plugin, hooks)
+    // perform. The regression pin still holds: $CLAUDE_CONFIG_DIR must
+    // route the file out of ~/.claude.
+    it("DB path lands under $CLAUDE_CONFIG_DIR (not ~/.claude)", () => {
       process.env.CLAUDE_CONFIG_DIR = customDir;
       const projectDir = "/test/project";
-      const hash = createHash("sha256")
-        .update(projectDir)
-        .digest("hex")
-        .slice(0, 16);
-      const dbPath = adapter.getSessionDBPath(projectDir);
+      const hash = hashProjectDirCanonical(projectDir);
+      const dbPath = resolveSessionDbPath({
+        projectDir,
+        sessionsDir: adapter.getSessionDir(),
+      });
       expect(dbPath).toBe(
         join(customDir, "context-mode", "sessions", `${hash}.db`),
       );
       // Regression pin: session DB must NOT land under ~/.claude when
       // CLAUDE_CONFIG_DIR is set.
-      expect(dbPath.startsWith(join(homedir(), ".claude") + "/")).toBe(false);
+      expect(dbPath.startsWith(join(homedir(), ".claude") + sep)).toBe(false);
     });
 
     it("validateHooks failure message references the resolved settings path", () => {

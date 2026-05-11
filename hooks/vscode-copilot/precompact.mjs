@@ -10,7 +10,7 @@ import "../ensure-deps.mjs";
  */
 
 import { createSessionLoaders } from "../session-loaders.mjs";
-import { readStdin, parseStdin, getSessionId, getSessionDBPath, VSCODE_OPTS } from "../session-helpers.mjs";
+import { readStdin, parseStdin, getSessionId, getSessionDBPath, getInputProjectDir, VSCODE_OPTS } from "../session-helpers.mjs";
 import { appendFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,11 +24,12 @@ const DEBUG_LOG = join(homedir(), ".vscode", "context-mode", "precompact-debug.l
 try {
   const raw = await readStdin();
   const input = parseStdin(raw);
+  const projectDir = getInputProjectDir(input, OPTS);
 
   const { buildResumeSnapshot } = await loadSnapshot();
   const { SessionDB } = await loadSessionDB();
 
-  const dbPath = getSessionDBPath(OPTS);
+  const dbPath = getSessionDBPath(OPTS, projectDir);
   const db = new SessionDB({ dbPath });
   const sessionId = getSessionId(input, OPTS);
 

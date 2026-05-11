@@ -13,7 +13,6 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SessionDB } from "../../session/db.js";
@@ -22,6 +21,7 @@ import type { HookInput } from "../../session/extract.js";
 import { buildResumeSnapshot } from "../../session/snapshot.js";
 import type { SessionEvent } from "../../types.js";
 import { bootstrapMCPTools, type BridgeHandle } from "./mcp-bridge.js";
+import { PiAdapter } from "./index.js";
 
 // ── Pi Tool Name Mapping ─────────────────────────────────
 // Pi uses lowercase; shared extractors expect PascalCase (Claude Code convention).
@@ -74,10 +74,6 @@ let _mcpBridge: BridgeHandle | null = null;
  */
 export let _mcpBridgeReady: Promise<void> = Promise.resolve();
 
-// Per-session gate: routing block injected at most once per session_id.
-const _routingInjected: Set<string> = new Set();
-
-
 // Cached routing-block string (built once per process from hooks/routing-block.mjs).
 let _routingBlock: string | null = null;
 async function getRoutingBlock(pluginRoot: string): Promise<string> {
@@ -119,8 +115,14 @@ async function getAutoInjection(
 
 // ── Helpers ──────────────────────────────────────────────
 
+// Single PiAdapter instance — owns the canonical session-dir contract
+// (~/.pi/context-mode/sessions). Routing the extension through it means
+// any future segment change in PiAdapter (or BaseAdapter) propagates
+// here automatically instead of silently desyncing (#473 round-3).
+const _piAdapter = new PiAdapter();
+
 function getSessionDir(): string {
-  const dir = join(homedir(), ".pi", "context-mode", "sessions");
+  const dir = _piAdapter.getSessionDir();
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -504,7 +506,7 @@ export default function piExtension(pi: any): void {
 
   // ── 7. session_shutdown — Cleanup old sessions ─────────
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
     try {
       if (_db) {
         _db.cleanupOldSessions(7);
@@ -513,6 +515,21 @@ export default function piExtension(pi: any): void {
       _sessionId = "";
     } catch {
       // best effort — never throw during shutdown
+    }
+    // Race fix (#472 round-3): if shutdown fires while bridge bootstrap
+    // is still in flight, _mcpBridge is null at this point and the
+    // freshly-spawned MCP child gets orphaned once bootstrap eventually
+    // resolves. Await the bootstrap up to a 2s ceiling so we see the
+    // real handle, then call shutdown() on it. The ceiling prevents a
+    // hung bootstrap (e.g. broken bundle) from blocking session exit.
+    try {
+      await Promise.race([
+        _mcpBridgeReady,
+        new Promise<void>((r) => setTimeout(r, 2000).unref()),
+      ]);
+    } catch {
+      // _mcpBridgeReady never rejects (best-effort), but defensively
+      // swallow anyway so shutdown never throws.
     }
     if (_mcpBridge) {
       try {

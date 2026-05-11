@@ -52,6 +52,83 @@ function makeEvent(overrides: Partial<{
 }
 
 // ════════════════════════════════════════════
+// SLICE 0: BYTES ACCOUNTING (D2 PRD Phase 2)
+// ════════════════════════════════════════════
+
+describe("Bytes accounting (D2 PRD Phase 2)", () => {
+  test("insertEvent persists bytesAvoided + bytesReturned when supplied", () => {
+    const db = createTestDB();
+    const sid = "sess-bytes-1";
+
+    db.insertEvent(
+      sid,
+      { type: "bash-redirected", category: "redirect", data: "curl https://example.com", priority: 2 },
+      "PreToolUse",
+      undefined,
+      { bytesAvoided: 8192, bytesReturned: 0 },
+    );
+
+    const events = db.getEvents(sid);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].bytes_avoided, 8192, "bytes_avoided must round-trip");
+    assert.equal(events[0].bytes_returned, 0, "bytes_returned must round-trip");
+  });
+
+  test("getEvents returns bytes columns with 0 default for legacy callers", () => {
+    const db = createTestDB();
+    const sid = "sess-bytes-default";
+
+    // Caller does NOT pass bytes — both columns must default to 0.
+    db.insertEvent(sid, makeEvent({ data: "no-bytes-supplied.ts" }));
+
+    const events = db.getEvents(sid);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].bytes_avoided, 0);
+    assert.equal(events[0].bytes_returned, 0);
+  });
+
+  test("getEventBytesSummary returns SUM of bytes_avoided + bytes_returned per session", () => {
+    const db = createTestDB();
+    const sid = "sess-bytes-sum";
+    const otherSid = "sess-bytes-other";
+
+    db.insertEvent(
+      sid,
+      { type: "bash-redirected", category: "redirect", data: "curl a", priority: 2 },
+      "PreToolUse",
+      undefined,
+      { bytesAvoided: 1000, bytesReturned: 50 },
+    );
+    db.insertEvent(
+      sid,
+      { type: "bash-redirected", category: "redirect", data: "curl b", priority: 2 },
+      "PreToolUse",
+      undefined,
+      { bytesAvoided: 2500, bytesReturned: 100 },
+    );
+    // Different session — must NOT contribute
+    db.insertEvent(
+      otherSid,
+      { type: "bash-redirected", category: "redirect", data: "curl c", priority: 2 },
+      "PreToolUse",
+      undefined,
+      { bytesAvoided: 9999, bytesReturned: 9999 },
+    );
+
+    const summary = db.getEventBytesSummary(sid);
+    assert.equal(summary.bytesAvoided, 3500);
+    assert.equal(summary.bytesReturned, 150);
+  });
+
+  test("getEventBytesSummary returns zeros for sessions with no events", () => {
+    const db = createTestDB();
+    const summary = db.getEventBytesSummary("never-existed");
+    assert.equal(summary.bytesAvoided, 0);
+    assert.equal(summary.bytesReturned, 0);
+  });
+});
+
+// ════════════════════════════════════════════
 // SLICE 1: SCHEMA INITIALIZATION
 // ════════════════════════════════════════════
 

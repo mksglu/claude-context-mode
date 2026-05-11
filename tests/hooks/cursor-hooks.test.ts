@@ -12,6 +12,11 @@ import { createHash } from "node:crypto";
 import { tmpdir, homedir } from "node:os";
 import { fakeHome, realHome } from "../setup-home";
 
+
+const _hashCanonical = (p: string) => createHash("sha256").update(
+  (process.platform === "darwin" || process.platform === "win32") ? p.toLowerCase() : p
+).digest("hex").slice(0, 16);
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_DIR = join(__dirname, "..", "..", "hooks", "cursor");
 
@@ -45,7 +50,7 @@ describe("Cursor hooks", () => {
 
   beforeAll(() => {
     tempDir = mkdtempSync(join(tmpdir(), "cursor-hook-test-"));
-    const hash = createHash("sha256").update(tempDir).digest("hex").slice(0, 16);
+    const hash = _hashCanonical(tempDir);
     const sessionsDir = join(homedir(), ".cursor", "context-mode", "sessions");
     dbPath = join(sessionsDir, `${hash}.db`);
     eventsPath = join(sessionsDir, `${hash}-events.md`);
@@ -345,5 +350,53 @@ describe("Cursor hooks", () => {
       const payload = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(String(payload.additional_context)).toContain("context-mode");
     });
+  });
+});
+
+// ── #435 round-3 — MCP cwd != hook projectDir worktree-suffix ─────────────
+describe("Cursor hooks — MCP cwd != hook projectDir worktree-suffix (#435)", () => {
+  let mcpDir: string;
+  let worktreeDir: string;
+  let mcpDbPath: string;
+  let worktreeDbPath: string;
+
+  beforeAll(() => {
+    mcpDir = mkdtempSync(join(tmpdir(), "cursor-mcp-A-"));
+    worktreeDir = mkdtempSync(join(tmpdir(), "cursor-wt-B-"));
+    // Hooks hash the path AFTER normalizeWorktreePath() (\ → /), so the test
+    // must apply the same normalization before SHA — otherwise on Windows the
+    // expected hash uses backslashes while the hook uses slashes and the
+    // existsSync assertion is vacuously false.
+    const mcpHash = _hashCanonical(mcpDir.replace(/\\/g, "/"));
+    const wtHash = _hashCanonical(worktreeDir.replace(/\\/g, "/"));
+    const sessionsDir = join(homedir(), ".cursor", "context-mode", "sessions");
+    mcpDbPath = join(sessionsDir, `${mcpHash}.db`);
+    worktreeDbPath = join(sessionsDir, `${wtHash}.db`);
+  });
+
+  afterAll(() => {
+    try { rmSync(mcpDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { rmSync(worktreeDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { if (existsSync(mcpDbPath)) unlinkSync(mcpDbPath); } catch { /* best effort */ }
+    try { if (existsSync(worktreeDbPath)) unlinkSync(worktreeDbPath); } catch { /* best effort */ }
+  });
+
+  const _sentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
+  const mcpSentinel = resolve(_sentinelDir, `context-mode-mcp-ready-${process.pid}`);
+  beforeEach(() => { writeFileSync(mcpSentinel, String(process.pid)); });
+  afterEach(() => { try { unlinkSync(mcpSentinel); } catch {} });
+
+  test("posttooluse writes DB under hook projectDir hash, not env CURSOR_CWD hash", () => {
+    const result = runHook("posttooluse.mjs", {
+      tool_name: "Read",
+      tool_input: { file_path: `${worktreeDir}/src/app.ts` },
+      tool_output: "export default {}",
+      conversation_id: "cursor-435-r3",
+      cwd: worktreeDir,
+    }, { CURSOR_CWD: mcpDir });
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(worktreeDbPath)).toBe(true);
+    expect(existsSync(mcpDbPath)).toBe(false);
   });
 });

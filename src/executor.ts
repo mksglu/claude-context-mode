@@ -293,7 +293,11 @@ export class PolyglotExecutor {
     return new Promise((res) => {
       // Only .cmd/.bat shims need shell on Windows; real executables don't.
       // Using shell: true globally causes process-tree kill issues with MSYS2/Git Bash.
-      const needsShell = isWin && ["tsx", "ts-node", "elixir"].includes(cmd[0]);
+      // "bun" is included as defense-in-depth: bunCommand() prefers absolute
+      // .exe paths now (#506), but if it falls back to the bare "bun" string
+      // on Windows that resolution typically goes through a `bun.cmd` shim
+      // (npm i -g bun) which CreateProcess can't execute without cmd.exe.
+      const needsShell = isWin && ["tsx", "ts-node", "elixir", "bun"].includes(cmd[0]);
 
       // On Windows with Git Bash, pass the script as `bash -c "source /posix/path"`
       // rather than `bash /path/to/script.sh`. This avoids MSYS2 path mangling

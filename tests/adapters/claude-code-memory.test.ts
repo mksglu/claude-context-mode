@@ -58,3 +58,62 @@ describe("ClaudeCodeAdapter memory conventions", () => {
     expect(adapter.getMemoryDir()).toBe(join(customDir, "memory"));
   });
 });
+
+/**
+ * Issue #460 follow-up — `getSettingsPath()` MUST flow through `getConfigDir()`
+ * so the documented `CLAUDE_CONFIG_DIR` override actually steers settings I/O.
+ * Otherwise hooks/security read one path, adapters write another, and policies
+ * silently diverge.
+ */
+describe("CLAUDE_CONFIG_DIR honors getSettingsPath", () => {
+  const adapter = new ClaudeCodeAdapter();
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+  beforeEach(() => {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  });
+
+  afterEach(() => {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+  });
+
+  it("env unset → ~/.claude/settings.json", () => {
+    expect(adapter.getSettingsPath()).toBe(
+      join(homedir(), ".claude", "settings.json"),
+    );
+  });
+
+  it("env=/tmp/custom-cc → /tmp/custom-cc/settings.json", () => {
+    const customDir = resolve("/tmp/custom-cc");
+    process.env.CLAUDE_CONFIG_DIR = customDir;
+    expect(adapter.getSettingsPath()).toBe(join(customDir, "settings.json"));
+  });
+
+  it("env=~/myconf → expanded to homedir-relative", () => {
+    process.env.CLAUDE_CONFIG_DIR = "~/myconf";
+    expect(adapter.getSettingsPath()).toBe(
+      join(homedir(), "myconf", "settings.json"),
+    );
+  });
+
+  it("env='' empty → falls back to ~/.claude/settings.json", () => {
+    process.env.CLAUDE_CONFIG_DIR = "";
+    expect(adapter.getSettingsPath()).toBe(
+      join(homedir(), ".claude", "settings.json"),
+    );
+  });
+
+  /**
+   * Issue #460 round-3: whitespace-only env values would otherwise resolve
+   * to `<cwd>/<spaces>` because the truthy guard catches them. Trim guard
+   * lives in `resolveClaudeConfigDir`; this test pins the adapter routing
+   * through the util.
+   */
+  it("env=' ' whitespace → falls back to ~/.claude/settings.json", () => {
+    process.env.CLAUDE_CONFIG_DIR = "   ";
+    expect(adapter.getSettingsPath()).toBe(
+      join(homedir(), ".claude", "settings.json"),
+    );
+  });
+});
