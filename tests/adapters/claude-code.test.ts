@@ -832,6 +832,29 @@ describe("ClaudeCodeAdapter", () => {
       expect(jsonMatchers).toEqual([...PRE_TOOL_USE_MATCHERS]);
     });
 
+    it("hooks/hooks.json external MCP entry wires to pretooluse.mjs (#529)", () => {
+      const repoRoot = resolve(__dirname, "..", "..");
+      const hooksJsonPath = join(repoRoot, "hooks", "hooks.json");
+      const parsed = JSON.parse(readFileSync(hooksJsonPath, "utf8")) as {
+        hooks: {
+          PreToolUse: Array<{
+            matcher: string;
+            hooks: Array<{ type: string; command: string }>;
+          }>;
+        };
+      };
+      const entry = parsed.hooks.PreToolUse.find(
+        (e) => e.matcher === EXTERNAL_MCP_MATCHER_PATTERN,
+      );
+      expect(entry, "external-MCP matcher entry missing from hooks.json").toBeDefined();
+      expect(entry!.hooks).toHaveLength(1);
+      expect(entry!.hooks[0].type).toBe("command");
+      // The runtime hook must point at the PreToolUse handler — losing this
+      // wiring would silently disable external-MCP routing even though the
+      // matcher is still present.
+      expect(entry!.hooks[0].command).toContain("pretooluse.mjs");
+    });
+
     it("POST_TOOL_USE_MATCHERS contains all tools that extractEvents handles", () => {
       const required = [
         "Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep",
