@@ -37,6 +37,22 @@ export type HookType = (typeof HOOK_TYPES)[keyof typeof HOOK_TYPES];
 // PreToolUse matchers
 // ─────────────────────────────────────────────────────────
 
+/**
+ * Negative-lookahead matcher for external MCP tool namespaces (#529).
+ *
+ * Claude Code's hook matcher engine evaluates each entry as a regex against
+ * the tool name. This pattern fires on any `mcp__<server>__<tool>` whose
+ * server segment is NOT context-mode's own (`plugin_context-mode_...`).
+ * Without it, large payloads from external MCPs (slack channel history,
+ * telegram messages, gdrive content, notion pages, …) bypass PreToolUse
+ * routing and flood the model's context window — PostToolUse runs too late
+ * to keep the raw data out.
+ *
+ * The negative lookahead prevents this entry from double-firing on
+ * context-mode's own ctx_* tools, which already have dedicated entries above.
+ */
+export const EXTERNAL_MCP_MATCHER_PATTERN = "mcp__(?!plugin_context-mode_)";
+
 /** Tools that context-mode's PreToolUse hook intercepts. */
 export const PRE_TOOL_USE_MATCHERS = [
   "Bash",
@@ -47,6 +63,7 @@ export const PRE_TOOL_USE_MATCHERS = [
   "mcp__plugin_context-mode_context-mode__ctx_execute",
   "mcp__plugin_context-mode_context-mode__ctx_execute_file",
   "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+  EXTERNAL_MCP_MATCHER_PATTERN,
 ] as const;
 
 /**

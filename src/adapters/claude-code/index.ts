@@ -39,6 +39,7 @@ import {
   HOOK_TYPES,
   HOOK_SCRIPTS,
   REQUIRED_HOOKS,
+  PRE_TOOL_USE_MATCHERS,
   PRE_TOOL_USE_MATCHER_PATTERN,
   isContextModeHook,
   isAnyContextModeHook,
@@ -106,16 +107,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
 
   generateHookConfig(pluginRoot: string): HookRegistration {
     const preToolUseCommand = `node ${pluginRoot}/hooks/pretooluse.mjs`;
-    const preToolUseMatchers = [
-      "Bash",
-      "WebFetch",
-      "Read",
-      "Grep",
-      "Task",
-      "mcp__plugin_context-mode_context-mode__ctx_execute",
-      "mcp__plugin_context-mode_context-mode__ctx_execute_file",
-      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-    ];
+    const preToolUseMatchers = [...PRE_TOOL_USE_MATCHERS];
 
     return {
       PreToolUse: preToolUseMatchers.map((matcher) => ({

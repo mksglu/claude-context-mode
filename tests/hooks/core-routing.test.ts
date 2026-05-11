@@ -585,6 +585,75 @@ describe("routePreToolUse", () => {
       expect(result).toBeNull();
     });
   });
+
+  // ─── External MCP tools (#529) ──────────────────────────
+  //
+  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so
+  // PreToolUse fires on slack/telegram/gdrive/notion-style MCPs whose payloads
+  // would otherwise spill into context before PostToolUse can act. The routing
+  // branch emits a one-shot context guidance nudge — same throttle model as
+  // bash/read/grep guidance.
+  describe("External MCP tools (#529)", () => {
+    it("emits context guidance for an external slack-style MCP tool", () => {
+      const result = routePreToolUse("mcp__slack__list_channels", {});
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("context");
+      expect(result!.additionalContext).toContain("External MCP tools");
+    });
+
+    it("emits context guidance for telegram, gdrive, and notion namespaces", () => {
+      const tools = [
+        "mcp__plugin_telegram__list_messages",
+        "mcp__claude_ai_Google_Drive__search",
+        "mcp__notion__query_database",
+      ];
+      for (const tool of tools) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, {});
+        expect(result, `expected guidance for ${tool}`).not.toBeNull();
+        expect(result!.action).toBe("context");
+      }
+    });
+
+    it("does NOT match context-mode's own MCP tools (no double-firing)", () => {
+      // These are routed by dedicated branches above (ctx_execute,
+      // ctx_execute_file, ctx_batch_execute) — they must NOT receive the
+      // external-MCP guidance, which would be redundant noise.
+      const contextModeTools = [
+        "mcp__plugin_context-mode_context-mode__ctx_execute",
+        "mcp__plugin_context-mode_context-mode__ctx_execute_file",
+        "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+        "mcp__context-mode__ctx_execute",
+      ];
+      for (const tool of contextModeTools) {
+        resetGuidanceThrottle();
+        const result = routePreToolUse(tool, { language: "javascript", code: "1+1" });
+        // ctx_execute returns null (no security violation, no guidance).
+        // The external-MCP branch must NOT have run for these.
+        if (result !== null) {
+          expect(result.additionalContext ?? "").not.toContain("External MCP tools");
+        }
+      }
+    });
+
+    it("respects the once-per-session guidance throttle", () => {
+      const first = routePreToolUse("mcp__slack__post_message", {});
+      expect(first).not.toBeNull();
+      expect(first!.action).toBe("context");
+
+      // Second call in the same session — guidanceOnce should suppress it.
+      const second = routePreToolUse("mcp__slack__list_users", {});
+      expect(second).toBeNull();
+    });
+
+    it("does NOT match plain Bash/Read/etc as external MCP", () => {
+      // Sanity: tools without the mcp__ prefix should not hit this branch.
+      // Use a tool name the routing branches don't otherwise handle (Bash
+      // would return a guidance from its own branch).
+      const result = routePreToolUse("Glob", { pattern: "**/*.ts" });
+      expect(result).toBeNull();
+    });
+  });
 });
 
 // ─── mcp-ready.mjs regression matrix (#347 guard) ──────────────────────────

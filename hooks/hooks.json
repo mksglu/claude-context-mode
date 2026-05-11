@@ -95,6 +95,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__(?!plugin_context-mode_)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

@@ -11,8 +11,9 @@
  */
 
 import {
-  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE,
+  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE, EXTERNAL_MCP_GUIDANCE,
   createRoutingBlock, createReadGuidance, createGrepGuidance, createBashGuidance,
+  createExternalMcpGuidance,
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
@@ -358,6 +359,21 @@ function matchesContextModeTool(toolName, ctxName, legacyName) {
   return raw.includes("context-mode") && leaf === legacyName;
 }
 
+// External MCP detection (#529). MCP-namespaced tool names follow the
+// `mcp__<server>__<tool>` convention on Claude Code / Gemini CLI / Antigravity
+// / Qwen Code (see core/tool-naming.mjs). Tools belonging to context-mode itself
+// are excluded — they have dedicated routing branches above (ctx_execute,
+// ctx_execute_file, ctx_batch_execute) and re-routing them here would
+// double-process the call.
+const MCP_PREFIX = "mcp__";
+const CONTEXT_MODE_MCP_SUBSTRING = "context-mode";
+
+function isExternalMcpTool(toolName) {
+  const raw = String(toolName ?? "");
+  if (!raw.startsWith(MCP_PREFIX)) return false;
+  return !raw.includes(CONTEXT_MODE_MCP_SUBSTRING);
+}
+
 /**
  * Route a PreToolUse event. Returns normalized decision object or null for passthrough.
  *
@@ -663,6 +679,16 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       }
     }
     return null;
+  }
+
+  // ─── External MCP tools: one-shot guidance about routing large payloads ─── (#529)
+  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so this
+  // branch fires for slack/telegram/gdrive/notion-style MCPs whose results would
+  // otherwise spill into context. We don't deny or modify — the agent still needs
+  // the tool's output; we just nudge it to pipe large results through ctx_execute.
+  if (isExternalMcpTool(toolName)) {
+    const externalMcpGuidance = platform ? createExternalMcpGuidance(t) : EXTERNAL_MCP_GUIDANCE;
+    return guidanceOnce("external-mcp", externalMcpGuidance, sessionId);
   }
 
   // Unknown tool — pass through
