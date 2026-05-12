@@ -32,6 +32,7 @@ const SCRIPT_EXT: Record<Language, string> = {
   perl: "pl",
   r: "R",
   elixir: "exs",
+  csharp: "csx",
 };
 
 /** Pure helper — exported for unit testing. Returns "script" or "script.<ext>". */
@@ -297,7 +298,7 @@ export class PolyglotExecutor {
       // .exe paths now (#506), but if it falls back to the bare "bun" string
       // on Windows that resolution typically goes through a `bun.cmd` shim
       // (npm i -g bun) which CreateProcess can't execute without cmd.exe.
-      const needsShell = isWin && ["tsx", "ts-node", "elixir", "bun"].includes(cmd[0]);
+      const needsShell = isWin && ["tsx", "ts-node", "elixir", "bun", "dotnet-script"].includes(cmd[0]);
 
       // On Windows with Git Bash, pass the script as `bash -c "source /posix/path"`
       // rather than `bash /path/to/script.sh`. This avoids MSYS2 path mangling
@@ -492,6 +493,13 @@ export class PolyglotExecutor {
       "R_PROFILE",            // site-wide R profile
       "R_PROFILE_USER",       // user R profile
       "R_HOME",               // R installation override
+      // .NET / C# — runtime/startup hooks, additional deps
+      "DOTNET_STARTUP_HOOKS",       // injects managed assemblies on startup
+      "DOTNET_ADDITIONAL_DEPS",     // additional .deps.json injection
+      "DOTNET_SHARED_STORE",        // shared assembly probe path injection
+      "DOTNET_ROOT",                // arbitrary .NET runtime override
+      "DOTNET_ROOT(x86)",           // 32-bit override
+      "DOTNET_HOST_PATH",           // host binary substitution
       // Dynamic linker — shared library injection
       "LD_PRELOAD",           // loads .so before all others (Linux)
       "DYLD_INSERT_LIBRARIES", // macOS equivalent of LD_PRELOAD
@@ -598,6 +606,11 @@ export class PolyglotExecutor {
         return `FILE_CONTENT_PATH <- ${escaped}\nfile_path <- FILE_CONTENT_PATH\nFILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE, encoding="UTF-8")\nFILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")\n${code}`;
       case "elixir":
         return `file_content_path = ${escaped}\nfile_path = file_content_path\nfile_content = File.read!(file_content_path)\n${code}`;
+      case "csharp":
+        // .csx forbids `using` directives after any other top-level statement
+        // (CS1529). User code inside executeFile must use fully-qualified type
+        // names (e.g. `System.Text.Json.JsonDocument`) instead of `using`.
+        return `var FILE_CONTENT_PATH = ${escaped};\nvar file_path = FILE_CONTENT_PATH;\nvar FILE_CONTENT = System.IO.File.ReadAllText(FILE_CONTENT_PATH);\n${code}`;
     }
   }
 }

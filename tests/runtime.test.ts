@@ -55,6 +55,7 @@ describe("runtime version reporting", () => {
       perl: null,
       r: null,
       elixir: null,
+      csharp: null,
     };
 
     const summary = getRuntimeSummary(runtimes);
@@ -283,6 +284,7 @@ describe("runnableExists — Windows MS Store stub filter (#454)", () => {
         Rscript: "throw",
         r: "throw",
         elixir: "throw",
+        "dotnet-script": "throw",
       },
       versionExits: { python3: "ok" },
     });
@@ -325,6 +327,7 @@ describe("runnableExists — Windows MS Store stub filter (#454)", () => {
         Rscript: "throw",
         r: "throw",
         elixir: "throw",
+        "dotnet-script": "throw",
       },
       // Probes must NOT be reached because all hits are stubs and `where` short-circuits.
       versionExits: {},
@@ -366,6 +369,7 @@ describe("runnableExists — Windows MS Store stub filter (#454)", () => {
         Rscript: "throw",
         r: "throw",
         elixir: "throw",
+        "dotnet-script": "throw",
       },
       versionExits: { python3: { code: 9009 } },
     });
@@ -399,6 +403,7 @@ describe("runnableExists — Windows MS Store stub filter (#454)", () => {
         Rscript: "throw",
         r: "throw",
         elixir: "throw",
+        "dotnet-script": "throw",
       },
       versionExits: { py: "ok" },
     });
@@ -576,6 +581,7 @@ describe("buildCommand shell variants", () => {
       perl: null,
       r: null,
       elixir: null,
+      csharp: null,
     };
   }
 

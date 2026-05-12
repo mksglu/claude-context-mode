@@ -110,6 +110,7 @@ describe("Runtime Detection", () => {
       perl: null,
       r: null,
       elixir: null,
+      csharp: null,
     };
     assert.throws(
       () => buildCommand(noRuntimes, "typescript", "/tmp/t.ts"),
@@ -126,6 +127,10 @@ describe("Runtime Detection", () => {
     assert.throws(
       () => buildCommand(noRuntimes, "elixir", "/tmp/t.exs"),
       /Elixir not available/,
+    );
+    assert.throws(
+      () => buildCommand(noRuntimes, "csharp", "/tmp/t.csx"),
+      /C# not available/,
     );
   });
 
@@ -686,6 +691,40 @@ IO.puts(result)
   });
 });
 
+describe.runIf(runtimes.csharp)("CSharp Execution", () => {
+  test("C#: hello world", async () => {
+    const r = await executor.execute({
+      language: "csharp",
+      code: 'Console.WriteLine("hello from csharp");',
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.ok(r.stdout.includes("hello from csharp"));
+  });
+
+  test("C#: LINQ over array", async () => {
+    const r = await executor.execute({
+      language: "csharp",
+      code: `
+using System.Linq;
+var nums = Enumerable.Range(1, 10);
+var evens = nums.Where(n => n % 2 == 0).ToArray();
+Console.WriteLine($"sum: {evens.Sum()}");
+      `,
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.ok(r.stdout.includes("sum: 30"));
+  });
+
+  test("C#: error returns non-zero exit", async () => {
+    const r = await executor.execute({
+      language: "csharp",
+      code: 'throw new System.Exception("intentional error");',
+    });
+    assert.notEqual(r.exitCode, 0);
+    assert.ok(r.stderr.length > 0 || r.stdout.includes("intentional error"));
+  });
+});
+
 describe("Error Handling", () => {
   test("JS: syntax error returns non-zero", async () => {
     const r = await executor.execute({
@@ -946,6 +985,21 @@ puts "Users: #{data['users'].length}"
       `,
     });
     assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes("Users: 3"));
+  });
+
+  test.runIf(runtimes.csharp)("execute_file: C# reads FILE_CONTENT", async () => {
+    const r = await executor.executeFile({
+      path: testFile,
+      language: "csharp",
+      code: `
+using (var doc = System.Text.Json.JsonDocument.Parse(FILE_CONTENT)) {
+  var users = doc.RootElement.GetProperty("users").GetArrayLength();
+  System.Console.WriteLine($"Users: {users}");
+}
+      `,
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
     assert.ok(r.stdout.includes("Users: 3"));
   });
 
@@ -1689,6 +1743,7 @@ describe("Windows Shell Support", () => {
     assert.equal(buildScriptFilename("ruby", "win32"), "script.rb");
     assert.equal(buildScriptFilename("go", "win32"), "script.go");
     assert.equal(buildScriptFilename("rust", "win32"), "script.rs");
+    assert.equal(buildScriptFilename("csharp", "win32"), "script.csx");
   });
 
   test("buildScriptFilename: non-shell languages keep their extension on Unix", async () => {
