@@ -566,6 +566,18 @@ describe("Decision Events", () => {
     assert.equal(decisionEvents.length, 1);
   });
 
+  test("extracts decision from Chinese corrections (#535)", () => {
+    const events = extractUserEvents("不要使用 fetch，改用 ctx_execute");
+    const decisionEvents = events.filter(e => e.type === "decision");
+    assert.equal(decisionEvents.length, 1);
+  });
+
+  test("extracts decision from Chinese 'never/always' directives (#535)", () => {
+    const events = extractUserEvents("别直接 push 到 main，宁可先开 PR");
+    const decisionEvents = events.filter(e => e.type === "decision");
+    assert.equal(decisionEvents.length, 1);
+  });
+
   test("does not extract decision from regular messages", () => {
     const events = extractUserEvents("Can you read the server.ts file?");
     const decisionEvents = events.filter(e => e.type === "decision");
@@ -587,6 +599,18 @@ describe("Role Events", () => {
 
   test("extracts role from 'you are' pattern", () => {
     const events = extractUserEvents("You are a principal architect. Review this design.");
+    const roleEvents = events.filter(e => e.type === "role");
+    assert.equal(roleEvents.length, 1);
+  });
+
+  test("extracts role from Chinese 'act as' pattern (#535)", () => {
+    const events = extractUserEvents("扮演一个高级工程师帮我 review 这份代码");
+    const roleEvents = events.filter(e => e.type === "role");
+    assert.equal(roleEvents.length, 1);
+  });
+
+  test("extracts role from Chinese '你是' pattern (#535)", () => {
+    const events = extractUserEvents("你是一个资深架构师，帮我看看设计");
     const roleEvents = events.filter(e => e.type === "role");
     assert.equal(roleEvents.length, 1);
   });
@@ -794,6 +818,34 @@ describe("Intent Events", () => {
 
   test("extracts discussion intent", () => {
     const events = extractUserEvents("Think about the pros and cons of this approach");
+    const intentEvents = events.filter(e => e.type === "intent");
+    assert.equal(intentEvents.length, 1);
+    assert.equal(intentEvents[0].data, "discuss");
+  });
+
+  test("extracts Chinese investigation intent (#535)", () => {
+    const events = extractUserEvents("为什么这个 hook 没有触发？分析一下原因");
+    const intentEvents = events.filter(e => e.type === "intent");
+    assert.equal(intentEvents.length, 1);
+    assert.equal(intentEvents[0].data, "investigate");
+  });
+
+  test("extracts Chinese implementation intent (#535)", () => {
+    const events = extractUserEvents("创建一个新的 PostToolUse hook");
+    const intentEvents = events.filter(e => e.type === "intent");
+    assert.equal(intentEvents.length, 1);
+    assert.equal(intentEvents[0].data, "implement");
+  });
+
+  test("extracts Chinese review intent (#535)", () => {
+    const events = extractUserEvents("审查一下这段代码的安全问题");
+    const intentEvents = events.filter(e => e.type === "intent");
+    assert.equal(intentEvents.length, 1);
+    assert.equal(intentEvents[0].data, "review");
+  });
+
+  test("extracts Chinese discussion intent (#535)", () => {
+    const events = extractUserEvents("讨论一下这个方案的利弊");
     const intentEvents = events.filter(e => e.type === "intent");
     assert.equal(intentEvents.length, 1);
     assert.equal(intentEvents[0].data, "discuss");
@@ -2540,6 +2592,18 @@ describe("Blocked-On Events", () => {
     assert.equal(blockerEvents.length, 1);
   });
 
+  test("extracts blocker from Chinese '等待' pattern (#535)", () => {
+    const events = extractUserEvents("等待 mert 的回复，目前阻塞中");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
+  test("extracts blocker from Chinese '依赖' pattern (#535)", () => {
+    const events = extractUserEvents("这个任务依赖于 auth 服务上线");
+    const blockerEvents = events.filter(e => e.type === "blocker");
+    assert.equal(blockerEvents.length, 1);
+  });
+
   // Resolution tests
 
   test("extracts blocker_resolved from 'unblocked' pattern", () => {
@@ -2570,6 +2634,18 @@ describe("Blocked-On Events", () => {
 
   test("extracts blocker_resolved from 'can proceed' pattern", () => {
     const events = extractUserEvents("we can proceed with the deployment");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+  });
+
+  test("extracts blocker_resolved from Chinese '解决了' pattern (#535)", () => {
+    const events = extractUserEvents("已经解决了，可以继续");
+    const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
+    assert.equal(resolvedEvents.length, 1);
+  });
+
+  test("extracts blocker_resolved from Chinese '搞定了' pattern (#535)", () => {
+    const events = extractUserEvents("搞定了，继续下一步");
     const resolvedEvents = events.filter(e => e.type === "blocker_resolved");
     assert.equal(resolvedEvents.length, 1);
   });

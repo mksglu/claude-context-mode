@@ -815,6 +815,11 @@ const DECISION_PATTERNS: RegExp[] = [
   /\b(no,?\s+(use|do|try|make))\b/i,
   // Turkish patterns
   /\b(hayır|hayir|evet|böyle|boyle|degil|değil|yerine|kullan)\b/i,
+  // Chinese patterns (zh-CN) — \b is Unicode-unaware in JS, so CJK alternates
+  // must live outside any \b…\b group; substring matching is sufficient here.
+  /不要|不用|别|不是|而不是|改用|改成|换成|换用|应该|不应该|宁可|宁愿|优先|选择/,
+  /(?:改|换|用)(?:用|成)?\s*\S+\s*(?:而不是|代替|取代|替代)/,
+  /(?:不,?\s*(?:用|做|试|搞|写))/,
 ];
 
 function extractUserDecision(message: string): SessionEvent[] {
@@ -839,6 +844,9 @@ const ROLE_PATTERNS: RegExp[] = [
   /\b(senior|staff|principal|lead)\s+(engineer|developer|architect)\b/i,
   // Turkish patterns
   /\b(gibi davran|rolünde|olarak çalış)\b/i,
+  // Chinese patterns (zh-CN)
+  /扮演|充当|你是(?:一(?:个|名|位))?|作为(?:一(?:个|名|位))?|当作|角色|身份/,
+  /(?:高级|资深|首席|主管|架构师)(?:工程师|开发(?:者|人员)?|架构师)?/,
 ];
 
 function extractRole(message: string): SessionEvent[] {
@@ -858,11 +866,13 @@ function extractRole(message: string): SessionEvent[] {
  * Session mode classification from user messages.
  */
 
+// Chinese alternates live outside \b…\b groups because JS \b is
+// Unicode-unaware; substring matching is what we want for CJK anyway.
 const INTENT_PATTERNS: Array<{ mode: string; pattern: RegExp }> = [
-  { mode: "investigate", pattern: /\b(why|how does|explain|understand|what is|analyze|debug|look into)\b/i },
-  { mode: "implement",   pattern: /\b(create|add|build|implement|write|make|develop|fix)\b/i },
-  { mode: "discuss",     pattern: /\b(think about|consider|should we|what if|pros and cons|opinion)\b/i },
-  { mode: "review",      pattern: /\b(review|check|audit|verify|test|validate)\b/i },
+  { mode: "investigate", pattern: /\b(why|how does|explain|understand|what is|analyze|debug|look into)\b|为什么|为何|怎么(?!样做|做)|如何|解释|说明|理解|分析|调查|排查|研究(?:一下)?|看看|了解|搞懂|弄清/i },
+  { mode: "implement",   pattern: /\b(create|add|build|implement|write|make|develop|fix)\b|创建|新建|添加|增加|加上|构建|搭建|实现|编写|写一个|做一个|开发|修复|修一下|修改|改一下|完成/i },
+  { mode: "discuss",     pattern: /\b(think about|consider|should we|what if|pros and cons|opinion)\b|讨论|商量|考虑|想想|想一下|是否|要不要|该不该|利弊|优缺点|看法|意见|如果.*?(?:呢|的话)/i },
+  { mode: "review",      pattern: /\b(review|check|audit|verify|test|validate)\b|审查|审核|审计|复查|复审|检查|检验|核查|核对|验证|测试|校验/i },
 ];
 
 function extractIntent(message: string): SessionEvent[] {
@@ -892,6 +902,9 @@ const BLOCKER_PATTERNS: RegExp[] = [
   // Turkish patterns
   /\bbekliyor\b/i,
   /\bbekliyorum\b/i,
+  // Chinese patterns (zh-CN)
+  /阻塞|卡住|卡在|被卡|被阻塞|无法(?:继续|进行|推进)|没法(?:继续|进行)|等待|等着|在等|要等|需要等|依赖于?|取决于/,
+  /(?:需要|得|要)\S{0,8}(?:先|之前|后)?\s*才能/,
 ];
 
 const BLOCKER_RESOLVED_PATTERNS: RegExp[] = [
@@ -900,6 +913,8 @@ const BLOCKER_RESOLVED_PATTERNS: RegExp[] = [
   /\bgot the\s+\S+/i,
   /\bis ready now\b/i,
   /\bcan proceed\b/i,
+  // Chinese patterns (zh-CN)
+  /(?:已经?)?(?:解决|搞定|处理好|修好|完成|好了|就绪|准备好)(?:了|啦)?|可以(?:继续|开始|推进|进行)|解除(?:了)?(?:阻塞|限制)?|不(?:再)?阻塞了?/,
 ];
 
 function extractBlocker(message: string): SessionEvent[] {
