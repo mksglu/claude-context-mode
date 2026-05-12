@@ -1,7 +1,7 @@
 /**
  * OpenClaw MCP tool registry.
  *
- * Catalogs the 11 ctx_* tools that OpenClaw plugin must register via
+ * Catalogs the 12 ctx_* tools that OpenClaw plugin must register via
  * api.registerTool(...) so the routing block (which nudges agents toward
  * ctx_execute, ctx_search, etc.) actually has tools to call. Without this,
  * Phase 7 audit (v1.0.107-adapter-openclaw.json) flagged severity=CRITICAL —
@@ -19,7 +19,7 @@
  * ctx-upgrade slash commands. This keeps the plugin's blast radius minimal:
  * we don't re-export the entire MCP server stack inside OpenClaw's process.
  *
- * The 11 tools mirror src/server.ts registerTool calls (lines 897, 1226, 1371,
+ * The 12 tools mirror src/server.ts registerTool calls (lines 897, 1226, 1371,
  * 1497, 2034, 2256, 2440, 2501, 2592, 2712, 2808).
  */
 
@@ -220,6 +220,21 @@ export const OPENCLAW_TOOL_DEFS: readonly OpenClawToolDef[] = [
       additionalProperties: true,
     },
     execute: cliRedirect("ctx_insight"),
+  },
+  {
+    name: "ctx_preload",
+    description: "Task-aware file preloader. Ranks project files by relevance to a task description using keyword match, git recency, and Boltzmann allocation. Returns paths + signatures.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "Task description" },
+        path: { type: "string", description: "Project root (default: cwd)" },
+        maxFiles: { type: "number", description: "Max files to return (default: 8)" },
+        budget: { type: "number", description: "Token budget for signatures (default: 4000)" },
+      },
+      required: ["task"],
+    },
+    execute: cliRedirect("ctx_preload"),
   },
 ];
 

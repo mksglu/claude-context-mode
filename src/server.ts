@@ -3057,6 +3057,174 @@ server.registerTool(
   },
 );
 
+// ── ctx_preload: task-aware file discovery with Boltzmann allocation ─────────
+server.registerTool(
+  "ctx_preload",
+  {
+    title: "Preload Relevant Files",
+    description:
+      "Task-aware file preloader. Given a task description, discovers project files, " +
+      "ranks them by relevance (keyword match + git recency + structural heuristics), " +
+      "and returns top files with key signatures (function/class/type declarations). " +
+      "Uses Boltzmann allocation to distribute attention budget across candidates.\n\n" +
+      "Use BEFORE starting implementation to identify which files matter for the task. " +
+      "Returns file paths + signatures — does NOT read full content into context.\n\n" +
+      "When reporting results — terse like caveman. Technical substance exact. Only fluff die. " +
+      "Pattern: [thing] [action] [reason]. [next step].",
+    inputSchema: z.object({
+      task: z.string().describe("Task description (e.g. 'fix auth bug in login flow', 'add caching to API endpoints')"),
+      path: z.string().optional().describe("Project root path. Defaults to cwd."),
+      maxFiles: z.coerce.number().optional().describe("Max files to return (default: 8)"),
+      budget: z.coerce.number().optional().describe("Total token budget for signatures (default: 4000)"),
+    }),
+  },
+  async ({ task, path: projectPath, maxFiles: userMax, budget: userBudget }) => {
+    const MAX_FILES = userMax || 8;
+    const SIGNATURE_BUDGET = 10;
+    const TOTAL_BUDGET = userBudget || 4000;
+
+    if (!task || !task.trim()) {
+      return trackResponse("ctx_preload", {
+        content: [{ type: "text" as const, text: "ERROR: ctx_preload requires a task description" }],
+      });
+    }
+
+    const root = projectPath ? resolve(projectPath) : process.cwd();
+    if (!existsSync(root)) {
+      return trackResponse("ctx_preload", {
+        content: [{ type: "text" as const, text: `ERROR: path does not exist: ${root}` }],
+      });
+    }
+
+    // Extract keywords from task
+    const stopWords = new Set([
+      "the", "a", "an", "in", "on", "at", "to", "for", "of", "with", "and", "or",
+      "is", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does",
+      "did", "will", "would", "could", "should", "may", "might", "it", "its", "this",
+      "that", "these", "those", "i", "we", "you", "fix", "add", "update", "change",
+      "make", "implement", "create", "build", "from", "into", "need", "must",
+    ]);
+    const keywords = task
+      .split(/[^a-zA-Z0-9_-]+/)
+      .filter(w => w.length >= 2)
+      .map(w => w.toLowerCase())
+      .filter(w => !stopWords.has(w));
+
+    // Discover source files
+    const IGNORED = new Set(["node_modules", ".git", "target", "__pycache__", ".venv", "dist", "build", ".next", "vendor", "coverage"]);
+    const SOURCE_EXTS = new Set(["ts", "tsx", "js", "jsx", "py", "rs", "go", "rb", "java", "kt", "swift", "c", "cpp", "h", "cs", "ex", "zig", "lua", "sh", "toml", "yaml", "yml", "md"]);
+
+    const files: string[] = [];
+    function walk(dir: string, depth: number) {
+      if (depth > 6) return;
+      let entries: string[];
+      try { entries = readdirSync(dir); } catch { return; }
+      for (const name of entries) {
+        if (name.startsWith(".") && name !== ".env") continue;
+        const full = join(dir, name);
+        try {
+          const stat = statSync(full);
+          if (stat.isDirectory()) {
+            if (!IGNORED.has(name)) walk(full, depth + 1);
+          } else {
+            const ext = name.split(".").pop() || "";
+            if (SOURCE_EXTS.has(ext)) files.push(full);
+          }
+        } catch { continue; }
+      }
+    }
+    walk(root, 0);
+
+    // Git recency: files touched in last 20 commits get bonus
+    const recentFiles = new Map<string, number>();
+    try {
+      const gitOut = execSync("git log --pretty=format: --name-only -20", {
+        cwd: root, timeout: 5000, stdio: ["pipe", "pipe", "pipe"],
+      }).toString();
+      let weight = 2.0;
+      for (const line of gitOut.split("\n")) {
+        const trimmed = line.trim().toLowerCase();
+        if (!trimmed) { weight *= 0.9; continue; }
+        if (!recentFiles.has(trimmed)) recentFiles.set(trimmed, weight);
+      }
+    } catch { /* not a git repo or git not available */ }
+
+    // Score files
+    interface ScoredFile { path: string; relPath: string; score: number; }
+    const scored: ScoredFile[] = files.map(f => {
+      const rel = f.slice(root.length + 1).toLowerCase();
+      let score = 0;
+      for (const kw of keywords) {
+        if (rel.includes(kw)) score += 3.0;
+      }
+      const recency = recentFiles.get(rel);
+      if (recency) score += recency;
+      const ext = f.split(".").pop() || "";
+      if (["ts", "tsx", "rs", "py", "go"].includes(ext)) score += 0.5;
+      const basename = f.split("/").pop() || "";
+      if (basename.includes("test") || basename.includes("spec")) {
+        if (!keywords.some(k => k.includes("test"))) score -= 0.5;
+      }
+      if (["mod.rs", "index.ts", "index.tsx", "__init__.py", "main.rs", "main.ts"].includes(basename)) {
+        score += 0.3;
+      }
+      return { path: f, relPath: f.slice(root.length + 1), score };
+    }).filter(s => s.score > 0);
+
+    scored.sort((a, b) => b.score - a.score);
+
+    // Boltzmann allocation
+    const candidates = scored.slice(0, MAX_FILES * 3);
+    if (candidates.length === 0) {
+      return trackResponse("ctx_preload", {
+        content: [{ type: "text" as const, text: `[task: ${task}]\nNo relevant files found. Use ctx_execute with 'find' or ctx_batch_execute to explore.` }],
+      });
+    }
+
+    const temperature = 0.5;
+    const maxScore = Math.max(...candidates.map(c => c.score));
+    const weights = candidates.map(c => Math.exp((c.score - maxScore) / temperature));
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    const normalized = weights.map(w => w / totalWeight);
+
+    // Select top-N by weight
+    const indexed = normalized.map((w, i) => ({ i, w }));
+    indexed.sort((a, b) => b.w - a.w);
+    const selected = indexed.slice(0, MAX_FILES).map(x => candidates[x.i]);
+
+    // Extract signatures from selected files
+    const sigRe = /^\s*(pub\s+)?(fn|func|def|function|class|struct|trait|impl|interface|type|export\s+(function|class|type|interface|const|default))\s+(\w+)/;
+
+    const parts: string[] = [];
+    parts.push(`[task: ${task}]`);
+    parts.push(`[files: ${selected.length}/${files.length} · keywords: ${keywords.join(", ")}]`);
+    parts.push("");
+
+    for (const sf of selected) {
+      let content: string;
+      try { content = readFileSync(sf.path, "utf-8"); } catch { continue; }
+
+      const sigs = content.split("\n")
+        .filter(line => sigRe.test(line))
+        .map(line => line.trim())
+        .slice(0, SIGNATURE_BUDGET);
+
+      parts.push(`## ${sf.relPath} (score: ${sf.score.toFixed(2)})`);
+      if (sigs.length === 0) {
+        parts.push("  (no signatures)");
+      } else {
+        for (const sig of sigs) parts.push(`  ${sig}`);
+      }
+      parts.push("");
+    }
+
+    const result = parts.join("\n");
+    return trackResponse("ctx_preload", {
+      content: [{ type: "text" as const, text: result }],
+    });
+  },
+);
+
 // ─────────────────────────────────────────────────────────
 // Server startup
 // ─────────────────────────────────────────────────────────
