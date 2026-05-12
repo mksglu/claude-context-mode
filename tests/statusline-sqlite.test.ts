@@ -43,6 +43,13 @@ const _hashCanonical = (p: string) => createHash("sha256").update(
 
 const STATUSLINE = resolve(process.cwd(), "bin", "statusline.mjs");
 
+// Statusline subprocess on windows-latest runner walks git worktrees and reads
+// SessionDB analytics with a 1000-row seed; observed p99 ≈ 265s under runner
+// load. Mac/Linux finish in <2s — keep the budget tight off-Windows so real
+// regressions still trip the test.
+const STATUSLINE_SQLITE_TIMEOUT_MS =
+  process.platform === "win32" ? 300_000 : 30_000;
+
 // Isolate the spawned statusline's env so getMultiAdapterLifetimeStats()
 // (and OpenCode's APPDATA/XDG_CONFIG_HOME paths on Windows) cannot leak data
 // from concurrently-running tests or the developer's real adapter dirs into
@@ -172,10 +179,9 @@ describe("statusline.mjs — SessionDB-backed reads", () => {
   // SLICE 1: lifetime $ comes from SessionDB, not from sidecar JSON.
   // Seed a SessionDB with substantial event data → statusline must render
   // a lifetime $ derived from those bytes (NOT $0.00, NOT a stale sidecar).
-  // 60s timeout: Windows fork+exec + 1000-row SQLite seed + statusline subprocess
-  // (which walks git worktrees + reads SessionDB analytics) regularly takes >30s
-  // on the windows-latest runner. Mac/Linux finish in <2s.
-  test("renders lifetime $ from SessionDB session_events bytes", { timeout: 60_000 }, () => {
+  // Per-platform timeout via STATUSLINE_SQLITE_TIMEOUT_MS — Windows runner is
+  // ~130× slower than mac/linux on this fork+exec+SQLite-seed pipeline.
+  test("renders lifetime $ from SessionDB session_events bytes", { timeout: STATUSLINE_SQLITE_TIMEOUT_MS }, () => {
     // 1000 events × ~256 bytes data = ~256KB → ~64K tokens → ~$0.96
     // Use bytes_avoided so it counts as keptOut savings.
     const events = Array.from({ length: 1000 }, () => ({
