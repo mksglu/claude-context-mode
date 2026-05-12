@@ -23,6 +23,7 @@ import { existsSync, copyFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -111,6 +112,21 @@ function probeNativeInChildProcess(pluginRoot) {
   }
 }
 
+/**
+ * In-process probe — cheap, safe on modern Node (no child spawn, no SIGSEGV path).
+ * Returns true if better-sqlite3 loads against the current ABI.
+ */
+function probeNativeInProcess(pluginRoot) {
+  try {
+    const req = createRequire(resolve(pluginRoot, "package.json"));
+    const Database = req("better-sqlite3");
+    new Database(":memory:").close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function ensureNativeCompat(pluginRoot) {
   // Bun ships bun:sqlite — no native addon needed
   if (typeof globalThis.Bun !== "undefined") return;
@@ -141,9 +157,12 @@ export function ensureNativeCompat(pluginRoot) {
     }
 
     if (skipProbe) {
-      // On modern Node, the current ABI cache is the compatibility marker.
-      // Without it, rebuild even when the active binary exists: it may be stale
-      // from a previous Node ABI and cannot be probed safely here.
+      // Seed the ABI cache from a working binary before falling back to rebuild;
+      // otherwise a missing cache forces npm rebuild on every hook invocation.
+      if (existsSync(binaryPath) && probeNativeInProcess(pluginRoot)) {
+        copyFileSync(binaryPath, abiCachePath);
+        return;
+      }
       execSync(`${process.platform === "win32" ? "npm.cmd" : "npm"} rebuild better-sqlite3 --ignore-scripts=false`, {
         cwd: pluginRoot,
         stdio: "pipe",
