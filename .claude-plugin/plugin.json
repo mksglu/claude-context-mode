@@ -21,9 +21,9 @@
   ],
   "mcpServers": {
     "context-mode": {
-      "command": "node",
+      "command": "C:/nvm4w/nodejs/node.exe",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/start.mjs"
+        "C:/Users/jfrei/code/context-mode/start.mjs"
       ]
     }
   },

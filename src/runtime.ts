@@ -94,11 +94,14 @@ function runnableExists(cmd: string): boolean {
   // fallthrough can be slow). On POSIX, 1500ms is plenty for a real binary
   // and keeps cold detection of python3 → python → py under ~5s total (#454).
   try {
-    execFileSync(cmd, ["--version"], {
-      shell: isWindows,
-      stdio: "pipe",
-      timeout: isWindows ? 5000 : 1500,
-    });
+    // DEP0190 fix: avoid args array with shell:true on Windows.
+    // Use execSync with a command string when shell is required;
+    // keep execFileSync (no shell) on POSIX.
+    if (isWindows) {
+      execSync(`"${cmd}" --version`, { stdio: "pipe", timeout: 5000 });
+    } else {
+      execFileSync(cmd, ["--version"], { stdio: "pipe", timeout: 1500 });
+    }
     return true;
   } catch {
     return false;
@@ -184,14 +187,27 @@ function resolveWindowsBash(): string | null {
 
 function getVersion(cmd: string, args: string[] = ["--version"]): string {
   try {
-    return execFileSync(cmd, args, {
-      encoding: "utf-8",
-      shell: process.platform === "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 5000,
-    })
-      .trim()
-      .split(/\r?\n/)[0];
+    // DEP0190 fix: avoid args array with shell:true on Windows.
+    if (process.platform === "win32") {
+      const cmdStr = [cmd, ...args]
+        .map(a => /\s/.test(a) ? JSON.stringify(a) : a)
+        .join(" ");
+      return execSync(cmdStr, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      })
+        .trim()
+        .split(/\r?\n/)[0];
+    } else {
+      return execFileSync(cmd, args, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      })
+        .trim()
+        .split(/\r?\n/)[0];
+    }
   } catch {
     return "unknown";
   }

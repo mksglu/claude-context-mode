@@ -313,11 +313,11 @@ export class PolyglotExecutor {
           : cmd.slice(1);
       }
 
-      const proc = spawn(spawnCmd, spawnArgs, {
+      // Common options shared by both spawn variants below.
+      const commonOpts = {
         cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
         env: this.#buildSafeEnv(sandboxTmpDir),
-        shell: needsShell,
         // On Unix, create a new process group so killTree can kill all children
         detached: !isWin,
         // Hide the spawned-process console window on Windows. Without this,
@@ -325,7 +325,22 @@ export class PolyglotExecutor {
         // leaving the MCP response empty and popping a Git Bash terminal over
         // the user's IDE. Issue #384.
         ...buildSpawnOptions(process.platform),
-      });
+      };
+
+      // DEP0190 fix: when shell is true (Windows .cmd/.bat shims), pass a
+      // single command string instead of cmd + args array. Node.js warns
+      // that args are unsafely concatenated when shell:true is combined with
+      // the args-array form of spawn(). Colllapsing to a string avoids the
+      // warning while preserving the same shell behavior.
+      let proc: ReturnType<typeof spawn>;
+      if (needsShell) {
+        const fullCmd = [spawnCmd, ...spawnArgs]
+          .map(a => /\s/.test(a) ? JSON.stringify(a) : a)
+          .join(" ");
+        proc = spawn(fullCmd, [], { ...commonOpts, shell: true });
+      } else {
+        proc = spawn(spawnCmd, spawnArgs, { ...commonOpts, shell: false });
+      }
 
       let timedOut = false;
       let resolved = false;

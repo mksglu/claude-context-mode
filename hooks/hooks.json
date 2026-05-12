@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/posttooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/posttooluse.mjs\""
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/precompact.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/precompact.mjs\""
           }
         ]
       }
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -65,7 +65,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -83,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       },
@@ -92,7 +92,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/pretooluse.mjs\""
           }
         ]
       }
@@ -103,7 +103,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/userpromptsubmit.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/userpromptsubmit.mjs\""
           }
         ]
       }
@@ -114,7 +114,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\""
+            "command": "\"C:/nvm4w/nodejs/node.exe\" \"C:/Users/jfrei/code/context-mode/hooks/sessionstart.mjs\""
           }
         ]
       }
