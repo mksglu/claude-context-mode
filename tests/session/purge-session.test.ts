@@ -445,3 +445,119 @@ describe("purgeSession — slice 9: backward-compatible labels", () => {
     for (const [, n] of Object.entries(counts)) expect(n).toBe(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// Issue #520 — scoped purge slices
+// ─────────────────────────────────────────────────────────
+
+// Slice 1 — explicit scope discipline. Either provide sessionId, or
+// declare scope:"project". Bare scope:"session" with no sessionId is
+// a programmer bug and must throw immediately.
+describe("purgeSession — issue #520 slice 1: requires sessionId for scope:'session'", () => {
+  it("throws TypeError when scope:'session' is passed without sessionId", () => {
+    const projectDir = makeRepo("i520s1");
+    const sessionsDir = makeTmpDir("sess-i520s1");
+    expect(() => purgeSession({
+      projectDir,
+      sessionsDir,
+      scope: "session",
+    })).toThrow(TypeError);
+  });
+});
+
+// Slice 3 — scoped wipe deletes target session's FTS5 chunks but
+// preserves chunks tagged with other session_ids. The chunks table
+// has a `session_id UNINDEXED` column — see src/store.ts:543. Today
+// nothing populates it (always NULL) but the SQL contract must be
+// in place so a future per-session-tagged indexing path is correct
+// from day one.
+describe("purgeSession — issue #520 slice 3: per-session FTS5 chunk wipe", () => {
+  it("deletes chunks where session_id = sessionId; sibling rows preserved", async () => {
+    const { ContentStore } = await import("../../src/store.js");
+    const projectDir = makeRepo("i520s3");
+    const sessionsDir = makeTmpDir("sess-i520s3");
+    const contentDir = makeTmpDir("content-i520s3");
+    const storePath = join(contentDir, "ftshash.db");
+
+    // Seed FTS5 store with two sessions worth of chunks. We open
+    // ContentStore (which creates the schema) then INSERT chunks
+    // tagged with session_id directly via raw SQL — the public
+    // index() path doesn't tag chunks per-session today.
+    const store = new ContentStore(storePath);
+    const rawDb = (store as unknown as { ['#db']?: unknown }); // cannot reach private; use a side-channel
+    // Instead re-open with better-sqlite3 directly after closing the store.
+    store.close();
+
+    const Database = (await import("better-sqlite3")).default;
+    const seedDb = new Database(storePath);
+    // sources row needed for FK semantics; chunks references source_id
+    const srcId = (seedDb.prepare(
+      "INSERT INTO sources (label, chunk_count, code_chunk_count) VALUES ('test', 0, 0) RETURNING id"
+    ).get() as { id: number }).id;
+    const ins = seedDb.prepare(
+      "INSERT INTO chunks (title, content, source_id, content_type, source_category, session_id, event_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    const insT = seedDb.prepare(
+      "INSERT INTO chunks_trigram (title, content, source_id, content_type, source_category, session_id, event_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    const now = new Date().toISOString();
+    ins.run("scratch-1", "alpha", srcId, "code", null, "scratch", null, now);
+    ins.run("scratch-2", "beta",  srcId, "code", null, "scratch", null, now);
+    ins.run("main-1",    "gamma", srcId, "code", null, "main",    null, now);
+    insT.run("scratch-1", "alpha", srcId, "code", null, "scratch", null, now);
+    insT.run("main-1",    "gamma", srcId, "code", null, "main",    null, now);
+    seedDb.close();
+
+    // Sanity: confirm rows are present BEFORE the purge
+    const checkBefore = new Database(storePath);
+    expect((checkBefore.prepare("SELECT COUNT(*) AS c FROM chunks").get() as { c: number }).c).toBe(3);
+    checkBefore.close();
+
+    purgeSession({ projectDir, sessionsDir, scope: "session", sessionId: "scratch", storePath });
+
+    const checkAfter = new Database(storePath);
+    const remaining = checkAfter.prepare(
+      "SELECT title, session_id FROM chunks ORDER BY title"
+    ).all() as Array<{ title: string; session_id: string | null }>;
+    const remainingTri = checkAfter.prepare(
+      "SELECT title, session_id FROM chunks_trigram ORDER BY title"
+    ).all() as Array<{ title: string; session_id: string | null }>;
+    checkAfter.close();
+
+    expect(remaining).toEqual([{ title: "main-1", session_id: "main" }]);
+    expect(remainingTri).toEqual([{ title: "main-1", session_id: "main" }]);
+    // FTS5 store file MUST still exist
+    expect(existsSync(storePath)).toBe(true);
+  });
+});
+
+// Slice 2 — scoped wipe deletes target session's session_events rows
+// but preserves rows for OTHER sessions in the same project DB.
+describe("purgeSession — issue #520 slice 2: per-session DB row wipe", () => {
+  it("wipes target session_events rows; sibling session preserved", async () => {
+    const { SessionDB } = await import("../../src/session/db.js");
+    const projectDir = makeRepo("i520s2");
+    const sessionsDir = makeTmpDir("sess-i520s2");
+    const suffix = getWorktreeSuffix(projectDir);
+    const canonicalHash = hashProjectDirCanonical(projectDir);
+    const dbPath = join(sessionsDir, `${canonicalHash}${suffix}.db`);
+
+    // Seed two sessions into the project DB. Use distinct data_hash values
+    // to bypass the SessionDB dedup window (same type+hash collapses).
+    const seed = new SessionDB({ dbPath });
+    seed.insertEvent("scratch", { type: "file", category: "file", data: "/scratch/x.ts", priority: 2 }, "PreToolUse");
+    seed.insertEvent("scratch", { type: "file", category: "file", data: "/scratch/y.ts", priority: 2 }, "PreToolUse");
+    seed.insertEvent("main",    { type: "file", category: "file", data: "/main/z.ts",    priority: 2 }, "PreToolUse");
+    seed.close(); // close() releases handle but preserves the file
+
+    purgeSession({ projectDir, sessionsDir, scope: "session", sessionId: "scratch" });
+
+    // Reopen and verify
+    const verify = new SessionDB({ dbPath });
+    expect(verify.getEvents("scratch")).toHaveLength(0);
+    expect(verify.getEvents("main")).toHaveLength(1);
+    verify.close();
+    // DB file MUST still exist — scoped purge does not wipe the file
+    expect(existsSync(dbPath)).toBe(true);
+  });
+});

@@ -1,0 +1,7 @@
+# Files in this directory that are NOT skills.
+# Pi's skill loader (@mariozechner/pi-coding-agent) reads `.ignore`, `.gitignore`,
+# and `.fdignore` while scanning skill directories with includeRootFiles=true,
+# and skips matching entries. Keeping this list in-package guarantees Pi will not
+# attempt to parse non-skill markdown as a skill — even if a stale copy of the
+# file ever slips into a published tarball (see issue #496 / v1.0.120 regression).
+UPSTREAM-CREDITS.md

@@ -14,7 +14,17 @@ const targets = [
   ".claude-plugin/marketplace.json",
   ".cursor-plugin/plugin.json",
   ".codex-plugin/plugin.json",
-  ".codex-plugin/marketplace.json",
+  // .codex-plugin/marketplace.json is intentionally absent — Codex CLI
+  // reads marketplaces from .agents/plugins/marketplace.json (or
+  // .claude-plugin/marketplace.json for Claude-compat). See
+  // refs/platforms/codex/codex-rs/core-plugins/src/marketplace.rs:21
+  // (MARKETPLACE_MANIFEST_RELATIVE_PATHS).
+  //
+  // .agents/plugins/marketplace.json has no top-level `version` field
+  // (per the Codex serde schema at marketplace.rs:694-700 — only `name`,
+  // `interface`, and `plugins[]`), so it doesn't need version-syncing.
+  // Per-plugin `version` lives in .codex-plugin/plugin.json which is
+  // already in this list.
   ".openclaw-plugin/openclaw.plugin.json",
   ".openclaw-plugin/package.json",
   "openclaw.plugin.json",

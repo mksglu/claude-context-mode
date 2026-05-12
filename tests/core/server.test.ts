@@ -2471,6 +2471,11 @@ describe("ctx_purge deleted array is honest", () => {
       expect(push[1]).toBe("session stats");
     }
 
+    // Issue #520: scoped per-session purge must NOT push "session stats"
+    // (stats are project-scoped). The push remains the only string-literal
+    // push, but it must be gated on scope === "project".
+    expect(purgeBody).toMatch(/scope\s*===\s*["']project["']/);
+
     const moduleSrc = readFileSync(
       resolve(__dirname, "../../src/session/purge.ts"),
       "utf-8",
@@ -2488,6 +2493,68 @@ describe("ctx_purge deleted array is honest", () => {
         || /if\s*\(\s*_store\s*\)/.test(context);
       expect(isGuarded, `"${push[1]}" in purge.ts must be guarded by a success check`).toBe(true);
     }
+  });
+});
+
+// ─── Issue #520: scoped ctx_purge handler/schema contract ──────────────────
+//
+// The HANDLER (not the deep module) owns the schema, the stats reset, and
+// the back-compat deprecation warning. The deep module stays pure and
+// is covered by tests/session/purge-session.test.ts. These tests assert
+// the additive contract WITHOUT booting the MCP server.
+
+describe("ctx_purge scoped handler (issue #520)", () => {
+  const serverSrc = readFileSync(
+    resolve(__dirname, "../../src/server.ts"),
+    "utf-8",
+  );
+  const purgeBody = serverSrc.match(
+    /server\.registerTool\(\s*"ctx_purge"[\s\S]*?^\);/m,
+  )![0];
+
+  // Slice 4 — stats file & in-memory reset gated on scope === "project".
+  // A scoped per-session purge must leave the persisted stats file alone
+  // (other sessions in the project still own those bytes).
+  test("slice 4: persisted stats file unlink is gated on scope === 'project'", () => {
+    const statsBlockMatch = purgeBody.match(/getStatsFilePath\(\)[\s\S]{0,300}/);
+    expect(statsBlockMatch, "stats unlink block must exist in handler").not.toBeNull();
+    // The whole stats reset (in-memory + file unlink) must live under a
+    // `if (... === "project")` branch — verified by ensuring the stats
+    // unlink is NOT at the top level of the handler.
+    const statsIdx = purgeBody.indexOf("getStatsFilePath()");
+    const beforeStats = purgeBody.slice(0, statsIdx);
+    expect(beforeStats).toMatch(/scope\s*===\s*["']project["']/);
+  });
+
+  // Slice 5 — back-compat: bare {confirm:true} keeps verbatim behavior.
+  // The handler must map missing scope/sessionId → scope:"project" and
+  // delegate to purgeSession exactly as before. The schema must accept
+  // bare {confirm:true} as it always did.
+  test("slice 5: bare {confirm:true} handler still calls purgeSession with project scope", () => {
+    // Either explicit scope:"project" is passed, OR the deep module's
+    // own default-resolution kicks in. The handler MUST NOT throw on
+    // bare {confirm:true}.
+    expect(purgeBody).toMatch(/purgeSession\(/);
+    expect(purgeBody).not.toMatch(/throw new (?:Error|TypeError)\([^)]*sessionId/);
+  });
+
+  // Slice 6 — schema rejects {confirm, sessionId, scope:"project"} (ambiguous).
+  test("slice 6: schema refuses ambiguous {sessionId + scope:'project'}", () => {
+    // Implemented via z.object(...).refine(...) on the inputSchema.
+    expect(purgeBody).toMatch(/\.refine\(/);
+  });
+
+  // Slice 7 — schema accepts {confirm:true, sessionId:"<uuid>"}.
+  test("slice 7: schema declares optional sessionId and scope", () => {
+    expect(purgeBody).toMatch(/sessionId:\s*z\.string\(\)\.optional\(\)/);
+    expect(purgeBody).toMatch(/scope:\s*z\.enum\(\[["']session["'],\s*["']project["']\]\)\.optional\(\)/);
+  });
+
+  // Slice 8 — bare {confirm:true} (no sessionId, no scope) emits a
+  // deprecation warning to stderr exactly once. The warn lives in the
+  // handler — not the deep module — to keep purge.ts pure.
+  test("slice 8: handler emits deprecation warning when scope+sessionId both omitted", () => {
+    expect(purgeBody).toMatch(/console\.warn\([^)]*deprecat/i);
   });
 });
 

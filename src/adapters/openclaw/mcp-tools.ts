@@ -203,7 +203,17 @@ export const OPENCLAW_TOOL_DEFS: readonly OpenClawToolDef[] = [
   },
   {
     name: "ctx_purge",
-    description: "Permanently delete all indexed content and reset session stats. Destructive.",
+    description:
+      "DESTRUCTIVE — permanently delete indexed content. CANNOT be undone.\n\n" +
+      "MUST specify exactly ONE scope:\n" +
+      "  • {confirm:true, sessionId:\"<uuid>\"}  → wipes ONLY that session's events + chunks; preserves stats and other sessions\n" +
+      "  • {confirm:true, scope:\"project\"}      → wipes ENTIRE project: FTS5 KB + every session DB + stats file\n\n" +
+      "REFUSED:\n" +
+      "  • confirm:false                              → 'purge cancelled'\n" +
+      "  • sessionId AND scope:\"project\" together     → 'ambiguous — pick one'\n" +
+      "  • scope:\"session\" without sessionId          → throws\n" +
+      "  • bare {confirm:true}                        → DEPRECATED: maps to scope:\"project\" with stderr warning\n\n" +
+      "Use sessionId for clearing one conversation. Use scope:\"project\" only when the user explicitly resets everything. NEVER call with bare {confirm:true}.",
     parameters: {
       type: "object",
       properties: {},

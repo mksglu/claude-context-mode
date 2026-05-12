@@ -34,8 +34,17 @@ describe("scripts/version-sync.mjs targets", () => {
     expect(SCRIPT_SRC).toContain('".codex-plugin/plugin.json"');
   });
 
-  it("includes .codex-plugin/marketplace.json", () => {
-    expect(SCRIPT_SRC).toContain('".codex-plugin/marketplace.json"');
+  it("does NOT include .codex-plugin/marketplace.json (Codex never reads that path)", () => {
+    // Codex CLI's MARKETPLACE_MANIFEST_RELATIVE_PATHS constant
+    // (refs/platforms/codex/codex-rs/core-plugins/src/marketplace.rs:21)
+    // lists only `.agents/plugins/marketplace.json` and `.claude-plugin/
+    // marketplace.json`. Shipping `.codex-plugin/marketplace.json` is dead
+    // weight and historically misled contributors into editing the wrong
+    // file. The actual Codex marketplace at `.agents/plugins/marketplace.json`
+    // has no top-level `version` field per the Codex serde schema
+    // (marketplace.rs:694-700 — only `name`, `interface`, `plugins[]`), so
+    // version-sync doesn't need to touch it.
+    expect(SCRIPT_SRC).not.toContain('"\.codex-plugin/marketplace.json"');
   });
 });
 
@@ -44,8 +53,8 @@ describe("package.json `version` script `git add` list", () => {
     expect(PKG_JSON.scripts.version).toContain(".codex-plugin/plugin.json");
   });
 
-  it("includes .codex-plugin/marketplace.json", () => {
-    expect(PKG_JSON.scripts.version).toContain(".codex-plugin/marketplace.json");
+  it("does NOT include .codex-plugin/marketplace.json (file is removed — Codex never reads it)", () => {
+    expect(PKG_JSON.scripts.version).not.toContain(".codex-plugin/marketplace.json");
   });
 });
 
@@ -62,7 +71,11 @@ describe("shipped manifests are in lockstep with package.json", () => {
     ".claude-plugin/marketplace.json",
     ".cursor-plugin/plugin.json",
     ".codex-plugin/plugin.json",
-    ".codex-plugin/marketplace.json",
+    // .codex-plugin/marketplace.json intentionally removed — Codex CLI
+    // never reads that path. See marketplace.rs:21 in
+    // refs/platforms/codex/codex-rs/core-plugins/. The Codex-facing
+    // marketplace at .agents/plugins/marketplace.json has no version field
+    // per the Rust serde schema, so version-sync doesn't touch it.
     ".openclaw-plugin/openclaw.plugin.json",
     ".openclaw-plugin/package.json",
     "openclaw.plugin.json",
@@ -100,12 +113,13 @@ describe("version-sync end-to-end", () => {
       for (const d of dirs) mkdirSync(join(scratch, d), { recursive: true });
 
       // Copy the actual manifests (drives a real, not synthetic, assertion).
+      // .codex-plugin/marketplace.json intentionally absent — Codex never
+      // reads that path; see marketplace.rs:21.
       const manifests = [
         ".claude-plugin/plugin.json",
         ".claude-plugin/marketplace.json",
         ".cursor-plugin/plugin.json",
         ".codex-plugin/plugin.json",
-        ".codex-plugin/marketplace.json",
         ".openclaw-plugin/openclaw.plugin.json",
         ".openclaw-plugin/package.json",
         "openclaw.plugin.json",

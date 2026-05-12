@@ -16,6 +16,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** @type {Array<{ name: string; pattern: RegExp; reason: string }>} */
 const FORBIDDEN_PATTERNS = [
@@ -89,9 +90,15 @@ function main() {
 }
 
 // Run only when invoked directly, not when imported.
+// On Windows, `import.meta.url` is `file:///C:/...` (forward slashes),
+// while `process.argv[1]` is `C:\...` (backslashes). A literal-string
+// `file://${argv[1]}` template never matches, so the prior comparison
+// silently skipped main() on Windows and the script exited 0 with empty
+// stdout — making the assert-bundle CI guardrail vacuous. Use
+// `pathToFileURL` so the entry-point comparison is OS-agnostic.
 const isDirectInvocation =
-  import.meta.url === `file://${process.argv[1]}` ||
-  import.meta.url.endsWith(process.argv[1] ?? "");
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isDirectInvocation) {
   main();
 }
