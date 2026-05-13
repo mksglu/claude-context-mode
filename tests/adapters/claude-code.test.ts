@@ -819,6 +819,34 @@ describe("ClaudeCodeAdapter", () => {
       expect(matchers).toEqual([...PRE_TOOL_USE_MATCHERS]);
     });
 
+    it("generateHookConfig quotes pluginRoot so paths with spaces round-trip through extractHookScriptPath", async () => {
+      // Regression: on Windows the user folder commonly contains spaces
+      // (e.g. "C:\\Users\\High Ground Services\\..."). Without quotes around
+      // ${pluginRoot} the doctor's extractHookScriptPath regex falls to its
+      // \S+\.mjs branch and grabs only the path tail after the last space,
+      // producing a doubled-path FAIL when resolve(pluginRoot, tail) runs.
+      const { extractHookScriptPath } = await import("../../src/util/hook-config.js");
+      const pluginRoot = "C:\\Users\\High Ground Services\\AppData\\Roaming\\npm\\node_modules\\context-mode";
+      const config = adapter.generateHookConfig(pluginRoot) as Record<
+        string,
+        Array<{ hooks: Array<{ command: string }> }>
+      >;
+      const allCommands = Object.values(config)
+        .flatMap((entries) => entries)
+        .flatMap((entry) => entry.hooks)
+        .map((hook) => hook.command);
+
+      expect(allCommands.length).toBeGreaterThan(0);
+      for (const command of allCommands) {
+        const extracted = extractHookScriptPath(command);
+        // Extracted path must be the full absolute path (still inside
+        // pluginRoot) — never a relative tail like "Services\\AppData\\...".
+        expect(extracted, `command did not yield extractable path: ${command}`).toBeTruthy();
+        expect(extracted!.startsWith(pluginRoot)).toBe(true);
+        expect(extracted!.endsWith(".mjs")).toBe(true);
+      }
+    });
+
     it("hooks/hooks.json PreToolUse matchers match PRE_TOOL_USE_MATCHERS (#529 drift guard)", () => {
       const repoRoot = resolve(__dirname, "..", "..");
       const hooksJsonPath = join(repoRoot, "hooks", "hooks.json");

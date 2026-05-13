@@ -106,7 +106,13 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
   }
 
   generateHookConfig(pluginRoot: string): HookRegistration {
-    const preToolUseCommand = `node ${pluginRoot}/hooks/pretooluse.mjs`;
+    // Paths must be double-quoted so that hosts (or our own diagnostic
+    // regex) parse them correctly when pluginRoot contains spaces — common
+    // on Windows where the user folder is e.g. "C:\Users\First Last\...".
+    // Without quotes, extractHookScriptPath's `\S+\.mjs` fallback grabs
+    // only the tail after the last space, producing a doubled-path FAIL
+    // in `ctx doctor`. Matches the quoting style used in hooks/hooks.json.
+    const preToolUseCommand = `node "${pluginRoot}/hooks/pretooluse.mjs"`;
     const preToolUseMatchers = [...PRE_TOOL_USE_MATCHERS];
 
     return {
@@ -120,7 +126,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/posttooluse.mjs`,
+              command: `node "${pluginRoot}/hooks/posttooluse.mjs"`,
             },
           ],
         },
@@ -131,7 +137,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/precompact.mjs`,
+              command: `node "${pluginRoot}/hooks/precompact.mjs"`,
             },
           ],
         },
@@ -142,7 +148,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/userpromptsubmit.mjs`,
+              command: `node "${pluginRoot}/hooks/userpromptsubmit.mjs"`,
             },
           ],
         },
@@ -153,7 +159,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
           hooks: [
             {
               type: "command",
-              command: `node ${pluginRoot}/hooks/sessionstart.mjs`,
+              command: `node "${pluginRoot}/hooks/sessionstart.mjs"`,
             },
           ],
         },
