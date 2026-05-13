@@ -32,7 +32,7 @@ Runs code in an isolated subprocess. Only stdout enters the context window.
 ```
 execute({
   language: "javascript" | "typescript" | "python" | "shell" | "ruby" |
-            "go" | "rust" | "php" | "perl" | "r" | "elixir",
+            "go" | "rust" | "php" | "perl" | "r" | "elixir" | "csharp",
   code: string,
   timeout?: number,   // default: 30000 ms
   intent?: string     // semantic filter for large output
@@ -41,7 +41,7 @@ execute({
 
 **Parameters:**
 
-- `language` (required): One of 11 supported languages. Determines which runtime executes the code.
+- `language` (required): One of 12 supported languages. Determines which runtime executes the code.
 - `code` (required): Source code to execute. For JS/TS, use `console.log()` to output. For Python, use `print()`. For Shell, use `echo`. Each language has its idiomatic output function.
 - `timeout` (optional): Maximum execution time in milliseconds. Default 30000. Process is killed via SIGTERM on timeout; partial stdout is returned.
 - `intent` (optional): Natural language description of what you are looking for. When provided and output exceeds 5000 bytes (~80-100 lines), the output is auto-indexed into FTS5 and only matching sections are returned via BM25 search instead of raw output.
@@ -72,7 +72,7 @@ Reads a file into a subprocess variable and runs processing code against it. The
 execute_file({
   path: string,       // absolute or relative file path
   language: "javascript" | "typescript" | "python" | "shell" | "ruby" |
-            "go" | "rust" | "php" | "perl" | "r" | "elixir",
+            "go" | "rust" | "php" | "perl" | "r" | "elixir" | "csharp",
   code: string,       // processing code -- FILE_CONTENT variable is available
   timeout?: number,   // default: 30000 ms
   intent?: string     // semantic filter for large output
@@ -394,6 +394,7 @@ score = IDF + lengthBonus + identifierBonus
 | Perl | perl | -- | -- |
 | R | Rscript | r | -- |
 | Elixir | elixir | -- | -- |
+| C# | dotnet-script | -- | -- |
 
 Runtime detection uses `commandExists()` which checks `which` (Unix) or `where` (Windows) for each runtime. Bun is preferred over Node when available.
 
@@ -641,7 +642,7 @@ The main skill providing workflow instructions for the execute/index/search pipe
 ### ctx-doctor
 
 Diagnostic skill that checks:
-- Runtime availability for all 11 languages
+- Runtime availability for all 12 languages
 - FTS5 SQLite extension availability
 - Hook registration and paths
 - Plugin registration in `installed_plugins.json`

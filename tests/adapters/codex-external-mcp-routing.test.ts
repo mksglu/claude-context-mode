@@ -29,24 +29,23 @@ describe("CodexAdapter — external MCP routing (#529)", () => {
     expect(EXTERNAL_MCP_MATCHER_PATTERN.length).toBeGreaterThan(0);
   });
 
-  it("EXTERNAL_MCP_MATCHER_PATTERN matches external MCP tools but not context-mode's own", () => {
-    const re = new RegExp(EXTERNAL_MCP_MATCHER_PATTERN);
+  it("EXTERNAL_MCP_MATCHER_PATTERN is the literal `mcp__` prefix (#547 hotfix)", () => {
+    // v1.0.124 used `mcp__(?!.*context-mode)` — Codex's Rust regex crate
+    // rejects look-around at boot, breaking every Codex user. v1.0.125 drops
+    // the lookaround in favor of a literal that satisfies Codex's
+    // `is_exact_matcher` charset (`[A-Za-z0-9_|]`). The hook BODY filters
+    // context-mode's own MCP tools via `isExternalMcpTool()` in
+    // hooks/core/routing.mjs, so semantics are preserved end-to-end.
+    expect(EXTERNAL_MCP_MATCHER_PATTERN).toBe("mcp__");
+    expect(EXTERNAL_MCP_MATCHER_PATTERN).toMatch(/^[A-Za-z0-9_|]+$/);
 
-    // External MCP namespaces — MUST match
-    expect(re.test("mcp__slack__list_channels")).toBe(true);
-    expect(re.test("mcp__plugin_telegram__list_messages")).toBe(true);
-    expect(re.test("mcp__notion__query_database")).toBe(true);
-    expect(re.test("mcp__claude_ai_Google_Drive__search")).toBe(true);
-
-    // context-mode's own MCP — MUST NOT match
-    expect(re.test("mcp__context-mode__ctx_execute")).toBe(false);
-    expect(re.test("mcp__plugin_context-mode_context-mode__ctx_execute")).toBe(false);
-    expect(re.test("mcp__context-mode__ctx_search")).toBe(false);
-
-    // Non-MCP bare codex tool names — MUST NOT match
-    expect(re.test("local_shell")).toBe(false);
-    expect(re.test("ctx_execute")).toBe(false);
-    expect(re.test("Bash")).toBe(false);
+    // Substring semantics — the prefix is shared by every external MCP
+    // tool name Codex emits (`mcp__<server>__<tool>`).
+    expect("mcp__slack__list_channels".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(true);
+    expect("mcp__plugin_telegram__list_messages".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(true);
+    // Non-MCP bare codex tool names do not start with the prefix.
+    expect("local_shell".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(false);
+    expect("Bash".startsWith(EXTERNAL_MCP_MATCHER_PATTERN)).toBe(false);
   });
 
   it("generateHookConfig PreToolUse matcher includes the external MCP pattern", () => {

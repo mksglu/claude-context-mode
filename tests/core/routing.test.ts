@@ -222,6 +222,15 @@ describe("Bash structurally-bounded allowlist (#463)", () => {
       "rm -v /tmp/foo",
       "rm -rv /tmp/foo",
       "rm --verbose /tmp/foo",
+      // #517 follow-up: `v` not at end of flag bundle must still trip the
+      // carve-out. The old `(?!\s+-[a-zA-Z]*v\b)` required v to be the
+      // LAST alpha char in the bundle, so `-vs`, `-vfr`, `-vfs`, `-sfvr`
+      // silently slipped past and flooded.
+      "cp -rvi /a /b",
+      "cp -vfr /etc /tmp",
+      "mv -vfr /a /b",
+      "rm -rvf /tmp/x",
+      "rm -vfr /tmp/x",
     ];
     for (const command of cases) {
       resetGuidanceThrottle(SID);
@@ -324,7 +333,15 @@ describe("Bash structurally-bounded allowlist: extended commands (#517)", () => 
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
       expect(decision, `expected null for ${command}`).toBeNull();
     }
-    for (const command of ["ln -v a b", "ln -sv a b", "ln --verbose a b"]) {
+    for (const command of [
+      "ln -v a b",
+      "ln -sv a b",
+      "ln --verbose a b",
+      // #517 follow-up: same `v not at end` slip as cp/mv/rm.
+      "ln -vs a b",
+      "ln -vfs a b",
+      "ln -sfvr /src /dst",
+    ]) {
       resetGuidanceThrottle(SID);
       const decision = routePreToolUse("Bash", { command }, "/test", "claude-code", SID);
       expect(decision?.action, `expected nudge for ${command}`).toBe("context");

@@ -570,7 +570,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
    ```json
    {
      "hooks": {
-      "PreToolUse": [{ "matcher": "local_shell|shell|shell_command|exec_command|container.exec|functions\\.exec_command|Bash|Shell|apply_patch|functions\\.apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__.*__ctx_execute|mcp__.*__ctx_execute_file|mcp__.*__ctx_batch_execute|mcp__.*__ctx_fetch_and_index|mcp__.*__ctx_search|mcp__.*__ctx_index|mcp__(?!.*context-mode)", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }],
+      "PreToolUse": [{ "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__", "hooks": [{ "type": "command", "command": "context-mode hook codex pretooluse" }] }],
        "PostToolUse": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex posttooluse" }] }],
        "SessionStart": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex sessionstart" }] }],
        "PreCompact": [{ "hooks": [{ "type": "command", "command": "context-mode hook codex precompact" }] }],
@@ -964,7 +964,7 @@ npm install -g context-mode
 | Tool | What it does | Context saved |
 |---|---|---|
 | `ctx_batch_execute` | Run multiple commands + search multiple queries in ONE call. Opt-in `concurrency: 1-8` for I/O-bound batches. | 986 KB → 62 KB |
-| `ctx_execute` | Run code in 11 languages. Only stdout enters context. | 56 KB → 299 B |
+| `ctx_execute` | Run code in 12 languages. Only stdout enters context. | 56 KB → 299 B |
 | `ctx_execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
 | `ctx_index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
@@ -978,7 +978,7 @@ npm install -g context-mode
 
 Each `ctx_execute` call spawns an isolated subprocess with its own process boundary. Scripts can't access each other's memory or state. The subprocess runs your code, captures stdout, and only that stdout enters the conversation context. The raw data — log files, API responses, snapshots — never leaves the sandbox.
 
-Eleven language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R, and Elixir. Bun is auto-detected for 3-5x faster JS/TS execution.
+Twelve language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R, Elixir, and C#. Bun is auto-detected for 3-5x faster JS/TS execution.
 
 Authenticated CLIs work through credential passthrough — `gh`, `aws`, `gcloud`, `kubectl`, `docker` inherit environment variables and config paths without exposing them to the conversation.
 

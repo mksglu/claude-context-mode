@@ -97,7 +97,7 @@
         ]
       },
       {
-        "matcher": "mcp__(?!plugin_context-mode_)",
+        "matcher": "mcp__",
         "hooks": [
           {
             "type": "command",

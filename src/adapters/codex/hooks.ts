@@ -37,24 +37,23 @@ export const HOOK_TYPES = {
 // ─────────────────────────────────────────────────────────
 
 /**
- * Negative-lookahead matcher for external MCP tool namespaces on Codex CLI (#529).
+ * External MCP catch-all matcher for Codex CLI (#529, #547 hotfix).
  *
  * Codex CLI's hook `tool_name` payload uses `mcp__<server>__<tool>` for any
- * MCP-namespaced tool — verified by configs/codex/hooks.json which already
- * matches `mcp__.*__ctx_execute` style for context-mode's OWN MCP tools. This
- * pattern fires PreToolUse for any external `mcp__<server>__<tool>` whose
- * server segment does NOT contain `context-mode`. Without it, large payloads
- * from slack / telegram / gdrive / notion-style MCPs bypass the routing nudge
- * and flood the model's context — PostToolUse runs too late to keep raw data
- * out.
+ * MCP-namespaced tool. Originally this constant used a negative lookahead
+ * `mcp__(?!.*context-mode)` to exclude context-mode's own MCP tools at the
+ * matcher layer. v1.0.124 shipped that pattern and Codex (Rust `regex` crate)
+ * rejected the matcher at boot with "look-around not supported", breaking
+ * every Codex user (#547).
  *
- * The negative lookahead `(?!.*context-mode)` covers both naming variants
- * Codex sees in practice: the canonical `mcp__context-mode__ctx_*` AND the
- * Claude Code plugin shim `mcp__plugin_context-mode_context-mode__ctx_*`.
- * Codex own bare names (ctx_execute, local_shell, …) are not `mcp__`-prefixed
- * and are unaffected.
+ * Fix: drop the lookaround. The matcher is now a charset-clean literal
+ * (`[A-Za-z0-9_|]` only), satisfying Codex's `is_exact_matcher`
+ * (refs/platforms/codex/codex-rs/hooks/src/events/common.rs:152) which
+ * short-circuits the regex engine entirely. context-mode's own MCP tools are
+ * already filtered in the hook BODY by `isExternalMcpTool()` in
+ * hooks/core/routing.mjs — semantics preserved.
  */
-export const EXTERNAL_MCP_MATCHER_PATTERN = "mcp__(?!.*context-mode)";
+export const EXTERNAL_MCP_MATCHER_PATTERN = "mcp__";
 
 // ─────────────────────────────────────────────────────────
 // Routing instructions

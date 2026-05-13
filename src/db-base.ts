@@ -208,10 +208,40 @@ export function nodeSqliteHasFts5(DatabaseSync: any): boolean {
 }
 
 /**
+ * Returns true when the current runtime ships a built-in SQLite binding:
+ * - Bun has `bun:sqlite` always
+ * - Node has `node:sqlite` since 22.5 (no flag since 22.13)
+ *
+ * Mirrors the helper in hooks/ensure-deps.mjs:61. Exported so the platform
+ * gate in loadDatabase() can be unit-tested without spawning a child
+ * process. `versionsOverride` and `bunOverride` are injection points for
+ * tests — production callers pass nothing.
+ *
+ * Widening the gate from `process.platform === "linux"` to this helper is
+ * required for Node 26 on macOS arm64 (#551): Node 26 removed
+ * `info.This()` from V8 PropertyCallbackInfo, breaking better-sqlite3
+ * 12.9.0's native compile. Using node:sqlite sidesteps the native addon
+ * entirely on every platform that has it.
+ */
+export function hasModernSqlite(
+  versionsOverride?: NodeJS.ProcessVersions,
+  bunOverride?: unknown,
+): boolean {
+  const bun = bunOverride !== undefined ? bunOverride : (globalThis as any).Bun;
+  if (typeof bun !== "undefined" && bun !== null) return true;
+  const versions = versionsOverride ?? process.versions;
+  const [majorStr, minorStr] = (versions.node ?? "0.0.0").split(".");
+  const major = Number(majorStr);
+  const minor = Number(minorStr);
+  if (!Number.isFinite(major) || !Number.isFinite(minor)) return false;
+  return major > 22 || (major === 22 && minor >= 5);
+}
+
+/**
  * Lazy-load the SQLite driver for the current runtime.
  * Bun → bun:sqlite via BunSQLiteAdapter (issue #45).
- * Linux Node → node:sqlite via NodeSQLiteAdapter when it ships FTS5 (#228, #461).
- * Other Node (or Linux Node without FTS5) → better-sqlite3 (native addon).
+ * Modern Node (>= 22.5) → node:sqlite via NodeSQLiteAdapter when it ships FTS5 (#228, #461, #551).
+ * Other Node (or modern Node without FTS5) → better-sqlite3 (native addon).
  */
 export function loadDatabase(): typeof DatabaseConstructor {
   if (!_Database) {
@@ -234,13 +264,19 @@ export function loadDatabase(): typeof DatabaseConstructor {
         }
         return adapter;
       } as any;
-    } else if (process.platform === "linux") {
-      // Linux — try node:sqlite to avoid native addon SIGSEGV (nodejs/node#62515).
-      // node:sqlite is built into Node >= 22.5, no flag needed since 22.13.
-      // Probe FTS5 support before committing — some Linux Node builds ship
-      // node:sqlite without FTS5, which would silently break ctx_search (#461).
-      // The probe runs at most once per process (cached via _Database below),
-      // so the cost of opening an in-memory DatabaseSync is negligible.
+    } else if (hasModernSqlite()) {
+      // Any Node >= 22.5 — try node:sqlite to avoid the native addon path
+      // entirely. Historically this was Linux-only (avoiding the Linux
+      // SIGSEGV per nodejs/node#62515, #228), but Node 26 also broke
+      // better-sqlite3's native compile on macOS arm64 by removing
+      // V8 `info.This()` (#551). The built-in `node:sqlite` ships its
+      // own SQLite, so it sidesteps both issues at once.
+      //
+      // Probe FTS5 support before committing — some Node builds ship
+      // node:sqlite without FTS5, which would silently break ctx_search
+      // (#461). The probe runs at most once per process (cached via
+      // _Database below), so the cost of an in-memory DatabaseSync is
+      // negligible.
       let DatabaseSync: any = null;
       try {
         // Array.join() prevents esbuild from resolving the specifier at bundle time
@@ -257,15 +293,15 @@ export function loadDatabase(): typeof DatabaseConstructor {
           return new NodeSQLiteAdapter(raw);
         } as any;
       } else {
-        // node:sqlite missing or built without FTS5 — fall through to better-sqlite3.
-        // Trade-off: this reintroduces the native-addon path that #228 routed
-        // around (Linux SIGSEGV per nodejs/node#62515). Deliberate — a visible
-        // crash on the rare unstable build is preferable to a silent
-        // "no such module: fts5" on every ctx_search call.
+        // node:sqlite missing or built without FTS5 — fall through to
+        // better-sqlite3. Trade-off: on Node 26 + macOS this may now hit
+        // the V8 ABI break (#551). A visible crash on the rare
+        // unstable build is preferable to silent "no such module: fts5"
+        // on every ctx_search call.
         _Database = require("better-sqlite3") as typeof DatabaseConstructor;
       }
     } else {
-      // Non-Linux Node.js — use better-sqlite3.
+      // Old Node (< 22.5) without bun:sqlite — fall back to better-sqlite3.
       _Database = require("better-sqlite3") as typeof DatabaseConstructor;
     }
   }

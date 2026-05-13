@@ -817,12 +817,14 @@ describe("node:sqlite adapter (#228)", () => {
     db.close();
   });
 
-  test("loadDatabase: source checks platform before choosing node:sqlite (#228)", () => {
+  test("loadDatabase: source uses hasModernSqlite() before choosing node:sqlite (#228, #551)", () => {
     const src = readFileSync(resolve(ROOT, "src", "db-base.ts"), "utf-8");
     const loadDbSection = src.slice(src.indexOf("function loadDatabase"), src.indexOf("return _Database"));
-    // Must check Linux platform
-    expect(loadDbSection).toContain('process.platform');
-    expect(loadDbSection).toContain('"linux"');
+    // #551: gate widened from `process.platform === "linux"` to
+    // hasModernSqlite() — Node 26 broke better-sqlite3 native compile on
+    // macOS arm64, so we prefer node:sqlite on every platform that has it.
+    expect(loadDbSection).toContain("hasModernSqlite()");
+    expect(loadDbSection).not.toMatch(/process\.platform\s*===\s*"linux"/);
     // Must reference NodeSQLiteAdapter
     expect(loadDbSection).toContain("NodeSQLiteAdapter");
     // Must still have better-sqlite3 fallback

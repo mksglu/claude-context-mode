@@ -1075,12 +1075,13 @@ server.registerTool(
           "perl",
           "r",
           "elixir",
+          "csharp",
         ])
         .describe("Runtime language"),
       code: z
         .string()
         .describe(
-          "Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), or IO.puts (Elixir) to output a summary to context.",
+          "Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), IO.puts (Elixir), or Console.WriteLine (C#) to output a summary to context.",
         ),
       timeout: z
         .coerce.number()
@@ -1408,12 +1409,13 @@ server.registerTool(
           "perl",
           "r",
           "elixir",
+          "csharp",
         ])
         .describe("Runtime language"),
       code: z
         .string()
         .describe(
-          "Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts.",
+          "Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine.",
         ),
       timeout: z
         .coerce.number()

@@ -20,7 +20,7 @@ context-mode uses a flat `src/` structure:
 src/
   server.ts        → MCP server, tool handlers, auto-indexing
   store.ts         → FTS5 content store (index, search, chunking)
-  executor.ts      → Polyglot code executor (11 languages)
+  executor.ts      → Polyglot code executor (12 languages)
   security.ts      → Permission enforcement (deny/allow rules)
   runtime.ts       → Runtime detection (Node, Bun, Python, etc.)
   db-base.ts       → SQLite base class (shared by store + session)

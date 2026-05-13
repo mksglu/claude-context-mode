@@ -1,6 +1,6 @@
 {
   "name": "context-mode",
-  "version": "1.0.124",
+  "version": "1.0.125",
   "description": "Cursor plugin that saves 98% of your context window. Sandboxed code execution in 11 languages, FTS5 knowledge base with BM25 ranking, intent-driven search, and native Cursor v1.7+ hook routing for context protection.",
   "author": {
     "name": "Mert Koseoğlu",

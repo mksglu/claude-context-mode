@@ -74,15 +74,26 @@ type HooksConfigReadResult =
   | { ok: false; reason: "invalid_json"; error: string }
   | { ok: false; reason: "read_error"; error: string };
 
-// PreToolUse matcher: canonical Codex tool names + context-mode own MCP tools
-// (both bare and `mcp__<server>__<tool>` forms) + external MCP catch-all (#529).
-// The final `mcp__(?!.*context-mode)` segment uses a negative lookahead that
-// excludes any `mcp__` tool whose server segment contains `context-mode` so
-// context-mode's own MCP tools (already wired by the explicit entries above)
-// are not double-routed. Keep this as a single string literal — `codex.test.ts`
-// drift-guard parses the source with a `"([^"]+)"` regex.
+// PreToolUse matcher: canonical Codex tool names + context-mode bare MCP tool
+// names + external MCP catch-all literal (#529, #547 hotfix).
+//
+// Codex CLI's Rust `regex` crate does NOT support look-around, and
+// `is_exact_matcher` (refs/platforms/codex/codex-rs/hooks/src/events/common.rs:152)
+// short-circuits the regex engine entirely when the matcher contains only
+// [A-Za-z0-9_|]. v1.0.124 shipped a matcher with `(?!.*context-mode)` AND
+// `mcp__.*__ctx_*` regex syntax — Codex rejected the file at boot with
+// "look-around not supported" → all v1.0.124 Codex users broken (#547).
+//
+// Fix: keep only literal tool names (charset-clean). The hook BODY already
+// filters context-mode's own MCP tools via `isExternalMcpTool()` in
+// hooks/core/routing.mjs, so dropping `mcp__.*__ctx_*` and the lookaround
+// preserves end-to-end semantics. The literal `mcp__` final segment is a
+// no-op under exact-matcher mode but kept for parity with hooks/hooks.json.
+//
+// Keep this as a single string literal — `codex.test.ts` drift-guard parses
+// the source with a `"([^"]+)"` regex.
 const PRE_TOOL_USE_MATCHER_PATTERN =
-  "local_shell|shell|shell_command|exec_command|container.exec|functions\\.exec_command|Bash|Shell|apply_patch|functions\\.apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__.*__ctx_execute|mcp__.*__ctx_execute_file|mcp__.*__ctx_batch_execute|mcp__.*__ctx_fetch_and_index|mcp__.*__ctx_search|mcp__.*__ctx_index|mcp__(?!.*context-mode)";
+  "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__";
 
 const CODEX_HOOK_COMMANDS = {
   PreToolUse: "context-mode hook codex pretooluse",

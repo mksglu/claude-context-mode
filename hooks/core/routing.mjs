@@ -185,12 +185,16 @@ const SAFE_COMMAND_PATTERNS = [
   /^cd(?:\s+[^\r\n]+)?$/,
   /^mkdir(?:\s+[^\r\n]+)?$/,
   /^touch\s+[^\r\n]+$/,
-  /^mv(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
-  /^cp(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
-  /^rm(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  // #517 follow-up: the original `(?!\s+-[a-zA-Z]*v\b)` required `v` to be
+  // the LAST alpha char in the flag bundle, so `-vs`, `-vfr`, `-rvf`,
+  // `-sfvr`, etc. silently slipped past the carve-out and flooded.
+  // `(?!\s+-[a-zA-Z]*v[a-zA-Z]*)` catches `v` anywhere in the bundle.
+  /^mv(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^cp(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^rm(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   // ln (#517): silent on success — same `-v` / `--verbose` carve-out as
   // cp/mv/rm. Bulk symlink operations with -v flood one line per link.
-  /^ln(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^ln(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   // ls — refuse recursive (-R / --recursive) to keep output bounded.
   /^ls(?!\s+-[a-zA-Z]*R)(?!\s+--recursive)(?:\s+[^\r\n]+)?$/,
   // git read-only / status subcommands

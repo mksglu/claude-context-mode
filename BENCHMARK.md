@@ -128,7 +128,7 @@ Claude's context window: **200,000 tokens**
 
 | Suite | Tests | Status |
 |-------|-------|--------|
-| Executor (10 languages + edge cases) | 55 | All pass |
+| Executor (12 languages + edge cases) | 55 | All pass |
 | ContentStore (FTS5 BM25) | 34 | All pass |
 | MCP Integration (JSON-RPC) | 22 | All pass |
 | Ecosystem Benchmark (14 scenarios) | 14 | All pass |

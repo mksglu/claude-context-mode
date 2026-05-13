@@ -182,7 +182,11 @@ describe("postinstall — non-global install (contributor `npm install`)", () =>
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("postinstall — global install with poisoned registry", () => {
-  it("repairs entry.version + enabledPlugins and emits one stderr line", () => {
+  // 90s budget — see L163/L246/L465 for the same precedent. Section 3 of
+  // postinstall.mjs (heal-better-sqlite3) routinely takes 20-30s on cold
+  // macOS GHA runners, blowing past vitest's default 30s. CI run
+  // 25804274156 caught this gap.
+  it("repairs entry.version + enabledPlugins and emits one stderr line", { timeout: 90_000 }, () => {
     const fake = buildFakeHome({
       entryVersion: "1.0.99",         // poisoned
       cacheVersion: "1.0.113",        // truth
@@ -215,7 +219,10 @@ describe("postinstall — global install with poisoned registry", () => {
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("postinstall — global install, user not on Claude Code", () => {
-  it("emits a single benign one-liner and never crashes", () => {
+  // 90s budget for the same reason as siblings (L163/L185/L246/L465) —
+  // heal-better-sqlite3 in section 3 of postinstall.mjs is the slow path
+  // and shares this whole-process budget on every spawn.
+  it("emits a single benign one-liner and never crashes", { timeout: 90_000 }, () => {
     const home = makeTmp("ctx-postinstall-home-bare-");
     const r = runPostinstall({ home, global: true });
     expect(r.status === 0 || r.status === null).toBe(true);
@@ -454,7 +461,15 @@ describe("normalize-hooks — /ctx-upgrade post-cpSync sequence (issue #528)", (
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("postinstall — global install, registry already healthy", () => {
-  it("emits 'no heal needed' and leaves registry bytes unchanged", () => {
+  // The vitest default test timeout is 30s; this test path runs the real
+  // `heal-better-sqlite3.mjs` (section 3 of postinstall.mjs) which alone
+  // can take 20-30s on cold CI runners. Sibling tests in this file
+  // (L163, L246) already use 90_000 for the same reason. CI run
+  // 25803559016 caught this gap — Ubuntu ran the whole file in 126s but
+  // macOS hit the default 30s budget for this `it()` and killed the test
+  // before spawn could return. 90s matches the precedent the rest of the
+  // file established; widening just this `it()` is the minimum diff.
+  it("emits 'no heal needed' and leaves registry bytes unchanged", { timeout: 90_000 }, () => {
     const fake = buildFakeHome({
       entryVersion: "1.0.114",
       cacheVersion: "1.0.114",
