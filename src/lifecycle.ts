@@ -91,11 +91,35 @@ export function makeDefaultIsParentAlive(deps: IsParentAliveDeps = {}): () => bo
 const defaultIsParentAlive = makeDefaultIsParentAlive();
 
 /**
+ * Resolve the parent-liveness poll interval based on context (#534).
+ *
+ * When this process is the MCP bridge child spawned by the Pi adapter
+ * (`bootstrapMCPTools` in `src/adapters/pi/mcp-bridge.ts` sets
+ * `CONTEXT_MODE_BRIDGE_DEPTH=1` in the child env), we tighten the poll to
+ * 1 s. The Pi parent can disappear in under 50 ms (`pi --help` prints
+ * usage and returns), so the default 30 s window leaves a long-lived
+ * CPU-spinning orphan. For top-level MCP servers (depth 0 / absent) we
+ * keep the original 30 s cadence — the existing #311/#388 ppid + stdin
+ * recovery paths already cover Claude Code style hosts.
+ *
+ * Exported for unit-testing.
+ */
+export function lifecycleGuardIntervalForEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.CONTEXT_MODE_BRIDGE_DEPTH;
+  if (raw === undefined) return 30_000;
+  const depth = Number.parseInt(raw, 10);
+  if (!Number.isFinite(depth) || depth <= 0) return 30_000;
+  return 1000;
+}
+
+/**
  * Start the lifecycle guard. Returns a cleanup function.
  * Skipped automatically when stdin is a TTY (e.g. OpenCode ts-plugin).
  */
 export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
-  const interval = opts.checkIntervalMs ?? 30_000;
+  const interval = opts.checkIntervalMs ?? lifecycleGuardIntervalForEnv();
   const check = opts.isParentAlive ?? defaultIsParentAlive;
   let stopped = false;
 

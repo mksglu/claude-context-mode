@@ -1075,13 +1075,22 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     const fakeIdeBin = mkdtempSync(join(tmpdir(), "ctx-jetbrains-bin-"));
 
     // Strip every PROJECT_DIR env var from the inherited env so the cascade
-    // is forced to consult IDEA_INITIAL_DIRECTORY.
+    // is forced to consult IDEA_INITIAL_DIRECTORY. Issue #545 (v1.0.124):
+    // also strip the claude-code IDENTIFICATION vars so detectPlatform()
+    // doesn't misclassify the spawned MCP child as claude-code (which would
+    // then run strict-mode and ban IDEA_INITIAL_DIRECTORY as a foreign var).
+    // The test process inherits CLAUDE_CODE_ENTRYPOINT / CLAUDE_PLUGIN_ROOT
+    // from whatever Claude Code session launched the test runner.
     const cleanEnv = { ...process.env };
     delete cleanEnv.CLAUDE_PROJECT_DIR;
+    delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
+    delete cleanEnv.CLAUDE_PLUGIN_ROOT;
+    delete cleanEnv.CLAUDE_SESSION_ID;
     delete cleanEnv.GEMINI_PROJECT_DIR;
     delete cleanEnv.VSCODE_CWD;
     delete cleanEnv.OPENCODE_PROJECT_DIR;
     delete cleanEnv.PI_PROJECT_DIR;
+    delete cleanEnv.PI_WORKSPACE_DIR;
     delete cleanEnv.CONTEXT_MODE_PROJECT_DIR;
 
     const proc = spawn("node", [buildEntry], {

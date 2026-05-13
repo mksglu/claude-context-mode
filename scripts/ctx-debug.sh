@@ -203,6 +203,19 @@ exec 1>/dev/null   # suppress stray output
 
 detect_os
 
+# ─── Windows path bridge ────────────────────────────────────────────────────
+# Git Bash resolves /tmp to C:\Users\...\AppData\Local\Temp, but native
+# Node.js resolves /tmp to D:\tmp.  Bridge via cygpath -m so Node.js sees
+# Windows paths for the mktemp-created files, using forward slashes that are
+# accepted by Node.js and avoid backslash-escaping issues in shell contexts.
+if [ "$OS_TYPE" = "windows" ] && command -v cygpath &>/dev/null; then
+  JSONL_FILE="$(cygpath -m "$JSONL_FILE" 2>/dev/null || echo "$JSONL_FILE")"
+  EFFECTIVE_TMP="$(cygpath -m "$EFFECTIVE_TMP" 2>/dev/null || echo "$EFFECTIVE_TMP")"
+  JSON_FILE="$(cygpath -m "$JSON_FILE" 2>/dev/null || echo "$JSON_FILE")"
+  PLUGIN_ROOT="$(cygpath -m "$PLUGIN_ROOT" 2>/dev/null || echo "$PLUGIN_ROOT")"
+  export NODE_PATH="$PLUGIN_ROOT/node_modules:${NODE_PATH:-}"
+fi
+
 NOW="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')"
 
 cat <<HEADER
@@ -664,7 +677,8 @@ section "10. Process Check"
 # Portable process listing — exclude dashboard, esbuild, wrangler, workerd, grep
 if command -v ps &>/dev/null; then
   CTX_PROCS="$(ps aux 2>/dev/null | grep '[c]ontext-mode' | grep -v -E 'context-mode-dashboard|esbuild|wrangler|workerd|grep' || true)"
-  CTX_COUNT="$(printf '%s' "$CTX_PROCS" | grep -c . 2>/dev/null || echo 0)"
+  CTX_COUNT="$(printf '%s' "$CTX_PROCS" | grep -c . 2>/dev/null || :)"
+  CTX_COUNT="${CTX_COUNT:-0}"
 else
   CTX_PROCS=""
   CTX_COUNT="0"

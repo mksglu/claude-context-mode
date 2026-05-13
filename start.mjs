@@ -122,7 +122,7 @@ if (cacheMatch) {
 // truth) so users who fix themselves via `npm install -g context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
 try {
-  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers } =
+  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
   const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
@@ -140,6 +140,12 @@ try {
   // path baked in. Iterates EVERY installed cache entry's installPath so
   // multi-version installs all self-recover. Each call is independently wrapped
   // because one poisoned entry must not block heals on the others. Best effort.
+  //
+  // v1.0.122 — Layer 5b extended (Issue #531): asymmetric-heal sibling for the
+  // `.mcp.json` file Claude Code reads at plugin load. Same per-entry loop, same
+  // defensive wrap. Covers both the #253/aea633c bare `./start.mjs` fresh-install
+  // regression AND the /ctx-upgrade tmpdir leak class. Both heals must run on
+  // every boot so users self-recover regardless of which drift shape hit them.
   try {
     if (existsSync(registryPath)) {
       const ip = JSON.parse(readFileSync(registryPath, "utf-8"));
@@ -150,6 +156,13 @@ try {
           if (typeof installPath !== "string" || !installPath) continue;
           try {
             healPluginJsonMcpServers({
+              pluginRoot: installPath,
+              pluginCacheRoot,
+              pluginKey,
+            });
+          } catch { /* best effort — per-entry */ }
+          try {
+            healMcpJsonArgs({
               pluginRoot: installPath,
               pluginCacheRoot,
               pluginKey,
@@ -310,6 +323,43 @@ if (!existsSync(resolve(__dirname, "cli.bundle.mjs")) && existsSync(resolve(__di
   const shimPath = resolve(__dirname, "cli.bundle.mjs");
   writeFileSync(shimPath, '#!/usr/bin/env node\nawait import("./build/cli.js");\n');
   if (process.platform !== "win32") chmodSync(shimPath, 0o755);
+}
+
+// ── Algo-D4: plugin cache integrity check ──
+// Verify boot-critical siblings exist BEFORE importing server.bundle.mjs.
+// Without this, a partial install (#550) gives an opaque downstream
+// stack trace from `import("./server.bundle.mjs")`. With it, we emit a
+// structured CONTEXT_MODE_PARTIAL_INSTALL stderr block + exit 2 so
+// external monitoring grep + the user both see the actionable signal.
+//
+// Runs AFTER the heal layers above so missing files they can fix
+// (cli.bundle.mjs shim, dangling symlinks) get a chance first. Helper
+// is shared with `ctx doctor` (Algo-D5) — single source of truth so
+// boot + diagnostic agree byte-for-byte. Skipped under VITEST so the
+// repo's own test invocations against in-tree start.mjs don't fail
+// when running before `npm run build` produces the bundles.
+if (!process.env.VITEST) {
+  try {
+    const { assertPluginCacheIntegrity, formatPartialInstallReport } =
+      await import("./scripts/plugin-cache-integrity.mjs");
+    const integrity = assertPluginCacheIntegrity({ pluginRoot: __dirname });
+    if (!integrity.ok) {
+      process.stderr.write(
+        formatPartialInstallReport({
+          pluginRoot: __dirname,
+          missing: integrity.missing,
+        }),
+      );
+      process.exit(2);
+    }
+  } catch (err) {
+    // The helper itself failing is unexpected — keep boot moving rather
+    // than blocking on a check infrastructure bug. The downstream
+    // import will still surface the actual missing-bundle error.
+    if (process.env.CONTEXT_MODE_DEBUG) {
+      process.stderr.write(`[start.mjs] integrity check skipped: ${err}\n`);
+    }
+  }
 }
 
 // Bundle exists (CI-built) — start instantly

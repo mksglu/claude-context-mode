@@ -26,7 +26,7 @@ const existsSyncMock = vi.mocked(fs.existsSync);
 
 // Derived from detect.ts's source-of-truth list so renames can't drift.
 const ALL_PLATFORM_ENV_VARS = [
-  ...PLATFORM_ENV_VARS.flatMap(([, vars]) => [...vars]),
+  ...[...PLATFORM_ENV_VARS.values()].flatMap((vars) => vars.map((v) => v.name)),
   "CONTEXT_MODE_PLATFORM",
 ];
 
@@ -106,6 +106,48 @@ describe("detectPlatform — config directory branches", () => {
     forceDir(resolve(home, ".claude"));
     process.env.CONTEXT_MODE_PLATFORM = "antigravity";
     expect(detectPlatform().platform).toBe("antigravity");
+  });
+
+  // ── Issue #542 — agents BEFORE host IDEs ─────────────
+  //
+  // Cursor is a VSCode fork and the most installed editor across our
+  // user base, so a bare ~/.cursor/ check first means every CLI agent
+  // co-installed with Cursor (Pi, OMP, Kiro, Qwen, Gemini, Codex,
+  // Claude Code) silently routes through CursorAdapter. The clientInfo
+  // tier (slice 1-3) covers the live MCP boot path, but env-less /
+  // clientInfo-less tooling (e.g. CLI subcommands invoked directly) still
+  // depends on the config-dir tier — so agents must be checked before
+  // editors there too.
+  //
+  // The forceDir helper mocks existsSync to return true for ONE target
+  // only, so each row asserts the priority winner when BOTH the agent's
+  // ~/.<dir>/ and ~/.cursor/ coexist. We use mockImplementation directly
+  // to mark BOTH paths as existing.
+  const bothDirsExist = (agent: string) => {
+    existsSyncMock.mockImplementation(
+      ((p: unknown) =>
+        p === resolve(home, agent) || p === resolve(home, ".cursor")) as typeof fs.existsSync,
+    );
+  };
+
+  it.each<[string, string]>([
+    [".pi", "pi"],
+    [".omp", "omp"],
+    [".kiro", "kiro"],
+    [".qwen", "qwen-code"],
+    [".gemini", "gemini-cli"],
+    [".claude", "claude-code"],
+    [".codex", "codex"],
+  ])("agent dir %s beats ~/.cursor/ when both exist (issue #542)", (agent, expected) => {
+    bothDirsExist(agent);
+    const signal = detectPlatform();
+    expect(signal.platform).toBe(expected);
+    expect(signal.confidence).toBe("medium");
+  });
+
+  it("bare ~/.cursor/ (no agent dir) still resolves to cursor (regression)", () => {
+    forceDir(resolve(home, ".cursor"));
+    expect(detectPlatform().platform).toBe("cursor");
   });
 });
 

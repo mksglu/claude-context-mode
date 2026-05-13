@@ -91,6 +91,10 @@ export function createBashGuidance(t) {
   return '<context_guidance>\n  <tip>\n    May produce large output. Use ' + t("ctx_batch_execute") + '(commands, queries) for multiple commands, ' + t("ctx_execute") + '(language: "shell", code: "...") for single. Only printed summary enters context. Bash only for: git, mkdir, rm, mv, navigation.\n  </tip>\n</context_guidance>';
 }
 
+export function createExternalMcpGuidance(t) {
+  return '<context_guidance>\n  <tip>\n    External MCP tools may return large payloads (channel history, file content, search results) that flood context. After this call, if the result is large or you need to filter/aggregate it, pipe the data through ' + t("ctx_execute") + '(language, code) — only your printed summary enters context. For docs-style fetches, prefer ' + t("ctx_fetch_and_index") + '(url, source) then ' + t("ctx_search") + '(queries).\n  </tip>\n</context_guidance>';
+}
+
 // ── Backward compat: static exports defaulting to claude-code ──
 
 const _t = createToolNamer("claude-code");
@@ -98,3 +102,4 @@ export const ROUTING_BLOCK = createRoutingBlock(_t);
 export const READ_GUIDANCE = createReadGuidance(_t);
 export const GREP_GUIDANCE = createGrepGuidance(_t);
 export const BASH_GUIDANCE = createBashGuidance(_t);
+export const EXTERNAL_MCP_GUIDANCE = createExternalMcpGuidance(_t);

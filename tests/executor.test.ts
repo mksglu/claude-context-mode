@@ -110,6 +110,7 @@ describe("Runtime Detection", () => {
       perl: null,
       r: null,
       elixir: null,
+      csharp: null,
     };
     assert.throws(
       () => buildCommand(noRuntimes, "typescript", "/tmp/t.ts"),
@@ -126,6 +127,10 @@ describe("Runtime Detection", () => {
     assert.throws(
       () => buildCommand(noRuntimes, "elixir", "/tmp/t.exs"),
       /Elixir not available/,
+    );
+    assert.throws(
+      () => buildCommand(noRuntimes, "csharp", "/tmp/t.csx"),
+      /C# not available/,
     );
   });
 
@@ -686,6 +691,40 @@ IO.puts(result)
   });
 });
 
+describe.runIf(runtimes.csharp)("CSharp Execution", () => {
+  test("C#: hello world", async () => {
+    const r = await executor.execute({
+      language: "csharp",
+      code: 'Console.WriteLine("hello from csharp");',
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.ok(r.stdout.includes("hello from csharp"));
+  });
+
+  test("C#: LINQ over array", async () => {
+    const r = await executor.execute({
+      language: "csharp",
+      code: `
+using System.Linq;
+var nums = Enumerable.Range(1, 10);
+var evens = nums.Where(n => n % 2 == 0).ToArray();
+Console.WriteLine($"sum: {evens.Sum()}");
+      `,
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.ok(r.stdout.includes("sum: 30"));
+  });
+
+  test("C#: error returns non-zero exit", async () => {
+    const r = await executor.execute({
+      language: "csharp",
+      code: 'throw new System.Exception("intentional error");',
+    });
+    assert.notEqual(r.exitCode, 0);
+    assert.ok(r.stderr.length > 0 || r.stdout.includes("intentional error"));
+  });
+});
+
 describe("Error Handling", () => {
   test("JS: syntax error returns non-zero", async () => {
     const r = await executor.execute({
@@ -946,6 +985,21 @@ puts "Users: #{data['users'].length}"
       `,
     });
     assert.equal(r.exitCode, 0);
+    assert.ok(r.stdout.includes("Users: 3"));
+  });
+
+  test.runIf(runtimes.csharp)("execute_file: C# reads FILE_CONTENT", async () => {
+    const r = await executor.executeFile({
+      path: testFile,
+      language: "csharp",
+      code: `
+using (var doc = System.Text.Json.JsonDocument.Parse(FILE_CONTENT)) {
+  var users = doc.RootElement.GetProperty("users").GetArrayLength();
+  System.Console.WriteLine($"Users: {users}");
+}
+      `,
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
     assert.ok(r.stdout.includes("Users: 3"));
   });
 
@@ -1389,6 +1443,89 @@ describe("Environment Denylist", () => {
     assert.ok(r.stdout.includes("PYTHONUNBUFFERED=1"), `PYTHONUNBUFFERED should be forced to 1, got: ${r.stdout}`);
   });
 
+  // PR #546 follow-up: Microsoft documents native injection vectors that
+  // hijack the dotnet host. Profiler attach loads an arbitrary DLL into the
+  // host process; DiagnosticPorts allows a peer to attach a debugger /
+  // inject IL via the IPC port; the bundle extract dir lets a
+  // single-file app extraction be redirected. Every DOTNET_* knob has a
+  // COMPlus_* synonym (back-compat alias). Strip the explicit set and
+  // sweep COMPlus_* via prefix.
+  // Refs: learn.microsoft.com/en-us/dotnet/core/runtime-config/{debugging-profiling,dotnet-environment-variables}
+  test("DOTNET profiler + DiagnosticPorts + COMPlus aliases are stripped", async () => {
+    const KEYS = [
+      "CORECLR_PROFILER",
+      "CORECLR_PROFILER_PATH",
+      "CORECLR_PROFILER_PATH_32",
+      "CORECLR_PROFILER_PATH_64",
+      "CORECLR_PROFILER_PATH_ARM32",
+      "CORECLR_PROFILER_PATH_ARM64",
+      "DOTNET_PROFILER_PATH",
+      "DOTNET_PROFILER_PATH_32",
+      "DOTNET_PROFILER_PATH_64",
+      "DOTNET_PROFILER_PATH_ARM32",
+      "DOTNET_PROFILER_PATH_ARM64",
+      "CORECLR_ENABLE_PROFILING",
+      "DOTNET_DiagnosticPorts",
+      "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+      // COMPlus_* alias coverage — sweep via /^COMPlus_/i prefix.
+      "COMPlus_EnableDiagnostics",
+      "COMPlus_DbgEnableMiniDump",
+      "COMPlus_TieredCompilation",
+    ];
+    const saved: Record<string, string | undefined> = {};
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      process.env[k] = "evil-injected";
+    }
+    try {
+      const echoes = KEYS.map((k) => `echo "${k}=\${${k}:-unset}"`).join(" && ");
+      const r = await executor.execute({ language: "shell", code: echoes });
+      assert.equal(r.exitCode, 0);
+      for (const k of KEYS) {
+        assert.ok(
+          r.stdout.includes(`${k}=unset`),
+          `${k} should be stripped, got: ${r.stdout}`,
+        );
+      }
+    } finally {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  test("CLAUDE_PLUGIN_ROOT and unrelated env vars survive after DOTNET strip", async () => {
+    // Defense-in-depth — make sure the new explicit denylist + COMPlus_*
+    // sweep do not accidentally clobber unrelated env. CLAUDE_PLUGIN_ROOT
+    // is the canary because the hooks rely on it.
+    const origRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    const origUnrelated = process.env.MY_HARMLESS_VAR;
+    process.env.CLAUDE_PLUGIN_ROOT = "/test/plugin/root";
+    process.env.MY_HARMLESS_VAR = "stay-alive";
+    try {
+      const r = await executor.execute({
+        language: "shell",
+        code:
+          'echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" && echo "MY_HARMLESS_VAR=$MY_HARMLESS_VAR"',
+      });
+      assert.equal(r.exitCode, 0);
+      assert.ok(
+        r.stdout.includes("CLAUDE_PLUGIN_ROOT=/test/plugin/root"),
+        `CLAUDE_PLUGIN_ROOT must survive, got: ${r.stdout}`,
+      );
+      assert.ok(
+        r.stdout.includes("MY_HARMLESS_VAR=stay-alive"),
+        `MY_HARMLESS_VAR must survive, got: ${r.stdout}`,
+      );
+    } finally {
+      if (origRoot === undefined) delete process.env.CLAUDE_PLUGIN_ROOT;
+      else process.env.CLAUDE_PLUGIN_ROOT = origRoot;
+      if (origUnrelated === undefined) delete process.env.MY_HARMLESS_VAR;
+      else process.env.MY_HARMLESS_VAR = origUnrelated;
+    }
+  });
+
   test("ERL_AFLAGS and ERL_FLAGS are stripped", async () => {
     const origA = process.env.ERL_AFLAGS;
     const origF = process.env.ERL_FLAGS;
@@ -1689,6 +1826,7 @@ describe("Windows Shell Support", () => {
     assert.equal(buildScriptFilename("ruby", "win32"), "script.rb");
     assert.equal(buildScriptFilename("go", "win32"), "script.go");
     assert.equal(buildScriptFilename("rust", "win32"), "script.rs");
+    assert.equal(buildScriptFilename("csharp", "win32"), "script.csx");
   });
 
   test("buildScriptFilename: non-shell languages keep their extension on Unix", async () => {

@@ -11,8 +11,9 @@
  */
 
 import {
-  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE,
+  ROUTING_BLOCK, READ_GUIDANCE, GREP_GUIDANCE, BASH_GUIDANCE, EXTERNAL_MCP_GUIDANCE,
   createRoutingBlock, createReadGuidance, createGrepGuidance, createBashGuidance,
+  createExternalMcpGuidance,
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
@@ -184,12 +185,16 @@ const SAFE_COMMAND_PATTERNS = [
   /^cd(?:\s+[^\r\n]+)?$/,
   /^mkdir(?:\s+[^\r\n]+)?$/,
   /^touch\s+[^\r\n]+$/,
-  /^mv(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
-  /^cp(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
-  /^rm(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  // #517 follow-up: the original `(?!\s+-[a-zA-Z]*v\b)` required `v` to be
+  // the LAST alpha char in the flag bundle, so `-vs`, `-vfr`, `-rvf`,
+  // `-sfvr`, etc. silently slipped past the carve-out and flooded.
+  // `(?!\s+-[a-zA-Z]*v[a-zA-Z]*)` catches `v` anywhere in the bundle.
+  /^mv(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^cp(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^rm(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   // ln (#517): silent on success — same `-v` / `--verbose` carve-out as
   // cp/mv/rm. Bulk symlink operations with -v flood one line per link.
-  /^ln(?!\s+-[a-zA-Z]*v\b)(?!\s+--verbose\b)\s+[^\r\n]+$/,
+  /^ln(?!\s+-[a-zA-Z]*v[a-zA-Z]*)(?!\s+--verbose\b)\s+[^\r\n]+$/,
   // ls — refuse recursive (-R / --recursive) to keep output bounded.
   /^ls(?!\s+-[a-zA-Z]*R)(?!\s+--recursive)(?:\s+[^\r\n]+)?$/,
   // git read-only / status subcommands
@@ -356,6 +361,50 @@ function matchesContextModeTool(toolName, ctxName, legacyName) {
   if (leaf === ctxName) return true;
   if (raw.startsWith("MCP:") && leaf === legacyName) return true;
   return raw.includes("context-mode") && leaf === legacyName;
+}
+
+// External MCP detection (#529 + 15-adapter coverage follow-up).
+//
+// MCP-namespaced tool names follow per-platform conventions (see
+// core/tool-naming.mjs):
+//   - `mcp__<server>__<tool>`     Claude Code / Gemini CLI / Antigravity / Qwen Code / Codex
+//   - `MCP:<tool>`                Cursor
+//   - `@<server>/<tool>`          Kiro
+//
+// Tools belonging to context-mode itself are excluded — they have dedicated
+// routing branches above (ctx_execute, ctx_execute_file, ctx_batch_execute)
+// and re-routing them here would double-process the call.
+const MCP_PREFIX = "mcp__";
+const CURSOR_MCP_PREFIX = "MCP:";
+const KIRO_MCP_PREFIX = "@";
+const CTX_TOOL_PREFIX = "ctx_";
+const CONTEXT_MODE_SUBSTRING = "context-mode";
+
+function isExternalMcpTool(toolName) {
+  const raw = String(toolName ?? "");
+
+  // Claude / Codex / Gemini / Qwen / Antigravity wire shape.
+  if (raw.startsWith(MCP_PREFIX)) {
+    const server = raw.slice(MCP_PREFIX.length).split("__")[0];
+    if (!server) return false;
+    return !server.includes(CONTEXT_MODE_SUBSTRING);
+  }
+
+  // Cursor wire shape: `MCP:<tool>` — own tools are `MCP:ctx_*`. There is no
+  // server segment, so the discriminator is the tool-leaf prefix.
+  if (raw.startsWith(CURSOR_MCP_PREFIX)) {
+    const tool = raw.slice(CURSOR_MCP_PREFIX.length);
+    return tool.length > 0 && !tool.startsWith(CTX_TOOL_PREFIX);
+  }
+
+  // Kiro wire shape: `@<server>/<tool>` — own tools are `@context-mode/ctx_*`.
+  if (raw.startsWith(KIRO_MCP_PREFIX) && raw.includes("/")) {
+    const server = raw.slice(KIRO_MCP_PREFIX.length).split("/")[0];
+    if (!server) return false;
+    return !server.includes(CONTEXT_MODE_SUBSTRING);
+  }
+
+  return false;
 }
 
 /**
@@ -663,6 +712,16 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       }
     }
     return null;
+  }
+
+  // ─── External MCP tools: one-shot guidance about routing large payloads ─── (#529)
+  // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so this
+  // branch fires for slack/telegram/gdrive/notion-style MCPs whose results would
+  // otherwise spill into context. We don't deny or modify — the agent still needs
+  // the tool's output; we just nudge it to pipe large results through ctx_execute.
+  if (isExternalMcpTool(toolName)) {
+    const externalMcpGuidance = platform ? createExternalMcpGuidance(t) : EXTERNAL_MCP_GUIDANCE;
+    return guidanceOnce("external-mcp", externalMcpGuidance, sessionId);
   }
 
   // Unknown tool — pass through

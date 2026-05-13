@@ -4,7 +4,7 @@
   "hooks": {
     "preToolUse": [
       {
-        "matcher": "execute_bash|fs_read|@context-mode/ctx_execute|@context-mode/ctx_execute_file|@context-mode/ctx_batch_execute",
+        "matcher": "execute_bash|fs_read|@context-mode/ctx_execute|@context-mode/ctx_execute_file|@context-mode/ctx_batch_execute|@(?!context-mode/)",
         "command": "context-mode hook kiro pretooluse"
       }
     ],

@@ -298,8 +298,12 @@ describe("CodexAdapter", () => {
       expect(config.PreToolUse[0]?.matcher).toContain("apply_patch");
       expect(config.PreToolUse[0]?.matcher).toContain("Edit");
       expect(config.PreToolUse[0]?.matcher).toContain("Write");
-      expect(config.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_execute");
-      expect(config.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_batch_execute");
+      // #547 hotfix: matcher is now charset-clean (no `.*` regex syntax) so
+      // the bare `ctx_*` names cover context-mode's own MCP tools and the
+      // literal `mcp__` segment exists for parity with hooks/hooks.json.
+      expect(config.PreToolUse[0]?.matcher).toContain("ctx_execute");
+      expect(config.PreToolUse[0]?.matcher).toContain("ctx_batch_execute");
+      expect(config.PreToolUse[0]?.matcher).toMatch(/(^|\|)mcp__$/);
       expect(config.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
       expect(config.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
       expect(config.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
@@ -325,7 +329,10 @@ describe("CodexAdapter", () => {
       expect(changes.some((change) => change.includes("Added PreToolUse hook"))).toBe(true);
       expect(changes.some((change) => change.includes("Wrote native Codex hooks"))).toBe(true);
       expect(changes.some((change) => change.includes("Enabled Codex hooks feature flag"))).toBe(true);
-      expect(written.hooks.PreToolUse[0]?.matcher).toContain("mcp__.*__ctx_execute");
+      // #547 hotfix: matcher is charset-clean — bare `ctx_execute` covers
+      // context-mode's own MCP tools (hook body filters by tool prefix).
+      expect(written.hooks.PreToolUse[0]?.matcher).toContain("ctx_execute");
+      expect(written.hooks.PreToolUse[0]?.matcher).toMatch(/(^|\|)mcp__$/);
       expect(written.hooks.PreToolUse[0]?.matcher).not.toMatch(/(^|\|)Read(\||$)/);
       expect(written.hooks.PreToolUse[0]?.matcher).not.toContain("mcp__plugin_context-mode_context-mode__");
       expect(written.hooks.PreCompact[0]?.hooks[0]?.command).toBe("context-mode hook codex precompact");
@@ -753,5 +760,62 @@ describe("Codex matcher parity + config integrity", () => {
       documented.push(m[1].replace(/\\\\/g, "\\"));
     }
     expect(documented).toContain(constant);
+  });
+});
+
+// #547: Codex CLI uses Rust's `regex` crate which does NOT support look-around
+// (?!...). v1.0.124 shipped matchers containing (?!.*context-mode) and
+// (?!plugin_context-mode_) — Codex rejects them at boot with
+// "look-around not supported", breaking ALL Codex users.
+//
+// Codex `is_exact_matcher` (refs/platforms/codex/codex-rs/hooks/src/events/common.rs:152)
+// short-circuits the regex engine when matcher chars are all
+// [A-Za-z0-9_|]. Pinning matchers to that charset avoids the crate's
+// limitations entirely. Drift-guard for future regressions.
+describe("Codex matcher #547 — is_exact_matcher charset compliance", () => {
+  const EXACT_MATCHER_CHARSET = /^[A-Za-z0-9_|]+$/;
+
+  it("EXTERNAL_MCP_MATCHER_PATTERN passes is_exact_matcher charset", async () => {
+    const { EXTERNAL_MCP_MATCHER_PATTERN } = await import(
+      "../../src/adapters/codex/hooks.js"
+    );
+    expect(EXTERNAL_MCP_MATCHER_PATTERN).toMatch(EXACT_MATCHER_CHARSET);
+  });
+
+  it("PRE_TOOL_USE_MATCHER_PATTERN (adapter source constant) passes is_exact_matcher charset", () => {
+    const path = resolve(__dirname, "..", "..", "src", "adapters", "codex", "index.ts");
+    const src = readFileSync(path, "utf8");
+    const m = src.match(/PRE_TOOL_USE_MATCHER_PATTERN\s*=\s*"([^"]+)"/);
+    if (!m) throw new Error("PRE_TOOL_USE_MATCHER_PATTERN constant not found");
+    // TS source uses \\ for a literal backslash. Convert to runtime form.
+    const runtimeMatcher = m[1].replace(/\\\\/g, "\\");
+    expect(runtimeMatcher).toMatch(EXACT_MATCHER_CHARSET);
+  });
+
+  it("configs/codex/hooks.json PreToolUse matcher passes is_exact_matcher charset", () => {
+    const path = resolve(__dirname, "..", "..", "configs", "codex", "hooks.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      hooks: { PreToolUse: Array<{ matcher: string }> };
+    };
+    const matcher = parsed.hooks.PreToolUse[0]?.matcher ?? "";
+    expect(matcher).toMatch(EXACT_MATCHER_CHARSET);
+  });
+
+  it("hooks/hooks.json (universal bundle) MCP catch-all matcher passes is_exact_matcher charset", () => {
+    // hooks/hooks.json is the universal bundled file Codex ALSO loads via
+    // the plugin cache. The MCP catch-all matcher must drop the lookahead so
+    // Codex's regex crate does not reject the file at boot. Claude Code
+    // continues to treat the literal `mcp__` as a substring matcher.
+    const path = resolve(__dirname, "..", "..", "hooks", "hooks.json");
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
+      hooks: { PreToolUse: Array<{ matcher: string }> };
+    };
+    const matchers = (parsed.hooks.PreToolUse ?? []).map((e) => e.matcher);
+    // Whichever entry was the external-MCP catch-all must now be charset-clean.
+    const mcpCatchAll = matchers.find(
+      (m) => m && m.startsWith("mcp__") && !m.includes("ctx_"),
+    );
+    expect(mcpCatchAll, "expected an mcp__ catch-all matcher in hooks.json").toBeDefined();
+    expect(mcpCatchAll).toMatch(EXACT_MATCHER_CHARSET);
   });
 });

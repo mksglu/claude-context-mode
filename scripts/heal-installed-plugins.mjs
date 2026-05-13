@@ -283,3 +283,114 @@ export function healPluginJsonMcpServers({ pluginRoot, pluginCacheRoot, pluginKe
 
   return { healed };
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #531 (v1.0.122) — Layer 6 heal: .mcp.json mcpServers args
+//
+// Asymmetric-heal sibling of healPluginJsonMcpServers (#523). The regression
+// that broke `.mcp.json` was commit aea633c (PR #253, 2026-04-13): the shipped
+// `.mcp.json` template at repo root used a bare relative `./start.mjs` arg.
+// Claude Code spawns the MCP child with session CWD inherited (not pluginRoot)
+// so fresh npm marketplace installs throw MODULE_NOT_FOUND on every ctx_* tool.
+// v1.0.119 added healPluginJsonMcpServers for the `.claude-plugin/plugin.json`
+// sibling but missed `.mcp.json` — same plugin, same drift class, different
+// file. This module is the asymmetric-heal sibling.
+//
+// Same regex, same placeholder, same traversal guard as #523. Only difference:
+//   - Target: `<pluginRoot>/.mcp.json` (flat shape, no `.claude-plugin/` subdir)
+//   - Structure: `.mcpServers.<pluginName>.args[]`
+//   - Additional drift shape: bare relative `./start.mjs` (the #253 regression)
+//     that healPluginJsonMcpServers's tmpdir-only check would not catch.
+//
+// Single source of truth shared by:
+//   - `start.mjs` HEAL 5b (every MCP boot)
+//   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+//   - `src/cli.ts` upgrade() (post-bump)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Heal `<pluginRoot>/.mcp.json` mcpServers args.
+ *
+ * Detects two drift shapes:
+ *   1. Bare relative `./start.mjs` (#253 regression — fresh-install class).
+ *   2. Tmpdir-prefixed `<...>/context-mode-upgrade-<digits>/start.mjs`
+ *      (mirrors healPluginJsonMcpServers's #523 tmpdir class).
+ * Both rewrite to the literal `${CLAUDE_PLUGIN_ROOT}/start.mjs` placeholder
+ * Claude Code resolves at load-time.
+ *
+ * @param {{
+ *   pluginRoot: string,
+ *   pluginCacheRoot: string,
+ *   pluginKey: string,
+ * }} opts
+ * @returns {HealResult}
+ */
+export function healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey }) {
+  if (!pluginRoot || !pluginCacheRoot || !pluginKey) {
+    return { healed: [], skipped: "missing-args" };
+  }
+
+  // Path-traversal guard: refuse to touch a plugin root that escapes the
+  // declared cache root. Mirrors healPluginJsonMcpServers + HEAL 3.
+  const resolvedRoot = resolve(pluginRoot);
+  const cacheRootWithSep = resolve(pluginCacheRoot) + sep;
+  if (!resolvedRoot.startsWith(cacheRootWithSep)) {
+    return { healed: [], skipped: "outside-cache-root" };
+  }
+
+  // `.mcp.json` lives at pluginRoot/.mcp.json (flat), NOT under .claude-plugin/.
+  const mcpJsonPath = resolve(pluginRoot, ".mcp.json");
+  if (!existsSync(mcpJsonPath)) {
+    return { healed: [], skipped: "no-mcp-json" };
+  }
+
+  let raw;
+  try { raw = readFileSync(mcpJsonPath, "utf-8"); }
+  catch (err) { return { healed: [], error: `read-failed: ${(err && err.message) || err}` }; }
+
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (err) { return { healed: [], error: `parse-failed: ${(err && err.message) || err}` }; }
+
+  const servers = parsed && parsed.mcpServers;
+  if (!servers || typeof servers !== "object") {
+    return { healed: [], skipped: "no-mcp-servers" };
+  }
+
+  // Derive our server name from pluginKey ("context-mode@context-mode" → "context-mode").
+  const ourServerName = pluginKey.split("@")[0];
+  const ours = servers[ourServerName];
+  if (!ours || typeof ours !== "object" || !Array.isArray(ours.args)) {
+    return { healed: [], skipped: "no-our-server" };
+  }
+
+  /** @type {string[]} */
+  const healed = [];
+  const before = ours.args;
+  const after = before.map((a) => {
+    if (typeof a !== "string") return a;
+    // Drift shape #1 (issue #531 / commit aea633c): bare relative `./start.mjs`.
+    // Resolved against session CWD (not pluginRoot) → MODULE_NOT_FOUND.
+    if (a === "./start.mjs" || a === "start.mjs") {
+      return PLACEHOLDER_ARG;
+    }
+    // Drift shape #2 (mirror of healPluginJsonMcpServers / #523):
+    // tmpdir-prefixed `<...>/context-mode-upgrade-<digits>/start.mjs`.
+    if (TMPDIR_UPGRADE_RE.test(a) && /[/\\]start\.mjs$/.test(a)) {
+      return PLACEHOLDER_ARG;
+    }
+    return a;
+  });
+  const changed = after.some((v, i) => v !== before[i]);
+  if (changed) {
+    ours.args = after;
+    healed.push("mcp-json-args");
+    try {
+      writeFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+    } catch (err) {
+      return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
+    }
+  }
+
+  return { healed };
+}

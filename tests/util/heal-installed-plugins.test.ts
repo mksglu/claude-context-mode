@@ -32,6 +32,8 @@ import {
   healSettingsEnabledPlugins,
   // @ts-expect-error — JS module, no TS declarations
   healPluginJsonMcpServers,
+  // @ts-expect-error — JS module, no TS declarations
+  healMcpJsonArgs,
 } from "../../scripts/heal-installed-plugins.mjs";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -612,5 +614,241 @@ describe("healPluginJsonMcpServers (Issue #523)", () => {
     expect(after.mcpServers["context-mode"].args[0]).toBe(
       "${CLAUDE_PLUGIN_ROOT}/start.mjs",
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// healMcpJsonArgs — Issue #531 (v1.0.122)
+//
+// Asymmetric-heal sibling of healPluginJsonMcpServers (#523). v1.0.119 healed
+// `.claude-plugin/plugin.json` but missed the sibling `<pluginRoot>/.mcp.json`.
+// The regression that broke `.mcp.json` was commit aea633c (PR #253,
+// 2026-04-13) where the shipped template used a bare relative `./start.mjs`
+// arg. Claude Code spawns the MCP child with session CWD, not pluginRoot →
+// fresh marketplace installs throw MODULE_NOT_FOUND on every ctx_* tool.
+//
+// Same regex, same placeholder, same traversal guard as #523. Only difference:
+// target file is `<pluginRoot>/.mcp.json` (flat shape, no `.claude-plugin/`
+// subdir) and JSON structure is `.mcpServers.<pluginName>.args[]`.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("healMcpJsonArgs (Issue #531)", () => {
+  function buildPoisonedMcpJson(opts: {
+    pluginRoot: string;
+    args0: string;
+    extraServers?: Record<string, unknown>;
+  }): string {
+    mkdirSync(opts.pluginRoot, { recursive: true });
+    const path = resolve(opts.pluginRoot, ".mcp.json");
+    const content = {
+      mcpServers: {
+        "context-mode": {
+          command: "node",
+          args: [opts.args0],
+        },
+        ...(opts.extraServers ?? {}),
+      },
+    };
+    writeFileSync(path, JSON.stringify(content, null, 2) + "\n");
+    return path;
+  }
+
+  // Slice 2 — bare relative `./start.mjs` (the aea633c regression shape)
+  it("rewrites bare relative ./start.mjs to ${CLAUDE_PLUGIN_ROOT}/start.mjs", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    const pluginRoot = resolve(
+      cacheRoot,
+      "context-mode",
+      "context-mode",
+      "1.0.121",
+    );
+    mkdirSync(pluginRoot, { recursive: true });
+    const mcpJsonPath = buildPoisonedMcpJson({
+      pluginRoot,
+      args0: "./start.mjs",
+    });
+
+    const result = healMcpJsonArgs({
+      pluginRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toContain("mcp-json-args");
+    const after = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    expect(after.mcpServers["context-mode"].args).toEqual([
+      "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    ]);
+  });
+
+  // Slice 3 — tmpdir-prefixed paths (POSIX + Windows backslash)
+  it("rewrites tmpdir-prefixed paths matching context-mode-upgrade-<digits>", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    const pluginRoot = resolve(
+      cacheRoot,
+      "context-mode",
+      "context-mode",
+      "1.0.121",
+    );
+    mkdirSync(pluginRoot, { recursive: true });
+    const posixPoisoned =
+      "/var/folders/xx/yyy/T/context-mode-upgrade-1747000000000/start.mjs";
+    const mcpJsonPath = buildPoisonedMcpJson({
+      pluginRoot,
+      args0: posixPoisoned,
+    });
+
+    const result = healMcpJsonArgs({
+      pluginRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toContain("mcp-json-args");
+    const after = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    expect(after.mcpServers["context-mode"].args[0]).toBe(
+      "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    );
+  });
+
+  it("rewrites Windows backslash AppData\\Local\\Temp prefix", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    const pluginRoot = resolve(
+      cacheRoot,
+      "context-mode",
+      "context-mode",
+      "1.0.121",
+    );
+    mkdirSync(pluginRoot, { recursive: true });
+    const winPoisoned =
+      "C:\\Users\\Mert\\AppData\\Local\\Temp\\context-mode-upgrade-1747000000000\\start.mjs";
+    const mcpJsonPath = buildPoisonedMcpJson({
+      pluginRoot,
+      args0: winPoisoned,
+    });
+
+    const result = healMcpJsonArgs({
+      pluginRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toContain("mcp-json-args");
+    const after = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    expect(after.mcpServers["context-mode"].args[0]).toBe(
+      "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    );
+  });
+
+  // Slice 4 — idempotent on healthy placeholder
+  it("idempotent — leaves correct ${CLAUDE_PLUGIN_ROOT} placeholder untouched", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    const pluginRoot = resolve(
+      cacheRoot,
+      "context-mode",
+      "context-mode",
+      "1.0.121",
+    );
+    mkdirSync(pluginRoot, { recursive: true });
+    const mcpJsonPath = buildPoisonedMcpJson({
+      pluginRoot,
+      args0: "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    });
+    const before = readFileSync(mcpJsonPath, "utf-8");
+
+    const result = healMcpJsonArgs({
+      pluginRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toEqual([]);
+    // Bytes on disk are unchanged.
+    expect(readFileSync(mcpJsonPath, "utf-8")).toBe(before);
+  });
+
+  // Slice 5 — traversal guard
+  it("traversal guard — refuses paths outside pluginCacheRoot", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    // pluginRoot OUTSIDE the declared cache root → must refuse.
+    const escapedRoot = makeTmp("ctx-issue531-escape-");
+    const mcpJsonPath = buildPoisonedMcpJson({
+      pluginRoot: escapedRoot,
+      args0: "/var/folders/x/T/context-mode-upgrade-1747000000000/start.mjs",
+    });
+    const before = readFileSync(mcpJsonPath, "utf-8");
+
+    const result = healMcpJsonArgs({
+      pluginRoot: escapedRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toEqual([]);
+    expect(result.skipped).toBe("outside-cache-root");
+    // File is untouched.
+    expect(readFileSync(mcpJsonPath, "utf-8")).toBe(before);
+  });
+
+  // Slice 6 — preserves unrelated mcpServers entries
+  it("preserves unrelated mcpServers entries", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    const pluginRoot = resolve(
+      cacheRoot,
+      "context-mode",
+      "context-mode",
+      "1.0.121",
+    );
+    mkdirSync(pluginRoot, { recursive: true });
+    const mcpJsonPath = buildPoisonedMcpJson({
+      pluginRoot,
+      args0: "./start.mjs",
+      extraServers: {
+        "user-other-mcp": {
+          command: "python",
+          args: ["/usr/local/bin/other-mcp.py", "--flag"],
+        },
+      },
+    });
+
+    const result = healMcpJsonArgs({
+      pluginRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toContain("mcp-json-args");
+    const after = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    // Our entry healed.
+    expect(after.mcpServers["context-mode"].args[0]).toBe(
+      "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    );
+    // Sibling untouched (we don't own it).
+    expect(after.mcpServers["user-other-mcp"]).toEqual({
+      command: "python",
+      args: ["/usr/local/bin/other-mcp.py", "--flag"],
+    });
+  });
+
+  // Defensive — missing file returns silent skip
+  it("returns skipped:'no-mcp-json' when .mcp.json is missing", () => {
+    const cacheRoot = makeTmp("ctx-issue531-cache-");
+    const pluginRoot = resolve(
+      cacheRoot,
+      "context-mode",
+      "context-mode",
+      "1.0.121",
+    );
+    mkdirSync(pluginRoot, { recursive: true });
+    // No .mcp.json file written.
+
+    const result = healMcpJsonArgs({
+      pluginRoot,
+      pluginCacheRoot: cacheRoot,
+      pluginKey: "context-mode@context-mode",
+    });
+
+    expect(result.healed).toEqual([]);
+    expect(result.skipped).toBe("no-mcp-json");
   });
 });

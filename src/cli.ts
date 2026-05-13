@@ -31,7 +31,7 @@ import { resolveClaudeConfigDir } from "./util/claude-config.js";
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
-import { healPluginJsonMcpServers } from "../scripts/heal-installed-plugins.mjs";
+import { healPluginJsonMcpServers, healMcpJsonArgs } from "../scripts/heal-installed-plugins.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
 // duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
 // Keep in sync — pure data, no I/O.
@@ -139,7 +139,17 @@ const args = process.argv.slice(2);
 if (args[0] === "doctor") {
   doctor().then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
-  upgrade().catch((err: unknown) => {
+  // Issue #542 — accept --platform <id> from the ctx_upgrade MCP handler,
+  // which forwards the live MCP clientInfo's resolved PlatformId. The flag
+  // wins over upgrade()'s own detectPlatform() heuristic chain so an
+  // ambiguous config-dir collision (e.g. ~/.cursor + ~/.pi both present)
+  // can never misroute the upgrade.
+  const platformFlagIdx = args.indexOf("--platform");
+  const platformArg =
+    platformFlagIdx >= 0 && args[platformFlagIdx + 1]
+      ? args[platformFlagIdx + 1]
+      : undefined;
+  upgrade(platformArg ? { platform: platformArg } : undefined).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     p.log.error(color.red(message));
     process.exit(1);
@@ -426,22 +436,49 @@ async function doctor(): Promise<number> {
     }
   }
 
-  // Hook scripts exist
+  // Hook scripts exist — Algo-D1 protocol path takes precedence.
+  // Adapters that override `getHealthChecks` (claude-code today) get a
+  // direct `existsSync(join(pluginRoot, "hooks", scriptName))` per
+  // HOOK_SCRIPTS entry — no regex round-trip on a hook command, so the
+  // #548 doubled-path FAIL class can't surface. Adapters that don't
+  // override fall through to the legacy `getHookScriptPaths` flow which
+  // generates the hook config and parses each command via
+  // `extractHookScriptPath`. Post-D3 every adapter emits buildNodeCommand-
+  // shape, so the legacy flow is also safe — but the direct existsSync
+  // path is strictly preferable when the adapter offers it.
   p.log.step("Checking hook scripts...");
-  const hookScriptPaths = getHookScriptPaths(adapter, pluginRoot);
-  if (hookScriptPaths.length === 0) {
-    p.log.success(color.green("Hook scripts: PASS") + color.dim(" — no direct .mjs script paths to verify"));
-  } else {
-    for (const scriptPath of hookScriptPaths) {
-      const absolutePath = resolve(pluginRoot, scriptPath);
-      try {
-        accessSync(absolutePath, constants.R_OK);
-        p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${absolutePath}`));
-      } catch {
-        p.log.error(
-          color.red("Hook script exists: FAIL") +
-            color.dim(` — not found at ${absolutePath}`),
+  const adapterHealthChecks = adapter.getHealthChecks?.(pluginRoot) ?? [];
+  if (adapterHealthChecks.length > 0) {
+    for (const hc of adapterHealthChecks) {
+      const result = hc.check();
+      if (result.status === "OK") {
+        p.log.success(
+          color.green(`${hc.name}: PASS`) +
+            (result.detail ? color.dim(` — ${result.detail}`) : ""),
         );
+      } else {
+        p.log.error(
+          color.red(`${hc.name}: FAIL`) +
+            (result.detail ? color.dim(` — ${result.detail}`) : ""),
+        );
+      }
+    }
+  } else {
+    const hookScriptPaths = getHookScriptPaths(adapter, pluginRoot);
+    if (hookScriptPaths.length === 0) {
+      p.log.success(color.green("Hook scripts: PASS") + color.dim(" — no direct .mjs script paths to verify"));
+    } else {
+      for (const scriptPath of hookScriptPaths) {
+        const absolutePath = resolve(pluginRoot, scriptPath);
+        try {
+          accessSync(absolutePath, constants.R_OK);
+          p.log.success(color.green("Hook script exists: PASS") + color.dim(` — ${absolutePath}`));
+        } catch {
+          p.log.error(
+            color.red("Hook script exists: FAIL") +
+              color.dim(` — not found at ${absolutePath}`),
+          );
+        }
       }
     }
   }
@@ -706,11 +743,18 @@ async function insight(port: number) {
  * Upgrade — adapter-aware hook configuration
  * ------------------------------------------------------- */
 
-async function upgrade() {
+async function upgrade(opts?: { platform?: string }) {
   if (process.stdout.isTTY) console.clear();
 
-  // Detect platform
-  const detection = detectPlatform();
+  // Issue #542 — when the MCP ctx_upgrade handler threads through an
+  // explicit --platform <id> (resolved from live clientInfo), trust it
+  // over the local heuristic chain. detectPlatform() with no args cannot
+  // see the MCP handshake and falls through to the config-dir tier,
+  // which misdetects Pi/OMP installs as Cursor on systems where both
+  // ~/.cursor/ and ~/.pi/ exist.
+  const detection = opts?.platform
+    ? { platform: opts.platform as Parameters<typeof getAdapter>[0], confidence: "high" as const, reason: `--platform ${opts.platform} from ctx_upgrade handler` }
+    : detectPlatform();
   const adapter = await getAdapter(detection.platform);
 
   p.intro(color.bgCyan(color.black(" context-mode upgrade ")));
@@ -944,6 +988,33 @@ async function upgrade() {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(`plugin.json drift check failed: ${message}`);
+      }
+
+      // v1.0.122 — Issue #531 — Layer 6 heal: assert .mcp.json's
+      // mcpServers["context-mode"].args[0] is the literal ${CLAUDE_PLUGIN_ROOT}/start.mjs
+      // placeholder. Asymmetric-heal sibling of the plugin.json assertion above.
+      // cli.ts writes .mcp.json at ~line 829-845 with the placeholder, but never
+      // asserted the on-disk shape afterwards — if a future regression dropped
+      // the placeholder write or a parallel normalize baked in an absolute path,
+      // upgrade() would declare success on a poisoned tree. Belt-and-braces:
+      // first call cleans any drift; second call MUST return healed:[] or throw.
+      // Single source of truth shared with start.mjs HEAL block + postinstall.
+      try {
+        const pluginCacheRoot = resolve(resolveClaudeConfigDir(), "plugins", "cache");
+        const pluginKey = "context-mode@context-mode";
+        const firstPass = healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey });
+        if (firstPass && firstPass.error) {
+          throw new Error(firstPass.error);
+        }
+        const secondPass = healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey });
+        if (secondPass && Array.isArray(secondPass.healed) && secondPass.healed.length > 0) {
+          throw new Error(
+            `.mcp.json drift: mcpServers.args still poisoned after first heal pass (healed=${secondPass.healed.join(",")})`,
+          );
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`.mcp.json drift check failed: ${message}`);
       }
 
       // v1.0.114 hotfix — marketplace post-pull assertion: clone (if

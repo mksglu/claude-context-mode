@@ -37,6 +37,27 @@ export const HOOK_TYPES = {
 export type HookType = (typeof HOOK_TYPES)[keyof typeof HOOK_TYPES];
 
 // ─────────────────────────────────────────────────────────
+// External MCP routing matcher (#529)
+// ─────────────────────────────────────────────────────────
+
+/**
+ * Negative-lookahead matcher for external MCP tool namespaces on Gemini CLI (#529).
+ *
+ * Gemini CLI MCP wire shape: `mcp__<server>__<tool>` (verified in
+ * hooks/core/tool-naming.mjs — context-mode's own tools surface as
+ * `mcp__context-mode__<tool>`). This pattern fires BeforeTool for any
+ * external `mcp__<server>__<tool>` whose server segment does NOT contain
+ * `context-mode`. Without it, large payloads from slack / telegram / gdrive /
+ * notion-style MCPs bypass the routing nudge and flood the model's context.
+ *
+ * The negative lookahead `(?!.*context-mode)` covers both the canonical
+ * `mcp__context-mode__*` and any Claude shim `mcp__plugin_context-mode_*`
+ * names. Gemini native bare tool names (run_shell_command, read_file, …)
+ * are not `mcp__`-prefixed and are unaffected.
+ */
+export const EXTERNAL_MCP_MATCHER_PATTERN = "mcp__(?!.*context-mode)";
+
+// ─────────────────────────────────────────────────────────
 // Hook script file names
 // ─────────────────────────────────────────────────────────
 

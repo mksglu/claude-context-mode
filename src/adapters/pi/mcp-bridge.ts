@@ -23,6 +23,7 @@
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { detectRuntimes } from "../../runtime.js";
+import { foreignWorkspaceEnv } from "../detect.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -175,6 +176,20 @@ export class MCPStdioClient {
       ...this.env,
       [BRIDGE_DEPTH_ENV]: String(Number.isFinite(depth) ? depth + 1 : 1),
     };
+    // Issue #545 — scrub foreign workspace env vars before spawn.
+    //
+    // Pi's MCP bridge inherits the host shell env (including a prior
+    // `claude` invocation's CLAUDE_PROJECT_DIR). Without this scrub, the
+    // spawned MCP server resolves getProjectDir() to the foreign workspace
+    // and Pi's sessions write into the wrong project. The ban list is
+    // derived ALGORITHMICALLY from PLATFORM_ENV_VARS (every other adapter's
+    // workspace-role vars), so adding adapter #16 grows the scrub
+    // automatically — no edit to this file. Identification vars
+    // (CLAUDE_PLUGIN_ROOT etc.) and the universal escape hatch
+    // (CONTEXT_MODE_PROJECT_DIR) are NEVER scrubbed.
+    for (const banned of foreignWorkspaceEnv("pi")) {
+      delete childEnv[banned];
+    }
     this._spawnEnv = childEnv;
     this.child = spawn(runtime, [this.serverScript], {
       // Pipe stderr (#472 round-3): swallowing it via "ignore" hides

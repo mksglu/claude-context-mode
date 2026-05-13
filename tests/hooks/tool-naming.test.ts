@@ -22,10 +22,12 @@ let createRoutingBlock: (t: (tool: string) => string) => string;
 let createReadGuidance: (t: (tool: string) => string) => string;
 let createGrepGuidance: (t: (tool: string) => string) => string;
 let createBashGuidance: (t: (tool: string) => string) => string;
+let createExternalMcpGuidance: (t: (tool: string) => string) => string;
 let ROUTING_BLOCK: string;
 let READ_GUIDANCE: string;
 let GREP_GUIDANCE: string;
 let BASH_GUIDANCE: string;
+let EXTERNAL_MCP_GUIDANCE: string;
 
 beforeAll(async () => {
   const naming = await import("../../hooks/core/tool-naming.mjs");
@@ -42,10 +44,12 @@ beforeAll(async () => {
   createReadGuidance = block.createReadGuidance;
   createGrepGuidance = block.createGrepGuidance;
   createBashGuidance = block.createBashGuidance;
+  createExternalMcpGuidance = block.createExternalMcpGuidance;
   ROUTING_BLOCK = block.ROUTING_BLOCK;
   READ_GUIDANCE = block.READ_GUIDANCE;
   GREP_GUIDANCE = block.GREP_GUIDANCE;
   BASH_GUIDANCE = block.BASH_GUIDANCE;
+  EXTERNAL_MCP_GUIDANCE = block.EXTERNAL_MCP_GUIDANCE;
 });
 
 // MCP readiness sentinel — routing.mjs checks process.ppid in-process
@@ -211,6 +215,43 @@ describe("createBashGuidance", () => {
   });
 });
 
+describe("createExternalMcpGuidance (#529)", () => {
+  it("uses kiro-style tool names for kiro platform", () => {
+    const t = createToolNamer("kiro");
+    const guidance = createExternalMcpGuidance(t);
+    expect(guidance).toContain("@context-mode/ctx_execute");
+    expect(guidance).toContain("@context-mode/ctx_fetch_and_index");
+    expect(guidance).toContain("@context-mode/ctx_search");
+  });
+
+  it("uses opencode-style tool names for opencode platform", () => {
+    const t = createToolNamer("opencode");
+    const guidance = createExternalMcpGuidance(t);
+    expect(guidance).toContain("context-mode_ctx_execute");
+    expect(guidance).toContain("context-mode_ctx_fetch_and_index");
+    expect(guidance).toContain("context-mode_ctx_search");
+  });
+
+  it("uses zed-style tool names for zed platform", () => {
+    const t = createToolNamer("zed");
+    const guidance = createExternalMcpGuidance(t);
+    expect(guidance).toContain("mcp:context-mode:ctx_execute");
+    expect(guidance).toContain("mcp:context-mode:ctx_fetch_and_index");
+    expect(guidance).toContain("mcp:context-mode:ctx_search");
+  });
+
+  it("mentions the routing intent so the model knows what to do", () => {
+    const t = createToolNamer("claude-code");
+    const guidance = createExternalMcpGuidance(t);
+    // Identifies the situation
+    expect(guidance).toContain("External MCP tools");
+    // Points to the right tools — losing any of these defeats the guidance
+    expect(guidance).toMatch(/ctx_execute/);
+    expect(guidance).toMatch(/ctx_fetch_and_index/);
+    expect(guidance).toMatch(/ctx_search/);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // Backward Compat — Static Exports
 // ═══════════════════════════════════════════════════════════════════
@@ -241,6 +282,22 @@ describe("backward compat static exports", () => {
     expect(BASH_GUIDANCE).toContain(
       "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
     );
+  });
+
+  it("EXTERNAL_MCP_GUIDANCE uses claude-code naming and matches the factory (#529)", () => {
+    expect(EXTERNAL_MCP_GUIDANCE).toContain(
+      "mcp__plugin_context-mode_context-mode__ctx_execute",
+    );
+    expect(EXTERNAL_MCP_GUIDANCE).toContain(
+      "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
+    );
+    expect(EXTERNAL_MCP_GUIDANCE).toContain(
+      "mcp__plugin_context-mode_context-mode__ctx_search",
+    );
+    // Drift guard: the static export must equal the factory output with the
+    // default (claude-code) namer — they share a single template.
+    const claudeCodeT = createToolNamer("claude-code");
+    expect(EXTERNAL_MCP_GUIDANCE).toBe(createExternalMcpGuidance(claudeCodeT));
   });
 });
 

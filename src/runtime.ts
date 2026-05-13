@@ -32,7 +32,8 @@ export type Language =
   | "php"
   | "perl"
   | "r"
-  | "elixir";
+  | "elixir"
+  | "csharp";
 
 export interface RuntimeInfo {
   command: string;
@@ -53,6 +54,7 @@ export interface RuntimeMap {
   perl: string | null;
   r: string | null;
   elixir: string | null;
+  csharp: string | null;
 }
 
 const isWindows = process.platform === "win32";
@@ -94,11 +96,14 @@ function runnableExists(cmd: string): boolean {
   // fallthrough can be slow). On POSIX, 1500ms is plenty for a real binary
   // and keeps cold detection of python3 → python → py under ~5s total (#454).
   try {
-    execFileSync(cmd, ["--version"], {
-      shell: isWindows,
-      stdio: "pipe",
-      timeout: isWindows ? 5000 : 1500,
-    });
+    // DEP0190 fix: avoid args array with shell:true on Windows.
+    // Use execSync with a command string when shell is required;
+    // keep execFileSync (no shell) on POSIX.
+    if (isWindows) {
+      execSync(`"${cmd}" --version`, { stdio: "pipe", timeout: 5000 });
+    } else {
+      execFileSync(cmd, ["--version"], { stdio: "pipe", timeout: 1500 });
+    }
     return true;
   } catch {
     return false;
@@ -184,14 +189,30 @@ function resolveWindowsBash(): string | null {
 
 function getVersion(cmd: string, args: string[] = ["--version"]): string {
   try {
-    return execFileSync(cmd, args, {
-      encoding: "utf-8",
-      shell: process.platform === "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 5000,
-    })
-      .trim()
-      .split(/\r?\n/)[0];
+    // DEP0190 fix: avoid args array with shell:true on Windows.
+    if (process.platform === "win32") {
+      // Hardening (PR #537 review): quote any cmd.exe metacharacter, not just
+      // whitespace. Current arg sources are internally controlled, but cheap
+      // defense-in-depth for future call sites.
+      const cmdStr = [cmd, ...args]
+        .map(a => /[\s"&|<>^()%!]/.test(a) ? JSON.stringify(a) : a)
+        .join(" ");
+      return execSync(cmdStr, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      })
+        .trim()
+        .split(/\r?\n/)[0];
+    } else {
+      return execFileSync(cmd, args, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 5000,
+      })
+        .trim()
+        .split(/\r?\n/)[0];
+    }
   } catch {
     return "unknown";
   }
@@ -245,6 +266,7 @@ export function detectRuntimes(): RuntimeMap {
         ? "r"
         : null,
     elixir: commandExists("elixir") ? "elixir" : null,
+    csharp: commandExists("dotnet-script") ? "dotnet-script" : null,
   };
 }
 
@@ -307,6 +329,10 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
     lines.push(
       `  Elixir:     ${runtimes.elixir} (${getVersion(runtimes.elixir)})`,
     );
+  if (runtimes.csharp)
+    lines.push(
+      `  C#:         ${runtimes.csharp} (${getVersion(runtimes.csharp)})`,
+    );
 
   if (!bunPreferred) {
     lines.push("");
@@ -329,6 +355,7 @@ export function getAvailableLanguages(runtimes: RuntimeMap): Language[] {
   if (runtimes.perl) langs.push("perl");
   if (runtimes.r) langs.push("r");
   if (runtimes.elixir) langs.push("elixir");
+  if (runtimes.csharp) langs.push("csharp");
   return langs;
 }
 
@@ -429,5 +456,13 @@ export function buildCommand(
         throw new Error( "Elixir not available. Install elixir.");
       }
       return ["elixir", filePath];
+
+    case "csharp":
+      if (!runtimes.csharp) {
+        throw new Error(
+          "C# not available. Install dotnet-script via `dotnet tool install -g dotnet-script`.",
+        );
+      }
+      return [runtimes.csharp, filePath];
   }
 }

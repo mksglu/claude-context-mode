@@ -18,6 +18,17 @@ tasks/
 AGENTS.md
 context-mode-guidance-*/
 .claude/worktrees/
+
+# .mcp.json is local-only — purpose splits between contributor dev
+# (relative paths work because cwd = repo root) and end-user marketplace
+# install (placeholder ${CLAUDE_PLUGIN_ROOT}/start.mjs is required).
+# These two forms have flip-flopped 3 times in history (#253 #531 etc),
+# causing every fresh install to silently break. End users get MCP via
+# .claude-plugin/plugin.json (always placeholder) and /ctx-upgrade's
+# cli.ts write (always placeholder). The .mcp.json at repo root only
+# helps contributors during local dev. Untracked → can't regress.
+# Copy .mcp.json.example to .mcp.json for local dev.
+.mcp.json
 .claude-worktrees/
 .vibetree/
 .cw/

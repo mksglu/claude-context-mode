@@ -107,8 +107,10 @@ describe("2. User Decisions Preserved in Resume", () => {
     const sid = `decisions-${randomUUID()}`;
     db.ensureSession(sid, "/project");
 
-    // Extract decision event from user message
-    const decisionEvents = extractUserEvents("never push to main without asking");
+    // Extract decision event from user message.
+    // Universal-rule shape (issue #535): the message carries a clause
+    // separator + non-question + corrective length → decision.
+    const decisionEvents = extractUserEvents("never push to main, ask me first");
     assert.ok(decisionEvents.length >= 1, "should extract at least 1 decision event");
 
     const decisionEvent = decisionEvents.find(e => e.type === "decision");

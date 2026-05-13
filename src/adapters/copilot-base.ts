@@ -255,8 +255,24 @@ export abstract class CopilotBaseAdapter extends BaseAdapter implements HookAdap
 
   // ── Configuration (shared) ─────────────────────────────
 
-  getSettingsPath(): string {
-    return resolve(".github", "hooks", "context-mode.json");
+  /**
+   * Resolve the absolute path to the Copilot-style hook settings file.
+   *
+   * Issue #539 fix: previously this returned `resolve(".github", ...)`
+   * — a CWD-relative path. `doctor` (validateHooks) and `upgrade`
+   * (configureAllHooks) could legitimately run from different working
+   * directories (CLI invoked from a subdir, MCP server cwd=projectDir),
+   * so each saw a DIFFERENT settings path and the diagnose/repair loop
+   * never converged on the same file.
+   *
+   * Now anchors on `projectDir` when supplied (matching the sibling
+   * `getConfigDir(projectDir?: string)` signature in
+   * vscode-copilot/index.ts:93). Falls back to `process.cwd()` to keep
+   * existing callers source-compatible — the slice-5 follow-up will
+   * thread projectDir through `cli.ts doctor`/`upgrade`.
+   */
+  getSettingsPath(projectDir?: string): string {
+    return resolve(projectDir ?? process.cwd(), ".github", "hooks", "context-mode.json");
   }
 
   generateHookConfig(pluginRoot: string): HookRegistration {

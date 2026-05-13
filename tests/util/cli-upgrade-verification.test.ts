@@ -37,7 +37,17 @@ const ROOT = resolve(__dirname, "..", "..");
 const cliSrc = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
 const startSrc = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
 const upgradeIdx = cliSrc.indexOf("async function upgrade");
-const upgradeBody = cliSrc.slice(upgradeIdx, upgradeIdx + 14000);
+// upgradeBody cap was 14000 at v1.0.114; the function has grown by ~10k chars
+// through #523/#531/#542 (Layer 5b heal, Layer 6 mcp.json heal, Pi/OMP detect).
+// CI run 25739349791 showed the cap truncating the `Run manually: git -C ...
+// fetch ... reset` one-liner at offset 14073 — 73 chars past the cap. The
+// "marketplace assertion provides a manual-fix one-liner" test then sliced
+// `assertIdx + 1000` and got a short 243-char buffer that ended mid-string at
+// `... marketplaceDir"} fe` (regex needs `fetch ... reset`, both cut off).
+// 30000 contains the full ~24k-char upgrade() body plus 6k buffer for future
+// growth. Cheaper than dynamically detecting function boundaries; safe because
+// every test using upgradeBody asserts on CONTENTS, never on .length.
+const upgradeBody = cliSrc.slice(upgradeIdx, upgradeIdx + 30000);
 
 // ─────────────────────────────────────────────────────────
 // start.mjs wires HEAL 3 + HEAL 4 (Change 1)

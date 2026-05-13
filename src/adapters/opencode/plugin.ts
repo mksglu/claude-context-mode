@@ -228,7 +228,7 @@ function systemHasRoutingInstructions(system: string[]): boolean {
 function getPlatform(): AdapterPlatformType {
   for (const [platform, vars] of PLATFORM_ENV_VARS) {
     if (platform !== "kilo" && platform !== "opencode") continue;
-    if (vars.some((v) => process.env[v])) {
+    if (vars.some((v) => process.env[v.name])) {
       return platform as AdapterPlatformType;
     }
   }

@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { sep } from "node:path";
-import { detectPlatform, getAdapter } from "../../src/adapters/detect.js";
+import {
+  detectPlatform,
+  getAdapter,
+  __seedClaudeCodePluginCacheMissForTests,
+} from "../../src/adapters/detect.js";
 import { ClaudeCodeAdapter } from "../../src/adapters/claude-code/index.js";
 import { GeminiCLIAdapter } from "../../src/adapters/gemini-cli/index.js";
 import { OpenCodeAdapter } from "../../src/adapters/opencode/index.js";
@@ -27,6 +31,12 @@ describe("detectPlatform", () => {
     // Clear all platform-specific env vars to get a clean slate
     delete process.env.CLAUDE_PROJECT_DIR;
     delete process.env.CLAUDE_SESSION_ID;
+    // Issue #539 follow-up: CLAUDE_CODE_ENTRYPOINT / CLAUDE_PLUGIN_ROOT are
+    // exported by Claude Code itself, so any test process that runs INSIDE
+    // CC will inherit them. Without this wipe, every non-claude-code env-var
+    // assertion below short-circuits to "claude-code" via PLATFORM_ENV_VARS.
+    delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    delete process.env.CLAUDE_PLUGIN_ROOT;
     delete process.env.GEMINI_PROJECT_DIR;
     delete process.env.GEMINI_CLI;
     delete process.env.KILO;
@@ -44,10 +54,21 @@ describe("detectPlatform", () => {
     delete process.env.VSCODE_CWD;
     delete process.env.QWEN_PROJECT_DIR;
     delete process.env.PI_CODING_AGENT_DIR;
+    // Issue #542 — Pi-runtime markers (PI_CONFIG_DIR, PI_SESSION_FILE,
+    // PI_COMPILED) replace the stale PI_PROJECT_DIR detection signal.
+    delete process.env.PI_CONFIG_DIR;
+    delete process.env.PI_SESSION_FILE;
+    delete process.env.PI_COMPILED;
+    delete process.env.PI_PROJECT_DIR;
     delete process.env.IDEA_INITIAL_DIRECTORY;
     delete process.env.IDEA_HOME;
     delete process.env.JETBRAINS_CLIENT_ID;
     delete process.env.CONTEXT_MODE_PLATFORM;
+    // Issue #539 slice 2: tests in this file pre-date the installed_plugins.json
+    // fallback and assume env-var-only detection. Seed the plugin cache to a
+    // "miss" so the fallback never triggers — explicit slice-2 coverage lives
+    // in detect-claude-code-in-vscode.test.ts which exercises the real read.
+    __seedClaudeCodePluginCacheMissForTests();
     vi.restoreAllMocks();
   });
 
@@ -207,14 +228,34 @@ describe("detectPlatform", () => {
   });
 
   // ── Pi ─────────────────────────────────────────────────
-  // Pi runtime sets PI_PROJECT_DIR before invoking the extension —
-  // verified by src/adapters/pi/extension.ts:154 + src/server.ts:153 consumers.
+  // Issue #542 — PI_PROJECT_DIR is consumed by src/adapters/pi/extension.ts
+  // but is NOT auto-set by the Pi runtime (verified at
+  // refs/platforms/oh-my-pi/packages/coding-agent/src/mcp/transports/stdio.ts:55-63
+  // — env passthrough only, no synthesis). Detection markers now use the
+  // Pi-exclusive PI_CONFIG_DIR / PI_SESSION_FILE / PI_COMPILED set by
+  // the runtime.
 
-  it("detects pi via PI_PROJECT_DIR env var", () => {
-    process.env.PI_PROJECT_DIR = "/some/project";
+  it("detects pi via PI_CONFIG_DIR env var", () => {
+    process.env.PI_CONFIG_DIR = "/home/u/.pi";
     const signal = detectPlatform();
     expect(signal.platform).toBe("pi");
     expect(signal.confidence).toBe("high");
+  });
+
+  it("detects pi via PI_SESSION_FILE env var", () => {
+    process.env.PI_SESSION_FILE = "/home/u/.pi/sessions/abc.json";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("pi");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("does NOT match pi on PI_PROJECT_DIR alone (issue #542 — dead marker removed)", () => {
+    // PI_PROJECT_DIR is consumed by src/adapters/pi/extension.ts but is
+    // not auto-set by the Pi runtime, so it cannot be a detection signal.
+    // Test guards against regressing back to the broken marker.
+    process.env.PI_PROJECT_DIR = "/some/project";
+    const signal = detectPlatform();
+    expect(signal.platform).not.toBe("pi");
   });
 
   // ── OMP (Oh My Pi) ──────────────────────────────────────
@@ -230,9 +271,9 @@ describe("detectPlatform", () => {
     expect(signal.confidence).toBe("high");
   });
 
-  it("prefers omp over pi when both PI_CODING_AGENT_DIR and PI_PROJECT_DIR are set", () => {
+  it("prefers omp over pi when both PI_CODING_AGENT_DIR and PI_CONFIG_DIR are set", () => {
     process.env.PI_CODING_AGENT_DIR = "/home/user/.omp/agent";
-    process.env.PI_PROJECT_DIR = "/some/project";
+    process.env.PI_CONFIG_DIR = "/home/u/.pi";
     const signal = detectPlatform();
     expect(signal.platform).toBe("omp");
     expect(signal.confidence).toBe("high");
@@ -519,8 +560,82 @@ describe("getAdapter", () => {
     expect(adapter.getSessionDir()).not.toContain(".claude");
   });
 
+  it("clientInfo 'omp-coding-agent' resolves to omp adapter (issue #542 rebrand)", async () => {
+    // refs/platforms/oh-my-pi/packages/coding-agent/src/mcp/client.ts:46-49
+    // ships clientInfo.name = "omp-coding-agent" as the rebrand canonical
+    // name. Verifies the high-confidence clientInfo tier short-circuits
+    // before falling through to the config-dir heuristic (which is the
+    // root cause of issue #542 misdetecting OMP/Pi installs as Cursor).
+    const signal = detectPlatform({ name: "omp-coding-agent", version: "1.0.0" });
+    expect(signal.platform).toBe("omp");
+    expect(signal.confidence).toBe("high");
+    expect(signal.reason).toContain("clientInfo");
+    expect(signal.reason).toContain("omp-coding-agent");
+
+    const adapter = await getAdapter(signal.platform);
+    expect(adapter).toBeInstanceOf(OMPAdapter);
+  });
+
   it("returns ClaudeCodeAdapter for unknown platform", async () => {
     const adapter = await getAdapter("unknown" as any);
     expect(adapter).toBeInstanceOf(ClaudeCodeAdapter);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// Issue #545 — PLATFORM_ENV_VARS typed with workspace/identification roles.
+//
+// The registry must split each entry into {name, role} so resolveProjectDir
+// can ALGORITHMICALLY derive ALLOW (own-platform workspace vars) and BAN
+// (other platforms' workspace vars) sets. Adding a 16th adapter must require
+// only one row in the registry — no edit to the resolver.
+// ─────────────────────────────────────────────────────────
+
+describe("PLATFORM_ENV_VARS — typed registry (issue #545 algorithmic design)", () => {
+  it("each entry tags name + role: 'workspace' | 'identification'", async () => {
+    const { PLATFORM_ENV_VARS } = await import("../../src/adapters/detect.js");
+    const claudeEntries = PLATFORM_ENV_VARS.get("claude-code");
+    expect(claudeEntries).toBeDefined();
+    expect(claudeEntries).toContainEqual({ name: "CLAUDE_PROJECT_DIR", role: "workspace" });
+    expect(claudeEntries).toContainEqual({ name: "CLAUDE_CODE_ENTRYPOINT", role: "identification" });
+    expect(claudeEntries).toContainEqual({ name: "CLAUDE_PLUGIN_ROOT", role: "identification" });
+    expect(claudeEntries).toContainEqual({ name: "CLAUDE_SESSION_ID", role: "identification" });
+  });
+
+  it("getEnvVarNames(p) shim returns string[] for backwards compatibility", async () => {
+    const { getEnvVarNames } = await import("../../src/adapters/detect.js");
+    const names = getEnvVarNames("claude-code");
+    expect(Array.isArray(names)).toBe(true);
+    expect(names).toContain("CLAUDE_PROJECT_DIR");
+    expect(names).toContain("CLAUDE_CODE_ENTRYPOINT");
+  });
+
+  it("workspaceEnvVarsFor(p) returns only role=workspace names in registry order", async () => {
+    const { workspaceEnvVarsFor } = await import("../../src/adapters/detect.js");
+    const claude = workspaceEnvVarsFor("claude-code");
+    expect(claude).toEqual(["CLAUDE_PROJECT_DIR"]);
+    const codex = workspaceEnvVarsFor("codex");
+    // Codex has no workspace var — id-only registry rows.
+    expect(codex).toEqual([]);
+  });
+
+  // Slice 2 — Pi's workspace var registry. PI_WORKSPACE_DIR (extension-set,
+  // freshest) before PI_PROJECT_DIR (user override) per registry-author order.
+  it("workspaceEnvVarsFor('pi') returns [PI_WORKSPACE_DIR, PI_PROJECT_DIR] in cascade order", async () => {
+    const { workspaceEnvVarsFor } = await import("../../src/adapters/detect.js");
+    expect(workspaceEnvVarsFor("pi")).toEqual(["PI_WORKSPACE_DIR", "PI_PROJECT_DIR"]);
+  });
+
+  it("foreignWorkspaceEnv(p) returns workspace vars from OTHER platforms", async () => {
+    const { foreignWorkspaceEnv } = await import("../../src/adapters/detect.js");
+    const banForPi = foreignWorkspaceEnv("pi");
+    // Other platforms' workspace vars must be banned for Pi.
+    expect(banForPi.has("CLAUDE_PROJECT_DIR")).toBe(true);
+    expect(banForPi.has("GEMINI_PROJECT_DIR")).toBe(true);
+    expect(banForPi.has("VSCODE_CWD")).toBe(true);
+    expect(banForPi.has("IDEA_INITIAL_DIRECTORY")).toBe(true);
+    // Identification vars (e.g. CLAUDE_PLUGIN_ROOT) are NEVER scrubbed.
+    expect(banForPi.has("CLAUDE_PLUGIN_ROOT")).toBe(false);
+    expect(banForPi.has("CLAUDE_CODE_ENTRYPOINT")).toBe(false);
   });
 });

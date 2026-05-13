@@ -70,6 +70,7 @@ import {
   HOOK_TYPES as GEMINI_HOOK_NAMES,
   HOOK_SCRIPTS as GEMINI_HOOK_SCRIPTS,
   buildHookCommand as buildGeminiHookCommand,
+  EXTERNAL_MCP_MATCHER_PATTERN,
   type HookType as GeminiHookType,
 } from "./hooks.js";
 
@@ -244,7 +245,9 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
       ],
       [GEMINI_HOOK_NAMES.BEFORE_TOOL]: [
         {
-          matcher: "run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode",
+          // Gemini native tools + context-mode own MCP (both canonical and Claude
+          // shim prefixes) + external MCP catch-all (#529).
+          matcher: `run_shell_command|read_file|read_many_files|grep_search|search_file_content|web_fetch|activate_skill|mcp__plugin_context-mode|mcp__context-mode|${EXTERNAL_MCP_MATCHER_PATTERN}`,
           hooks: [
             {
               type: "command",

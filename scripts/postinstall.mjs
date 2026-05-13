@@ -14,7 +14,7 @@ import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { healBetterSqlite3Binding } from "./heal-better-sqlite3.mjs";
-import { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers } from "./heal-installed-plugins.mjs";
+import { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } from "./heal-installed-plugins.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
@@ -123,10 +123,26 @@ if (isGlobalInstall()) {
               healedAny = true;
             }
           } catch { /* per-entry best effort */ }
+          // v1.0.122 — Issue #531 — Layer 6: asymmetric-heal sibling for
+          // .mcp.json. The #253/aea633c regression shipped a bare `./start.mjs`
+          // arg that Claude Code resolves against session CWD (not pluginRoot)
+          // → MODULE_NOT_FOUND on every ctx_* tool. When MCP is dead, the
+          // only escape hatch is `npm install -g context-mode` whose
+          // postinstall MUST run this heal too.
+          try {
+            const r = healMcpJsonArgs({
+              pluginRoot: installPath,
+              pluginCacheRoot: cacheRoot,
+              pluginKey: "context-mode@context-mode",
+            });
+            if (r && Array.isArray(r.healed) && r.healed.length > 0) {
+              healedAny = true;
+            }
+          } catch { /* per-entry best effort */ }
         }
       }
       if (healedAny) {
-        process.stderr.write("context-mode: healed plugin.json mcpServers args (Issue #523)\n");
+        process.stderr.write("context-mode: healed mcpServers args (Issues #523 + #531)\n");
       }
     }
   } catch { /* never block install */ }
@@ -272,15 +288,25 @@ try { healBetterSqlite3Binding(pkgRoot); } catch { /* best effort — don't bloc
 // here too closes the gap for the very first hook fire after a fresh install
 // (before any MCP server has run).
 //
-// Guard: /ctx-upgrade clones the repo to `<tmpdir>/context-mode-upgrade-<epoch>/`
+// Guard 1: only run on REAL `npm install -g context-mode`. A contributor's
+// `npm install` from a git clone (or CI checkout) must NOT mutate the
+// source-tracked `.claude-plugin/plugin.json` — doing so substitutes the
+// literal `${CLAUDE_PLUGIN_ROOT}` with an absolute path and trips
+// `scripts/assert-asymmetric-drift.mjs` (Issue #531) in the build chain.
+// Reuses `isGlobalInstall()` (section -1 already gates that way); the
+// `.git` walk inside it is what keeps contributor / CI installs untouched.
+//
+// Guard 2: /ctx-upgrade clones the repo to `<tmpdir>/context-mode-upgrade-<epoch>/`
 // and runs `npm install` there before `cpSync`-ing files into the real pluginRoot
-// (src/cli.ts). If we normalize here, pkgRoot is the tmpdir → hooks.json gets
-// the tmpdir's absolute paths baked in → cpSync copies that poisoned hooks.json
-// into the real plugin dir → tmpdir is later cleaned → every hook fires with
-// `MODULE_NOT_FOUND`. Detect the upgrade staging path and skip; start.mjs will
-// normalize correctly on the next MCP boot from the real pluginRoot.
+// (src/cli.ts). The tmpdir has no `.git`, so `isGlobalInstall()` returns
+// true there — we need this second check to skip the staging dir. Without
+// it, pkgRoot is the tmpdir → hooks.json gets the tmpdir's absolute paths
+// baked in → cpSync copies that poisoned hooks.json into the real plugin
+// dir → tmpdir is later cleaned → every hook fires with MODULE_NOT_FOUND.
+// start.mjs normalizes correctly on the next MCP boot from the real
+// pluginRoot anyway.
 const TMPDIR_UPGRADE_RE = /[/\\]context-mode-upgrade-\d+[/\\]?$/;
-if (!TMPDIR_UPGRADE_RE.test(pkgRoot)) {
+if (isGlobalInstall() && !TMPDIR_UPGRADE_RE.test(pkgRoot)) {
   try {
     const { normalizeHooksOnStartup } = await import("../hooks/normalize-hooks.mjs");
     normalizeHooksOnStartup({

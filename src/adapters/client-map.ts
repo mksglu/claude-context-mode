@@ -24,6 +24,12 @@ export const CLIENT_NAME_TO_PLATFORM: Record<string, PlatformId> = {
   "Kiro CLI": "kiro",
   "Pi CLI": "pi",
   "Pi Coding Agent": "pi",
+  // Issue #542 — Pi rebranded to OMP. Upstream
+  // refs/platforms/oh-my-pi/packages/coding-agent/src/mcp/client.ts:46-49
+  // ships clientInfo.name = "omp-coding-agent". Resolved to the OMP
+  // adapter (~/.omp/, PI_CODING_AGENT_DIR). Legacy "Pi CLI" /
+  // "Pi Coding Agent" entries above still resolve to the pi adapter.
+  "omp-coding-agent": "omp",
   "Zed": "zed",
   "zed": "zed",
   "qwen-code": "qwen-code",

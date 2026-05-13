@@ -1,4 +1,4 @@
-import type { HookAdapter } from "../adapters/types.js";
+import { parseNodeCommand, type HookAdapter } from "../adapters/types.js";
 
 export function getCommandsFromHookEntry(entry: unknown): string[] {
   const commands: string[] = [];
@@ -21,9 +21,43 @@ export function getCommandsFromHookEntry(entry: unknown): string[] {
   return commands;
 }
 
+/**
+ * Extract the hook script path from a hook command string.
+ *
+ * Post Algo-D2 this is a thin wrapper around `parseNodeCommand` with a
+ * single legacy fallback retained for stale-entry cleanup
+ * (`configureAllHooks` walks pre-v1.0.124 settings.json shapes that
+ * predate `buildNodeCommand`). The legacy branches are deliberately
+ * narrow:
+ *
+ *   1) Canonical: `"<nodePath>" "<scriptPath>.mjs"` — `parseNodeCommand`
+ *      handles this; round-trips with `buildNodeCommand`.
+ *   2) Legacy quoted: `node "<scriptPath>.mjs"` — emitted by claude-code
+ *      pre-D3. The script segment is fully quoted, no whitespace
+ *      ambiguity.
+ *   3) Legacy unquoted: `node <scriptPath>.mjs` — only when the entire
+ *      command is whitespace-safe (exactly two whitespace-separated
+ *      tokens). The #548 wire shape — `node C:/Users/High Ground …` —
+ *      contains internal whitespace so this branch refuses it. Returns
+ *      `null` instead of grabbing the tail after the last whitespace.
+ *
+ * Anything else returns `null`, letting the doctor (Algo-D1) fall
+ * through to direct `existsSync` instead of trusting the regex.
+ */
 export function extractHookScriptPath(command: string): string | null {
-  const match = command.match(/(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|(\S+\.mjs))/);
-  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+  const parsed = parseNodeCommand(command);
+  if (parsed) {
+    return parsed.scriptPath.endsWith(".mjs") ? parsed.scriptPath : null;
+  }
+  // Legacy quoted: `node "/path/with spaces/x.mjs"` (pre-D3 claude-code emit).
+  const legacyQuoted = command.match(/^\s*node\s+"([^"]+\.mjs)"\s*$/);
+  if (legacyQuoted) return legacyQuoted[1];
+  // Legacy unquoted: `node /path/x.mjs` — refuses internal whitespace
+  // by anchoring both tokens. The #548 ambiguous shape has 3+ tokens
+  // (spaces in the path) and falls through to `null`.
+  const legacyBare = command.match(/^\s*node\s+(\S+\.mjs)\s*$/);
+  if (legacyBare) return legacyBare[1];
+  return null;
 }
 
 export function getHookScriptPaths(adapter: HookAdapter, pluginRoot: string): string[] {

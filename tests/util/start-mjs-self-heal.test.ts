@@ -84,3 +84,44 @@ describe("start.mjs — Issue #523 Layer 5b plugin.json mcpServers heal", () => 
     expect(postinstallSrc).toContain("healPluginJsonMcpServers");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #531 — start.mjs MUST also run healMcpJsonArgs alongside
+// healPluginJsonMcpServers. Same Layer 5b heal block, sibling file (.mcp.json
+// vs .claude-plugin/plugin.json). On every MCP boot, BOTH heals run so
+// users poisoned by fresh-marketplace-install (#253 / aea633c) OR by
+// /ctx-upgrade tmpdir leak self-recover the next time Claude Code spawns
+// the plugin. Without this, a user whose `.mcp.json` has `./start.mjs`
+// can never boot MCP — and start.mjs never runs — and the heal can't
+// fire. That's the "fresh marketplace install" class; the postinstall
+// path (slice 10) closes that gap. This slice closes the post-recovery
+// loop: once MCP boots from any source, every subsequent boot heals.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("start.mjs — Issue #531 Layer 5b .mcp.json args heal", () => {
+  test("imports healMcpJsonArgs from the shared module", () => {
+    expect(startSrc).toContain("healMcpJsonArgs");
+    expect(startSrc).toMatch(/heal-installed-plugins\.mjs/);
+  });
+
+  test("Layer 5b heal call lives inside the existing HEAL 3+4 try-block", () => {
+    // Co-located with healPluginJsonMcpServers — same dynamic-import + outer
+    // try/catch (never block MCP boot). Same per-entry loop.
+    const heal34Idx = startSrc.indexOf("HEAL 3");
+    const layer4Idx = startSrc.indexOf("Self-heal Layer 4");
+    expect(heal34Idx).toBeGreaterThan(-1);
+    expect(layer4Idx).toBeGreaterThan(-1);
+    const block = startSrc.slice(heal34Idx, layer4Idx);
+    expect(block).toContain("healMcpJsonArgs");
+  });
+
+  test("Layer 5b heal iterates ALL cache entries — not just our own pluginRoot", () => {
+    // Same iterator pattern as healPluginJsonMcpServers. The .mcp.json heal
+    // MUST run per-installPath so multi-version installs all self-recover.
+    const heal34Idx = startSrc.indexOf("HEAL 3");
+    const layer4Idx = startSrc.indexOf("Self-heal Layer 4");
+    const block = startSrc.slice(heal34Idx, layer4Idx);
+    expect(block).toContain("installPath");
+    expect(block).toContain("healMcpJsonArgs");
+  });
+});

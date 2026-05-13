@@ -37,7 +37,7 @@ import {
 } from "./session/event-emit.js";
 import { persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
-import { buildNodeCommand, type HookAdapter } from "./adapters/types.js";
+import { buildNodeCommand, type HookAdapter, type PlatformId } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
 import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
@@ -218,17 +218,29 @@ function getProjectDir(): string {
   // modified Claude Code session's cwd — wrong project entirely. Gate the
   // path on detected platform so non-Claude hosts skip the heuristic and
   // fall through to PWD/cwd cleanly.
+  //
+  // Issue #545 (v1.0.124): pass strictPlatform for ALL adapters so the
+  // env-var cascade is built ALGORITHMICALLY from the platform's own
+  // workspace vars + universal escape hatch — foreign workspace vars (e.g.
+  // CLAUDE_PROJECT_DIR leaked into Pi's MCP child env from the user's shell)
+  // cannot win, regardless of cascade order. start.mjs intentionally does
+  // NOT pass strictPlatform — host detection is unreliable at the entrypoint
+  // and the legacy literal cascade is preserved there for semver safety.
   let transcriptsRoot: string | undefined;
+  let strictPlatform: PlatformId | undefined;
   try {
-    if (detectPlatform().platform === "claude-code") {
+    const detected = detectPlatform().platform;
+    strictPlatform = detected;
+    if (detected === "claude-code") {
       transcriptsRoot = join(homedir(), ".claude", "projects");
     }
-  } catch { /* detection failure — leave undefined, resolver skips heuristic */ }
+  } catch { /* detection failure — leave both undefined, resolver uses legacy cascade */ }
   return resolveProjectDir({
     env: process.env,
     cwd: process.cwd(),
     pwd: process.env.PWD,
     transcriptsRoot,
+    strictPlatform,
   });
 }
 
@@ -1063,12 +1075,13 @@ server.registerTool(
           "perl",
           "r",
           "elixir",
+          "csharp",
         ])
         .describe("Runtime language"),
       code: z
         .string()
         .describe(
-          "Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), or IO.puts (Elixir) to output a summary to context.",
+          "Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), IO.puts (Elixir), or Console.WriteLine (C#) to output a summary to context.",
         ),
       timeout: z
         .coerce.number()
@@ -1396,12 +1409,13 @@ server.registerTool(
           "perl",
           "r",
           "elixir",
+          "csharp",
         ])
         .describe("Runtime language"),
       code: z
         .string()
         .describe(
-          "Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts.",
+          "Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine.",
         ),
       timeout: z
         .coerce.number()
@@ -3045,12 +3059,27 @@ server.registerTool(
       }
     } catch { /* best effort — don't block upgrade */ }
 
+    // Issue #542 — thread MCP clientInfo into the spawned upgrade
+    // process. detectPlatform() runs IN-PROCESS here (no spawn boundary)
+    // so clientInfo from the MCP handshake is the highest-confidence
+    // signal available. We forward the resolved PlatformId as a
+    // --platform flag (cross-shell safe on POSIX, Git Bash, PowerShell,
+    // and cmd.exe — unlike env-var prefixes). If detection fails we
+    // skip the flag and let upgrade()'s own detectPlatform() fall back.
+    let platformFlag = "";
+    try {
+      const { detectPlatform } = await import("./adapters/detect.js");
+      const clientInfo = server.server.getClientVersion();
+      const signal = detectPlatform(clientInfo ?? undefined);
+      platformFlag = ` --platform ${signal.platform}`;
+    } catch { /* best effort — fall back to upgrade()'s own detect */ }
+
     let cmd: string;
 
     if (existsSync(bundlePath)) {
-      cmd = `${buildNodeCommand(bundlePath)} upgrade`;
+      cmd = `${buildNodeCommand(bundlePath)} upgrade${platformFlag}`;
     } else if (existsSync(fallbackPath)) {
-      cmd = `${buildNodeCommand(fallbackPath)} upgrade`;
+      cmd = `${buildNodeCommand(fallbackPath)} upgrade${platformFlag}`;
     } else {
       // Inline fallback: neither CLI file exists (e.g. marketplace installs).
       // Generate a self-contained node -e script that performs the upgrade.

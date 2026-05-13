@@ -23,6 +23,7 @@ import { existsSync, copyFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, "..");
@@ -111,20 +112,51 @@ function probeNativeInChildProcess(pluginRoot) {
   }
 }
 
+/**
+ * In-process probe — cheap, safe on modern Node (no child spawn, no SIGSEGV path).
+ * Returns true if better-sqlite3 loads against the current ABI.
+ */
+function probeNativeInProcess(pluginRoot) {
+  try {
+    const req = createRequire(resolve(pluginRoot, "package.json"));
+    const Database = req("better-sqlite3");
+    new Database(":memory:").close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function ensureNativeCompat(pluginRoot) {
-  // Bun ships bun:sqlite — no native addon needed
-  if (typeof globalThis.Bun !== "undefined") return;
+  // Pre-compute paths regardless of runtime — the Bun branch below uses
+  // them to seed the ABI cache (#543) so the next /ctx-upgrade boot (under
+  // Node) finds the success marker file. Bun spoofs
+  // process.versions.modules to match the Node ABI level (e.g. 137 on
+  // Darwin matching Node 24), so a plain file-copy produces the correct
+  // filename for any subsequent Node boot at the same ABI.
+  const abi = process.versions.modules;
+  const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
+  const binaryPath = resolve(nativeDir, "better_sqlite3.node");
+  const abiCachePath = resolve(nativeDir, `better_sqlite3.abi${abi}.node`);
+
+  // Bun ships bun:sqlite — no native addon needed at RUNTIME. But
+  // /ctx-upgrade still verifies the ABI cache file as the success marker,
+  // so we seed it from the active binary if it exists. Best-effort:
+  // any failure here is silent because Bun never loads better-sqlite3.
+  if (typeof globalThis.Bun !== "undefined") {
+    try {
+      if (existsSync(nativeDir) && existsSync(binaryPath) && !existsSync(abiCachePath)) {
+        copyFileSync(binaryPath, abiCachePath);
+      }
+    } catch { /* best effort — Bun never dlopens this file */ }
+    return;
+  }
 
   // On Node >= 22.5, skip the child-process probe that can cause SIGSEGV (#331).
   // The binary install/rebuild still runs — only the dlopen probe is skipped.
   const skipProbe = hasModernSqlite();
 
   try {
-    const abi = process.versions.modules;
-    const nativeDir = resolve(pluginRoot, "node_modules", "better-sqlite3", "build", "Release");
-    const binaryPath = resolve(nativeDir, "better_sqlite3.node");
-    const abiCachePath = resolve(nativeDir, `better_sqlite3.abi${abi}.node`);
-
     if (!existsSync(nativeDir)) return;
 
     // Fast path: cached binary for this ABI already exists — swap in
@@ -141,9 +173,12 @@ export function ensureNativeCompat(pluginRoot) {
     }
 
     if (skipProbe) {
-      // On modern Node, the current ABI cache is the compatibility marker.
-      // Without it, rebuild even when the active binary exists: it may be stale
-      // from a previous Node ABI and cannot be probed safely here.
+      // Seed the ABI cache from a working binary before falling back to rebuild;
+      // otherwise a missing cache forces npm rebuild on every hook invocation.
+      if (existsSync(binaryPath) && probeNativeInProcess(pluginRoot)) {
+        copyFileSync(binaryPath, abiCachePath);
+        return;
+      }
       execSync(`${process.platform === "win32" ? "npm.cmd" : "npm"} rebuild better-sqlite3 --ignore-scripts=false`, {
         cwd: pluginRoot,
         stdio: "pipe",

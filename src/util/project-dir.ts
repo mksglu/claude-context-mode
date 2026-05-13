@@ -1,6 +1,37 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import type { PlatformId } from "../adapters/types.js";
+import { workspaceEnvVarsFor } from "../adapters/detect.js";
+
+/**
+ * Universal escape hatch. NEVER appears in any platform's foreignWorkspaceEnv()
+ * (because it isn't registered in PLATFORM_ENV_VARS), so it survives strict
+ * mode and bridge env scrubs. Documented as the cross-strict user override
+ * for every adapter (set in `~/.<host>/mcp.json` env when nothing else works).
+ */
+const UNIVERSAL_WORKSPACE_ENV = ["CONTEXT_MODE_PROJECT_DIR"] as const;
+
+/**
+ * Frozen legacy candidate list — preserves bit-for-bit behavior of every
+ * non-strict caller (`start.mjs` and any caller that doesn't pass
+ * `strictPlatform`). Order is locked for semver compatibility.
+ *
+ * If a new adapter is added, DO NOT add its workspace var here — register it
+ * in `PLATFORM_ENV_VARS` and let strict callers pick it up via
+ * `workspaceEnvVarsFor(platform)`. Strict mode is the default forward path.
+ */
+const LEGACY_NON_STRICT_CANDIDATES: readonly string[] = [
+  "CLAUDE_PROJECT_DIR",
+  "GEMINI_PROJECT_DIR",
+  "VSCODE_CWD",
+  "OPENCODE_PROJECT_DIR",
+  "PI_PROJECT_DIR",
+  "IDEA_INITIAL_DIRECTORY",
+  "CURSOR_CWD",
+  "CONTEXT_MODE_PROJECT_DIR",
+];
+
 /**
  * Project-dir resolution helpers — shared between `start.mjs` (the MCP entry
  * point) and `src/server.ts getProjectDir()` (the consumer).
@@ -133,26 +164,27 @@ export function resolveProjectDir(opts: {
   pwd: string | undefined;
   /** Optional override; production code passes `~/.claude/projects`. */
   transcriptsRoot?: string;
+  /**
+   * Issue #545 — opt-in tightening. When set, the candidate list is built
+   * algorithmically from `workspaceEnvVarsFor(strictPlatform)` plus the
+   * universal escape hatch. Foreign workspace vars (e.g. CLAUDE_PROJECT_DIR
+   * leaked into Pi's MCP child env) cannot win, regardless of cascade order.
+   *
+   * When `undefined`, the legacy literal candidate order is used (semver lock
+   * for `start.mjs` and any non-strict consumer).
+   */
+  strictPlatform?: PlatformId;
 }): string {
-  const { env, cwd, pwd, transcriptsRoot } = opts;
-  const candidates = [
-    env.CLAUDE_PROJECT_DIR,
-    env.GEMINI_PROJECT_DIR,
-    env.VSCODE_CWD,
-    env.OPENCODE_PROJECT_DIR,
-    env.PI_PROJECT_DIR,
-    env.IDEA_INITIAL_DIRECTORY,
-    // Issue #521: Cursor MCP env override. The cursor adapter already
-    // trusts CURSOR_CWD for hook input resolution (adapters/cursor/index.ts:581);
-    // mirror that trust here so ctx_stats / SessionDB / hash see the workspace
-    // path on Cursor. Whether Cursor itself sets this on MCP child spawn is
-    // unconfirmed — but documenting it as a supported override gives users a
-    // documented escape hatch (`~/.cursor/mcp.json` env: { CURSOR_CWD: "..." }).
-    env.CURSOR_CWD,
-    env.CONTEXT_MODE_PROJECT_DIR,
-  ];
-  for (const c of candidates) {
-    if (c && !isPluginInstallPath(c)) return c;
+  const { env, cwd, pwd, transcriptsRoot, strictPlatform } = opts;
+  // Build candidate list. Strict path: own workspace vars + universal escape
+  // hatch — NO foreign workspace vars, in any order, can win. Non-strict
+  // path: frozen legacy literal order for backwards compatibility.
+  const candidateVars: readonly string[] = strictPlatform
+    ? [...workspaceEnvVarsFor(strictPlatform), ...UNIVERSAL_WORKSPACE_ENV]
+    : LEGACY_NON_STRICT_CANDIDATES;
+  for (const name of candidateVars) {
+    const v = env[name];
+    if (v && !isPluginInstallPath(v)) return v;
   }
   if (transcriptsRoot) {
     const fromTranscript = resolveProjectDirFromTranscript({ projectsRoot: transcriptsRoot });

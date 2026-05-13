@@ -41,7 +41,7 @@ ctx_execute({
 
 **Parameters:**
 
-- `language` (required): One of 11 supported languages. Determines which runtime executes the code.
+- `language` (required): One of 12 supported languages. Determines which runtime executes the code.
 - `code` (required): Source code to execute. For JS/TS, use `console.log()` to output. For Python, use `print()`. For Shell, use `echo`. Each language has its idiomatic output function.
 - `timeout` (optional): Maximum execution time in milliseconds. Default 30000. Process is killed via SIGTERM on timeout; partial stdout is returned.
 - `intent` (optional): Natural language description of what you are looking for. When provided and output exceeds 5000 bytes (~80-100 lines), the output is auto-indexed into FTS5 and only matching sections are returned via BM25 search instead of raw output.
@@ -232,7 +232,7 @@ ctx_stats({})   // no parameters
 
 Diagnose context-mode installation. Runs all checks server-side and returns
 results as a markdown checklist. No CLI execution needed. Verifies runtime
-availability for all 11 languages, sandbox round-trip, FTS5 / SQLite native
+availability for all 12 languages, sandbox round-trip, FTS5 / SQLite native
 module, hook script presence, and current version.
 
 ```
@@ -692,7 +692,7 @@ The main skill providing workflow instructions for the execute/index/search pipe
 ### ctx-doctor
 
 Diagnostic skill that checks:
-- Runtime availability for all 11 languages
+- Runtime availability for all 12 languages
 - FTS5 SQLite extension availability
 - Hook registration and paths
 - Plugin registration in `installed_plugins.json`
