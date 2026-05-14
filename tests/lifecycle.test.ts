@@ -417,6 +417,44 @@ describe("Lifecycle Guard — idle timeout (#565)", () => {
     assert.equal(shutdownCalled, true, "idle timeout should trigger shutdown");
   });
 
+  test("idle tick is INDEPENDENT of the 30s parent-liveness interval (regression for live-e2e bug)", async () => {
+    // Bug observed in /tmp/ctx-mode-e2e e2e harness pre-fix: with
+    // idleTimeoutMs=3000ms but checkIntervalMs left at default 30_000ms,
+    // the idle check piggy-backed on the parent-liveness tick and never
+    // fired within the test window. Fix: idle gets its OWN setInterval
+    // with tick = min(idleTimeoutMs/6, 30_000ms, lower-bound 50ms).
+    //
+    // This test pins the contract by leaving checkIntervalMs at default
+    // 30_000ms but giving idleTimeoutMs=300ms — if the idle path is
+    // tied to checkIntervalMs again, it would not fire within the
+    // 250ms wait below and the test fails.
+    if (process.stdin.isTTY) return;
+
+    let shutdownCalled = false;
+    let fakeNow = 1_000_000;
+
+    const handle = startLifecycleGuard({
+      // checkIntervalMs intentionally NOT set → uses production default (30_000ms)
+      idleTimeoutMs: 300,
+      isParentAlive: () => true,
+      onShutdown: () => { shutdownCalled = true; },
+      now: () => fakeNow,
+    });
+
+    // Advance past the idle threshold, then wait less than checkIntervalMs.
+    // If idle uses its own tick (≈50ms here), shutdown fires; if it doesn't,
+    // we'd need to wait 30s for the parent-liveness tick.
+    fakeNow += 500;
+    await new Promise((r) => setTimeout(r, 250));
+
+    handle();
+    assert.equal(
+      shutdownCalled,
+      true,
+      "idle timer must fire on its own tick, not piggy-back on checkIntervalMs",
+    );
+  });
+
   test("recordActivity() prevents idle shutdown", async () => {
     if (process.stdin.isTTY) return;
 

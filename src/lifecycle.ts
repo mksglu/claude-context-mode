@@ -195,19 +195,30 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): LifecycleGuard
     lastActivity = now();
   };
 
-  // P0: Periodic parent liveness check (+ idle timeout when configured)
+  // P0: Periodic parent liveness check.
   const timer = setInterval(() => {
-    if (!check()) {
-      shutdown();
-      return;
-    }
-    // Idle shutdown (#565). Skipped on TTY because interactive dev
-    // sessions are expected to sit idle between commands.
-    if (idleTimeoutMs > 0 && !process.stdin.isTTY) {
-      if (now() - lastActivity > idleTimeoutMs) shutdown();
-    }
+    if (!check()) shutdown();
   }, interval);
   timer.unref();
+
+  // P0+: Idle shutdown (#565). Runs on its OWN tick — distinct from the
+  // 30 s parent-liveness poll — so a 15 min idle timeout actually reacts
+  // close to 15 min instead of "next 30 s tick after 15 min". Pick the
+  // tick as min(idleTimeoutMs / 6, 30 s) so a short timeout (e.g. 3 s in
+  // e2e tests, 60 s in dev) reacts within ~16 % of its window while a
+  // production 15 min timeout still polls every 30 s (cheap).
+  //
+  // Skipped on TTY because interactive dev sessions are expected to
+  // sit idle between commands, and also when idleTimeoutMs is 0 (env
+  // opt-out via CONTEXT_MODE_IDLE_TIMEOUT_MS=0).
+  let idleTimer: NodeJS.Timeout | null = null;
+  if (idleTimeoutMs > 0 && !process.stdin.isTTY) {
+    const idleTick = Math.max(50, Math.min(Math.floor(idleTimeoutMs / 6), 30_000));
+    idleTimer = setInterval(() => {
+      if (now() - lastActivity > idleTimeoutMs) shutdown();
+    }, idleTick);
+    idleTimer.unref();
+  }
 
   // P0: OS signals — terminal close, kill, ctrl+c
   const signals: NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
@@ -239,6 +250,7 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): LifecycleGuard
   const cleanup = () => {
     stopped = true;
     clearInterval(timer);
+    if (idleTimer) clearInterval(idleTimer);
     for (const sig of signals) process.removeListener(sig, shutdown);
     process.stdin.removeListener("end", onStdinEnd);
   };
