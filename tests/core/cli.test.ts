@@ -32,6 +32,14 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(pkg.files).toContain("bin");
   });
 
+  it("doctor supports fast/default and deep modes", () => {
+    const cliSrc = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    expect(cliSrc).toContain("doctor(args.slice(1))");
+    expect(cliSrc).toContain("argv.includes(\"--deep\")");
+    expect(cliSrc).toContain("context-mode doctor (${mode})");
+    expect(cliSrc).toContain("doctor --deep");
+  });
+
   it("package.json bundle script builds cli.bundle.mjs", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts.bundle).toContain("cli.bundle.mjs");

@@ -139,7 +139,7 @@ async function hookDispatch(platform: string, event: string): Promise<void> {
 const args = process.argv.slice(2);
 
 if (args[0] === "doctor") {
-  doctor().then((code) => process.exit(code));
+  doctor(args.slice(1)).then((code) => process.exit(code));
 } else if (args[0] === "upgrade") {
   // Issue #542 — accept --platform <id> from the ctx_upgrade MCP handler,
   // which forwards the live MCP clientInfo's resolved PlatformId. The flag
@@ -321,14 +321,16 @@ async function fetchLatestVersion(): Promise<string> {
  * Doctor — adapter-aware diagnostics
  * ------------------------------------------------------- */
 
-async function doctor(): Promise<number> {
+async function doctor(argv: string[] = []): Promise<number> {
   if (process.stdout.isTTY) console.clear();
+  const deep = argv.includes("--deep");
+  const mode = deep ? "deep" : "fast";
 
   // Detect platform
   const detection = detectPlatform();
   const adapter = await getAdapter(detection.platform);
 
-  p.intro(color.bgMagenta(color.white(" context-mode doctor ")));
+  p.intro(color.bgMagenta(color.white(` context-mode doctor (${mode}) `)));
   p.log.info(
     `Platform: ${color.cyan(adapter.name)}` +
       color.dim(` (${detection.confidence} confidence — ${detection.reason})`),
@@ -387,32 +389,36 @@ async function doctor(): Promise<number> {
   }
 
   // Server test
-  p.log.step("Testing server initialization...");
-  try {
-    const { PolyglotExecutor } = await import("./executor.js");
-    const executor = new PolyglotExecutor({ runtimes });
-    const result = await executor.execute({
-      language: "javascript",
-      code: 'console.log("ok");',
-      timeout: 5000,
-    });
-    if (result.exitCode === 0 && result.stdout.trim() === "ok") {
-      p.log.success(color.green("Server test: PASS"));
-    } else {
-      criticalFails++;
-      const detail = result.stderr?.trim() ? ` (${result.stderr.trim().slice(0, 200)})` : "";
-      p.log.error(
-        color.red("Server test: FAIL") + ` — exit ${result.exitCode}${detail}`,
-      );
+  if (deep) {
+    p.log.step("Testing server initialization...");
+    try {
+      const { PolyglotExecutor } = await import("./executor.js");
+      const executor = new PolyglotExecutor({ runtimes });
+      const result = await executor.execute({
+        language: "javascript",
+        code: 'console.log("ok");',
+        timeout: 5000,
+      });
+      if (result.exitCode === 0 && result.stdout.trim() === "ok") {
+        p.log.success(color.green("Server test: PASS"));
+      } else {
+        criticalFails++;
+        const detail = result.stderr?.trim() ? ` (${result.stderr.trim().slice(0, 200)})` : "";
+        p.log.error(
+          color.red("Server test: FAIL") + ` — exit ${result.exitCode}${detail}`,
+        );
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Cannot find module") || message.includes("MODULE_NOT_FOUND")) {
+        p.log.warn(color.yellow("Server test: SKIP") + color.dim(" — module not available (restart session after upgrade)"));
+      } else {
+        criticalFails++;
+        p.log.error(color.red("Server test: FAIL") + ` — ${message}`);
+      }
     }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("Cannot find module") || message.includes("MODULE_NOT_FOUND")) {
-      p.log.warn(color.yellow("Server test: SKIP") + color.dim(" — module not available (restart session after upgrade)"));
-    } else {
-      criticalFails++;
-      p.log.error(color.red("Server test: FAIL") + ` — ${message}`);
-    }
+  } else {
+    p.log.info(color.dim("Server test: SKIP — run `context-mode doctor --deep` for subprocess smoke"));
   }
 
   // Hooks — adapter-aware validation
@@ -498,22 +504,23 @@ async function doctor(): Promise<number> {
   }
 
   // FTS5 / SQLite
-  p.log.step("Checking FTS5 / SQLite...");
-  try {
-    const Database = (await import("./db-base.js")).loadDatabase();
-    const db = new Database(":memory:");
-    db.exec("CREATE VIRTUAL TABLE fts_test USING fts5(content)");
-    db.exec("INSERT INTO fts_test(content) VALUES ('hello world')");
-    const row = db.prepare("SELECT * FROM fts_test WHERE fts_test MATCH 'hello'").get() as { content: string } | undefined;
-    db.close();
-    if (row && row.content === "hello world") {
-      p.log.success(color.green("FTS5 / SQLite: PASS") + " — native module works");
-    } else {
-      criticalFails++;
-      p.log.error(color.red("FTS5 / SQLite: FAIL") + " — query returned unexpected result");
-    }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+  if (deep) {
+    p.log.step("Checking FTS5 / SQLite...");
+    try {
+      const Database = (await import("./db-base.js")).loadDatabase();
+      const db = new Database(":memory:");
+      db.exec("CREATE VIRTUAL TABLE fts_test USING fts5(content)");
+      db.exec("INSERT INTO fts_test(content) VALUES ('hello world')");
+      const row = db.prepare("SELECT * FROM fts_test WHERE fts_test MATCH 'hello'").get() as { content: string } | undefined;
+      db.close();
+      if (row && row.content === "hello world") {
+        p.log.success(color.green("FTS5 / SQLite: PASS") + " — native module works");
+      } else {
+        criticalFails++;
+        p.log.error(color.red("FTS5 / SQLite: FAIL") + " — query returned unexpected result");
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
     // Distinguish package-missing from binding-missing (#514). Both
     // throw with similar shapes from `import("better-sqlite3")` but the
     // recovery commands differ:
@@ -570,15 +577,23 @@ async function doctor(): Promise<number> {
         );
       }
     }
+    }
+  } else {
+    p.log.info(color.dim("FTS5 / SQLite: SKIP — run `context-mode doctor --deep` for native DB smoke"));
   }
 
   // Version check — adapter-aware
   p.log.step("Checking versions...");
   const localVersion = getLocalVersion();
-  const latestVersion = await fetchLatestVersion();
+  const latestVersion = deep ? await fetchLatestVersion() : "unknown";
   const installedVersion = adapter.getInstalledVersion();
 
-  if (latestVersion === "unknown") {
+  if (!deep) {
+    p.log.info(
+      color.dim(`npm (MCP): local v${localVersion}`) +
+        " — skipped registry check in fast mode",
+    );
+  } else if (latestVersion === "unknown") {
     p.log.warn(
       color.yellow("npm (MCP): WARN") +
         ` — local v${localVersion}, could not reach npm registry`,
