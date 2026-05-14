@@ -24,6 +24,8 @@ let routePreToolUse: (
   toolName: string,
   toolInput: Record<string, unknown>,
   projectDir?: string,
+  platform?: string,
+  sessionId?: string,
 ) => {
   action: string;
   reason?: string;
@@ -86,6 +88,21 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect(result!.updatedInput).toBeDefined();
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "curl/wget blocked",
+      );
+    });
+
+    it("denies Codex exec_command cmd payloads like Bash command payloads", () => {
+      const result = routePreToolUse(
+        "exec_command",
+        { cmd: "curl https://example.com" },
+        undefined,
+        "codex",
+        "codex-cmd-curl",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
         "curl/wget blocked",
       );
@@ -522,6 +539,60 @@ describe("routePreToolUse", () => {
       ["mcp__other__ctx_batch_execute", { commands: [{ label: "bad", command: "sudo whoami" }] }],
     ])("denies shell policy matches for %s", (toolName, toolInput) => {
       const result = routePreToolUse(toolName, toolInput, projectDir);
+      expect(result?.action).toBe("deny");
+      expect(result?.reason).toContain("deny pattern");
+    });
+  });
+
+  describe("Codex exec_command security policy", () => {
+    let projectDir: string;
+    let homeDir: string;
+    let codexDir: string;
+    let previousHome: string | undefined;
+    let previousCodexHome: string | undefined;
+    let previousPlatform: string | undefined;
+
+    beforeAll(async () => {
+      await initSecurity(resolve(process.cwd(), "build"));
+    });
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "ctx-codex-exec-project-"));
+      homeDir = mkdtempSync(join(tmpdir(), "ctx-codex-home-"));
+      codexDir = join(homeDir, ".codex");
+      mkdirSync(codexDir, { recursive: true });
+      writeFileSync(
+        join(codexDir, "settings.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(echo blocked)"] } }),
+        "utf-8",
+      );
+      previousHome = process.env.HOME;
+      previousCodexHome = process.env.CODEX_HOME;
+      previousPlatform = process.env.CONTEXT_MODE_PLATFORM;
+      process.env.HOME = homeDir;
+      process.env.CODEX_HOME = codexDir;
+      process.env.CONTEXT_MODE_PLATFORM = "codex";
+    });
+
+    afterEach(() => {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousPlatform === undefined) delete process.env.CONTEXT_MODE_PLATFORM;
+      else process.env.CONTEXT_MODE_PLATFORM = previousPlatform;
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(homeDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it("denies Codex exec_command cmd payloads from .codex settings", () => {
+      const result = routePreToolUse(
+        "exec_command",
+        { cmd: "echo blocked" },
+        projectDir,
+        "codex",
+        "codex-cmd-policy",
+      );
       expect(result?.action).toBe("deny");
       expect(result?.reason).toContain("deny pattern");
     });

@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "local_shell|shell|shell_command|exec_command|Bash|Shell|apply_patch|Edit|Write|grep_files|ctx_execute|ctx_execute_file|ctx_batch_execute|ctx_fetch_and_index|ctx_search|ctx_index|mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const r=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!r)throw new Error('PLUGIN_ROOT missing');process.env.CONTEXT_MODE_PLATFORM='codex';Promise.all([import('node:path'),import('node:url')]).then(([p,u])=>import(u.pathToFileURL(p.join(r,'hooks/codex/pretooluse.mjs')).href))\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const r=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!r)throw new Error('PLUGIN_ROOT missing');process.env.CONTEXT_MODE_PLATFORM='codex';Promise.all([import('node:path'),import('node:url')]).then(([p,u])=>import(u.pathToFileURL(p.join(r,'hooks/codex/posttooluse.mjs')).href))\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const r=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!r)throw new Error('PLUGIN_ROOT missing');process.env.CONTEXT_MODE_PLATFORM='codex';Promise.all([import('node:path'),import('node:url')]).then(([p,u])=>import(u.pathToFileURL(p.join(r,'hooks/codex/sessionstart.mjs')).href))\""
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const r=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!r)throw new Error('PLUGIN_ROOT missing');process.env.CONTEXT_MODE_PLATFORM='codex';Promise.all([import('node:path'),import('node:url')]).then(([p,u])=>import(u.pathToFileURL(p.join(r,'hooks/codex/precompact.mjs')).href))\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const r=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!r)throw new Error('PLUGIN_ROOT missing');process.env.CONTEXT_MODE_PLATFORM='codex';Promise.all([import('node:path'),import('node:url')]).then(([p,u])=>import(u.pathToFileURL(p.join(r,'hooks/codex/userpromptsubmit.mjs')).href))\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const r=process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT;if(!r)throw new Error('PLUGIN_ROOT missing');process.env.CONTEXT_MODE_PLATFORM='codex';Promise.all([import('node:path'),import('node:url')]).then(([p,u])=>import(u.pathToFileURL(p.join(r,'hooks/codex/stop.mjs')).href))\""
+          }
+        ]
+      }
+    ]
+  }
+}
