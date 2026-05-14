@@ -1,13 +1,16 @@
 /**
- * heal-better-sqlite3.mjs source contract tests (#514).
+ * heal-better-sqlite3.mjs source contract tests (#514, VS 2026).
  *
- * The package-missing branch was a no-op — it returned
- * `{healed: false, reason: "package-missing"}` and trusted ensure-deps
- * to recover. That trust broke on Node 26: ensure-deps's `npm install`
- * call also silently skipped better-sqlite3 because it sat under
- * optionalDependencies. The heal script must take ownership of the
- * package-missing branch and actively install the package via an
- * explicit `npm install better-sqlite3` invocation.
+ * #514 — package-missing branch was a no-op that trusted ensure-deps to
+ * recover. That trust broke on Node 26: ensure-deps's `npm install` also
+ * silently skipped better-sqlite3 under optionalDependencies. The heal
+ * script must take ownership and actively install via `npm install better-sqlite3`.
+ *
+ * VS 2026 — node-gyp's internal version→year map (15→2017…17→2022) does
+ * not include VS 2026 (internal major 18). The fix queries vswhere's
+ * `displayName` property (e.g. "Visual Studio Community 2026") and extracts
+ * the 4-digit year with a regex. catalog_productLineVersion is NOT used
+ * because it returns "18" on VS 2026 rather than the year string.
  *
  * @see https://github.com/mksglu/context-mode/issues/514
  */
@@ -85,5 +88,129 @@ describe("heal-better-sqlite3.mjs — package-missing branch (#514)", () => {
       /existsSync\s*\(\s*bindingPath\s*\)/.test(afterTag) ||
       /\bbindingPath\b/.test(afterTag);
     expect(continuesWork).toBe(true);
+  });
+});
+
+describe("heal-better-sqlite3.mjs — Windows VS year detection (VS 2026+)", () => {
+  // ── Slice 1: detectWindowsVsYear() unit tests ──────────────────────
+
+  it("exports detectWindowsVsYear() as a function", async () => {
+    const mod = await import("../../scripts/heal-better-sqlite3.mjs");
+    expect(typeof mod.detectWindowsVsYear).toBe("function");
+  });
+
+  it("returns null on non-Windows platforms", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    for (const platform of ["darwin", "linux", "freebsd"]) {
+      expect(detectWindowsVsYear({ platform })).toBeNull();
+    }
+  });
+
+  it("returns null when vswhere.exe is absent", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    expect(detectWindowsVsYear({
+      platform: "win32",
+      existsSync: () => false,
+    })).toBeNull();
+  });
+
+  it("extracts year from vswhere displayName for VS 2026", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    expect(detectWindowsVsYear({
+      platform: "win32",
+      existsSync: () => true,
+      exec: () => "Visual Studio Community 2026",
+    })).toBe("2026");
+  });
+
+  it("works for all VS editions (Community, Professional, Enterprise)", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    for (const displayName of [
+      "Visual Studio Community 2026",
+      "Visual Studio Professional 2026",
+      "Visual Studio Enterprise 2026",
+    ]) {
+      expect(detectWindowsVsYear({
+        platform: "win32",
+        existsSync: () => true,
+        exec: () => displayName,
+      })).toBe("2026");
+    }
+  });
+
+  it("works for older VS versions (2017, 2019, 2022)", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    for (const [displayName, year] of [
+      ["Visual Studio Community 2017", "2017"],
+      ["Visual Studio Community 2019", "2019"],
+      ["Visual Studio Community 2022", "2022"],
+    ]) {
+      expect(detectWindowsVsYear({
+        platform: "win32",
+        existsSync: () => true,
+        exec: () => displayName,
+      })).toBe(year);
+    }
+  });
+
+  it("trims whitespace and CRLF from vswhere output before matching", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    expect(detectWindowsVsYear({
+      platform: "win32",
+      existsSync: () => true,
+      exec: () => "  Visual Studio Community 2026\r\n",
+    })).toBe("2026");
+  });
+
+  it("returns null when vswhere throws", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    expect(detectWindowsVsYear({
+      platform: "win32",
+      existsSync: () => true,
+      exec: () => { throw new Error("vswhere failed"); },
+    })).toBeNull();
+  });
+
+  it("returns null when vswhere returns a string with no 4-digit year", async () => {
+    const { detectWindowsVsYear } = await import(
+      "../../scripts/heal-better-sqlite3.mjs"
+    );
+    for (const bad of ["", "18", "unknown"]) {
+      expect(detectWindowsVsYear({
+        platform: "win32",
+        existsSync: () => true,
+        exec: () => bad,
+      })).toBeNull();
+    }
+  });
+
+  // ── Slice 2: source-code assertions on buildSafeEnv ───────────────
+
+  it("uses displayName to get the year and extracts it with a regex", () => {
+    expect(HEAL_SRC).toMatch(/-property displayName/);
+    expect(HEAL_SRC).toMatch(/20\\d\{2\}/);
+  });
+
+  it("buildSafeEnv sets npm_config_msvs_version on Windows via vswhere", () => {
+    expect(HEAL_SRC).toMatch(/npm_config_msvs_version/);
+    expect(HEAL_SRC).toMatch(/vswhere/);
+  });
+
+  it("buildSafeEnv only sets npm_config_msvs_version when not already present", () => {
+    expect(HEAL_SRC).toMatch(/!\s*env\.npm_config_msvs_version/);
   });
 });

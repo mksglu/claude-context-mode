@@ -34,6 +34,8 @@ import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mc
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
 import { healPluginJsonMcpServers, healMcpJsonArgs } from "../scripts/heal-installed-plugins.mjs";
+// @ts-expect-error — JS module, no TS declarations
+import { detectWindowsVsYear } from "../scripts/heal-better-sqlite3.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
 // duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
 // Keep in sync — pure data, no I/O.
@@ -873,10 +875,12 @@ async function upgrade(opts?: { platform?: string }) {
 
       // Step 2: Install dependencies + build
       s.start("Installing dependencies & building");
+      const vsYear = detectWindowsVsYear();
       npmExecFile(["install", "--no-audit", "--no-fund"], {
         cwd: srcDir,
         stdio: "pipe",
         timeout: 120000,
+        ...(vsYear ? { env: { ...process.env, npm_config_msvs_version: vsYear } } : {}),
       });
       npmExecFile(["run", "build"], {
         cwd: srcDir,
