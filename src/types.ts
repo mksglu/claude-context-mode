@@ -78,6 +78,7 @@ export interface IndexResult {
   label: string;
   totalChunks: number;
   codeChunks: number;
+  chunks?: Array<{ title: string; bytes: number; contentType: "code" | "prose" }>;
 }
 
 /**

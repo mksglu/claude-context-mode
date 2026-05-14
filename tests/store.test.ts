@@ -1976,3 +1976,58 @@ describe("ctx_index TOCTOU symlink swap (#442 round-3)", () => {
     }
   });
 });
+
+describe("Performance-oriented chunk metadata", () => {
+  test("index result carries chunk inventory without DB read-back", () => {
+    const store = createStore();
+    try {
+      const result = store.index({
+        content: "# One\n\nalpha\n\n# Two\n\nbeta",
+        source: "inventory-test",
+      });
+      assert.equal(result.totalChunks, 2);
+      assert.equal(result.chunks?.length, 2);
+      assert.deepEqual(result.chunks?.map((c) => c.title), ["One", "Two"]);
+      assert.ok(result.chunks!.every((c) => c.bytes > 0));
+    } finally {
+      store.close();
+    }
+  });
+
+  test("large JSON arrays chunk with parseable array payloads", () => {
+    const store = createStore();
+    try {
+      const items = Array.from({ length: 30 }, (_, i) => ({
+        id: `item-${i}`,
+        value: "x".repeat(80),
+      }));
+      const result = store.indexJSON(JSON.stringify({ items }), "json-array-test", 500);
+      assert.ok(result.totalChunks > 1);
+      const chunks = store.getChunksBySource(result.sourceId);
+      for (const chunk of chunks) {
+        assert.doesNotThrow(() => JSON.parse(chunk.content));
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("oversized markdown code blocks are hard-split with balanced fences", () => {
+    const store = createStore();
+    try {
+      const code = Array.from({ length: 300 }, (_, i) => `console.log(${i});`).join("\n");
+      const result = store.index({
+        content: `# Huge\n\n\`\`\`js\n${code}\n\`\`\``,
+        source: "huge-code-test",
+      });
+      assert.ok(result.totalChunks > 1);
+      const chunks = store.getChunksBySource(result.sourceId);
+      for (const chunk of chunks) {
+        const fenceCount = (chunk.content.match(/```/g) ?? []).length;
+        assert.equal(fenceCount % 2, 0, `unbalanced fence in ${chunk.title}`);
+      }
+    } finally {
+      store.close();
+    }
+  });
+});

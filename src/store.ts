@@ -502,6 +502,7 @@ export class ContentStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_sources_label ON sources(label);
+      CREATE INDEX IF NOT EXISTS idx_vocabulary_word_len ON vocabulary(length(word));
     `);
 
     // FTS5 schema migration: old schema (4 cols) → new schema (8 cols).
@@ -768,7 +769,7 @@ export class ContentStore {
 
     // Fuzzy path
     this.#stmtFuzzyVocab = this.#db.prepare(
-      "SELECT word FROM vocabulary WHERE length(word) BETWEEN ? AND ?",
+      "SELECT word FROM vocabulary INDEXED BY idx_vocabulary_word_len WHERE length(word) BETWEEN ? AND ?",
     );
 
     // Read path
@@ -1017,6 +1018,11 @@ export class ContentStore {
       label,
       totalChunks: chunks.length,
       codeChunks,
+      chunks: chunks.map((chunk) => ({
+        title: chunk.title,
+        bytes: Buffer.byteLength(chunk.content),
+        contentType: chunk.hasCode ? "code" : "prose",
+      })),
     };
   }
 
@@ -1171,7 +1177,14 @@ export class ContentStore {
     const fetchLimit = Math.max(limit * 2, 10);
 
     const porterResults = this.search(query, fetchLimit, source, "OR", contentType, sourceMatchMode);
-    const trigramResults = this.searchTrigram(query, fetchLimit, source, "OR", contentType, sourceMatchMode);
+    const shouldRunTrigram =
+      porterResults.length < limit ||
+      /[./\\:_-]/.test(query) ||
+      /[a-z][A-Z]/.test(query) ||
+      /\d/.test(query);
+    const trigramResults = shouldRunTrigram
+      ? this.searchTrigram(query, fetchLimit, source, "OR", contentType, sourceMatchMode)
+      : [];
 
     const scoreMap = new Map<string, { result: SearchResult; score: number }>();
     const key = (r: SearchResult) => `${r.source}::${r.title}`;
@@ -1262,9 +1275,10 @@ export class ContentStore {
     source?: string,
     contentType?: "code" | "prose",
     sourceMatchMode: SourceMatchMode = "like",
+    refreshStale = true,
   ): SearchResult[] {
     // Step 0: Auto-refresh stale file-backed sources before searching
-    this.#refreshStaleSources();
+    if (refreshStale) this.refreshStaleSources();
 
     // Step 1: RRF fusion (porter OR + trigram OR → merge)
     const rrfResults = this.#rrfSearch(query, limit, source, contentType, sourceMatchMode);
@@ -1298,6 +1312,12 @@ export class ContentStore {
 
   /** Number of sources auto-refreshed in the last searchWithFallback call. */
   lastRefreshCount = 0;
+
+  /** Refresh stale file-backed sources once for a caller-managed search batch. */
+  refreshStaleSources(): number {
+    this.#refreshStaleSources();
+    return this.lastRefreshCount;
+  }
 
   /**
    * Check all file-backed sources for staleness and auto re-index changed files.
@@ -1484,7 +1504,7 @@ export class ContentStore {
   }
 
   close(): void {
-    this.#optimizeFTS(); // defragment before close
+    if (this.#insertCount > 0) this.#optimizeFTS(); // defragment only after writes
     closeDB(this.#db); // WAL checkpoint before close — important for persistent DBs
   }
 
@@ -1538,6 +1558,7 @@ export class ContentStore {
       // Split oversized chunk at paragraph boundaries (double newlines)
       const paragraphs = joined.split(/\n\n+/);
       let accumulator: string[] = [];
+      let accumulatorBytes = 0;
       let partIndex = 1;
 
       const flushAccumulator = () => {
@@ -1552,16 +1573,25 @@ export class ContentStore {
           hasCode: part.includes("```"),
         });
         accumulator = [];
+        accumulatorBytes = 0;
       };
 
       for (const para of paragraphs) {
-        accumulator.push(para);
-        const candidate = accumulator.join("\n\n");
-        if (Buffer.byteLength(candidate) > maxChunkBytes && accumulator.length > 1) {
-          accumulator.pop();
+        const paraBytes = Buffer.byteLength(para);
+        const nextBytes = accumulatorBytes + (accumulator.length > 0 ? 2 : 0) + paraBytes;
+        if (nextBytes > maxChunkBytes && accumulator.length > 0) {
           flushAccumulator();
-          accumulator = [para];
         }
+        if (paraBytes > maxChunkBytes) {
+          for (const part of this.#hardSplitMarkdownBlock(para, maxChunkBytes)) {
+            accumulator = [part];
+            accumulatorBytes = Buffer.byteLength(part);
+            flushAccumulator();
+          }
+          continue;
+        }
+        accumulator.push(para);
+        accumulatorBytes += (accumulator.length > 1 ? 2 : 0) + paraBytes;
       }
       flushAccumulator();
 
@@ -1631,6 +1661,43 @@ export class ContentStore {
     flush();
 
     return chunks;
+  }
+
+  #hardSplitMarkdownBlock(text: string, maxChunkBytes: number): string[] {
+    if (Buffer.byteLength(text) <= maxChunkBytes) return [text];
+    const lines = text.split("\n");
+    const parts: string[] = [];
+    let current: string[] = [];
+    let currentBytes = 0;
+    let inFence = false;
+    let fenceInfo = "";
+
+    const flush = () => {
+      if (current.length === 0) return;
+      const body = current.join("\n");
+      parts.push(inFence ? `${body}\n\`\`\`` : body);
+      current = [];
+      currentBytes = 0;
+      if (inFence) {
+        const fence = `\`\`\`${fenceInfo}`;
+        current.push(fence);
+        currentBytes = Buffer.byteLength(fence);
+      }
+    };
+
+    for (const line of lines) {
+      const fence = line.match(/^```(.*)$/);
+      if (fence) {
+        inFence = !inFence;
+        fenceInfo = inFence ? fence[1] ?? "" : "";
+      }
+      const lineBytes = Buffer.byteLength(line) + (current.length > 0 ? 1 : 0);
+      if (current.length > 0 && currentBytes + lineBytes > maxChunkBytes) flush();
+      current.push(line);
+      currentBytes += lineBytes;
+    }
+    flush();
+    return parts;
   }
 
   #chunkPlainText(
@@ -1792,28 +1859,36 @@ export class ContentStore {
     const identityField = this.#findIdentityField(arr);
 
     let batch: unknown[] = [];
+    let batchBytes = 2; // brackets for []
     let batchStart = 0;
+    const itemJson = arr.map((item) => JSON.stringify(item, null, 2));
+    const itemBytes = itemJson.map((item) => Buffer.byteLength(item));
 
     const flushBatch = (batchEnd: number) => {
       if (batch.length === 0) return;
       const title = this.#jsonBatchTitle(prefix, batchStart, batchEnd, batch, identityField);
+      const content = `[\n${itemJson
+        .slice(batchStart, batchEnd + 1)
+        .map((item) => item.split("\n").map((line) => `  ${line}`).join("\n"))
+        .join(",\n")}\n]`;
       chunks.push({
         title,
-        content: JSON.stringify(batch, null, 2),
+        content,
         hasCode: true,
       });
     };
 
     for (let i = 0; i < arr.length; i++) {
-      batch.push(arr[i]);
-      const candidate = JSON.stringify(batch, null, 2);
-
-      if (Buffer.byteLength(candidate) > maxChunkBytes && batch.length > 1) {
-        batch.pop();
+      const nextBytes = batchBytes + (batch.length > 0 ? 2 : 0) + itemBytes[i] + 2;
+      if (nextBytes > maxChunkBytes && batch.length > 0) {
         flushBatch(i - 1);
         batch = [arr[i]];
+        batchBytes = 2 + itemBytes[i] + 2;
         batchStart = i;
+        continue;
       }
+      batch.push(arr[i]);
+      batchBytes = nextBytes;
     }
 
     // Flush remaining
