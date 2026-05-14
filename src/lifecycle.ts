@@ -23,6 +23,63 @@ export interface LifecycleGuardOptions {
   onShutdown: () => void;
   /** Injectable parent-alive check (for testing). Default: ppid-based check. */
   isParentAlive?: () => boolean;
+  /**
+   * Idle shutdown threshold in ms (#565). When the server has handled no
+   * MCP activity for this long, `onShutdown` fires. `0` disables.
+   * Default: env `CONTEXT_MODE_IDLE_TIMEOUT_MS`, else 15 minutes.
+   * Skipped on TTY stdin (interactive dev / OpenCode ts-plugin standalone).
+   *
+   * Pair with the returned `recordActivity()` callback — call it on every
+   * MCP request the server handles so genuinely busy servers never trip.
+   */
+  idleTimeoutMs?: number;
+  /** Test injection — defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * Hybrid return type: callable like the original `() => void` cleanup (kept
+ * for backwards compatibility with #103/#236/#311/#388/#534 test suites),
+ * and additionally exposes `recordActivity` for the idle-timeout path (#565)
+ * and `stop` as an explicit alias.
+ */
+export interface LifecycleGuardHandle {
+  /** Stop the guard. Calling the handle directly is equivalent. */
+  (): void;
+  /** Bumps the "last activity" timestamp so the idle timer doesn't fire. */
+  recordActivity: () => void;
+  /** Stop the guard. Alias for invoking the handle. */
+  stop: () => void;
+}
+
+/**
+ * Resolve the idle-shutdown threshold (#565).
+ *
+ * OpenCode + KiloCode open a fresh MCP client per session AND per subagent
+ * task, but never tear them down for the host's lifetime. A host alive for
+ * a working day accumulates one stdio child per session — observed live at
+ * 26 children / 1.6 GB RSS under a single `opencode serve` parent.
+ *
+ * None of the existing exit paths (ppid poll, grandparent reparent, stdin
+ * EOF, SIGTERM) fire while the host stays alive. Idle shutdown is the
+ * structural fix: a server with no work to do should release its memory.
+ *
+ * Default 15 min strikes a balance — long enough that a paused
+ * conversation does not pay a cold-start on every resume, short enough
+ * that 8 hours of unused sessions do not pin GB of RAM.
+ *
+ * Set env to `0` to disable entirely.
+ *
+ * Exported for unit-testing.
+ */
+export function idleTimeoutForEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env.CONTEXT_MODE_IDLE_TIMEOUT_MS;
+  if (raw === undefined) return 15 * 60 * 1000;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return 15 * 60 * 1000;
+  return n;
 }
 
 /** Read grandparent PID via `ps -o ppid= -p $PPID`. Returns NaN on failure or Windows. */
@@ -115,13 +172,18 @@ export function lifecycleGuardIntervalForEnv(
 }
 
 /**
- * Start the lifecycle guard. Returns a cleanup function.
+ * Start the lifecycle guard. Returns a handle with `recordActivity` (call
+ * on every MCP request to keep idle timer from firing) and `stop`.
+ *
  * Skipped automatically when stdin is a TTY (e.g. OpenCode ts-plugin).
  */
-export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
+export function startLifecycleGuard(opts: LifecycleGuardOptions): LifecycleGuardHandle {
   const interval = opts.checkIntervalMs ?? lifecycleGuardIntervalForEnv();
   const check = opts.isParentAlive ?? defaultIsParentAlive;
+  const idleTimeoutMs = opts.idleTimeoutMs ?? idleTimeoutForEnv();
+  const now = opts.now ?? Date.now;
   let stopped = false;
+  let lastActivity = now();
 
   const shutdown = () => {
     if (stopped) return;
@@ -129,9 +191,21 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
     opts.onShutdown();
   };
 
-  // P0: Periodic parent liveness check
+  const recordActivity = () => {
+    lastActivity = now();
+  };
+
+  // P0: Periodic parent liveness check (+ idle timeout when configured)
   const timer = setInterval(() => {
-    if (!check()) shutdown();
+    if (!check()) {
+      shutdown();
+      return;
+    }
+    // Idle shutdown (#565). Skipped on TTY because interactive dev
+    // sessions are expected to sit idle between commands.
+    if (idleTimeoutMs > 0 && !process.stdin.isTTY) {
+      if (now() - lastActivity > idleTimeoutMs) shutdown();
+    }
   }, interval);
   timer.unref();
 
@@ -162,10 +236,17 @@ export function startLifecycleGuard(opts: LifecycleGuardOptions): () => void {
     process.stdin.on("end", onStdinEnd);
   }
 
-  return () => {
+  const cleanup = () => {
     stopped = true;
     clearInterval(timer);
     for (const sig of signals) process.removeListener(sig, shutdown);
     process.stdin.removeListener("end", onStdinEnd);
   };
+
+  // Hybrid: callable for legacy `const cleanup = startLifecycleGuard(...)`
+  // sites, with `.recordActivity` / `.stop` properties for the new contract.
+  const handle = cleanup as LifecycleGuardHandle;
+  handle.recordActivity = recordActivity;
+  handle.stop = cleanup;
+  return handle;
 }

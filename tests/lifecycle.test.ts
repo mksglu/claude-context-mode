@@ -9,7 +9,7 @@ import { describe, test, assert } from "vitest";
 import { spawn, execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { startLifecycleGuard, makeDefaultIsParentAlive } from "../src/lifecycle.js";
+import { startLifecycleGuard, makeDefaultIsParentAlive, idleTimeoutForEnv } from "../src/lifecycle.js";
 
 const TSX_PATH = execSync("which tsx", { encoding: "utf-8" }).trim();
 
@@ -374,4 +374,109 @@ describe.skipIf(isWindows)("Lifecycle Guard — Integration (real process)", () 
 
     assert.equal(code, 43, "Child should exit with code 43 on SIGTERM");
   }, 10_000);
+});
+
+describe("Lifecycle Guard — idle timeout (#565)", () => {
+  test("idleTimeoutForEnv: default is 15 minutes", () => {
+    assert.equal(idleTimeoutForEnv({}), 15 * 60 * 1000);
+  });
+
+  test("idleTimeoutForEnv: env override respected", () => {
+    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "60000" }), 60_000);
+  });
+
+  test("idleTimeoutForEnv: env=0 disables", () => {
+    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "0" }), 0);
+  });
+
+  test("idleTimeoutForEnv: malformed env falls back to default", () => {
+    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "garbage" }), 15 * 60 * 1000);
+    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "-1" }), 15 * 60 * 1000);
+  });
+
+  test("shuts down when no activity for idleTimeoutMs", async () => {
+    // Skip on TTY — guard intentionally skips idle check there.
+    if (process.stdin.isTTY) return;
+
+    let shutdownCalled = false;
+    let fakeNow = 1_000_000;
+
+    const handle = startLifecycleGuard({
+      checkIntervalMs: 20,
+      idleTimeoutMs: 100,
+      isParentAlive: () => true,
+      onShutdown: () => { shutdownCalled = true; },
+      now: () => fakeNow,
+    });
+
+    // Advance simulated clock past the idle threshold.
+    fakeNow += 200;
+    await new Promise((r) => setTimeout(r, 80));
+
+    handle();
+    assert.equal(shutdownCalled, true, "idle timeout should trigger shutdown");
+  });
+
+  test("recordActivity() prevents idle shutdown", async () => {
+    if (process.stdin.isTTY) return;
+
+    let shutdownCalled = false;
+    let fakeNow = 1_000_000;
+
+    const handle = startLifecycleGuard({
+      checkIntervalMs: 20,
+      idleTimeoutMs: 100,
+      isParentAlive: () => true,
+      onShutdown: () => { shutdownCalled = true; },
+      now: () => fakeNow,
+    });
+
+    // Bump activity timestamp every "tick" so the gap stays < idleTimeoutMs.
+    for (let i = 0; i < 5; i++) {
+      fakeNow += 50;
+      handle.recordActivity();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+
+    handle();
+    assert.equal(shutdownCalled, false, "active server must not shut down");
+  });
+
+  test("idleTimeoutMs=0 disables the idle check", async () => {
+    if (process.stdin.isTTY) return;
+
+    let shutdownCalled = false;
+    let fakeNow = 1_000_000;
+
+    const handle = startLifecycleGuard({
+      checkIntervalMs: 20,
+      idleTimeoutMs: 0,
+      isParentAlive: () => true,
+      onShutdown: () => { shutdownCalled = true; },
+      now: () => fakeNow,
+    });
+
+    fakeNow += 10_000_000; // huge gap
+    await new Promise((r) => setTimeout(r, 80));
+
+    handle();
+    assert.equal(shutdownCalled, false, "idleTimeoutMs=0 must disable idle shutdown");
+  });
+
+  test("returned handle is callable AND exposes recordActivity/stop", async () => {
+    const handle = startLifecycleGuard({
+      checkIntervalMs: 50,
+      onShutdown: () => {},
+      isParentAlive: () => true,
+    });
+
+    assert.equal(typeof handle, "function", "handle itself should be callable (legacy cleanup contract)");
+    assert.equal(typeof handle.recordActivity, "function", "handle.recordActivity exposed");
+    assert.equal(typeof handle.stop, "function", "handle.stop exposed");
+
+    // Stop both ways — must be idempotent.
+    handle.recordActivity();
+    handle.stop();
+    handle(); // calling the handle again must not throw
+  });
 });
