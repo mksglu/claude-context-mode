@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { afterAll, describe, expect, test } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
 import {
+  flushToolCallCountersSync,
   persistToolCallCounter,
   restoreSessionStats,
 } from "../../src/session/persist-tool-calls.js";
@@ -28,6 +29,7 @@ import {
 const tmpDirs: string[] = [];
 
 afterAll(() => {
+  flushToolCallCountersSync();
   for (const dir of tmpDirs) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
@@ -53,6 +55,7 @@ describe("Cycle 1 — persistToolCallCounter (write-back)", () => {
   test("no-op when DB file does not exist (best-effort, never throws)", () => {
     const missing = join(tmpdir(), `does-not-exist-${Date.now()}.db`);
     expect(() => persistToolCallCounter(missing, "ctx_search", 1024)).not.toThrow();
+    flushToolCallCountersSync();
     expect(existsSync(missing)).toBe(false);
   });
 
@@ -61,6 +64,7 @@ describe("Cycle 1 — persistToolCallCounter (write-back)", () => {
     // Create the schema only — no session row.
     new SessionDB({ dbPath }).close();
     expect(() => persistToolCallCounter(dbPath, "ctx_search", 100)).not.toThrow();
+    flushToolCallCountersSync();
     // Counter should remain empty since there is no session to attach to.
     const db = new SessionDB({ dbPath });
     try {
@@ -78,6 +82,7 @@ describe("Cycle 1 — persistToolCallCounter (write-back)", () => {
     persistToolCallCounter(dbPath, "ctx_search", 1024);
     persistToolCallCounter(dbPath, "ctx_search", 2048);
     persistToolCallCounter(dbPath, "ctx_fetch_and_index", 4096);
+    flushToolCallCountersSync();
 
     const db = new SessionDB({ dbPath });
     try {
@@ -99,6 +104,7 @@ describe("Cycle 1 — persistToolCallCounter (write-back)", () => {
     // First "process": writes 2 calls.
     persistToolCallCounter(dbPath, "ctx_execute", 500);
     persistToolCallCounter(dbPath, "ctx_execute", 700);
+    flushToolCallCountersSync();
 
     // Second "process": new SessionDB instance, same dbPath.
     const db = new SessionDB({ dbPath });
@@ -132,6 +138,7 @@ describe("Cycle 2 — restoreSessionStats (read-side)", () => {
     persistToolCallCounter(dbPath, "ctx_search", 1500);
     persistToolCallCounter(dbPath, "ctx_search", 2500);
     persistToolCallCounter(dbPath, "ctx_execute", 800);
+    flushToolCallCountersSync();
 
     const restored = restoreSessionStats(dbPath);
     expect(restored).not.toBeNull();
@@ -145,6 +152,7 @@ describe("Cycle 2 — restoreSessionStats (read-side)", () => {
     const dbPath = freshDbPath();
     seedSession(dbPath, "sess-restore-2");
     persistToolCallCounter(dbPath, "ctx_search", 1);
+    flushToolCallCountersSync();
 
     const restored = restoreSessionStats(dbPath);
     expect(restored).not.toBeNull();
@@ -165,6 +173,7 @@ describe("Cycle 2 — restoreSessionStats (read-side)", () => {
     seedSession(dbPath, "sess-new");
 
     persistToolCallCounter(dbPath, "ctx_search", 100);
+    flushToolCallCountersSync();
 
     const restored = restoreSessionStats(dbPath);
     expect(restored).not.toBeNull();

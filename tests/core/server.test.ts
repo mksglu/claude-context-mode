@@ -1182,12 +1182,12 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     );
     // Locate the ctx_index store.index call site and assert canonical fallback.
     const indexCall = serverSrc.match(
-      /store\.index\(\{[^}]*source:\s*source\s*\?\?\s*(\w+)/,
+      /store\.index(?:Queued)?\(\{[^}]*source:\s*source\s*\?\?\s*(\w+)/,
     );
     expect(indexCall).not.toBeNull();
     expect(indexCall![1]).toBe("resolvedPath");
     // Negative guard: no place in ctx_index falls back to raw `path`.
-    expect(serverSrc).not.toMatch(/store\.index\(\{[^}]*source:\s*source\s*\?\?\s*path[\s,}]/);
+    expect(serverSrc).not.toMatch(/store\.index(?:Queued)?\(\{[^}]*source:\s*source\s*\?\?\s*path[\s,}]/);
   });
 });
 
@@ -2817,8 +2817,11 @@ describe("batch_execute FS read tracking", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
+  BATCH_QUERY_HOT_PATH_MAX_BYTES,
   buildBatchNodeOptionsPrefix,
+  formatDeferredBatchQueryGuidance,
   runBatchCommands,
+  shouldDeferBatchQueryResults,
   type BatchCommand,
 } from "../../src/server.js";
 
@@ -2833,6 +2836,18 @@ function mkMockExecutor(
 }
 
 const NOOP_PREFIX = ""; // tests don't need NODE_OPTIONS prefix
+
+describe("ctx_batch_execute large-output query deferral", () => {
+  test("defers fresh FTS searches above the hot-path threshold", () => {
+    expect(shouldDeferBatchQueryResults(BATCH_QUERY_HOT_PATH_MAX_BYTES)).toBe(false);
+    expect(shouldDeferBatchQueryResults(BATCH_QUERY_HOT_PATH_MAX_BYTES + 1)).toBe(true);
+
+    const guidance = formatDeferredBatchQueryGuidance(["SQLITE_BUSY", "write queue"], "batch:A,B");
+    expect(guidance.join("\n")).toContain("skipped synchronous FTS searches");
+    expect(guidance.join("\n")).toContain("ctx_search");
+    expect(guidance.join("\n")).toContain('source: "batch:A,B"');
+  });
+});
 
 describe("runBatchCommands serial path (concurrency=1)", () => {
   test("happy path: outputs in input order, no timeout cascade", async () => {

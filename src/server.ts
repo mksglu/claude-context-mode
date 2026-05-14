@@ -32,10 +32,17 @@ import { hashProjectDirCanonical, hashProjectDirLegacy, resolveContentStorePath,
 import { purgeSession } from "./session/purge.js";
 import {
   emitCacheHitEvent,
+  flushSessionEvents,
+  flushSessionEventsSync,
   emitIndexWriteEvent,
   emitSandboxExecuteEvent,
 } from "./session/event-emit.js";
-import { persistToolCallCounter, restoreSessionStats } from "./session/persist-tool-calls.js";
+import {
+  flushToolCallCounters,
+  flushToolCallCountersSync,
+  persistToolCallCounter,
+  restoreSessionStats,
+} from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter, type PlatformId } from "./adapters/types.js";
 import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
@@ -489,10 +496,9 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   persistStats();
 
   // Persist to SessionDB so counters survive process restart, --continue,
-  // upgrade. Re-introduces the write path 4742160 added and b392c2f dropped.
-  // setImmediate keeps this off the response hot path; the helper itself
-  // is best-effort (never throws).
-  setImmediate(() => persistToolCallCounter(getSessionDbPath(), toolName, bytes));
+  // upgrade. The helper coalesces rapid responses by DB path before opening
+  // SQLite, avoiding one open/write/close per MCP response.
+  persistToolCallCounter(getSessionDbPath(), toolName, bytes);
 
   // D2 Phase 5/7 — sandbox-execute event emission. Tracks the bytes the
   // user actually saw from sandboxed runs so getRealBytesStats() can
@@ -503,13 +509,11 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
     || toolName === "ctx_execute_file"
     || toolName === "ctx_batch_execute"
   ) {
-    setImmediate(() =>
-      emitSandboxExecuteEvent({
-        sessionDbPath: getSessionDbPath(),
-        toolName,
-        bytesReturned: bytes,
-      })
-    );
+    emitSandboxExecuteEvent({
+      sessionDbPath: getSessionDbPath(),
+      toolName,
+      bytesReturned: bytes,
+    });
   }
 
   return response;
@@ -522,13 +526,11 @@ function trackIndexed(bytes: number, source: string = "unknown"): void {
   // these are bytes that would have flooded context if the user had
   // Read'd the source instead of indexing.
   if (bytes > 0) {
-    setImmediate(() =>
-      emitIndexWriteEvent({
-        sessionDbPath: getSessionDbPath(),
-        source,
-        bytesAvoided: bytes,
-      })
-    );
+    emitIndexWriteEvent({
+      sessionDbPath: getSessionDbPath(),
+      source,
+      bytesAvoided: bytes,
+    });
   }
 }
 
@@ -908,6 +910,22 @@ export function formatBatchQueryResults(
   return sections;
 }
 
+export function shouldDeferBatchQueryResults(totalBytes: number): boolean {
+  return totalBytes > BATCH_QUERY_HOT_PATH_MAX_BYTES;
+}
+
+export function formatDeferredBatchQueryGuidance(queries: string[], source: string): string[] {
+  const examples = queries.length > 0
+    ? queries.map((query) => JSON.stringify(query)).join(", ")
+    : JSON.stringify("...");
+  return [
+    "## Query Results",
+    "",
+    `Output exceeds ${(BATCH_QUERY_HOT_PATH_MAX_BYTES / 1024).toFixed(0)}KB, so ctx_batch_execute skipped synchronous FTS searches on the freshly indexed source.`,
+    `Use ctx_search(queries: [${examples}], source: ${JSON.stringify(source)}) to retrieve matching sections after the queued index write settles.`,
+  ];
+}
+
 // ─────────────────────────────────────────────────────────
 // batch_execute runner — used by ctx_batch_execute handler
 // ─────────────────────────────────────────────────────────
@@ -1248,7 +1266,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute", {
             content: [
-              { type: "text" as const, text: intentSearch(output, intent, isError ? `execute:${language}:error` : `execute:${language}`) },
+              { type: "text" as const, text: await intentSearch(output, intent, isError ? `execute:${language}:error` : `execute:${language}`) },
             ],
             isError,
           });
@@ -1258,7 +1276,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute", {
             content: [
-              { type: "text" as const, text: intentSearch(output, "errors failures exceptions", isError ? `execute:${language}:error` : `execute:${language}`) },
+              { type: "text" as const, text: await intentSearch(output, "errors failures exceptions", isError ? `execute:${language}:error` : `execute:${language}`) },
             ],
             isError,
           });
@@ -1278,14 +1296,14 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
         trackIndexed(Buffer.byteLength(stdout));
         return trackResponse("ctx_execute", {
           content: [
-            { type: "text" as const, text: intentSearch(stdout, intent, `execute:${language}`) },
+            { type: "text" as const, text: await intentSearch(stdout, intent, `execute:${language}`) },
           ],
         });
       }
 
       // Auto-index large stdout into FTS5 — return pointer, not raw content
       if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
-        return trackResponse("ctx_execute", indexStdout(stdout, `execute:${language}`));
+        return trackResponse("ctx_execute", await indexStdout(stdout, `execute:${language}`));
       }
 
       return trackResponse("ctx_execute", {
@@ -1309,13 +1327,13 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 // Helper: index stdout into FTS5 knowledge base
 // ─────────────────────────────────────────────────────────
 
-function indexStdout(
+async function indexStdout(
   stdout: string,
   source: string,
-): { content: Array<{ type: "text"; text: string }> } {
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const store = getStore();
   trackIndexed(Buffer.byteLength(stdout));
-  const indexed = store.index({ content: stdout, source });
+  const indexed = await store.indexQueued({ content: stdout, source });
   return {
     content: [
       {
@@ -1332,19 +1350,20 @@ function indexStdout(
 
 const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
 const LARGE_OUTPUT_THRESHOLD = 102_400; // 100KB — auto-index into FTS5, return pointer
+export const BATCH_QUERY_HOT_PATH_MAX_BYTES = 256 * 1024;
 
-function intentSearch(
+async function intentSearch(
   stdout: string,
   intent: string,
   source: string,
   maxResults: number = 5,
-): string {
+): Promise<string> {
   const totalLines = stdout.split("\n").length;
   const totalBytes = Buffer.byteLength(stdout);
 
   // Index into the PERSISTENT store so user can ctx_search() later
   const persistent = getStore();
-  const indexed = persistent.indexPlainText(stdout, source);
+  const indexed = await persistent.indexPlainTextQueued(stdout, source);
 
   // Search the persistent store directly (porter → trigram → fuzzy)
   let results = persistent.searchWithFallback(intent, maxResults, source);
@@ -1479,7 +1498,7 @@ server.registerTool(
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute_file", {
             content: [
-              { type: "text" as const, text: intentSearch(output, intent, isError ? `file:${path}:error` : `file:${path}`) },
+              { type: "text" as const, text: await intentSearch(output, intent, isError ? `file:${path}:error` : `file:${path}`) },
             ],
             isError,
           });
@@ -1489,7 +1508,7 @@ server.registerTool(
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute_file", {
             content: [
-              { type: "text" as const, text: intentSearch(output, "errors failures exceptions", isError ? `file:${path}:error` : `file:${path}`) },
+              { type: "text" as const, text: await intentSearch(output, "errors failures exceptions", isError ? `file:${path}:error` : `file:${path}`) },
             ],
             isError,
           });
@@ -1508,14 +1527,14 @@ server.registerTool(
         trackIndexed(Buffer.byteLength(stdout));
         return trackResponse("ctx_execute_file", {
           content: [
-            { type: "text" as const, text: intentSearch(stdout, intent, `file:${path}`) },
+            { type: "text" as const, text: await intentSearch(stdout, intent, `file:${path}`) },
           ],
         });
       }
 
       // Auto-index large stdout into FTS5 — return pointer, not raw content
       if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
-        return trackResponse("ctx_execute_file", indexStdout(stdout, `file:${path}`));
+        return trackResponse("ctx_execute_file", await indexStdout(stdout, `file:${path}`));
       }
 
       return trackResponse("ctx_execute_file", {
@@ -1611,7 +1630,7 @@ server.registerTool(
         } catch { /* ignore — file read errors handled by store */ }
       }
       const store = getStore();
-      const result = store.index({ content, path: resolvedPath, source: source ?? resolvedPath });
+      const result = await store.indexQueued({ content, path: resolvedPath, source: source ?? resolvedPath });
 
       return trackResponse("ctx_index", {
         content: [
@@ -2377,7 +2396,7 @@ interface IndexedFetchResult {
  * fetched results and calls this one-at-a-time to avoid SQLite WAL contention
  * (PRD finding E).
  */
-function indexFetched(f: { url: string; source?: string; markdown: string; header: string }): IndexedFetchResult {
+async function indexFetched(f: { url: string; source?: string; markdown: string; header: string }): Promise<IndexedFetchResult> {
   const store = getStore();
   // Storage label composed via composeFetchCacheKey so two URLs sharing a
   // `source` label do not overwrite each other (commit 1f1243e). ctx_search()
@@ -2385,11 +2404,11 @@ function indexFetched(f: { url: string; source?: string; markdown: string; heade
   const storageLabel = composeFetchCacheKey(f.source, f.url);
   let indexed: IndexResult;
   if (f.header === "__CM_CT__:json") {
-    indexed = store.indexJSON(f.markdown, storageLabel);
+    indexed = await store.indexJSONQueued(f.markdown, storageLabel);
   } else if (f.header === "__CM_CT__:text") {
-    indexed = store.indexPlainText(f.markdown, storageLabel);
+    indexed = await store.indexPlainTextQueued(f.markdown, storageLabel);
   } else {
-    indexed = store.index({ content: f.markdown, source: storageLabel });
+    indexed = await store.indexQueued({ content: f.markdown, source: storageLabel });
   }
   // Track AFTER the FTS5 write succeeds — failed indexes shouldn't inflate the counter.
   trackIndexed(Buffer.byteLength(f.markdown));
@@ -2526,7 +2545,7 @@ server.registerTool(
         finalized.push({ kind: "fetch_error", url: v.url, error: v.error, reason: v.reason });
       } else {
         // Serial FTS5 write here — no parallel store.index calls.
-        finalized.push({ kind: "fetched", indexed: indexFetched(v) });
+        finalized.push({ kind: "fetched", indexed: await indexFetched(v) });
       }
     }
 
@@ -2751,7 +2770,12 @@ server.registerTool(
         .map((c) => c.label)
         .join(",")
         .slice(0, 80)}`;
-      const indexed = store.index({ content: stdout, source });
+      const deferQueryResults = shouldDeferBatchQueryResults(totalBytes);
+      const indexed = await store.indexQueued({
+        content: stdout,
+        source,
+        skipVocabulary: deferQueryResults,
+      });
 
       // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
       const allSections = store.getChunksBySource(indexed.sourceId);
@@ -2763,18 +2787,22 @@ server.registerTool(
         sectionTitles.push(s.title);
       }
 
-      // Run all search queries — source scoped only.
-      // Cross-source search remains available via explicit ctx_search().
-      const queryResults = formatBatchQueryResults(store, queries, source);
+      // Run source-scoped searches only for bounded outputs. For very large
+      // batches, FTS write + vocabulary + N fresh searches can dominate the
+      // response hot path; return deterministic ctx_search guidance instead.
+      const queryResults = deferQueryResults
+        ? formatDeferredBatchQueryGuidance(queries, source)
+        : formatBatchQueryResults(store, queries, source);
 
       // Get searchable terms for edge cases where follow-up is needed
-      const distinctiveTerms = store.getDistinctiveTerms
+      const distinctiveTerms = !deferQueryResults && store.getDistinctiveTerms
         ? store.getDistinctiveTerms(indexed.sourceId)
         : [];
 
       const output = [
         `Executed ${commands.length} commands (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). ` +
-          `Indexed ${indexed.totalChunks} sections. Searched ${queries.length} queries.`,
+          `Indexed ${indexed.totalChunks} sections. ` +
+          (deferQueryResults ? `Deferred ${queries.length} queries.` : `Searched ${queries.length} queries.`),
         "",
         ...inventory,
         "",
@@ -3760,11 +3788,17 @@ async function main() {
     try {
       _lastStatsPersist = 0;
       persistStats();
+      await flushToolCallCounters();
+      await flushSessionEvents();
     } catch { /* best effort — never block shutdown */ }
     shutdown();
     process.exit(0);
   };
-  process.on("exit", shutdown);
+  process.on("exit", () => {
+    try { flushToolCallCountersSync(); } catch { /* best effort */ }
+    try { flushSessionEventsSync(); } catch { /* best effort */ }
+    shutdown();
+  });
   process.on("SIGINT", () => { gracefulShutdown(); });
   process.on("SIGTERM", () => { gracefulShutdown(); });
 

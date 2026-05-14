@@ -11,6 +11,7 @@
 import type { Database as DatabaseInstance } from "better-sqlite3";
 import { loadDatabase, applyWALPragmas, closeDB, cleanOrphanedWALFiles, withRetry, deleteDBFiles, isSQLiteCorruptionError } from "./db-base.js";
 import type { PreparedStatement } from "./db-base.js";
+import { enqueueDbWrite } from "./db-write-queue.js";
 import { readFileSync, readdirSync, unlinkSync, existsSync, statSync, openSync, fstatSync, closeSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -39,6 +40,22 @@ type SearchRow = {
 };
 
 import type { IndexResult, SearchResult, StoreStats } from "./types.js";
+
+interface IndexOptions {
+  content?: string;
+  path?: string;
+  source?: string;
+  skipVocabulary?: boolean;
+}
+
+interface InsertOptions {
+  skipVocabulary?: boolean;
+}
+
+// Vocabulary extraction feeds fuzzy fallback, but it is CPU-linear in input
+// size and runs after FTS writes. Huge command outputs should be searchable via
+// FTS immediately without paying that extra hot-path cost.
+export const VOCABULARY_EXTRACTION_MAX_BYTES = 512 * 1024;
 export type { IndexResult, SearchResult, StoreStats } from "./types.js";
 
 // ─────────────────────────────────────────────────────────
@@ -428,6 +445,10 @@ export class ContentStore {
     this.#prepareStatements();
   }
 
+  get dbPath(): string {
+    return this.#dbPath;
+  }
+
   /** Delete this session's DB files. Call on process exit. */
   cleanup(): void {
     try {
@@ -803,11 +824,7 @@ export class ContentStore {
 
   // ── Index ──
 
-  index(options: {
-    content?: string;
-    path?: string;
-    source?: string;
-  }): IndexResult {
+  index(options: IndexOptions): IndexResult {
     const { content, path, source } = options;
 
     // Treat empty string as "no content" so an empty `content` paired with a
@@ -851,7 +868,11 @@ export class ContentStore {
     const filePath = path ?? undefined;
     const contentHash = filePath ? createHash("sha256").update(text).digest("hex") : undefined;
 
-    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash));
+    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash, options));
+  }
+
+  indexQueued(options: IndexOptions): Promise<IndexResult> {
+    return enqueueDbWrite(this.#dbPath, () => this.index(options));
   }
 
   // ── Index Plain Text ──
@@ -865,9 +886,10 @@ export class ContentStore {
     content: string,
     source: string,
     linesPerChunk: number = 20,
+    options: InsertOptions = {},
   ): IndexResult {
     if (!content || content.trim().length === 0) {
-      return this.#insertChunks([], source, "");
+      return this.#insertChunks([], source, "", undefined, undefined, options);
     }
 
     const chunks = this.#chunkPlainText(content, linesPerChunk);
@@ -876,7 +898,19 @@ export class ContentStore {
       chunks.map((c) => ({ ...c, hasCode: false })),
       source,
       content,
+      undefined,
+      undefined,
+      options,
     ));
+  }
+
+  indexPlainTextQueued(
+    content: string,
+    source: string,
+    linesPerChunk: number = 20,
+    options: InsertOptions = {},
+  ): Promise<IndexResult> {
+    return enqueueDbWrite(this.#dbPath, () => this.indexPlainText(content, source, linesPerChunk, options));
   }
 
   // ── Index JSON ──
@@ -914,6 +948,14 @@ export class ContentStore {
     return withRetry(() => this.#insertChunks(chunks, source, content));
   }
 
+  indexJSONQueued(
+    content: string,
+    source: string,
+    maxChunkBytes: number = MAX_CHUNK_BYTES,
+  ): Promise<IndexResult> {
+    return enqueueDbWrite(this.#dbPath, () => this.indexJSON(content, source, maxChunkBytes));
+  }
+
   // ── Shared DB Insertion ──
 
   /**
@@ -921,7 +963,14 @@ export class ContentStore {
    * into both FTS5 tables within a transaction and extracts vocabulary.
    * Uses cached prepared statements from #prepareStatements().
    */
-  #insertChunks(chunks: Chunk[], label: string, text: string, filePath?: string, contentHash?: string): IndexResult {
+  #insertChunks(
+    chunks: Chunk[],
+    label: string,
+    text: string,
+    filePath?: string,
+    contentHash?: string,
+    options: InsertOptions = {},
+  ): IndexResult {
     const codeChunks = chunks.filter((c) => c.hasCode).length;
 
     // Atomic dedup + insert: delete previous source with same label,
@@ -951,7 +1000,8 @@ export class ContentStore {
     });
 
     const sourceId = transaction();
-    if (text) this.#extractAndStoreVocabulary(text);
+    const skipVocabulary = options.skipVocabulary || Buffer.byteLength(text) > VOCABULARY_EXTRACTION_MAX_BYTES;
+    if (text && !skipVocabulary) this.#extractAndStoreVocabulary(text);
 
     // Periodically optimize FTS5 indexes to merge b-tree segments.
     // Fragmentation accumulates over insert/delete cycles (dedup re-indexes

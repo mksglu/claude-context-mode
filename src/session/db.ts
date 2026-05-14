@@ -765,7 +765,7 @@ export class SessionDB extends SQLiteBase {
    */
   bulkInsertEvents(
     sessionId: string,
-    events: SessionEvent[],
+    events: Array<Omit<SessionEvent, "data_hash"> & { data_hash?: string }>,
     sourceHook: string = "PostToolUse",
     attributions?: Array<Partial<ProjectAttribution> | undefined>,
     bytesList?: Array<EventBytes | undefined>,
@@ -1058,9 +1058,27 @@ export class SessionDB extends SQLiteBase {
    * SessionDB instances — counters survive process restart.
    */
   incrementToolCall(sessionId: string, tool: string, bytesReturned: number = 0): void {
-    const safeBytes = Number.isFinite(bytesReturned) && bytesReturned > 0 ? Math.round(bytesReturned) : 0;
+    this.bulkIncrementToolCalls(sessionId, [{ tool, calls: 1, bytesReturned }]);
+  }
+
+  bulkIncrementToolCalls(
+    sessionId: string,
+    rows: Array<{ tool: string; calls: number; bytesReturned: number }>,
+  ): void {
+    if (rows.length === 0) return;
     try {
-      this.stmt(S.incrementToolCall).run(sessionId, tool, safeBytes);
+      const transaction = this.db.transaction(() => {
+        for (const row of rows) {
+          const calls = Number.isFinite(row.calls) && row.calls > 0 ? Math.round(row.calls) : 0;
+          const safeBytes = Number.isFinite(row.bytesReturned) && row.bytesReturned > 0
+            ? Math.round(row.bytesReturned)
+            : 0;
+          for (let i = 0; i < calls; i++) {
+            this.stmt(S.incrementToolCall).run(sessionId, row.tool, i === 0 ? safeBytes : 0);
+          }
+        }
+      });
+      this.withRetry(() => transaction());
     } catch {
       // best-effort: counter must never throw and break the parent call
     }

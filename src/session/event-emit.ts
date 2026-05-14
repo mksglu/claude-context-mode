@@ -14,35 +14,92 @@
  * - Best-effort error swallowing matches `persistToolCallCounter` in
  *   `persist-tool-calls.ts`. A stats-side failure must NEVER break the
  *   parent MCP tool call.
- * - Resolves the latest `session_id` from `session_meta` so the wiring
- *   in `server.ts` is `setImmediate(() => emit*({...}))` — no need to
- *   plumb session ids through every handler.
+ * - Coalesces rapid events per SessionDB path before opening SQLite, so busy
+ *   tool loops do not create an open/write/close storm.
  */
 
 import { existsSync } from "node:fs";
-import { SessionDB } from "./db.js";
+import { enqueueDbWrite } from "../db-write-queue.js";
+import { SessionDB, type EventBytes } from "./db.js";
+import type { SessionEvent } from "../types.js";
+
+export const SESSION_EVENT_FLUSH_DELAY_MS = 100;
+
+interface PendingSessionEvent {
+  event: Omit<SessionEvent, "data_hash"> & { data_hash?: string };
+  bytes?: EventBytes;
+}
+
+const pendingByPath = new Map<string, PendingSessionEvent[]>();
+let flushTimer: NodeJS.Timeout | undefined;
 
 /**
- * Open the SessionDB at `dbPath`, find the latest session_id, and run
- * `fn` with both. Wraps everything in try/catch so callers stay
- * fire-and-forget.
+ * Open the SessionDB at `dbPath`, find the latest session_id, and insert all
+ * queued events in one transaction. Wraps everything in try/catch so callers
+ * stay fire-and-forget.
  */
-function withLatestSession(
-  dbPath: string,
-  fn: (db: SessionDB, sessionId: string) => void,
-): void {
+function flushPath(dbPath: string, pending: PendingSessionEvent[]): void {
   try {
     if (!existsSync(dbPath)) return;
     const sdb = new SessionDB({ dbPath });
     try {
       const sid = sdb.getLatestSessionId();
       if (!sid) return;
-      fn(sdb, sid);
+      sdb.bulkInsertEvents(
+        sid,
+        pending.map((p) => p.event),
+        "ctx-server",
+        undefined,
+        pending.map((p) => p.bytes),
+      );
     } finally {
       try { sdb.close(); } catch { /* ignore */ }
     }
   } catch {
     // Best-effort: never break the parent MCP tool call.
+  }
+}
+
+function takePending(): Array<[string, PendingSessionEvent[]]> {
+  const batches = Array.from(pendingByPath.entries());
+  pendingByPath.clear();
+  return batches;
+}
+
+function scheduleFlush(): void {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = undefined;
+    void flushSessionEvents();
+  }, SESSION_EVENT_FLUSH_DELAY_MS);
+  flushTimer.unref?.();
+}
+
+function enqueueSessionEvent(sessionDbPath: string, event: PendingSessionEvent): void {
+  const pending = pendingByPath.get(sessionDbPath) ?? [];
+  pending.push(event);
+  pendingByPath.set(sessionDbPath, pending);
+  scheduleFlush();
+}
+
+export async function flushSessionEvents(): Promise<void> {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = undefined;
+  }
+  const batches = takePending();
+  await Promise.all(batches.map(([dbPath, pending]) => (
+    enqueueDbWrite(dbPath, () => flushPath(dbPath, pending))
+  )));
+}
+
+export function flushSessionEventsSync(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = undefined;
+  }
+  for (const [dbPath, pending] of takePending()) {
+    flushPath(dbPath, pending);
   }
 }
 
@@ -56,10 +113,8 @@ export function emitSandboxExecuteEvent(opts: {
   toolName: string;
   bytesReturned: number;
 }): void {
-  withLatestSession(opts.sessionDbPath, (sdb, sid) => {
-    sdb.insertEvent(
-      sid,
-      {
+  enqueueSessionEvent(opts.sessionDbPath, {
+    event: {
         type: "sandbox-execute",
         category: "sandbox",
         priority: 1,
@@ -68,10 +123,7 @@ export function emitSandboxExecuteEvent(opts: {
         attribution_source: "server",
         attribution_confidence: 1,
       },
-      "ctx-server",
-      undefined,
-      { bytesReturned: opts.bytesReturned },
-    );
+    bytes: { bytesReturned: opts.bytesReturned },
   });
 }
 
@@ -84,10 +136,8 @@ export function emitIndexWriteEvent(opts: {
   source: string;
   bytesAvoided: number;
 }): void {
-  withLatestSession(opts.sessionDbPath, (sdb, sid) => {
-    sdb.insertEvent(
-      sid,
-      {
+  enqueueSessionEvent(opts.sessionDbPath, {
+    event: {
         type: "index-write",
         category: "sandbox",
         priority: 1,
@@ -96,10 +146,7 @@ export function emitIndexWriteEvent(opts: {
         attribution_source: "server",
         attribution_confidence: 1,
       },
-      "ctx-server",
-      undefined,
-      { bytesAvoided: opts.bytesAvoided },
-    );
+    bytes: { bytesAvoided: opts.bytesAvoided },
   });
 }
 
@@ -112,10 +159,8 @@ export function emitCacheHitEvent(opts: {
   source: string;
   bytesAvoided: number;
 }): void {
-  withLatestSession(opts.sessionDbPath, (sdb, sid) => {
-    sdb.insertEvent(
-      sid,
-      {
+  enqueueSessionEvent(opts.sessionDbPath, {
+    event: {
         type: "cache-hit",
         category: "cache",
         priority: 1,
@@ -124,9 +169,6 @@ export function emitCacheHitEvent(opts: {
         attribution_source: "server",
         attribution_confidence: 1,
       },
-      "ctx-server",
-      undefined,
-      { bytesAvoided: opts.bytesAvoided },
-    );
+    bytes: { bytesAvoided: opts.bytesAvoided },
   });
 }

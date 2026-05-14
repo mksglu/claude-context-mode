@@ -945,7 +945,7 @@ describe("withRetry — SQLITE_BUSY retry loop", () => {
     assert.equal(calls, 1);
   });
 
-  test("waits between retries (busy-wait respects delay)", () => {
+  test("waits between retries (sync wait respects delay)", () => {
     let calls = 0;
     const start = Date.now();
     const result = withRetry(() => {

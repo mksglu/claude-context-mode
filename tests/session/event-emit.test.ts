@@ -27,6 +27,7 @@ import {
   emitCacheHitEvent,
   emitIndexWriteEvent,
   emitSandboxExecuteEvent,
+  flushSessionEventsSync,
 } from "../../src/session/event-emit.js";
 
 interface RawEventRow {
@@ -56,6 +57,7 @@ function readEvents(dbPath: string, sessionId: string, type: string): RawEventRo
 const cleanups: Array<() => void> = [];
 
 afterAll(() => {
+  flushSessionEventsSync();
   for (const fn of cleanups) {
     try { fn(); } catch { /* ignore */ }
   }
@@ -86,6 +88,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
       bytesReturned: 1234,
     });
     sdb.close(); // release lock so the raw reader can open
+    flushSessionEventsSync();
 
     const rows = readEvents(dbPath, sid, "sandbox-execute");
     expect(rows.length).toBe(1);
@@ -108,6 +111,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
       bytesAvoided: 5678,
     });
     sdb.close();
+    flushSessionEventsSync();
 
     const rows = readEvents(dbPath, sid, "index-write");
     expect(rows.length).toBe(1);
@@ -129,6 +133,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
       bytesAvoided: 9000,
     });
     sdb.close();
+    flushSessionEventsSync();
 
     const rows = readEvents(dbPath, sid, "cache-hit");
     expect(rows.length).toBe(1);
@@ -142,6 +147,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
     expect(() => emitSandboxExecuteEvent({ sessionDbPath: missing, toolName: "x", bytesReturned: 1 })).not.toThrow();
     expect(() => emitIndexWriteEvent({ sessionDbPath: missing, source: "x", bytesAvoided: 1 })).not.toThrow();
     expect(() => emitCacheHitEvent({ sessionDbPath: missing, source: "x", bytesAvoided: 1 })).not.toThrow();
+    flushSessionEventsSync();
   });
 
   test("emitters skip silently when no session exists in the DB", () => {
@@ -150,6 +156,7 @@ describe("event-emit (Phase 5/7 server-side emitters)", () => {
     // No insertEvent → no session_meta row → emitter must return without throwing.
     expect(() => emitSandboxExecuteEvent({ sessionDbPath: dbPath, toolName: "x", bytesReturned: 1 })).not.toThrow();
     sdb.close();
+    flushSessionEventsSync();
     cleanups.push(() => { try { if (existsSync(dbPath)) unlinkSync(dbPath); } catch {} });
 
     const Database = loadDatabase();

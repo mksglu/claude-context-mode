@@ -19,6 +19,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { enqueueDbWrite } from "../db-write-queue.js";
 import { SessionDB } from "./db.js";
 
 /**
@@ -39,6 +40,54 @@ export interface RestoredSessionStats {
   sessionStart: number;
 }
 
+export const TOOL_CALL_COUNTER_FLUSH_DELAY_MS = 100;
+
+interface PendingToolCounter {
+  calls: number;
+  bytesReturned: number;
+}
+
+const pendingByPath = new Map<string, Map<string, PendingToolCounter>>();
+let flushTimer: NodeJS.Timeout | undefined;
+
+function scheduleFlush(): void {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = undefined;
+    void flushToolCallCounters();
+  }, TOOL_CALL_COUNTER_FLUSH_DELAY_MS);
+  flushTimer.unref?.();
+}
+
+function takePending(): Array<[string, Map<string, PendingToolCounter>]> {
+  const batches = Array.from(pendingByPath.entries());
+  pendingByPath.clear();
+  return batches;
+}
+
+function flushPath(dbPath: string, counters: Map<string, PendingToolCounter>): void {
+  try {
+    if (!existsSync(dbPath)) return;
+    const sdb = new SessionDB({ dbPath });
+    try {
+      const sid = sdb.getLatestSessionId();
+      if (!sid) return;
+      sdb.bulkIncrementToolCalls(
+        sid,
+        Array.from(counters.entries()).map(([tool, counter]) => ({
+          tool,
+          calls: counter.calls,
+          bytesReturned: counter.bytesReturned,
+        })),
+      );
+    } finally {
+      sdb.close();
+    }
+  } catch {
+    // Best-effort: counter must never throw and break the parent tool call.
+  }
+}
+
 /**
  * Increment the persistent tool-call counter for `toolName` under whatever
  * session_id `session_meta` currently treats as the most recent. This is
@@ -51,18 +100,33 @@ export function persistToolCallCounter(
   toolName: string,
   bytes: number,
 ): void {
-  try {
-    if (!existsSync(sessionDbPath)) return;
-    const sdb = new SessionDB({ dbPath: sessionDbPath });
-    try {
-      const sid = sdb.getLatestSessionId();
-      if (!sid) return;
-      sdb.incrementToolCall(sid, toolName, bytes);
-    } finally {
-      sdb.close();
-    }
-  } catch {
-    // Best-effort: counter must never throw and break the parent tool call.
+  const byTool = pendingByPath.get(sessionDbPath) ?? new Map<string, PendingToolCounter>();
+  const current = byTool.get(toolName) ?? { calls: 0, bytesReturned: 0 };
+  current.calls += 1;
+  current.bytesReturned += Number.isFinite(bytes) && bytes > 0 ? Math.round(bytes) : 0;
+  byTool.set(toolName, current);
+  pendingByPath.set(sessionDbPath, byTool);
+  scheduleFlush();
+}
+
+export async function flushToolCallCounters(): Promise<void> {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = undefined;
+  }
+  const batches = takePending();
+  await Promise.all(batches.map(([dbPath, counters]) => (
+    enqueueDbWrite(dbPath, () => flushPath(dbPath, counters))
+  )));
+}
+
+export function flushToolCallCountersSync(): void {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = undefined;
+  }
+  for (const [dbPath, counters] of takePending()) {
+    flushPath(dbPath, counters);
   }
 }
 
