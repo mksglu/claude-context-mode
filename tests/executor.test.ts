@@ -54,6 +54,22 @@ describe("Runtime Detection", () => {
     assert.equal(cmd[2], "/tmp/test.js");
   });
 
+  test("buildCommand: javascript with Windows bun.exe runtime uses 'run' subcommand", async () => {
+    const bunRuntimes: RuntimeMap = { ...runtimes, javascript: "C:\\Users\\me\\.bun\\bin\\bun.exe" };
+    const cmd = buildCommand(bunRuntimes, "javascript", "C:\\tmp\\test.js");
+    assert.equal(cmd[0], "C:\\Users\\me\\.bun\\bin\\bun.exe");
+    assert.equal(cmd[1], "run");
+    assert.equal(cmd[2], "C:\\tmp\\test.js");
+  });
+
+  test("buildCommand: typescript with Windows bun.exe runtime uses 'run' subcommand", async () => {
+    const bunRuntimes: RuntimeMap = { ...runtimes, typescript: "C:\\Users\\me\\.bun\\bin\\bun.exe" };
+    const cmd = buildCommand(bunRuntimes, "typescript", "C:\\tmp\\test.ts");
+    assert.equal(cmd[0], "C:\\Users\\me\\.bun\\bin\\bun.exe");
+    assert.equal(cmd[1], "run");
+    assert.equal(cmd[2], "C:\\tmp\\test.ts");
+  });
+
   test("detects Shell runtime (non-empty string)", async () => {
     assert.ok(
       typeof runtimes.shell === "string" && runtimes.shell.length > 0,
