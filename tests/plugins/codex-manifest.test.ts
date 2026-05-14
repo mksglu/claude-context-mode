@@ -97,17 +97,30 @@ describe(".codex-plugin/hooks.json", () => {
     expect(existsSync(hooksPath)).toBe(true);
   });
 
-  it("sets CONTEXT_MODE_PLATFORM=codex before loading hook scripts", () => {
+  it("uses simple plugin-root hook script commands", () => {
     for (const groups of Object.values(hooks.hooks)) {
       const command = groups[0]?.hooks[0]?.command ?? "";
-      expect(command).toMatch(/process\.env\.CONTEXT_MODE_PLATFORM\s*=\s*['"]codex['"]/);
+      expect(command).toContain('node "${PLUGIN_ROOT}/hooks/codex/');
+      expect(command).not.toContain("node -e");
+      expect(command).not.toContain("CONTEXT_MODE_PLATFORM");
+      expect(command).not.toContain("CLAUDE_PLUGIN_ROOT");
     }
   });
 
-  it("resolves plugin root from PLUGIN_ROOT with CLAUDE_PLUGIN_ROOT compatibility fallback", () => {
+  it("sets CONTEXT_MODE_PLATFORM=codex in hook wrapper modules", () => {
+    const platformSource = readFileSync(resolve(REPO_ROOT, "hooks/codex/platform.mjs"), "utf8");
+    expect(platformSource).toContain('process.env.CONTEXT_MODE_PLATFORM = "codex";');
+
     for (const groups of Object.values(hooks.hooks)) {
       const command = groups[0]?.hooks[0]?.command ?? "";
-      expect(command).toContain("process.env.PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT");
+      const match = command.match(/\$\{PLUGIN_ROOT\}\/(hooks\/codex\/[^"]+\.mjs)/);
+      expect(match, `expected codex hook script path in ${command}`).not.toBeNull();
+
+      const hookSource = readFileSync(resolve(REPO_ROOT, match![1]), "utf8");
+      const platformImport = hookSource.indexOf('import "./platform.mjs";');
+      const firstSharedImport = hookSource.indexOf('import "../');
+      expect(platformImport).toBeGreaterThanOrEqual(0);
+      expect(firstSharedImport).toBeGreaterThan(platformImport);
     }
   });
 });
