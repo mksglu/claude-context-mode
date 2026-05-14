@@ -153,9 +153,9 @@ Use context-mode for ANY of these, without being asked:
 7. **Always use `filename` parameter** on Playwright tools (`browser_snapshot`, `browser_console_messages`, `browser_network_requests`). Without it, the full output enters context.
 8. **Don't re-index data already in context.** If an MCP tool returned data in a previous response, it's already loaded — use it directly or save to file first.
 
-## Sandboxed Data Workflow
+## Managed Subprocess Data Workflow
 
-<sandboxed_data_workflow>
+<managed_subprocess_data_workflow>
   <critical_rule>
     When using tools that support saving to a file: ALWAYS use the 'filename' parameter.
     NEVER return large raw datasets directly to context.
@@ -163,7 +163,7 @@ Use context-mode for ANY of these, without being asked:
   <workflow>
     LargeDataTool(filename: "path") → mcp__context-mode__ctx_index(path: "path") → ctx_search()
   </workflow>
-</sandboxed_data_workflow>
+</managed_subprocess_data_workflow>
 
 This is the universal pattern for context preservation regardless of
 the source tool (Playwright, GitHub API, AWS CLI, etc.).
@@ -208,11 +208,11 @@ print(f"Records: {len(data)}")
 
 ## Browser & Playwright Integration
 
-**When a task involves Playwright snapshots, screenshots, or page inspection, ALWAYS route through file → sandbox.**
+**When a task involves Playwright snapshots, screenshots, or page inspection, ALWAYS route through file → managed subprocess/index.**
 
 Playwright `browser_snapshot` returns 10K–135K tokens of accessibility tree data. Calling it without `filename` dumps all of that into context. Passing the output to `ctx_index(content: ...)` sends it into context a SECOND time as a parameter. Both are wrong.
 
-**The key insight**: `browser_snapshot` has a `filename` parameter that saves to file instead of returning to context. `ctx_index` has a `path` parameter that reads files server-side. `ctx_execute_file` processes files in a sandbox. **None of these touch context.**
+**The key insight**: `browser_snapshot` has a `filename` parameter that saves to file instead of returning to context. `ctx_index` has a `path` parameter that reads files server-side. `ctx_execute_file` processes bounded-size files in a managed subprocess. **None of these touch context.**
 
 ### Workflow A: Snapshot → File → Index → Search (multiple queries)
 

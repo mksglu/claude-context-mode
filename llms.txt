@@ -1,6 +1,6 @@
 # context-mode
 
-> An MCP server plugin for Claude Code that saves ~98% of context window usage by sandboxing data processing into isolated subprocesses and indexing outputs into a searchable FTS5/BM25 knowledge base. Large command outputs, log files, and documentation never enter the context window — only your printed summaries do.
+> An MCP server plugin for Claude Code that saves ~98% of context window usage by processing data in managed subprocesses and indexing outputs into a searchable FTS5/BM25 knowledge base. Large command outputs, log files, and documentation never enter the context window — only your printed summaries do.
 
 ## Getting Started
 
@@ -11,8 +11,8 @@
 
 - [server.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/server.ts): MCP server entrypoint — registers tools, handles requests, wires up subsystems
 - [store.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/store.ts): FTS5/BM25 knowledge base — indexes chunks, manages search, handles ephemeral storage
-- [executor.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/executor.ts): Sandbox subprocess runner — executes code in isolation, captures output, enforces limits
-- [security.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/security.ts): Security layer — validates inputs, enforces sandbox boundaries, blocks dangerous operations
+- [executor.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/executor.ts): Managed subprocess runner — executes code, captures output, scrubs env, enforces limits
+- [security.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/security.ts): Preflight policy layer — validates inputs, checks deny rules, blocks obvious dangerous operations
 - [runtime.ts](https://raw.githubusercontent.com/mksglu/context-mode/main/src/runtime.ts): Runtime detection and language dispatch — routes execution to the correct interpreter
 
 ## Hook System

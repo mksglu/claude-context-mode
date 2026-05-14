@@ -965,7 +965,7 @@ npm install -g context-mode
 |---|---|---|
 | `ctx_batch_execute` | Run multiple commands + search multiple queries in ONE call. Opt-in `concurrency: 1-8` for I/O-bound batches. | 986 KB → 62 KB |
 | `ctx_execute` | Run code in 12 languages. Only stdout enters context. | 56 KB → 299 B |
-| `ctx_execute_file` | Process files in sandbox. Raw content never leaves. | 45 KB → 155 B |
+| `ctx_execute_file` | Process bounded-size files in a managed subprocess. Raw content stays out of the conversation. | 45 KB → 155 B |
 | `ctx_index` | Chunk markdown into FTS5 with BM25 ranking. | 60 KB → 40 B |
 | `ctx_search` | Query indexed content with multiple queries in one call. | On-demand retrieval |
 | `ctx_fetch_and_index` | Fetch URL, chunk and index. 24h TTL cache — repeat calls skip network. `force: true` to bypass. Pass `requests: [{url, source}, ...]` + `concurrency: 1-8` for parallel multi-URL. | 60 KB → 40 B |
@@ -974,9 +974,9 @@ npm install -g context-mode
 | `ctx_upgrade` | Upgrade to latest version from GitHub, rebuild, reconfigure hooks. | — |
 | `ctx_purge` | Permanently deletes all indexed content from the knowledge base. | — |
 
-## How the Sandbox Works
+## How Managed Subprocess Execution Works
 
-Each `ctx_execute` call spawns an isolated subprocess with its own process boundary. Scripts can't access each other's memory or state. The subprocess runs your code, captures stdout, and only that stdout enters the conversation context. The raw data — log files, API responses, snapshots — never leaves the sandbox.
+Each `ctx_execute` call spawns a managed subprocess with its own process boundary, temp files, env scrubbing, output caps, and indexing. This is a context-control boundary, not an OS security sandbox: subprocesses still run as your user and can access resources your user can access. The subprocess runs your code, captures stdout, and only that stdout enters the conversation context. The raw data — log files, API responses, snapshots — stays out of the conversation unless you print it.
 
 Twelve language runtimes are available: JavaScript, TypeScript, Python, Shell, Ruby, Go, Rust, PHP, Perl, R, Elixir, and C#. Bun is auto-detected for 3-5x faster JS/TS execution.
 
@@ -1305,7 +1305,7 @@ with tasks, files, and decisions intact — no re-prompting needed.
 
 ## Privacy & Architecture
 
-Context Mode is not a CLI output filter or a cloud analytics dashboard. It operates at the MCP protocol layer — raw data stays in a sandboxed subprocess and never enters your context window. Web pages, API responses, file analysis, Playwright snapshots, log files — everything is processed in complete isolation.
+Context Mode is not a CLI output filter or a cloud analytics dashboard. It operates at the MCP protocol layer — raw data is processed in managed subprocesses or indexed directly and does not enter your context window unless you print it. Web pages, API responses, file analysis, Playwright snapshots, and log files stay local on your machine.
 
 **Nothing leaves your machine.** No telemetry, no cloud sync, no usage tracking, no account required. Your code, your prompts, your session data — all local. The SQLite databases live in your home directory and die when you're done.
 
@@ -1313,7 +1313,7 @@ This is a deliberate architectural choice, not a missing feature. Context optimi
 
 ## Security
 
-Context Mode enforces the same permission rules you already use — but extends them to the MCP sandbox. If you block `sudo`, it's also blocked inside `ctx_execute`, `ctx_execute_file`, and `ctx_batch_execute`.
+Context Mode enforces deny rules from the same settings you already use and applies them before `ctx_execute`, `ctx_execute_file`, and `ctx_batch_execute` run. This is a preflight policy check for obvious commands and file paths, not a replacement for OS permissions.
 
 **Zero setup required.** If you haven't configured any permissions, nothing changes. This only activates when you add rules.
 

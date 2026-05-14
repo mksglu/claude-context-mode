@@ -560,6 +560,14 @@ describe("Shell-Escape Scanner", () => {
     assert.ok(cmds[0].includes("sudo"));
   });
 
+  test("extractShellCommands: scanner is literal-only best effort for dynamic JS commands", () => {
+    const cmds = extractShellCommands(
+      'const cmd = "sudo apt update"; require("child_process").execSync(cmd)',
+      "javascript",
+    );
+    assert.deepEqual(cmds, []);
+  });
+
   test("extractShellCommands: Ruby system()", () => {
     const result = extractShellCommands(
       'system("sudo rm -rf /tmp")',

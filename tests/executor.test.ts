@@ -1,6 +1,6 @@
 import { describe, test, expect, afterAll } from "vitest";
 import { strict as assert } from "node:assert";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -8,6 +8,7 @@ import {
   buildScriptFilename,
   buildShellScriptContent,
   buildSpawnOptions,
+  resolveExecuteFileMaxBytes,
 } from "../src/executor.js";
 import {
   detectRuntimes,
@@ -974,6 +975,20 @@ print(f"Users: {len(data['users'])}")
     assert.ok(r.stdout.includes("bytes"));
   });
 
+  test("execute_file: rejects files above configured FILE_CONTENT cap before reading", async () => {
+    const tooLarge = join(testDir, "too-large.log");
+    writeFileSync(tooLarge, "0123456789abcdef", "utf-8");
+    const r = await executor.executeFile({
+      path: tooLarge,
+      language: "javascript",
+      code: "console.log(FILE_CONTENT.length)",
+      maxFileBytes: 8,
+    });
+    assert.notEqual(r.exitCode, 0);
+    assert.ok(r.stderr.includes("File exceeds ctx_execute_file limit"), r.stderr);
+    assert.ok(r.stderr.includes("CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES"), r.stderr);
+  });
+
     test.runIf(runtimes.ruby)("execute_file: Ruby reads FILE_CONTENT", async () => {
     const r = await executor.executeFile({
       path: testFile,
@@ -1548,6 +1563,23 @@ describe("Environment Denylist", () => {
   });
 });
 
+describe("execute_file size limit config", () => {
+  test("resolveExecuteFileMaxBytes uses positive numeric env override", () => {
+    assert.equal(resolveExecuteFileMaxBytes({ CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES: "1234" }), 1234);
+  });
+
+  test("resolveExecuteFileMaxBytes falls back on invalid env override", () => {
+    assert.equal(
+      resolveExecuteFileMaxBytes({ CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES: "-1" }),
+      50 * 1024 * 1024,
+    );
+    assert.equal(
+      resolveExecuteFileMaxBytes({ CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES: "not-a-number" }),
+      50 * 1024 * 1024,
+    );
+  });
+});
+
 describe("Concurrent Execution", () => {
   test("5 concurrent JS executions", async () => {
     const promises = Array.from({ length: 5 }, (_, i) =>
@@ -1709,6 +1741,25 @@ describe("Background Mode", () => {
     alive = false;
     try { process.kill(pid, 0); alive = true; } catch { /* ESRCH */ }
     assert.equal(alive, false, `Process ${pid} should be dead after cleanup`);
+  }, 10_000);
+
+  test("background process close removes temp directory after natural exit", async () => {
+    const bgExecutor = new PolyglotExecutor({ runtimes });
+    const r = await bgExecutor.execute({
+      language: "javascript",
+      code: `console.log(process.cwd()); setTimeout(() => {}, 150);`,
+      timeout: 50,
+      background: true,
+    });
+    const tmpDir = r.stdout.trim();
+    assert.equal(r.backgrounded, true, `Expected backgrounded result, got ${JSON.stringify(r)}`);
+    assert.ok(tmpDir.includes(".ctx-mode-"), `Expected executor temp dir, got: ${tmpDir}`);
+    assert.equal(existsSync(tmpDir), true, "Temp dir should exist while background process is alive");
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    assert.equal(existsSync(tmpDir), false, `Temp dir should be removed after background close: ${tmpDir}`);
+    bgExecutor.cleanupBackgrounded();
   }, 10_000);
 });
 

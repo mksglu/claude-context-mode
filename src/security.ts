@@ -511,9 +511,12 @@ export function evaluateFilePath(
 // Shell-Escape Scanner
 // ==============================================================================
 
-// Regex patterns that detect shell-escape calls in non-shell languages.
+// Best-effort regex patterns that detect literal shell-escape calls in non-shell languages.
 // Each pattern uses capture groups so that the embedded command string
 // can be extracted from the last non-quote group.
+// This is a preflight guard for obvious literals, not a dynamic policy
+// enforcement boundary: computed commands, aliases, and indirect API calls
+// may not be visible to regex scanning.
 //
 // NOTE: These regexes contain literal strings like "execSync" — they are
 // patterns for *detecting* shell escapes in user code, not actual usage.

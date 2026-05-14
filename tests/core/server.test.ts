@@ -1235,6 +1235,20 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
     });
   }
 
+  function spawnServerInCodexProject(projectDir: string): ChildProcess {
+    const env = {
+      ...process.env,
+      CONTEXT_MODE_DISABLE_VERSION_CHECK: "1",
+      CONTEXT_MODE_PROJECT_DIR: projectDir,
+      CODEX_CI: "1",
+    };
+    delete env.CLAUDE_PROJECT_DIR;
+    return spawn("node", [mcpEntry], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env,
+    });
+  }
+
   // Rejects on timeout (rather than resolving undefined) so silent
   // server-spawn / import failures surface as a failing test instead of
   // false-positive assertions on optional-chained undefined access.
@@ -1407,6 +1421,74 @@ describe("ctx_index: Read deny-policy enforcement (#442)", () => {
       expect(indexResp.result?.isError).toBe(true);
       const text = indexResp.result?.content?.[0]?.text ?? "";
       expect(text).toContain("blocked by security policy");
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_execute command deny uses projectDir on Codex-style env without CLAUDE_PROJECT_DIR", async () => {
+    const projectDir = setupProject(
+      ["Bash(sudo *)"],
+      { "README.md": "# test\n" },
+    );
+    const proc = spawnServerInCodexProject(projectDir);
+    try {
+      await initServer(proc, "codex-cli-mcp-client-test");
+
+      const execResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 200, method: "tools/call",
+        params: {
+          name: "ctx_execute",
+          arguments: {
+            language: "shell",
+            code: "sudo id",
+            timeout: 1000,
+          },
+        },
+      });
+
+      expect(execResp.error).toBeUndefined();
+      expect(execResp.result?.isError).toBe(true);
+      const text = execResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("Command blocked by security policy");
+      expect(text).toContain("Bash(sudo *)");
+    } finally {
+      killProc(proc);
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("ctx_batch_execute command deny uses projectDir on Codex-style env without CLAUDE_PROJECT_DIR", async () => {
+    const projectDir = setupProject(
+      ["Bash(sudo *)"],
+      { "README.md": "# test\n" },
+    );
+    const proc = spawnServerInCodexProject(projectDir);
+    try {
+      await initServer(proc, "codex-cli-mcp-client-test");
+
+      const batchResp = await awaitRpc(proc, {
+        jsonrpc: "2.0", id: 201, method: "tools/call",
+        params: {
+          name: "ctx_batch_execute",
+          arguments: {
+            commands: [
+              { label: "safe", command: "echo ok" },
+              { label: "denied", command: "sudo id" },
+            ],
+            queries: ["ok"],
+            timeout: 1000,
+          },
+        },
+      });
+
+      expect(batchResp.error).toBeUndefined();
+      expect(batchResp.result?.isError).toBe(true);
+      const text = batchResp.result?.content?.[0]?.text ?? "";
+      expect(text).toContain("Command blocked by security policy");
+      expect(text).toContain("Bash(sudo *)");
+      expect(text).not.toContain("Executed 2 commands");
     } finally {
       killProc(proc);
       rmSync(projectDir, { recursive: true, force: true });

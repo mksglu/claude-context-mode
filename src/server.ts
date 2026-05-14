@@ -666,7 +666,7 @@ function checkDenyPolicy(
   toolName: string,
 ): ToolResult | null {
   try {
-    const policies = readBashPolicies(process.env.CLAUDE_PROJECT_DIR);
+    const policies = readBashPolicies(getProjectDir());
     const result = evaluateCommandDenyOnly(command, policies);
     if (result.decision === "deny") {
       return trackResponse(toolName, {
@@ -695,7 +695,7 @@ function checkNonShellDenyPolicy(
   try {
     const commands = extractShellCommands(code, language);
     if (commands.length === 0) return null;
-    const policies = readBashPolicies(process.env.CLAUDE_PROJECT_DIR);
+    const policies = readBashPolicies(getProjectDir());
     for (const cmd of commands) {
       const result = evaluateCommandDenyOnly(cmd, policies);
       if (result.decision === "deny") {
@@ -1085,7 +1085,7 @@ server.registerTool(
   "ctx_execute",
   {
     title: "Execute Code",
-    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a sandboxed subprocess. Only stdout enters context — raw data stays in the subprocess.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.\n\nTHINK IN CODE: When you need to analyze, count, filter, compare, or process data — write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,
+    description: `MANDATORY: Use for any command where output exceeds 20 lines. Execute code in a managed subprocess with temp files, env scrubbing, output caps, and indexing. This is not an OS security sandbox. Only stdout enters context — raw data stays out of the conversation.${bunNote} Available: ${langList}.\n\nPREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.\n\nTHINK IN CODE: When you need to analyze, count, filter, compare, or process data — write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,
     inputSchema: z.object({
       language: z
         .enum([
@@ -1417,7 +1417,7 @@ server.registerTool(
   {
     title: "Execute File Processing",
     description:
-      "Read a file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside the sandbox. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: log files, data files (CSV, JSON, XML), large source files for analysis, and any file where you need to extract specific information rather than read the entire content.\n\nTHINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript — no npm deps, try/catch, null-safe. Node.js + Bun compatible.",
+      "Read a bounded-size file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside a managed subprocess; default cap is 50 MiB, override with CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES. Only your printed summary enters context.\n\nPREFER THIS OVER Read/cat for: logs, data files (CSV, JSON, XML), source files, and any file where you need to extract specific information rather than read the entire content. For truly large files, use ctx_execute with streaming/path-based code instead of FILE_CONTENT.\n\nTHINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript — no npm deps, try/catch, null-safe. Node.js + Bun compatible.",
     inputSchema: z.object({
       path: z
         .string()
@@ -2429,7 +2429,7 @@ server.registerTool(
     title: "Fetch & Index URL(s)",
     description:
       "Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, " +
-      "and returns a ~3KB preview. Full content stays in sandbox — use ctx_search() for deeper lookups.\n\n" +
+      "and returns a ~3KB preview. Full content stays out of the conversation and is indexed for ctx_search() lookups.\n\n" +
       "Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.\n\n" +
       "Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.\n\n" +
       "PARALLELIZE I/O: For multi-URL research (library evaluation, migration scans, doc comparisons), pass `requests: [{url, source}, ...]` with `concurrency: 4-8` — speeds up by 3-5x on real workloads.\n" +
@@ -2564,7 +2564,7 @@ server.registerTool(
         const totalKB = (r.indexed.totalBytes / 1024).toFixed(1);
         const text = [
           `Fetched and indexed **${r.indexed.totalChunks} sections** (${totalKB}KB) from: ${r.indexed.label}`,
-          `Full content indexed in sandbox — use ctx_search(queries: [...], source: "${r.indexed.label}") for specific lookups.`,
+          `Full content indexed outside the conversation — use ctx_search(queries: [...], source: "${r.indexed.label}") for specific lookups.`,
           "",
           "---",
           "",
@@ -2761,7 +2761,7 @@ server.registerTool(
         });
       }
 
-      // Track indexed bytes (raw data that stays in sandbox)
+      // Track indexed bytes (raw data that stays out of the conversation)
       trackIndexed(totalBytes);
 
       // Index into knowledge base — markdown heading chunking splits by # labels

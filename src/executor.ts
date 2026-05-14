@@ -1,5 +1,5 @@
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -12,6 +12,15 @@ export type { ExecResult } from "./types.js";
 import type { ExecResult } from "./types.js";
 
 const isWin = process.platform === "win32";
+export const DEFAULT_EXECUTE_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
+export function resolveExecuteFileMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES;
+  if (!raw) return DEFAULT_EXECUTE_FILE_MAX_BYTES;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_EXECUTE_FILE_MAX_BYTES;
+  return Math.floor(parsed);
+}
 
 /**
  * Pure helper: extension map for temp script files per language.
@@ -92,8 +101,8 @@ const OS_TMPDIR = (() => {
   return "/tmp";
 })();
 
-/** Kill process tree — on Windows uses taskkill /T; on Unix kills the process group. */
-function killTree(proc: ReturnType<typeof spawn>): void {
+/** Signal process tree — on Windows uses taskkill /T; on Unix signals the process group. */
+function signalTree(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGKILL"): void {
   if (isWin && proc.pid) {
     try {
       execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
@@ -101,9 +110,14 @@ function killTree(proc: ReturnType<typeof spawn>): void {
   } else if (proc.pid) {
     try {
       // Kill entire process group (negative PID) to prevent orphaned children
-      process.kill(-proc.pid, "SIGKILL");
+      process.kill(-proc.pid, signal);
     } catch { /* already dead */ }
   }
+}
+
+/** Kill process tree — on Windows uses taskkill /T; on Unix kills the process group. */
+function killTree(proc: ReturnType<typeof spawn>): void {
+  signalTree(proc, "SIGKILL");
 }
 
 interface ExecuteOptions {
@@ -116,6 +130,13 @@ interface ExecuteOptions {
 
 interface ExecuteFileOptions extends ExecuteOptions {
   path: string;
+  maxFileBytes?: number;
+}
+
+interface BackgroundProcess {
+  proc: ReturnType<typeof spawn>;
+  tmpDir: string;
+  hardKillTimer?: NodeJS.Timeout;
 }
 
 export class PolyglotExecutor {
@@ -130,8 +151,8 @@ export class PolyglotExecutor {
   #projectRootResolver: () => string;
   #runtimes: RuntimeMap;
 
-  /** PIDs of backgrounded processes — killed on cleanup to prevent zombies. */
-  #backgroundedPids = new Set<number>();
+  /** Backgrounded processes — killed on cleanup and removed on close. */
+  #backgrounded = new Map<number, BackgroundProcess>();
 
   constructor(opts?: {
     hardCapBytes?: number;
@@ -160,13 +181,11 @@ export class PolyglotExecutor {
 
   /** Kill all backgrounded processes to prevent zombie/port-conflict issues. */
   cleanupBackgrounded(): void {
-    for (const pid of this.#backgroundedPids) {
-      try {
-        // Kill process group on Unix to catch all children
-        process.kill(isWin ? pid : -pid, "SIGTERM");
-      } catch { /* already dead */ }
+    for (const record of this.#backgrounded.values()) {
+      try { signalTree(record.proc, "SIGTERM"); } catch { /* already dead */ }
+      record.hardKillTimer = setTimeout(() => killTree(record.proc), 500);
+      record.hardKillTimer.unref?.();
     }
-    this.#backgroundedPids.clear();
   }
 
   async execute(opts: ExecuteOptions): Promise<ExecResult> {
@@ -207,6 +226,24 @@ export class PolyglotExecutor {
   async executeFile(opts: ExecuteFileOptions): Promise<ExecResult> {
     const { path: filePath, language, code, timeout } = opts;
     const absolutePath = resolve(this.#projectRoot, filePath);
+    const maxFileBytes = opts.maxFileBytes ?? resolveExecuteFileMaxBytes();
+    try {
+      const st = statSync(absolutePath);
+      if (st.size > maxFileBytes) {
+        return {
+          stdout: "",
+          stderr:
+            `File exceeds ctx_execute_file limit: ${absolutePath} is ${st.size} bytes, ` +
+            `limit is ${maxFileBytes} bytes. ` +
+            "Use ctx_execute with streaming/path-based code for very large files, " +
+            "or set CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES to raise the limit.",
+          exitCode: 1,
+          timedOut: false,
+        };
+      }
+    } catch {
+      // Keep the existing graceful runtime error path for missing/unreadable files.
+    }
     const wrappedCode = this.#wrapWithFileContent(
       absolutePath,
       language,
@@ -355,7 +392,9 @@ export class PolyglotExecutor {
         if (background) {
           // Background mode: detach process, return partial output, keep running
           resolved = true;
-          if (proc.pid) this.#backgroundedPids.add(proc.pid);
+          if (proc.pid) {
+            this.#backgrounded.set(proc.pid, { proc, tmpDir: sandboxTmpDir });
+          }
           proc.unref();
           proc.stdout!.destroy();
           proc.stderr!.destroy();
@@ -404,6 +443,16 @@ export class PolyglotExecutor {
 
       proc.on("close", (exitCode) => {
         clearTimeout(timer);
+        if (proc.pid) {
+          const record = this.#backgrounded.get(proc.pid);
+          if (record) {
+            if (record.hardKillTimer) clearTimeout(record.hardKillTimer);
+            this.#backgrounded.delete(proc.pid);
+            try {
+              rmSync(record.tmpDir, { recursive: true, force: true });
+            } catch { /* ignore */ }
+          }
+        }
         if (resolved) return; // Already resolved by background timeout
         const rawStdout = Buffer.concat(stdoutChunks).toString("utf-8");
         let rawStderr = Buffer.concat(stderrChunks).toString("utf-8");
@@ -425,6 +474,16 @@ export class PolyglotExecutor {
 
       proc.on("error", (err) => {
         clearTimeout(timer);
+        if (proc.pid) {
+          const record = this.#backgrounded.get(proc.pid);
+          if (record) {
+            if (record.hardKillTimer) clearTimeout(record.hardKillTimer);
+            this.#backgrounded.delete(proc.pid);
+            try {
+              rmSync(record.tmpDir, { recursive: true, force: true });
+            } catch { /* ignore */ }
+          }
+        }
         if (resolved) return; // Already resolved by background timeout
         res({
           stdout: "",
