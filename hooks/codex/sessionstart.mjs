@@ -23,10 +23,12 @@ import {
   getSessionEventsPath,
   getCleanupFlagPath,
   getInputProjectDir,
+  resolveConfigDir,
   CODEX_OPTS,
 } from "../session-helpers.mjs";
 import { createSessionLoaders } from "../session-loaders.mjs";
-import { unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = fileURLToPath(new URL(".", import.meta.url));
@@ -34,6 +36,25 @@ const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
 const OPTS = CODEX_OPTS;
 
 let additionalContext = ROUTING_BLOCK;
+
+function captureCodexInstructionRules(db, sessionId, projectDir) {
+  const paths = [];
+  for (const baseDir of [resolveConfigDir(OPTS), projectDir]) {
+    paths.push(join(baseDir, "AGENTS.md"));
+    paths.push(join(baseDir, "AGENTS.override.md"));
+  }
+
+  for (const p of [...new Set(paths)]) {
+    try {
+      if (!existsSync(p)) continue;
+      const content = readFileSync(p, "utf8");
+      db.insertEvent(sessionId, { type: "rule", category: "rule", data: p, priority: 1 });
+      db.insertEvent(sessionId, { type: "rule_content", category: "rule", data: content, priority: 1 });
+    } catch {
+      // Missing or unreadable rule files should never break SessionStart.
+    }
+  }
+}
 
 try {
   const raw = await readStdin();
@@ -84,6 +105,7 @@ try {
 
     const sessionId = getSessionId(input, OPTS);
     db.ensureSession(sessionId, projectDir);
+    captureCodexInstructionRules(db, sessionId, projectDir);
 
     db.close();
   }
