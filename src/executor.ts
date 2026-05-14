@@ -150,6 +150,7 @@ export class PolyglotExecutor {
    */
   #projectRootResolver: () => string;
   #runtimes: RuntimeMap;
+  #sslCertFile: string | null | undefined;
 
   /** Backgrounded processes — killed on cleanup and removed on close. */
   #backgrounded = new Map<number, BackgroundProcess>();
@@ -643,21 +644,23 @@ export class PolyglotExecutor {
 
     // Ensure SSL_CERT_FILE is set so Python/Ruby HTTPS works in sandbox.
     if (!env["SSL_CERT_FILE"]) {
-      const certPaths = isWin ? [] : [
-        "/etc/ssl/cert.pem",                         // macOS, some Linux
-        "/etc/ssl/certs/ca-certificates.crt",         // Debian/Ubuntu/Alpine
-        "/etc/pki/tls/certs/ca-bundle.crt",           // RHEL/CentOS/Fedora
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // Fedora alt
-      ];
-      for (const p of certPaths) {
-        if (existsSync(p)) {
-          env["SSL_CERT_FILE"] = p;
-          break;
-        }
-      }
+      const certFile = this.#resolveSslCertFile();
+      if (certFile) env["SSL_CERT_FILE"] = certFile;
     }
 
     return env;
+  }
+
+  #resolveSslCertFile(): string | null {
+    if (this.#sslCertFile !== undefined) return this.#sslCertFile;
+    const certPaths = isWin ? [] : [
+      "/etc/ssl/cert.pem",                         // macOS, some Linux
+      "/etc/ssl/certs/ca-certificates.crt",         // Debian/Ubuntu/Alpine
+      "/etc/pki/tls/certs/ca-bundle.crt",           // RHEL/CentOS/Fedora
+      "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // Fedora alt
+    ];
+    this.#sslCertFile = certPaths.find((p) => existsSync(p)) ?? null;
+    return this.#sslCertFile;
   }
 
   #wrapWithFileContent(

@@ -106,6 +106,19 @@ writeFileSync(
 
 // Lazy singleton — no DB overhead unless index/search is used
 let _store: ContentStore | null = null;
+const PATH_CACHE_TTL_MS = 100;
+let _projectDirCache:
+  | { key: string; value: string; expiresAt: number }
+  | undefined;
+let _sessionDbPathCache:
+  | { key: string; value: string; expiresAt: number }
+  | undefined;
+let _storePathCache:
+  | { key: string; value: string; expiresAt: number }
+  | undefined;
+let _sessionEventScanAt = 0;
+let _sessionEventIndexing = false;
+const SESSION_EVENT_SCAN_DEBOUNCE_MS = 5_000;
 
 /**
  * Auto-index session events files written by SessionStart hook.
@@ -116,18 +129,26 @@ let _store: ContentStore | null = null;
  * Called on every getStore() — readdirSync is sub-millisecond when no files match.
  */
 function maybeIndexSessionEvents(store: ContentStore): void {
+  const now = Date.now();
+  if (_sessionEventIndexing || now - _sessionEventScanAt < SESSION_EVENT_SCAN_DEBOUNCE_MS) return;
+  _sessionEventScanAt = now;
   try {
     const sessionsDir = getSessionDir();
     if (!existsSync(sessionsDir)) return;
     const files = readdirSync(sessionsDir).filter(f => f.endsWith("-events.md"));
+    if (files.length === 0) return;
+    _sessionEventIndexing = true;
     for (const file of files) {
       const filePath = join(sessionsDir, file);
-      try {
-        store.index({ path: filePath, source: "session-events" });
-        unlinkSync(filePath);
-      } catch { /* best-effort per file */ }
+      store.indexQueued({ path: filePath, source: "session-events" })
+        .then(() => { try { unlinkSync(filePath); } catch { /* best effort */ } })
+        .catch(() => { /* best-effort per file */ })
+        .finally(() => { _sessionEventIndexing = false; });
     }
-  } catch { /* best-effort — session continuity never blocks tools */ }
+  } catch {
+    _sessionEventIndexing = false;
+    /* best-effort — session continuity never blocks tools */
+  }
 }
 
 // ── Platform-aware paths ──────────────────────────────────────────────────
@@ -210,6 +231,17 @@ function getSessionDir(): string {
  * that don't set their own env var (Cursor, OpenClaw, Codex, Kiro, Zed).
  */
 function getProjectDir(): string {
+  const cacheKey = [
+    process.env.CONTEXT_MODE_PROJECT_DIR ?? "",
+    process.env.CLAUDE_PROJECT_DIR ?? "",
+    process.env.PWD ?? "",
+    process.cwd(),
+    _detectedAdapter?.name ?? "",
+  ].join("\0");
+  const now = Date.now();
+  if (_projectDirCache && _projectDirCache.key === cacheKey && _projectDirCache.expiresAt > now) {
+    return _projectDirCache.value;
+  }
   // Delegated to the shared resolver so the env-var chain rejects plugin
   // install paths (set by a prior MCP boot's start.mjs after `/ctx-upgrade`)
   // and prefers the shell-set PWD before the chdir'd cwd. v1.0.115 adds
@@ -248,7 +280,7 @@ function getProjectDir(): string {
       transcriptsRoot = join(homedir(), ".claude", "projects");
     }
   } catch { /* detection failure — leave both undefined, resolver uses legacy cascade */ }
-  return resolveProjectDir({
+  const value = resolveProjectDir({
     env: process.env,
     cwd: process.cwd(),
     pwd: process.env.PWD,
@@ -256,6 +288,8 @@ function getProjectDir(): string {
     transcriptMaxAgeMs: 5 * 60 * 1000,
     strictPlatform,
   });
+  _projectDirCache = { key: cacheKey, value, expiresAt: now + PATH_CACHE_TTL_MS };
+  return value;
 }
 
 /**
@@ -275,10 +309,16 @@ function resolveProjectPath(filePath: string): string {
  * resolve. Linux is a no-op.
  */
 function getSessionDbPath(): string {
-  return resolveSessionDbPath({
-    projectDir: getProjectDir(),
-    sessionsDir: getSessionDir(),
-  });
+  const projectDir = getProjectDir();
+  const sessionsDir = getSessionDir();
+  const cacheKey = `${projectDir}\0${sessionsDir}`;
+  const now = Date.now();
+  if (_sessionDbPathCache && _sessionDbPathCache.key === cacheKey && _sessionDbPathCache.expiresAt > now) {
+    return _sessionDbPathCache.value;
+  }
+  const value = resolveSessionDbPath({ projectDir, sessionsDir });
+  _sessionDbPathCache = { key: cacheKey, value, expiresAt: now + PATH_CACHE_TTL_MS };
+  return value;
 }
 
 /**
@@ -292,13 +332,22 @@ function getSessionDbPath(): string {
  */
 function getStorePath(): string {
   // Derive content dir from session dir: .../sessions/ → .../content/
-  const dir = join(dirname(getSessionDir()), "content");
+  const projectDir = getProjectDir();
+  const sessionDir = getSessionDir();
+  const dir = join(dirname(sessionDir), "content");
+  const cacheKey = `${projectDir}\0${dir}`;
+  const now = Date.now();
+  if (_storePathCache && _storePathCache.key === cacheKey && _storePathCache.expiresAt > now) {
+    return _storePathCache.value;
+  }
   mkdirSync(dir, { recursive: true });
   // Delegate to resolveContentStorePath: same case-fold + one-shot legacy
   // rename behavior as resolveSessionDbPath. On macOS / Windows, an
   // existing legacy raw-casing FTS5 db (with -wal/-shm sidecars) is
   // migrated in place on first call. On Linux it's a no-op.
-  return resolveContentStorePath({ projectDir: getProjectDir(), contentDir: dir });
+  const value = resolveContentStorePath({ projectDir, contentDir: dir });
+  _storePathCache = { key: cacheKey, value, expiresAt: now + PATH_CACHE_TTL_MS };
+  return value;
 }
 
 function getStore(): ContentStore {
@@ -489,11 +538,10 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
   sessionStats.bytesReturned[toolName] =
     (sessionStats.bytesReturned[toolName] || 0) + bytes;
 
-  // Persist a sidecar JSON snapshot for the statusline — read at ~3-5 Hz by
-  // bin/statusline.mjs (and any external dashboard) so they don't have to
-  // open the SQLite database. Throttled inside persistStats() (500ms) so
-  // it's safe to call on every response.
-  persistStats();
+  // Persist a sidecar JSON snapshot for the statusline out of band. The
+  // counters above are in-memory and immediately visible to ctx_stats; the
+  // JSON sidecar is only for external readers.
+  scheduleStatsPersist();
 
   // Persist to SessionDB so counters survive process restart, --continue,
   // upgrade. The helper coalesces rapid responses by DB path before opening
@@ -521,7 +569,7 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
 
 function trackIndexed(bytes: number, source: string = "unknown"): void {
   sessionStats.bytesIndexed += bytes;
-  persistStats();
+  scheduleStatsPersist();
   // D2 Phase 5/7 — index-write event emission. `bytes_avoided` because
   // these are bytes that would have flooded context if the user had
   // Read'd the source instead of indexing.
@@ -556,6 +604,8 @@ const LIFETIME_REFRESH_MS = 30_000;
 const TOKENS_PER_EVENT = 256;
 let _lastStatsPersist = 0;
 let _lifetimeCache: { tokens: number; computedAt: number } | undefined;
+let _statsPersistTimer: NodeJS.Timeout | undefined;
+let _statsDirty = false;
 
 /**
  * Resolve the per-session stats file path.
@@ -569,9 +619,26 @@ function getStatsFilePath(): string {
   return join(getSessionDir(), `stats-${sessionId}.json`);
 }
 
-function persistStats(): void {
+function scheduleStatsPersist(): void {
+  _statsDirty = true;
+  if (_statsPersistTimer) return;
+  _statsPersistTimer = setTimeout(() => flushStatsNow(), STATS_PERSIST_THROTTLE_MS);
+  _statsPersistTimer.unref?.();
+}
+
+function flushStatsNow(): void {
+  if (_statsPersistTimer) {
+    clearTimeout(_statsPersistTimer);
+    _statsPersistTimer = undefined;
+  }
+  if (!_statsDirty) return;
+  _statsDirty = false;
+  persistStats(true);
+}
+
+function persistStats(force = false): void {
   const now = Date.now();
-  if (now - _lastStatsPersist < STATS_PERSIST_THROTTLE_MS) return;
+  if (!force && now - _lastStatsPersist < STATS_PERSIST_THROTTLE_MS) return;
   _lastStatsPersist = now;
 
   try {
@@ -911,6 +978,7 @@ export function formatBatchQueryResults(
 }
 
 export function shouldDeferBatchQueryResults(totalBytes: number): boolean {
+  if (perfDeferDisabled()) return false;
   return totalBytes > BATCH_QUERY_HOT_PATH_MAX_BYTES;
 }
 
@@ -1263,6 +1331,12 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
           language, exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr,
         });
         if (intent && intent.trim().length > 0 && Buffer.byteLength(output) > INTENT_SEARCH_THRESHOLD) {
+          if (!perfDeferDisabled()) {
+            return trackResponse("ctx_execute", {
+              ...(await indexStdout(output, isError ? `execute:${language}:error` : `execute:${language}`, intent)),
+              isError,
+            });
+          }
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute", {
             content: [
@@ -1273,6 +1347,12 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
         }
         // Auto-index large error output into FTS5 — no data loss
         if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
+          if (!perfDeferDisabled()) {
+            return trackResponse("ctx_execute", {
+              ...(await indexStdout(output, isError ? `execute:${language}:error` : `execute:${language}`, "errors failures exceptions")),
+              isError,
+            });
+          }
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute", {
             content: [
@@ -1293,6 +1373,9 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 
       // Intent-driven search: if intent provided and output is large enough
       if (intent && intent.trim().length > 0 && Buffer.byteLength(stdout) > INTENT_SEARCH_THRESHOLD) {
+        if (!perfDeferDisabled()) {
+          return trackResponse("ctx_execute", await indexStdout(stdout, `execute:${language}`, intent));
+        }
         trackIndexed(Buffer.byteLength(stdout));
         return trackResponse("ctx_execute", {
           content: [
@@ -1330,15 +1413,19 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 async function indexStdout(
   stdout: string,
   source: string,
+  intent?: string,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const store = getStore();
   trackIndexed(Buffer.byteLength(stdout));
   const indexed = await store.indexQueued({ content: stdout, source });
+  const intentLine = intent
+    ? `\nIntent "${intent}" was not searched synchronously; run ctx_search with the same query and source.`
+    : "";
   return {
     content: [
       {
         type: "text" as const,
-        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}\nUse ctx_search(queries: ["..."]) to query this content. Use source: "${indexed.label}" to scope results.`,
+        text: `Indexed ${indexed.totalChunks} sections (${indexed.codeChunks} with code) from: ${indexed.label}${intentLine}\nUse ctx_search(queries: ["..."], source: "${indexed.label}") to query this content.`,
       },
     ],
   };
@@ -1350,7 +1437,11 @@ async function indexStdout(
 
 const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
 const LARGE_OUTPUT_THRESHOLD = 102_400; // 100KB — auto-index into FTS5, return pointer
-export const BATCH_QUERY_HOT_PATH_MAX_BYTES = 256 * 1024;
+export const BATCH_QUERY_HOT_PATH_MAX_BYTES = 64 * 1024;
+
+function perfDeferDisabled(): boolean {
+  return process.env.CONTEXT_MODE_DISABLE_PERF_DEFER === "1";
+}
 
 async function intentSearch(
   stdout: string,
@@ -1817,6 +1908,9 @@ server.registerTool(
       }
 
       const configDir = _detectedAdapter?.getConfigDir() ?? resolveClaudeConfigRoot();
+      if (sort !== "timeline") {
+        store.refreshStaleSources();
+      }
 
       try {
       for (const q of queryList) {
@@ -1840,7 +1934,7 @@ server.registerTool(
             adapter: _detectedAdapter ?? undefined,
           });
         } else {
-          results = store.searchWithFallback(q, effectiveLimit, source, contentType);
+          results = store.searchWithFallback(q, effectiveLimit, source, contentType, "like", false);
         }
 
         if (results.length === 0) {
@@ -2777,14 +2871,15 @@ server.registerTool(
         skipVocabulary: deferQueryResults,
       });
 
-      // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
-      const allSections = store.getChunksBySource(indexed.sourceId);
+      // Build section inventory from the index write result; avoid an immediate
+      // read-back query on the freshly-written source.
+      const allSections = indexed.chunks ?? store.getChunksBySource(indexed.sourceId).map((s) => ({
+        title: s.title,
+        bytes: Buffer.byteLength(s.content),
+      }));
       const inventory: string[] = ["## Indexed Sections", ""];
-      const sectionTitles: string[] = [];
       for (const s of allSections) {
-        const bytes = Buffer.byteLength(s.content);
-        inventory.push(`- ${s.title} (${(bytes / 1024).toFixed(1)}KB)`);
-        sectionTitles.push(s.title);
+        inventory.push(`- ${s.title} (${(s.bytes / 1024).toFixed(1)}KB)`);
       }
 
       // Run source-scoped searches only for bounded outputs. For very large
@@ -2848,6 +2943,31 @@ function createMinimalDb(): import("./session/analytics.js").DatabaseAdapter {
   };
 }
 
+function formatQuickStats(): string {
+  const totalReturned = Object.values(sessionStats.bytesReturned).reduce((a, b) => a + b, 0);
+  const totalCalls = Object.values(sessionStats.calls).reduce((a, b) => a + b, 0);
+  const keptOut = sessionStats.bytesIndexed + sessionStats.bytesSandboxed + sessionStats.cacheBytesSaved;
+  const totalProcessed = keptOut + totalReturned;
+  const reductionPct = totalProcessed > 0
+    ? Math.round((1 - totalReturned / totalProcessed) * 100)
+    : 0;
+  const byTool = Object.entries(sessionStats.calls)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([tool, calls]) => `- ${tool}: ${calls} calls, ${sessionStats.bytesReturned[tool] ?? 0} bytes returned`);
+  return [
+    "context-mode stats (quick)",
+    "",
+    `Total calls: ${totalCalls}`,
+    `Bytes returned: ${totalReturned}`,
+    `Bytes kept out: ${keptOut}`,
+    `Context savings: ${reductionPct}%`,
+    "",
+    byTool.length > 0 ? byTool.join("\n") : "No tool calls recorded yet.",
+    "",
+    "Use ctx_stats({ mode: \"full\" }) for SessionDB lifetime analytics.",
+  ].join("\n");
+}
+
 server.registerTool(
   "ctx_stats",
   {
@@ -2856,9 +2976,17 @@ server.registerTool(
       "Returns context consumption statistics for the current session. " +
       "Shows total bytes returned to context, breakdown by tool, call counts, " +
       "estimated token usage, and context savings ratio.",
-    inputSchema: z.object({}),
+    inputSchema: z.object({
+      mode: z.enum(["quick", "full"]).optional().default("quick"),
+    }),
   },
-  async () => {
+  async ({ mode }) => {
+    flushStatsNow();
+    if (mode !== "full") {
+      return trackResponse("ctx_stats", {
+        content: [{ type: "text" as const, text: formatQuickStats() }],
+      });
+    }
     // ONE call, ONE source — AnalyticsEngine.queryAll()
     let text: string;
     try {
@@ -3786,8 +3914,7 @@ async function main() {
     // (PR #401 grill-me review B1: persistStats early-returns inside throttle
     // window; gracefulShutdown previously did NOT bypass).
     try {
-      _lastStatsPersist = 0;
-      persistStats();
+      flushStatsNow();
       await flushToolCallCounters();
       await flushSessionEvents();
     } catch { /* best effort — never block shutdown */ }
@@ -3795,6 +3922,7 @@ async function main() {
     process.exit(0);
   };
   process.on("exit", () => {
+    try { flushStatsNow(); } catch { /* best effort */ }
     try { flushToolCallCountersSync(); } catch { /* best effort */ }
     try { flushSessionEventsSync(); } catch { /* best effort */ }
     shutdown();

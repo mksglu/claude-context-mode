@@ -2929,6 +2929,17 @@ describe("ctx_batch_execute large-output query deferral", () => {
     expect(guidance.join("\n")).toContain("ctx_search");
     expect(guidance.join("\n")).toContain('source: "batch:A,B"');
   });
+
+  test("CONTEXT_MODE_DISABLE_PERF_DEFER restores synchronous search behavior", () => {
+    const original = process.env.CONTEXT_MODE_DISABLE_PERF_DEFER;
+    process.env.CONTEXT_MODE_DISABLE_PERF_DEFER = "1";
+    try {
+      expect(shouldDeferBatchQueryResults(BATCH_QUERY_HOT_PATH_MAX_BYTES * 100)).toBe(false);
+    } finally {
+      if (original === undefined) delete process.env.CONTEXT_MODE_DISABLE_PERF_DEFER;
+      else process.env.CONTEXT_MODE_DISABLE_PERF_DEFER = original;
+    }
+  });
 });
 
 describe("runBatchCommands serial path (concurrency=1)", () => {
