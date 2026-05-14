@@ -30,6 +30,15 @@
  *
  * @see https://github.com/mksglu/context-mode/issues/408
  * @see https://github.com/mksglu/context-mode/issues/533
+ *
+ * Windows VS 2026+ detection:
+ *   node-gyp has a hardcoded internal-version→year map. VS 2026 (internal
+ *   major 18) was absent from older node-gyp builds, causing "unknown version"
+ *   failures on machines that only have VS 2026 installed. Rather than
+ *   extending the map (which would break again with VS 2029, etc.), we query
+ *   vswhere's `displayName` property ("Visual Studio Community 2026") and
+ *   extract the 4-digit year with a regex. `catalog_productLineVersion` is NOT
+ *   used — it returns the internal major ("18") on VS 2026, not the year.
  */
 
 import { existsSync as fsExistsSync } from "node:fs";
@@ -138,10 +147,58 @@ function isCondaActive(env = process.env) {
 }
 
 /**
+ * Detect the installed Visual Studio year string via vswhere.exe.
+ *
+ * Uses the `displayName` property (e.g. "Visual Studio Community 2026")
+ * and extracts the 4-digit year with a regex. This is more reliable than
+ * `catalog_productLineVersion`, which returns the internal major version
+ * number ("18") on VS 2026 instead of the year — making it useless as a
+ * direct msvs_version value without a mapping table.
+ *
+ * `displayName` has consistently included the branded year across every
+ * VS release (2017, 2019, 2022, 2026) and will continue to do so because
+ * it is the user-visible product name Microsoft ships.
+ *
+ * Dependency-injected so unit tests can exercise all branches without
+ * spawning a real process or requiring vswhere to be present on the host.
+ *
+ * Returns null on non-Windows, when vswhere is absent, or on any error.
+ *
+ * @param {object} [deps]
+ * @param {string} [deps.platform] - process.platform override
+ * @param {(p: string) => boolean} [deps.existsSync] - fs probe override
+ * @param {(cmd: string, opts: object) => string} [deps.exec] - execSync override
+ * @returns {string | null}
+ */
+export function detectWindowsVsYear({
+  platform = process.platform,
+  existsSync = fsExistsSync,
+  exec = execSync,
+} = {}) {
+  if (platform !== "win32") return null;
+  try {
+    const vswhere =
+      "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe";
+    if (!existsSync(vswhere)) return null;
+    const displayName = exec(
+      `"${vswhere}" -latest -property displayName`,
+      { encoding: "utf-8", stdio: "pipe", timeout: 5000 },
+    ).trim();
+    // "Visual Studio Community 2026" → "2026"
+    const match = displayName.match(/\b(20\d{2})\b/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the child-process env for an npm/node-gyp invocation. Pins
  * PYTHON + npm_config_python to the resolved safe interpreter, strips
- * CONDA_* keys, and prepends /usr/bin to PATH on darwin so any
- * downstream PATH-based python3 lookup also resolves to system python.
+ * CONDA_* keys, prepends /usr/bin to PATH on darwin so any downstream
+ * PATH-based python3 lookup resolves to system python, and on Windows
+ * injects npm_config_msvs_version from vswhere so node-gyp finds VS
+ * regardless of which major version is installed.
  *
  * @param {string | null} safePython - output of resolveSafePython()
  * @param {NodeJS.ProcessEnv} [base] - starting env (defaults to process.env)
@@ -170,6 +227,15 @@ function buildSafeEnv(safePython, base = process.env) {
     if (parts[0] !== "/usr/bin") {
       env.PATH = "/usr/bin:" + parts.filter((p) => p !== "/usr/bin").join(":");
     }
+  }
+  // ── Windows: pin npm_config_msvs_version via vswhere (#VS2026) ───────
+  // node-gyp defaults to VS 2022. On machines that only have VS 2026 (or
+  // a later release) installed the build fails with "unknown version" or
+  // "msvs_version does not match". Querying vswhere directly gives us the
+  // correct year string without a hardcoded mapping table.
+  if (process.platform === "win32" && !env.npm_config_msvs_version) {
+    const year = detectWindowsVsYear();
+    if (year) env.npm_config_msvs_version = year;
   }
   return env;
 }
