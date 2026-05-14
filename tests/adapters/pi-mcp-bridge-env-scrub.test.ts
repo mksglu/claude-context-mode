@@ -85,9 +85,13 @@ describe("Pi MCPStdioClient — foreign workspace env scrub (issue #545)", () =>
     expect(spawned.PI_WORKSPACE_DIR).toBe("/Users/x/own-pi-workspace");
     expect(spawned.PI_PROJECT_DIR).toBe("/Users/x/own-pi-project");
 
-    // Identification vars — PRESERVED (some are load-bearing for hooks).
-    expect(spawned.CLAUDE_PLUGIN_ROOT).toBe("/some/plugin/root");
-    expect(spawned.CLAUDE_CODE_ENTRYPOINT).toBe("cli");
+    // v1.0.129 #561 — Foreign identification vars (CLAUDE_PLUGIN_ROOT,
+    // CLAUDE_CODE_ENTRYPOINT) are now ALSO scrubbed because they hijack
+    // detectPlatform() in the child. The original v1.0.124 #545 fix
+    // PRESERVED them; the v1.0.129 hotfix correctly removes them when
+    // Pi spawns a child under a different host.
+    expect(spawned.CLAUDE_PLUGIN_ROOT).toBeUndefined();
+    expect(spawned.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
 
     // Universal escape hatch — PRESERVED.
     expect(spawned.CONTEXT_MODE_PROJECT_DIR).toBe("/Users/x/escape");
@@ -115,5 +119,112 @@ describe("Pi MCPStdioClient — foreign workspace env scrub (issue #545)", () =>
     expect(spawned.PI_CODING_AGENT_DIR).toBeUndefined();
     // Pi's own var survives.
     expect(spawned.PI_PROJECT_DIR).toBe("/Users/x/own");
+  });
+});
+
+// v1.0.129 slice 4 — Issue #561 algorithmic identification env scrub.
+// Pi runs alongside Claude Code; the spawned MCP child inherits both
+// CLAUDE_CODE_ENTRYPOINT and CLAUDE_PLUGIN_ROOT, hijacking the child's
+// detectPlatform() so it returns claude-code instead of pi. Pi's session
+// data then writes to ~/.claude/context-mode/ — the root cause of #560.
+// The fix mirrors the v1.0.124 #545 workspace scrub: derive the foreign
+// identification ban set algorithmically from PLATFORM_ENV_VARS so adapter
+// #16 inherits the scrub for free.
+describe("Pi MCPStdioClient — foreign identification env scrub (issue #561)", () => {
+  it("strips CLAUDE_CODE_ENTRYPOINT / CLAUDE_PLUGIN_ROOT / CLAUDE_SESSION_ID from spawned child env", () => {
+    const env: NodeJS.ProcessEnv = {
+      // Foreign identification leaks (Claude Code running co-resident
+      // with Pi) — must be removed so the child does not detect as
+      // claude-code.
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_PLUGIN_ROOT: "/Users/x/.claude/plugins/marketplaces/x/cm/1.0.128",
+      CLAUDE_SESSION_ID: "abcd-1234",
+      // Cross-host identification leaks from other adapters.
+      CURSOR_TRACE_ID: "cursor-trace-xyz",
+      VSCODE_PID: "55555",
+      OPENCODE: "1",
+      OPENCODE_PID: "66666",
+      KILO: "1",
+      CODEX_THREAD_ID: "codex-th-zzz",
+      GEMINI_CLI: "1",
+      ZED_TERM: "true",
+      ANTIGRAVITY_CLI_ALIAS: "antigravity",
+      // Pi's OWN identification vars — must SURVIVE so the child detects pi.
+      PI_CONFIG_DIR: "/Users/x/.pi/config",
+      PI_SESSION_FILE: "/Users/x/.pi/sessions/active.json",
+      PI_COMPILED: "1",
+      // Universal escape hatch — never scrubbed.
+      CONTEXT_MODE_PROJECT_DIR: "/Users/x/escape",
+      // Non-platform env — preserved as-is.
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: "/Users/x",
+    };
+
+    const client = new MCPStdioClient(fakeServer, env);
+    clients.push(client);
+    client.start();
+
+    const spawned = client._spawnEnv;
+    expect(spawned).not.toBeNull();
+    if (!spawned) throw new Error("unreachable");
+
+    // Foreign identification vars — REMOVED.
+    expect(spawned.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(spawned.CLAUDE_PLUGIN_ROOT).toBeUndefined();
+    expect(spawned.CLAUDE_SESSION_ID).toBeUndefined();
+    expect(spawned.CURSOR_TRACE_ID).toBeUndefined();
+    expect(spawned.VSCODE_PID).toBeUndefined();
+    expect(spawned.OPENCODE).toBeUndefined();
+    expect(spawned.OPENCODE_PID).toBeUndefined();
+    expect(spawned.KILO).toBeUndefined();
+    expect(spawned.CODEX_THREAD_ID).toBeUndefined();
+    expect(spawned.GEMINI_CLI).toBeUndefined();
+    expect(spawned.ZED_TERM).toBeUndefined();
+    expect(spawned.ANTIGRAVITY_CLI_ALIAS).toBeUndefined();
+
+    // Pi's OWN identification vars — PRESERVED (otherwise the child
+    // can't detect itself as pi).
+    expect(spawned.PI_CONFIG_DIR).toBe("/Users/x/.pi/config");
+    expect(spawned.PI_SESSION_FILE).toBe("/Users/x/.pi/sessions/active.json");
+    expect(spawned.PI_COMPILED).toBe("1");
+
+    // Universal escape hatch — PRESERVED.
+    expect(spawned.CONTEXT_MODE_PROJECT_DIR).toBe("/Users/x/escape");
+
+    // Non-platform env — PRESERVED.
+    expect(spawned.HOME).toBe("/Users/x");
+  });
+
+  it("workspace scrub from #545 still works alongside identification scrub from #561", () => {
+    // Both filters must compose — workspace + identification leaks together.
+    const env: NodeJS.ProcessEnv = {
+      // Workspace leaks (#545) — scrubbed.
+      CLAUDE_PROJECT_DIR: "/leak/workspace/claude",
+      VSCODE_CWD: "/leak/workspace/vscode",
+      // Identification leaks (#561) — scrubbed.
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      CLAUDE_PLUGIN_ROOT: "/leak/identification/claude",
+      VSCODE_PID: "11111",
+      // Pi's own vars — preserved.
+      PI_PROJECT_DIR: "/Users/x/own",
+      PI_CONFIG_DIR: "/Users/x/.pi/config",
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+    };
+    const client = new MCPStdioClient(fakeServer, env);
+    clients.push(client);
+    client.start();
+    const spawned = client._spawnEnv;
+    expect(spawned).not.toBeNull();
+    if (!spawned) throw new Error("unreachable");
+
+    // Both filter sets active.
+    expect(spawned.CLAUDE_PROJECT_DIR).toBeUndefined();
+    expect(spawned.VSCODE_CWD).toBeUndefined();
+    expect(spawned.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+    expect(spawned.CLAUDE_PLUGIN_ROOT).toBeUndefined();
+    expect(spawned.VSCODE_PID).toBeUndefined();
+    // Pi's own vars survive both filters.
+    expect(spawned.PI_PROJECT_DIR).toBe("/Users/x/own");
+    expect(spawned.PI_CONFIG_DIR).toBe("/Users/x/.pi/config");
   });
 });

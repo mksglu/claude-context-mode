@@ -293,6 +293,32 @@ describe("resolveProjectDirFromTranscript", () => {
     expect(result).toBeUndefined();
   });
 
+  it("returns undefined when the newest transcript is older than maxAgeMs", () => {
+    const root = makeTranscriptsRoot();
+    const now = Date.now();
+    writeTranscript(root, "-Users-x-stale", "stale-session", "/Users/x/stale-proj", new Date(now - 60_000));
+
+    const result = resolveProjectDirFromTranscript({
+      projectsRoot: root,
+      maxAgeMs: 30_000,
+      nowMs: now,
+    });
+    expect(result).toBeUndefined();
+  });
+
+  it("returns cwd when the newest transcript is within maxAgeMs", () => {
+    const root = makeTranscriptsRoot();
+    const now = Date.now();
+    writeTranscript(root, "-Users-x-fresh", "fresh-session", "/Users/x/fresh-proj", new Date(now - 10_000));
+
+    const result = resolveProjectDirFromTranscript({
+      projectsRoot: root,
+      maxAgeMs: 30_000,
+      nowMs: now,
+    });
+    expect(result).toBe("/Users/x/fresh-proj");
+  });
+
   it("returns undefined when no jsonl files exist", () => {
     const root = makeTranscriptsRoot();
     mkdirSync(join(root, "-Users-x-empty"), { recursive: true });
@@ -334,6 +360,22 @@ describe("resolveProjectDirFromTranscript", () => {
       transcriptsRoot: "/nonexistent/transcripts",
     });
     expect(result).toBe("/Users/x/proj");
+  });
+
+  it("resolveProjectDir falls back to PWD when transcript is stale", () => {
+    const root = makeTranscriptsRoot();
+    const now = Date.now();
+    writeTranscript(root, "-Users-x-stale", "stale-session", "/Users/x/stale-proj", new Date(now - 60_000));
+
+    const result = resolveProjectDir({
+      env: {},
+      cwd: "/Users/x",
+      pwd: "/Users/x",
+      transcriptsRoot: root,
+      transcriptMaxAgeMs: 30_000,
+      nowMs: now,
+    });
+    expect(result).toBe("/Users/x");
   });
 
   it("compiled ESM resolver runs under Node without CommonJS require", () => {

@@ -84,12 +84,20 @@ export function __seedClaudeCodePluginCacheMissForTests(): void {
  *     `resolveProjectDir({ strictPlatform })` to form the candidate list,
  *     and by Pi's bridge to scrub foreign workspace vars on child spawn.
  *   - `identification`: env var only signals which host is running; carries
- *     no project path. NEVER scrubbed (some are load-bearing, e.g.
- *     CLAUDE_PLUGIN_ROOT for hook integrations).
+ *     no project path. PRESERVED in normal operation (some are load-bearing
+ *     for hook integrations on the host that owns them, e.g. CLAUDE_PLUGIN_ROOT
+ *     for Claude Code's hook context).
  *
  * Issue #545 — algorithmic env-leak fix. The split allows resolveProjectDir
  * to derive ALLOW (own workspace vars) and BAN (other platforms' workspace
  * vars) sets from a single registry, satisfying MUST-3 (15 adapters equal).
+ *
+ * Issue #561 — FOREIGN identification vars MUST be scrubbed when spawning a
+ * child under a different host (e.g. Pi spawning context-mode child must
+ * scrub Claude Code identification vars CLAUDE_CODE_ENTRYPOINT /
+ * CLAUDE_PLUGIN_ROOT to prevent detectPlatform() in the child from
+ * misidentifying the host as claude-code and writing Pi's data into
+ * ~/.claude/context-mode/). See `foreignIdentificationEnv()` below.
  */
 export type EnvVarRole = "workspace" | "identification";
 export interface PlatformEnvEntry {
@@ -274,6 +282,36 @@ export function foreignWorkspaceEnv(platform: PlatformId): Set<string> {
     if (p === platform) continue;
     for (const v of vars) {
       if (v.role === "workspace") ban.add(v.name);
+    }
+  }
+  return ban;
+}
+
+/**
+ * Issue #561 — return the union of identification env vars from ALL
+ * platforms EXCEPT the given one. Sibling of `foreignWorkspaceEnv`,
+ * filtered on `role === "identification"` instead of "workspace".
+ *
+ * Consumed by Pi's bridge env scrub: when Pi spawns the context-mode
+ * MCP child, the child inherits the host shell env including any
+ * identification vars set by a co-resident Claude Code session
+ * (CLAUDE_CODE_ENTRYPOINT / CLAUDE_PLUGIN_ROOT). Without scrubbing,
+ * `detectPlatform()` in the child falls through env priority order and
+ * resolves to claude-code first — Pi's session data then writes into
+ * `~/.claude/context-mode/` instead of Pi's own dir. Scrubbing FOREIGN
+ * identification vars (everyone else's) preserves Pi's OWN identification
+ * vars (PI_CONFIG_DIR / PI_SESSION_FILE / PI_COMPILED) so the child still
+ * detects pi correctly.
+ *
+ * Algorithmic, registry-driven — adding adapter #16 grows the scrub
+ * automatically (no edit to mcp-bridge.ts).
+ */
+export function foreignIdentificationEnv(platform: PlatformId): Set<string> {
+  const ban = new Set<string>();
+  for (const [p, vars] of PLATFORM_ENV_VARS) {
+    if (p === platform) continue;
+    for (const v of vars) {
+      if (v.role === "identification") ban.add(v.name);
     }
   }
   return ban;

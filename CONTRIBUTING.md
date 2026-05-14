@@ -80,6 +80,10 @@ LLM               → searches source:"session-events" for details on demand
 
 Raw session events are **never injected into context**. Only a compact summary table + search queries are injected. The LLM searches for details via the existing `ctx_search()` MCP tool.
 
+### Multi-writer contract (v1.0.130 — see [docs/adr/0001-sessiondb-multi-writer.md](docs/adr/0001-sessiondb-multi-writer.md))
+
+Both SessionDB and ContentStore are **multi-writer-safe**. Two processes may open the same on-disk dbPath simultaneously — that is the legitimate multi-window UX shape. Write contention is handled by `withRetry()` on top of SQLite's built-in `busy_timeout` (30000ms). Do NOT add `acquireDbLock`-style file locks or `locking_mode = EXCLUSIVE` pragmas to `SQLiteBase` or `applyWALPragmas`. Process-identity invariants (one MCP per project) live in `src/util/sibling-mcp.ts`, not the DB layer.
+
 ## Prerequisites
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed

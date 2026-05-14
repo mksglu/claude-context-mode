@@ -12,6 +12,12 @@ import { createRequire } from "node:module";
 import { existsSync, unlinkSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// v1.0.130 — `acquireDbLock` + `locking_mode = EXCLUSIVE` were REMOVED.
+// See docs/adr/0001-sessiondb-multi-writer.md for the architectural
+// rationale. The short version: SessionDB is multi-writer-safe and the
+// process-identity invariants the lockfile tried to enforce belong in
+// the process layer (sibling-mcp), not the DB layer. WAL + busy_timeout
+// + withRetry handle the actual concurrency safely.
 
 // ─────────────────────────────────────────────────────────
 // Types
@@ -331,6 +337,13 @@ export function applyWALPragmas(db: DatabaseInstance): void {
   // the actual file size). Falls back gracefully on platforms where mmap
   // is unavailable or restricted.
   try { db.pragma("mmap_size = 268435456"); } catch { /* unsupported runtime */ }
+  // NOTE: `locking_mode = EXCLUSIVE` is intentionally NOT applied here.
+  // ALL DBs built on this helper — ContentStore (FTS5 shared knowledge
+  // base) AND SessionDB (per-project events) — are multi-writer-safe by
+  // contract. WAL + busy_timeout + the withRetry() wrapper below handle
+  // SQLITE_BUSY natively. EXCLUSIVE locking is opt-out, never opt-in
+  // from a base class shared by multi-writer consumers.
+  // See docs/adr/0001-sessiondb-multi-writer.md for the v1.0.130 ADR.
 }
 
 // ─────────────────────────────────────────────────────────
@@ -480,7 +493,12 @@ export function renameCorruptDB(dbPath: string): void {
  * re-imports within the same fork process (ESM isolate mode clears
  * module-level state but globalThis persists).
  */
-const _kLiveDBs = Symbol.for("__context_mode_live_dbs__");
+// v1.0.130 — symbol name bumped because the value type reverted from
+// Map<DatabaseInstance, string> (v1.0.128 lockfile pairing) back to
+// Set<DatabaseInstance>. A persistent global slot from a v1.0.128 or
+// v1.0.129 module would deserialize as the wrong shape and crash the
+// exit hook iteration.
+const _kLiveDBs = Symbol.for("__context_mode_live_dbs_v3__");
 const _liveDBs: Set<DatabaseInstance> = (() => {
   const g = globalThis as Record<symbol, Set<DatabaseInstance> | undefined>;
   if (!g[_kLiveDBs]) {
@@ -499,6 +517,26 @@ export abstract class SQLiteBase {
   readonly #dbPath: string;
   readonly #db: DatabaseInstance;
 
+  /**
+   * Open (or create) a SQLite DB at `dbPath`.
+   *
+   * v1.0.130 — multi-writer is the contract. ALL SQLiteBase consumers
+   * (SessionDB, ContentStore) may open the same on-disk dbPath from
+   * multiple processes simultaneously — that is the legitimate multi-
+   * window UX shape and the WAL handles it natively. SQLITE_BUSY on
+   * write contention is absorbed by `withRetry()` below (busy_timeout
+   * = 30000ms inside `new Database(...)`).
+   *
+   * v1.0.128 introduced a single-writer guard here as a defense against
+   * #560. That defense was an over-correction — the actual root causes
+   * of #560 were #559 (zombie MCP child accumulation) and #561 (Pi
+   * misdetection writing to the wrong DB path), both fixed in v1.0.128
+   * + v1.0.129. The single-writer guard broke legitimate multi-window
+   * users; v1.0.130 rolls it out. See
+   * docs/adr/0001-sessiondb-multi-writer.md and the v1.0.130 INVARIANT
+   * block in tests/util/db-base-platform-gate.test.ts for the
+   * regression-proof anchor (source-pin + behavioural).
+   */
   constructor(dbPath: string) {
     const Database = loadDatabase();
     this.#dbPath = dbPath;

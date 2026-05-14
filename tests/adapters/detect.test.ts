@@ -634,8 +634,60 @@ describe("PLATFORM_ENV_VARS — typed registry (issue #545 algorithmic design)",
     expect(banForPi.has("GEMINI_PROJECT_DIR")).toBe(true);
     expect(banForPi.has("VSCODE_CWD")).toBe(true);
     expect(banForPi.has("IDEA_INITIAL_DIRECTORY")).toBe(true);
-    // Identification vars (e.g. CLAUDE_PLUGIN_ROOT) are NEVER scrubbed.
+    // Identification vars (e.g. CLAUDE_PLUGIN_ROOT) are NOT in the
+    // workspace ban set — they belong to foreignIdentificationEnv (#561).
     expect(banForPi.has("CLAUDE_PLUGIN_ROOT")).toBe(false);
     expect(banForPi.has("CLAUDE_CODE_ENTRYPOINT")).toBe(false);
+  });
+
+  // v1.0.129 slice 3 — Issue #561 algorithmic identification env scrub.
+  // Pi runs alongside Claude Code; the spawned MCP child inherits both
+  // CLAUDE_CODE_ENTRYPOINT and CLAUDE_PLUGIN_ROOT, hijacking detectPlatform()
+  // back to claude-code. Foreign IDENTIFICATION vars must therefore be
+  // scrubbed when Pi spawns its child — same algorithmic shape as
+  // foreignWorkspaceEnv, but filtered on role==="identification".
+  it("foreignIdentificationEnv(p) returns identification vars from OTHER platforms", async () => {
+    const { foreignIdentificationEnv } = await import("../../src/adapters/detect.js");
+    const banForPi = foreignIdentificationEnv("pi");
+    // Foreign identification vars — must be banned when Pi spawns a child.
+    expect(banForPi.has("CLAUDE_CODE_ENTRYPOINT")).toBe(true);
+    expect(banForPi.has("CLAUDE_PLUGIN_ROOT")).toBe(true);
+    expect(banForPi.has("CLAUDE_SESSION_ID")).toBe(true);
+    expect(banForPi.has("CURSOR_TRACE_ID")).toBe(true);
+    expect(banForPi.has("CURSOR_CLI")).toBe(true);
+    expect(banForPi.has("VSCODE_PID")).toBe(true);
+    expect(banForPi.has("OPENCODE")).toBe(true);
+    expect(banForPi.has("OPENCODE_PID")).toBe(true);
+    expect(banForPi.has("KILO")).toBe(true);
+    expect(banForPi.has("KILO_PID")).toBe(true);
+    expect(banForPi.has("CODEX_THREAD_ID")).toBe(true);
+    expect(banForPi.has("CODEX_CI")).toBe(true);
+    expect(banForPi.has("GEMINI_CLI")).toBe(true);
+    expect(banForPi.has("ZED_TERM")).toBe(true);
+    expect(banForPi.has("ZED_SESSION_ID")).toBe(true);
+    expect(banForPi.has("ANTIGRAVITY_CLI_ALIAS")).toBe(true);
+    // Pi's OWN identification vars — MUST NOT appear in its own ban set.
+    expect(banForPi.has("PI_CONFIG_DIR")).toBe(false);
+    expect(banForPi.has("PI_SESSION_FILE")).toBe(false);
+    expect(banForPi.has("PI_COMPILED")).toBe(false);
+    // Workspace-role vars are NEVER in the identification ban set.
+    expect(banForPi.has("CLAUDE_PROJECT_DIR")).toBe(false);
+    expect(banForPi.has("GEMINI_PROJECT_DIR")).toBe(false);
+    expect(banForPi.has("VSCODE_CWD")).toBe(false);
+  });
+
+  it("foreignIdentificationEnv is symmetric — every host excludes its own identification vars", async () => {
+    const { foreignIdentificationEnv, PLATFORM_ENV_VARS } = await import("../../src/adapters/detect.js");
+    for (const [host, entries] of PLATFORM_ENV_VARS) {
+      const ban = foreignIdentificationEnv(host);
+      for (const e of entries) {
+        if (e.role === "identification") {
+          expect(
+            ban.has(e.name),
+            `host=${host}: own identification var ${e.name} must NOT be in its own ban set`,
+          ).toBe(false);
+        }
+      }
+    }
   });
 });

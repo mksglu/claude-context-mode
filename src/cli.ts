@@ -28,6 +28,8 @@ import {
 } from "./runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
+// v1.0.128 — Issue #559 sibling MCP kill helpers (see PR-559-560-FIX-DESIGN.md).
+import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mcp.js";
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
@@ -835,6 +837,40 @@ async function upgrade(opts?: { platform?: string }) {
       p.log.info(
         `Update available: ${color.yellow("v" + localVersion)} → ${color.green("v" + newVersion)}`,
       );
+
+      // v1.0.128 — Issue #559: terminate sibling MCP servers BEFORE installing
+      // new files. Historically /ctx-upgrade rsynced new code over the old
+      // tree but never signalled the running MCP server, so the previous
+      // version stayed alive holding stdio + DB handles. Across enough
+      // upgrades users observed 5+ context-mode start.mjs processes pinned
+      // to RAM. Discovery + kill must happen before npm install to avoid
+      // racing against the EXCLUSIVE lock the new server claims on first
+      // ctx_search (see #560 fix). Wrapped in try/catch so a missing pgrep
+      // (stripped Linux distro) or unavailable PowerShell (weird Windows)
+      // can never block the upgrade itself.
+      try {
+        const siblingPids = discoverSiblingMcpPids({
+          ownPid: process.pid,
+          ownPpid: process.ppid,
+        });
+        if (siblingPids.length > 0) {
+          const killReport = await killSiblingMcpServers({ pids: siblingPids });
+          if (killReport.totalKilled > 0) {
+            // Concise summary only — no PIDs in the user-facing log to keep
+            // the line readable. Plural-aware so "1 sibling MCP server" reads
+            // naturally alongside "3 sibling MCP servers".
+            const noun = killReport.totalKilled === 1
+              ? "sibling MCP server"
+              : "sibling MCP servers";
+            p.log.info(
+              color.dim(
+                `Stopped ${killReport.totalKilled} ${noun} (SIGTERM: ${killReport.terminatedBySigterm}, SIGKILL: ${killReport.terminatedBySigkill})`,
+              ),
+            );
+          }
+        }
+      } catch { /* never block upgrade on discovery/kill failure */ }
+
       // Step 2: Install dependencies + build
       s.start("Installing dependencies & building");
       npmExecFile(["install", "--no-audit", "--no-fund"], {

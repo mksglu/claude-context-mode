@@ -357,11 +357,19 @@ describe("initSecurity loud-failure (#466)", () => {
     const r = spawnSync("node", ["--input-type=module", "-e", code], {
       encoding: "utf-8",
       timeout: 10000,
-      env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "" },
+      env: {
+        ...process.env,
+        CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "",
+        // #558 v1.0.127: initSecurity is now bundle-first. To exercise the
+        // "both missing → loud fail" contract, point the bundle test seam at
+        // a non-existent path so neither the bundle nor build/security.js
+        // can be loaded.
+        CONTEXT_MODE_SECURITY_BUNDLE_PATH: join(missingBuildDir, "no-bundle.mjs"),
+      },
     });
     assert.equal(r.status, 0, `subprocess failed: ${r.stderr}`);
     const parsed = JSON.parse(r.stdout);
-    assert.equal(parsed.ok, false, "initSecurity should return false when security.js missing");
+    assert.equal(parsed.ok, false, "initSecurity should return false when both bundle and security.js missing");
     assert.ok(
       r.stderr.includes("security deny patterns will NOT be enforced"),
       `expected loud warning on stderr, got: ${r.stderr}`,
@@ -378,7 +386,13 @@ describe("initSecurity loud-failure (#466)", () => {
     const r = spawnSync("node", ["--input-type=module", "-e", code], {
       encoding: "utf-8",
       timeout: 10000,
-      env: { ...process.env, CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1" },
+      env: {
+        ...process.env,
+        CONTEXT_MODE_SUPPRESS_SECURITY_WARNING: "1",
+        // #558 v1.0.127: bundle-first — hide the bundle so the warn-or-suppress
+        // codepath actually runs (otherwise bundle loads and warning never fires).
+        CONTEXT_MODE_SECURITY_BUNDLE_PATH: join(missingBuildDir, "no-bundle.mjs"),
+      },
     });
     assert.equal(r.status, 0);
     assert.ok(

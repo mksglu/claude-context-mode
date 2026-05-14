@@ -21,6 +21,7 @@ import {
   PLATFORM_ENV_VARS,
   workspaceEnvVarsFor,
   foreignWorkspaceEnv,
+  foreignIdentificationEnv,
 } from "../../src/adapters/detect.js";
 import type { PlatformId } from "../../src/adapters/types.js";
 
@@ -128,5 +129,60 @@ describe("resolveProjectDir matrix — MUST-3 invariant (issue #545)", () => {
     // future adapter is added — just assert "many" and the per-iteration
     // expects above carry the real signal.
     expect(assertions).toBeGreaterThanOrEqual(ALL_PLATFORMS.length * (ALL_PLATFORMS.length - 1) * 3);
+  });
+});
+
+// v1.0.129 slice 5 — Issue #561 algorithmic identification leak matrix.
+// Mirror of MUST-3 for identification vars: for every (host, foreign) pair
+// of registered platforms with host ≠ foreign, foreignIdentificationEnv(host)
+// must ban every foreign identification var AND must NOT ban any of host's
+// own identification vars. Algorithmically derived from PLATFORM_ENV_VARS so
+// adapter #16 inherits the guarantee for free.
+describe("foreignIdentificationEnv matrix — #561 invariant", () => {
+  it("matrix: host bans every foreign identification var, preserves its own", () => {
+    let assertions = 0;
+    for (const host of ALL_PLATFORMS) {
+      const ban = foreignIdentificationEnv(host);
+
+      // Build host's OWN identification var set for the negative check.
+      const ownIdVars = new Set<string>();
+      for (const e of (PLATFORM_ENV_VARS.get(host) ?? [])) {
+        if (e.role === "identification") ownIdVars.add(e.name);
+      }
+
+      // Negative invariant: host's own identification vars are NEVER in
+      // its own ban set (otherwise the spawned child can't detect the host).
+      for (const own of ownIdVars) {
+        expect(
+          ban.has(own),
+          `host=${host}: own identification var ${own} must NOT be in its own ban set`,
+        ).toBe(false);
+        assertions++;
+      }
+
+      for (const foreign of ALL_PLATFORMS) {
+        if (foreign === host) continue;
+        const foreignEntries = PLATFORM_ENV_VARS.get(foreign) ?? [];
+        for (const fe of foreignEntries) {
+          if (fe.role !== "identification") continue;
+          // Positive invariant: every foreign identification var IS banned.
+          expect(
+            ban.has(fe.name),
+            `host=${host} foreign=${foreign}: identification var ${fe.name} must be in ban set`,
+          ).toBe(true);
+          assertions++;
+          // Cross-invariant: workspace ban set never contains identification vars.
+          expect(
+            foreignWorkspaceEnv(host).has(fe.name),
+            `host=${host}: workspace ban must NOT contain identification var ${fe.name}`,
+          ).toBe(false);
+          assertions++;
+        }
+      }
+    }
+    // Sanity floor: at minimum, every platform's own identification check
+    // ran once, and every (host, foreign) pair contributed at least one
+    // identification ban check (most pairs contribute 2-4).
+    expect(assertions).toBeGreaterThan(ALL_PLATFORMS.length);
   });
 });

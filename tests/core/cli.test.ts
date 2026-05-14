@@ -1154,6 +1154,119 @@ describe("start.mjs CLI self-heal", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.files).toContain("scripts/plugin-cache-integrity.mjs");
   });
+
+  // ── Algo-D4 — algorithmic runtime-sibling derivation (#558) ──────────
+  //
+  // v1.0.126 shipped Algo-D4 with a HARDCODED `REQUIRED_RUNTIME_SIBLINGS`
+  // array that omitted `hooks/security.bundle.mjs` (and would omit any
+  // future runtime-critical bundle). Result: the integrity check returns
+  // `{ ok: true }` on a marketplace install where `hooks/security.bundle.mjs`
+  // is missing — exactly the silent fail-open #558 reports. The fix is
+  // algorithmic: derive the required-sibling set from `derivePluginManifest`
+  // (which itself reads `package.json files[]`), filtered to a runtime-
+  // critical pattern. Adding `hooks/security.bundle.mjs` (or any future
+  // hooks/*.bundle.mjs) to files[] auto-extends the integrity check.
+  test("Algo-D4 algorithmically requires hooks/security.bundle.mjs (#558)", async () => {
+    // Synthesize a marketplace-install scenario: every hardcoded boot
+    // sibling is present, but hooks/security.bundle.mjs is NOT. The pre-
+    // 558 hardcoded check passes vacuously here — that's the regression.
+    const { assertPluginCacheIntegrity } = await import(
+      "../../scripts/plugin-cache-integrity.mjs"
+    );
+    const fakeRoot = mkdtempSync(join(tmpdir(), "ctx-mode-d4-algo-"));
+    try {
+      // Stage every legacy-hardcoded sibling so the test isolates the
+      // new requirement: only hooks/security.bundle.mjs is missing.
+      writeFileSync(join(fakeRoot, "server.bundle.mjs"), "");
+      writeFileSync(join(fakeRoot, "cli.bundle.mjs"), "");
+      writeFileSync(join(fakeRoot, "start.mjs"), "");
+      mkdirSync(join(fakeRoot, "hooks"));
+      writeFileSync(join(fakeRoot, "hooks", "pretooluse.mjs"), "");
+      writeFileSync(join(fakeRoot, "hooks", "posttooluse.mjs"), "");
+      writeFileSync(join(fakeRoot, "hooks", "precompact.mjs"), "");
+      writeFileSync(join(fakeRoot, "hooks", "sessionstart.mjs"), "");
+      writeFileSync(join(fakeRoot, "hooks", "userpromptsubmit.mjs"), "");
+      // Copy the real package.json so the algorithm reads the same
+      // files[] the npm tarball ships with.
+      const pkgSrc = readFileSync(resolve(ROOT, "package.json"), "utf-8");
+      writeFileSync(join(fakeRoot, "package.json"), pkgSrc);
+
+      const result = assertPluginCacheIntegrity({ pluginRoot: fakeRoot });
+      expect(result.ok).toBe(false);
+      // Must surface the missing security bundle path so the doctor /
+      // boot-fail block tells users exactly what's broken.
+      const missingStr = result.missing.join("\n");
+      expect(missingStr).toContain("security.bundle.mjs");
+    } finally {
+      rmSync(fakeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("Algo-D4 derivation reads scripts.bundle outfiles — pure-data, no parallel hardcoded list", async () => {
+    // Algorithmic guarantee: a future runtime bundle added to
+    // `scripts.bundle` (with `--outfile=hooks/foo.bundle.mjs`) is
+    // auto-gated by Algo-D4 — no parallel REQUIRED_RUNTIME_SIBLINGS
+    // edit needed. Soft-fallback bundles (session-* with
+    // bundle-first/build-fallback in session-loaders.mjs) are
+    // explicitly whitelisted out.
+    const mod: any = await import("../../scripts/plugin-cache-integrity.mjs");
+    // The new public surface — algorithm must be inspectable from tests.
+    expect(typeof mod.getRequiredRuntimeSiblings).toBe("function");
+
+    const fakeRoot = mkdtempSync(join(tmpdir(), "ctx-mode-d4-pkg-"));
+    try {
+      // Synthetic package.json: scripts.bundle produces 3 outfiles.
+      //   - hooks/security.bundle.mjs is runtime-critical → required.
+      //   - hooks/session-db.bundle.mjs is soft-fallback → NOT required.
+      //   - hooks/foo.bundle.mjs is a hypothetical future bundle → required
+      //     (proves the gate auto-extends without code changes).
+      const pkg = {
+        files: ["server.bundle.mjs", "cli.bundle.mjs", "hooks", "start.mjs"],
+        scripts: {
+          bundle:
+            "esbuild src/security.ts --outfile=hooks/security.bundle.mjs && " +
+            "esbuild src/session/db.ts --outfile=hooks/session-db.bundle.mjs && " +
+            "esbuild src/foo.ts --outfile=hooks/foo.bundle.mjs",
+        },
+      };
+      writeFileSync(join(fakeRoot, "package.json"), JSON.stringify(pkg));
+
+      const required: string[] = mod.getRequiredRuntimeSiblings(fakeRoot);
+      // Runtime-critical bundle must be in the set:
+      expect(required.some((p) => p.endsWith("security.bundle.mjs"))).toBe(true);
+      // Hypothetical future bundle auto-included (the algorithmic win):
+      expect(required.some((p) => p.endsWith("foo.bundle.mjs"))).toBe(true);
+      // Soft-fallback bundle MUST be excluded — its absence is gracefully
+      // handled by session-loaders.mjs's bundle-first/build-fallback.
+      expect(required.some((p) => p.endsWith("session-db.bundle.mjs"))).toBe(false);
+    } finally {
+      rmSync(fakeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("Algo-D4 preserves the legacy hardcoded contract (no regression on existing required siblings)", async () => {
+    // Backward-compat guarantee: every entry that used to be in the
+    // hardcoded REQUIRED_RUNTIME_SIBLINGS array must still be flagged
+    // as required by the algorithmic derivation. This pins the
+    // pre-558 contract so the algorithmic refactor is purely additive.
+    const mod: any = await import("../../scripts/plugin-cache-integrity.mjs");
+    const required: string[] = mod.getRequiredRuntimeSiblings(ROOT);
+    const legacy = [
+      "server.bundle.mjs",
+      "cli.bundle.mjs",
+      join("hooks", "pretooluse.mjs"),
+      join("hooks", "posttooluse.mjs"),
+      join("hooks", "precompact.mjs"),
+      join("hooks", "sessionstart.mjs"),
+      join("hooks", "userpromptsubmit.mjs"),
+    ];
+    for (const entry of legacy) {
+      expect(
+        required.some((p) => p === entry || p.endsWith(entry)),
+        `legacy required sibling missing from algorithmic set: ${entry}`,
+      ).toBe(true);
+    }
+  });
 });
 
 // ── session-loaders.mjs fallback ──────────────────────────────────────

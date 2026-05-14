@@ -306,3 +306,55 @@ describe("Gemini CLI hooks — MCP cwd != hook projectDir worktree-suffix (#435)
     expect(existsSync(mcpDbPath)).toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// Dead-code excision: writeRoutingInstructions never re-implemented (#558)
+// ─────────────────────────────────────────────────────────
+//
+// Recon for #558 surfaced a second silent failure on marketplace installs:
+// `hooks/gemini-cli/sessionstart.mjs:93` imports `GeminiCLIAdapter` from
+// `build/adapters/gemini-cli/index.js` (also missing on marketplace via
+// .gitignore — same root cause as the security regression) and calls
+// `.writeRoutingInstructions(projectDir, pluginRoot)`. Two distinct bugs
+// stacked behind the same try/catch:
+//
+//   1. The build/ artifact is missing on marketplace installs (file not
+//      found at import time → caught silently by the surrounding try/catch).
+//   2. The `writeRoutingInstructions` method itself was REMOVED from every
+//      adapter in commit 6dae20c "refactor: remove writeRoutingInstructions
+//      from all adapters". Even on dev installs where build/ is present,
+//      the call site has been calling a deleted method for many releases —
+//      another silent fail-open swallowed by the same try/catch.
+//
+// A bundle-first fix for the import would not address bug #2, so the
+// staff-engineer-correct move is to delete the dead block entirely.
+// Re-introducing routing-instruction writing is out of scope — it would
+// need its own PRD, method spec, and GEMINI.md format tests.
+
+describe("Gemini CLI sessionstart — dead writeRoutingInstructions block excised (#558)", () => {
+  test("hooks/gemini-cli/sessionstart.mjs no longer references the removed writeRoutingInstructions method", () => {
+    const src = readFileSync(resolve(ROOT, "hooks/gemini-cli/sessionstart.mjs"), "utf-8");
+    // The method does not exist on GeminiCLIAdapter (verified against
+    // src/adapters/gemini-cli/index.ts) — calling it has been a silent
+    // no-op since 6dae20c. Delete the call site.
+    expect(src).not.toContain("writeRoutingInstructions");
+  });
+
+  test("hooks/gemini-cli/sessionstart.mjs no longer imports GeminiCLIAdapter from build/", () => {
+    const src = readFileSync(resolve(ROOT, "hooks/gemini-cli/sessionstart.mjs"), "utf-8");
+    // The whole purpose of importing GeminiCLIAdapter at runtime was the
+    // dead writeRoutingInstructions call. With that gone, the import is
+    // also gone — no more marketplace-fragile build/adapters/... probe.
+    expect(src).not.toContain("GeminiCLIAdapter");
+    expect(src).not.toMatch(/build[\/]adapters[\/]gemini-cli/);
+  });
+
+  test("source-of-truth check: GeminiCLIAdapter has no writeRoutingInstructions method", async () => {
+    // Anti-regression — if someone re-adds the method to the adapter,
+    // the dead-block deletion still stands until the call site is
+    // intentionally re-introduced with its own tests.
+    const { GeminiCLIAdapter } = await import("../../src/adapters/gemini-cli/index.js");
+    const inst: any = new GeminiCLIAdapter();
+    expect(inst.writeRoutingInstructions).toBeUndefined();
+  });
+});

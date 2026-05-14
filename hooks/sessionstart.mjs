@@ -53,6 +53,24 @@ await runHook(async () => {
 
   let additionalContext = ROUTING_BLOCK;
 
+  // ─── #558: surface security init failure as agent-facing context ───
+  //
+  // Pre-558 the only signal of a fail-open security regression was a
+  // stderr WARNING line (suppressed/discarded by most adapters). The
+  // SessionStart additionalContext block is the in-band channel — the
+  // agent reads it, the user sees it. Idempotent by virtue of
+  // SessionStart's once-per-session lifecycle.
+  try {
+    const { initSecurity, isSecurityInitFailed, buildSecurityWarningContext } =
+      await import("./core/routing.mjs");
+    const { resolve: _resolve } = await import("node:path");
+    await initSecurity(_resolve(HOOK_DIR, "..", "build"));
+    if (isSecurityInitFailed()) {
+      const warning = buildSecurityWarningContext();
+      if (warning) additionalContext = warning + "\n\n" + additionalContext;
+    }
+  } catch { /* security probe is best-effort — never block session start */ }
+
   try {
     const raw = await readStdin();
     const input = parseStdin(raw);

@@ -88,4 +88,55 @@ describe("cli.ts upgrade() — better-sqlite3 binding verification (#514)", () =
     expect(block).toMatch(/better-sqlite3/);
     expect(block).toMatch(/ctx-doctor|npm install better-sqlite3|npm rebuild/i);
   });
+
+  // ─────────────────────────────────────────────────────────
+  // Slices 3 + 4 (#559): /ctx-upgrade kills sibling MCP servers
+  // before npm install so previous-version processes are not left
+  // running in the background. Verified at the SOURCE level — we
+  // assert the upgrade() body imports the helpers and calls them
+  // with process.pid/ppid, before the "Installing dependencies &
+  // building" spinner that introduces the install region.
+  // ─────────────────────────────────────────────────────────
+  it("upgrade() kills sibling MCP servers BEFORE npm install (#559)", () => {
+    const body = getUpgradeBody();
+    // Helper imports — must reference the new util by name so static
+    // bundling picks it up.
+    expect(body).toMatch(/discoverSiblingMcpPids/);
+    expect(body).toMatch(/killSiblingMcpServers/);
+    // Discover must pass own pid + ppid so we don't terminate ourselves
+    // or our parent (Claude Code / the spawning shell).
+    expect(body).toMatch(/discoverSiblingMcpPids\s*\(\s*\{[\s\S]*?ownPid\s*:\s*process\.pid[\s\S]*?ownPpid\s*:\s*process\.ppid/);
+    // Kill must happen BEFORE the install spinner — assert by
+    // character offset within the upgrade body.
+    const killIdx = body.indexOf("killSiblingMcpServers");
+    const installIdx = body.indexOf('s.start("Installing dependencies & building")');
+    expect(killIdx).toBeGreaterThan(-1);
+    expect(installIdx).toBeGreaterThan(-1);
+    expect(killIdx).toBeLessThan(installIdx);
+  });
+
+  it("upgrade() suppresses the kill summary when no siblings were terminated (#559)", () => {
+    const body = getUpgradeBody();
+    // Anchor on the helper call.
+    const callIdx = body.indexOf("killSiblingMcpServers");
+    expect(callIdx).toBeGreaterThan(-1);
+    const region = body.slice(callIdx, callIdx + 1200);
+    // Summary literal must reference "sibling MCP server" so user
+    // feedback is unambiguous and not generic "killed N processes".
+    expect(region).toMatch(/sibling MCP server/);
+    // Suppression: must guard the log on `> 0` (or equivalent) so a
+    // zero-kill upgrade stays quiet — no log noise on the common path.
+    expect(region).toMatch(/totalKilled\s*[>!]/);
+  });
+
+  it("upgrade() never lets sibling discovery block the install (#559)", () => {
+    const body = getUpgradeBody();
+    const callIdx = body.indexOf("discoverSiblingMcpPids");
+    expect(callIdx).toBeGreaterThan(-1);
+    // The discover/kill block must be wrapped in try/catch — pgrep
+    // missing on a stripped Linux distro / PowerShell unavailable on a
+    // weird Windows must NOT block /ctx-upgrade.
+    const region = body.slice(Math.max(0, callIdx - 200), callIdx + 1500);
+    expect(region).toMatch(/try\s*\{[\s\S]*?discoverSiblingMcpPids[\s\S]*?\}\s*catch/);
+  });
 });

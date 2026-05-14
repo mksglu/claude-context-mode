@@ -1691,7 +1691,16 @@ function renderNarrative5Section(args: {
   const lifetimeLegacyTokens = lifetimeEventsTokens + lifetimeRescueTokens;
   const lifetimeRealTokens   = realBytes?.lifetime?.totalSavedTokens ?? 0;
   const lifetimeTokensWithout = Math.max(lifetimeLegacyTokens, lifetimeRealTokens);
-  const lifetimeTokensWith    = Math.max(1, Math.round(lifetimeTokensWithout * 0.02));
+  // Lifetime "with" — measured when available, else legacy 0.02 fallback.
+  // Honest definition (matches conversation bar below):
+  //   "with"    = bytes_returned (what the model actually re-saw)
+  //   "without" = bytes_returned + bytes_avoided
+  // When the schema has measurement, derive `with` from `bytes_returned/4`.
+  const lifeRet = realBytes?.lifetime?.bytesReturned ?? 0;
+  const lifeAv  = realBytes?.lifetime?.bytesAvoided  ?? 0;
+  const lifetimeTokensWith = (lifeRet + lifeAv) > 0
+    ? Math.max(1, Math.floor(lifeRet / 4))
+    : Math.max(1, Math.round(lifetimeTokensWithout * 0.02));
 
   // Bytes from realBytes when present, else derive from tokens (×4 — same
   // ratio Phase 8 uses everywhere). All-work bytes drives the opener tally
@@ -1764,15 +1773,33 @@ function renderNarrative5Section(args: {
   }
   out.push("");
 
-  // Without/With bars — the screenshottable proof for THIS conversation.
-  const convTokensWith = Math.max(1, Math.round(conversationTokens * 0.02));
-  const withoutBar = dataBar(conversationTokens, conversationTokens, 32);
-  const withBar    = dataBar(convTokensWith,     conversationTokens, 32);
-  const convPct    = conversationTokens > 0 ? (1 - convTokensWith / conversationTokens) * 100 : 0;
-  out.push(`  Without context-mode  ${kb(convBytes).padStart(8)}  ${withoutBar}   ${fmtNum(conversationTokens).padStart(7)} tokens`);
-  out.push(`  With context-mode     ${kb(Math.max(1, Math.round(convBytes * 0.02))).padStart(8)}  ${withBar}   ${fmtNum(convTokensWith).padStart(7)} tokens`);
-  out.push(`                          ${convPct.toFixed(0)}% kept out of context · your AI ran ${Math.max(1, Math.round(conversationTokens / convTokensWith))}× longer before /compact fired`);
-  out.push("");
+  // Without/With bars — measured from real per-event bytes_returned / bytes_avoided.
+  //
+  // Honest definitions:
+  //   Without = bytes the model WOULD have re-seen with no filtering    = bytes_returned + bytes_avoided
+  //   With    = bytes the model ACTUALLY re-saw after context-mode      = bytes_returned
+  //
+  // No fallback to heuristic. If the schema has zero signal for this
+  // conversation (no hook ever populated bytes_avoided / bytes_returned),
+  // the section is skipped entirely. Honesty over decoration.
+  const realConv = realBytes?.conversation;
+  const measuredAvoided  = realConv?.bytesAvoided  ?? 0;
+  const measuredReturned = realConv?.bytesReturned ?? 0;
+
+  if (measuredAvoided + measuredReturned > 0) {
+    const convBytesWithout  = measuredReturned + measuredAvoided;
+    const convBytesWith     = Math.max(1, measuredReturned);
+    const convTokensWithout = Math.max(1, Math.floor(convBytesWithout / 4));
+    const convTokensWith    = Math.max(1, Math.floor(convBytesWith    / 4));
+    const withoutBar = dataBar(convTokensWithout, convTokensWithout, 32);
+    const withBar    = dataBar(convTokensWith,    convTokensWithout, 32);
+    const convPct    = (1 - convTokensWith / convTokensWithout) * 100;
+    const convMult   = Math.max(1, Math.round(convTokensWithout / convTokensWith));
+    out.push(`  Without context-mode  ${kb(convBytesWithout).padStart(8)}  ${withoutBar}   ${fmtNum(convTokensWithout).padStart(7)} tokens`);
+    out.push(`  With context-mode     ${kb(convBytesWith).padStart(8)}  ${withBar}   ${fmtNum(convTokensWith).padStart(7)} tokens`);
+    out.push(`                          ${convPct.toFixed(0)}% kept out of context · your AI ran ${convMult}× longer before /compact fired`);
+    out.push("");
+  }
 
   // Timeline — drop-in if conversation has byDay.
   if (conversation.byDay && conversation.byDay.length > 0) {

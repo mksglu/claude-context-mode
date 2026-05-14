@@ -29,7 +29,7 @@
  * developer ran during `pretest`.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 /**
  * Walk a directory recursively, returning a flat list of relative file
@@ -102,22 +102,15 @@ export function derivePluginManifest({ pkg, pluginRoot }) {
 }
 
 /**
- * REQUIRED_RUNTIME_SIBLINGS — the minimum set of files start.mjs must
- * find at boot. These are the files start.mjs actively `import()`s or
- * needs to re-symlink against. The check is intentionally narrower
- * than the full manifest:
+ * LEGACY_FALLBACK — the v1.0.126 hardcoded REQUIRED_RUNTIME_SIBLINGS,
+ * preserved verbatim. Forms the union seed for the algorithmic set so
+ * the post-558 contract is strictly additive over the pre-558 contract
+ * (no required sibling ever silently disappears).
  *
- *   - server.bundle.mjs / cli.bundle.mjs are produced by `npm run
- *     bundle`. Without server.bundle.mjs the server can't start;
- *     without cli.bundle.mjs `context-mode doctor` can't run.
- *   - hooks/{5 hook scripts}.mjs are spawned per Claude Code event.
- *     Missing any one produces a silent hook failure.
- *
- * Other files in package.json files[] (insight/, configs/, README, …)
- * are not boot-critical, so missing them is a "warn"-class issue
- * surfaced only via the doctor — never enough to fail-fast at boot.
+ * Also acts as a safety net when `package.json` is unreadable — the
+ * boot gate stays loud even if the publish manifest is corrupted.
  */
-const REQUIRED_RUNTIME_SIBLINGS = Object.freeze([
+const LEGACY_FALLBACK = Object.freeze([
   "server.bundle.mjs",
   "cli.bundle.mjs",
   join("hooks", "pretooluse.mjs"),
@@ -128,21 +121,108 @@ const REQUIRED_RUNTIME_SIBLINGS = Object.freeze([
 ]);
 
 /**
+ * SOFT_FALLBACK_BUNDLES — bundles that already implement
+ * bundle-first / build-fallback resolution (via session-loaders.mjs or
+ * session-helpers.mjs). Their absence on a published install is
+ * gracefully recoverable, so they MUST NOT join the fail-fast boot
+ * gate — the gate would refuse to start a working install.
+ *
+ * The security bundle is intentionally NOT here: its absence creates a
+ * silent fail-OPEN regression (#558), so it IS boot-critical.
+ */
+const SOFT_FALLBACK_BUNDLES = new Set([
+  "hooks/session-extract.bundle.mjs",
+  "hooks/session-snapshot.bundle.mjs",
+  "hooks/session-db.bundle.mjs",
+  "hooks/session-attribution.bundle.mjs",
+]);
+
+/**
+ * Algorithmically extract every esbuild output path from
+ * `package.json scripts.bundle`. The bundle script is the SINGLE
+ * SOURCE OF TRUTH for "what bundles this build produces" — parsing
+ * its `--outfile=…` arguments avoids the parallel-list trap that
+ * bit Algo-D4 v1.0.126 (the hardcoded REQUIRED list lagged the
+ * actual bundle output).
+ *
+ * Returns POSIX-style relative paths (forward slashes) for stable
+ * comparison with SOFT_FALLBACK_BUNDLES. Caller normalizes to
+ * `path.join` shape before pluginRoot-relative resolution.
+ */
+function extractBundleOutfiles(pkg) {
+  const script = pkg?.scripts?.bundle;
+  if (typeof script !== "string") return [];
+  const out = new Set();
+  // Match every `--outfile=<path>` token (path is whitespace-delimited
+  // because the script chains commands with `&&`).
+  const re = /--outfile=(\S+)/g;
+  let m;
+  while ((m = re.exec(script)) !== null) {
+    out.add(m[1]);
+  }
+  return [...out];
+}
+
+/**
+ * Algorithmic — derive the boot-critical sibling set as the union of:
+ *   1. LEGACY_FALLBACK (the v1.0.126 contract, preserved verbatim).
+ *   2. Every esbuild output path from `package.json scripts.bundle`
+ *      that is NOT in SOFT_FALLBACK_BUNDLES.
+ *
+ * Why algorithmic instead of hardcoded:
+ *
+ *   v1.0.126 shipped Algo-D4 with a hardcoded REQUIRED_RUNTIME_SIBLINGS
+ *   array that omitted `hooks/security.bundle.mjs` (the bundle didn't
+ *   ship until v1.0.127). The hardcoded list would need manual
+ *   extension every time a runtime bundle is added — the same trap
+ *   would re-bite the next bundle. Deriving from `scripts.bundle`
+ *   closes the trap: any new bundle output is auto-gated unless it
+ *   joins the soft-fallback whitelist (which is itself an explicit
+ *   architectural decision, not a maintenance burden). (#558)
+ *
+ * Returns OS-native-separator relative paths (suitable for
+ * `path.join(pluginRoot, …)`).
+ *
+ * If `package.json` is unreadable, returns LEGACY_FALLBACK as a
+ * safety net so the boot gate never goes silent due to a parse
+ * error in the publish manifest.
+ */
+export function getRequiredRuntimeSiblings(pluginRoot) {
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(join(pluginRoot, "package.json"), "utf-8"));
+  } catch {
+    return [...LEGACY_FALLBACK];
+  }
+  const required = new Set(LEGACY_FALLBACK);
+  for (const outfile of extractBundleOutfiles(pkg)) {
+    // Normalize to POSIX for soft-fallback membership check —
+    // scripts.bundle is hand-authored with forward slashes already,
+    // but be defensive in case a Windows-authored package.json ever
+    // reaches us.
+    const posix = outfile.split(sep).join("/");
+    if (SOFT_FALLBACK_BUNDLES.has(posix)) continue;
+    // Convert back to OS-native sep for downstream filesystem ops.
+    required.add(posix.split("/").join(sep));
+  }
+  return [...required];
+}
+
+/**
  * Verify boot-critical siblings exist at pluginRoot.
  *
  * Returns `{ ok, missing }`. Pure — does NOT touch process.exit or
  * stderr. The caller (start.mjs at boot, src/cli.ts at doctor) decides
  * the failure surface (fail-fast exit 2 vs. doctor diagnostic).
  *
- * Uses package.json (read from pluginRoot) only as a source-of-truth
- * cross-check; the actual REQUIRED list is hardcoded above to keep the
- * runtime contract independent of package.json being readable. If
- * package.json IS readable AND files[] omits something we require, the
- * check fails — that's the "drift between contract and tarball" trap.
+ * Required-set is computed by `getRequiredRuntimeSiblings()` —
+ * algorithmically derived from `package.json files[]` filtered to the
+ * RUNTIME_CRITICAL_PATTERN. Drift between publish manifest and runtime
+ * contract becomes architecturally impossible (#558).
  */
 export function assertPluginCacheIntegrity({ pluginRoot }) {
   const missing = [];
-  for (const rel of REQUIRED_RUNTIME_SIBLINGS) {
+  for (const rel of getRequiredRuntimeSiblings(pluginRoot)) {
     const abs = join(pluginRoot, rel);
     if (!existsSync(abs)) missing.push(abs);
   }

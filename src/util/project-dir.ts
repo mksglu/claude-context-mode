@@ -88,6 +88,15 @@ export function isPluginInstallPath(p: string): boolean {
  */
 export function resolveProjectDirFromTranscript(opts: {
   projectsRoot: string;
+  /**
+   * Optional freshness guard. Claude Code updates the active transcript while
+   * the session is being used; stale transcripts from previous days must not
+   * become a global project-dir signal for other hosts that merely have
+   * ~/.claude on disk.
+   */
+  maxAgeMs?: number;
+  /** Test seam for maxAgeMs. Defaults to Date.now(). */
+  nowMs?: number;
 }): string | undefined {
   if (!fs.existsSync(opts.projectsRoot)) return undefined;
 
@@ -113,6 +122,10 @@ export function resolveProjectDirFromTranscript(opts: {
   } catch { return undefined; }
 
   if (!bestPath) return undefined;
+  if (typeof opts.maxAgeMs === "number") {
+    const nowMs = opts.nowMs ?? Date.now();
+    if (nowMs - bestMtime > opts.maxAgeMs) return undefined;
+  }
 
   // Read first ~10 lines until we find a cwd field. The jsonl is
   // append-only and can be huge (60+ MB on long sessions) — never load it
@@ -164,6 +177,10 @@ export function resolveProjectDir(opts: {
   pwd: string | undefined;
   /** Optional override; production code passes `~/.claude/projects`. */
   transcriptsRoot?: string;
+  /** Optional freshness guard for Claude Code transcript project recovery. */
+  transcriptMaxAgeMs?: number;
+  /** Test seam for transcriptMaxAgeMs. Defaults to Date.now(). */
+  nowMs?: number;
   /**
    * Issue #545 — opt-in tightening. When set, the candidate list is built
    * algorithmically from `workspaceEnvVarsFor(strictPlatform)` plus the
@@ -175,7 +192,7 @@ export function resolveProjectDir(opts: {
    */
   strictPlatform?: PlatformId;
 }): string {
-  const { env, cwd, pwd, transcriptsRoot, strictPlatform } = opts;
+  const { env, cwd, pwd, transcriptsRoot, transcriptMaxAgeMs, nowMs, strictPlatform } = opts;
   // Build candidate list. Strict path: own workspace vars + universal escape
   // hatch — NO foreign workspace vars, in any order, can win. Non-strict
   // path: frozen legacy literal order for backwards compatibility.
@@ -187,7 +204,11 @@ export function resolveProjectDir(opts: {
     if (v && !isPluginInstallPath(v)) return v;
   }
   if (transcriptsRoot) {
-    const fromTranscript = resolveProjectDirFromTranscript({ projectsRoot: transcriptsRoot });
+    const fromTranscript = resolveProjectDirFromTranscript({
+      projectsRoot: transcriptsRoot,
+      maxAgeMs: transcriptMaxAgeMs,
+      nowMs,
+    });
     if (fromTranscript && !isPluginInstallPath(fromTranscript)) return fromTranscript;
   }
   if (pwd && !isPluginInstallPath(pwd)) return pwd;

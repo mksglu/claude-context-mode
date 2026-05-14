@@ -219,6 +219,12 @@ function getProjectDir(): string {
   // path on detected platform so non-Claude hosts skip the heuristic and
   // fall through to PWD/cwd cleanly.
   //
+  // The Claude heuristic must also be fresh. Hosts such as Pi can be
+  // misdetected as Claude Code solely because ~/.claude exists; without a
+  // freshness guard an old Claude transcript can globally hijack ctx shell cwd
+  // after reboot. Active Claude sessions update their transcript as the user
+  // interacts, so stale transcripts should fall through to PWD/cwd.
+  //
   // Issue #545 (v1.0.124): pass strictPlatform for ALL adapters so the
   // env-var cascade is built ALGORITHMICALLY from the platform's own
   // workspace vars + universal escape hatch — foreign workspace vars (e.g.
@@ -240,6 +246,7 @@ function getProjectDir(): string {
     cwd: process.cwd(),
     pwd: process.env.PWD,
     transcriptsRoot,
+    transcriptMaxAgeMs: 5 * 60 * 1000,
     strictPlatform,
   });
 }

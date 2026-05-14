@@ -23,7 +23,7 @@
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { detectRuntimes } from "../../runtime.js";
-import { foreignWorkspaceEnv } from "../detect.js";
+import { foreignWorkspaceEnv, foreignIdentificationEnv } from "../detect.js";
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -184,10 +184,25 @@ export class MCPStdioClient {
     // and Pi's sessions write into the wrong project. The ban list is
     // derived ALGORITHMICALLY from PLATFORM_ENV_VARS (every other adapter's
     // workspace-role vars), so adding adapter #16 grows the scrub
-    // automatically — no edit to this file. Identification vars
-    // (CLAUDE_PLUGIN_ROOT etc.) and the universal escape hatch
-    // (CONTEXT_MODE_PROJECT_DIR) are NEVER scrubbed.
+    // automatically — no edit to this file. Pi's own workspace vars and
+    // the universal escape hatch (CONTEXT_MODE_PROJECT_DIR) are NEVER
+    // scrubbed.
     for (const banned of foreignWorkspaceEnv("pi")) {
+      delete childEnv[banned];
+    }
+    // Issue #561 — scrub foreign IDENTIFICATION env vars before spawn.
+    //
+    // Foreign identification vars hijack detectPlatform() — must scrub
+    // when spawning child under a different host (#561). When Pi runs
+    // co-resident with Claude Code, the inherited shell env carries
+    // CLAUDE_CODE_ENTRYPOINT and CLAUDE_PLUGIN_ROOT; the spawned MCP
+    // child's detectPlatform() then walks PLATFORM_ENV_VARS in priority
+    // order (claude-code first), returns claude-code, and Pi's session
+    // data lands in ~/.claude/context-mode/ instead of Pi's own dir.
+    // Pi's OWN identification vars (PI_CONFIG_DIR / PI_SESSION_FILE /
+    // PI_COMPILED) are excluded from the ban set so the child still
+    // detects pi correctly.
+    for (const banned of foreignIdentificationEnv("pi")) {
       delete childEnv[banned];
     }
     this._spawnEnv = childEnv;

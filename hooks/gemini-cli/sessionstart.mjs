@@ -25,7 +25,7 @@ import { createSessionLoaders } from "../session-loaders.mjs";
 import { join, dirname } from "node:path";
 import { readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const HOOK_DIR = dirname(fileURLToPath(import.meta.url));
 const { loadSessionDB } = createSessionLoaders(HOOK_DIR);
@@ -88,11 +88,13 @@ try {
     const sessionId = getSessionId(input, OPTS);
     db.ensureSession(sessionId, projectDir);
 
-    // Auto-write GEMINI.md on startup if missing or not merged yet
-    try {
-      const { GeminiCLIAdapter } = await import(pathToFileURL(join(HOOK_DIR, "..", "..", "build", "adapters", "gemini-cli", "index.js")).href);
-      new GeminiCLIAdapter().writeRoutingInstructions(projectDir, join(HOOK_DIR, "..", ".."));
-    } catch { /* best effort — don't block session start */ }
+    // NOTE (#558): excised the old GEMINI.md auto-write block. It loaded an
+    // adapter from build/ (gitignored, missing on marketplace installs) and
+    // called a method that was deleted from every adapter in commit 6dae20c.
+    // Both layers were silently no-op'd by the surrounding try/catch on every
+    // install path for many releases. If routing-instruction auto-write is
+    // reintroduced it must come with its own PRD, method spec, and format
+    // tests — out of scope for the security regression fix.
 
     const ruleFilePaths = [
       join(homedir(), ".gemini", "GEMINI.md"),
