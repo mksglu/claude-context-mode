@@ -99,6 +99,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "npx tsx tests/benchmark.ts",
+    "perf:smoke": "npx tsx tests/perf-smoke.ts --baseline=tests/perf-baseline.json",
     "test:use-cases": "npx tsx tests/use-cases.ts",
     "test:compare": "npx tsx tests/context-comparison.ts",
     "test:ecosystem": "npx tsx tests/ecosystem-benchmark.ts",

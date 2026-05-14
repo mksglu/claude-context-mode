@@ -1,0 +1,24 @@
+{
+  "created_at": "2026-05-14T20:28:23.162Z",
+  "note": "Baseline captured before performance phases on codex/context-mode-hang-fixes after hardening commit 00bca75. Coarse reference only; not a CI micro-gate.",
+  "samples": [
+    {
+      "label": "tiny_node_startup",
+      "median_ms": 35,
+      "p95_ms": 39,
+      "runs": 3
+    },
+    {
+      "label": "cli_version_startup",
+      "median_ms": 728,
+      "p95_ms": 785,
+      "runs": 3
+    },
+    {
+      "label": "hook_startup",
+      "median_ms": 83,
+      "p95_ms": 109,
+      "runs": 3
+    }
+  ]
+}
