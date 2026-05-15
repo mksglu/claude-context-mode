@@ -64,9 +64,14 @@ export interface LifecycleGuardHandle {
  * EOF, SIGTERM) fire while the host stays alive. Idle shutdown is the
  * structural fix: a server with no work to do should release its memory.
  *
- * Default 15 min strikes a balance — long enough that a paused
- * conversation does not pay a cold-start on every resume, short enough
- * that 8 hours of unused sessions do not pin GB of RAM.
+ * Default 15 min strikes a balance for hosts that can tolerate/recreate an
+ * idle stdio child — long enough that a paused conversation does not pay a
+ * cold-start on every resume, short enough that 8 hours of unused sessions do
+ * not pin GB of RAM.
+ *
+ * Codex keeps the MCP transport handle for the current thread. If the server
+ * exits on idle, later tool calls fail with "Transport closed" instead of
+ * spawning a replacement, so Codex defaults to disabled idle shutdown.
  *
  * Set env to `0` to disable entirely.
  *
@@ -75,10 +80,14 @@ export interface LifecycleGuardHandle {
 export function idleTimeoutForEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
+  const defaultTimeout =
+    String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase() === "codex"
+      ? 0
+      : 15 * 60 * 1000;
   const raw = env.CONTEXT_MODE_IDLE_TIMEOUT_MS;
-  if (raw === undefined) return 15 * 60 * 1000;
+  if (raw === undefined) return defaultTimeout;
   const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) return 15 * 60 * 1000;
+  if (!Number.isFinite(n) || n < 0) return defaultTimeout;
   return n;
 }
 
