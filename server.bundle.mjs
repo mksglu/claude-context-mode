@@ -651,4 +651,96 @@ Use ctx_search(queries: ["..."], source: "${o.label}") to query this content.`}]
 
 PREFER THIS OVER Read/cat for: logs, data files (CSV, JSON, XML), source files, and any file where you need to extract specific information rather than read the entire content. For truly large files, use ctx_execute with streaming/path-based code instead of FILE_CONTENT.
 
-THINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript \u2014 no npm deps, try/catch, null-safe. Node.js + Bun compatible.`,inputSchema:M.object({path:M.string().describe("Absolute file path or relative to project root"),language:M.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:M.string().describe("Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."),timeout:M.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs."),intent:M.string().optional().describe("What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.")})},async({path:t,language:e,code:r,timeout:n,intent:o})=>{let s=FE(t,"ctx_execute_file");if(s)return s;if(e==="shell"){let i=Uh(r,"execute_file");if(i)return i}else{let i=HE(r,e,"execute_file");if(i)return i}try{let i=await Di.executeFile({path:t,language:e,code:r,timeout:n});if(i.timedOut)return B("ctx_execute_file",{content:[{type:"text",text:`Timed out processing ${t} after ${n}ms`}],isError:!0});if(i.exitCode!==0){let{isError:c,output:u}=hh({language:
+THINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript \u2014 no npm deps, try/catch, null-safe. Node.js + Bun compatible.`,inputSchema:M.object({path:M.string().describe("Absolute file path or relative to project root"),language:M.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:M.string().describe("Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."),timeout:M.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs."),intent:M.string().optional().describe("What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.")})},async({path:t,language:e,code:r,timeout:n,intent:o})=>{let s=FE(t,"ctx_execute_file");if(s)return s;if(e==="shell"){let i=Uh(r,"execute_file");if(i)return i}else{let i=HE(r,e,"execute_file");if(i)return i}try{let i=await Di.executeFile({path:t,language:e,code:r,timeout:n});if(i.timedOut)return B("ctx_execute_file",{content:[{type:"text",text:`Timed out processing ${t} after ${n}ms`}],isError:!0});if(i.exitCode!==0){let{isError:c,output:u}=hh({language:e,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return o&&o.trim().length>0&&Buffer.byteLength(u)>mu?(rr(Buffer.byteLength(u)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(u,o,c?`file:${t}:error`:`file:${t}`)}],isError:c})):Buffer.byteLength(u)>hu?(rr(Buffer.byteLength(u)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(u,"errors failures exceptions",c?`file:${t}:error`:`file:${t}`)}],isError:c})):B("ctx_execute_file",{content:[{type:"text",text:u}],isError:c})}let a=i.stdout||"(no output)";return o&&o.trim().length>0&&Buffer.byteLength(a)>mu?(rr(Buffer.byteLength(a)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(a,o,`file:${t}`)}]})):Buffer.byteLength(a)>hu?B("ctx_execute_file",await $i(a,`file:${t}`)):B("ctx_execute_file",{content:[{type:"text",text:a}]})}catch(i){let a=i instanceof Error?i.message:String(i);return B("ctx_execute_file",{content:[{type:"text",text:`Runtime error: ${a}`}],isError:!0})}});Le.registerTool("ctx_index",{title:"Index Content",description:`Index documentation or knowledge content into a searchable BM25 knowledge base. Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. The full content does NOT stay in context \u2014 only a brief summary is returned.
+
+WHEN TO USE:
+- Documentation from Context7, Skills, or MCP tools (API docs, framework guides, code examples)
+- API references (endpoint details, parameter specs, response schemas)
+- MCP tools/list output (exact tool signatures and descriptions)
+- Skill prompts and instructions that are too large for context
+- README files, migration guides, changelog entries
+- Any content with code examples you may need to reference precisely
+
+After indexing, use 'ctx_search' to retrieve specific sections on-demand.
+When \`path\` is provided, a content hash is stored for automatic stale detection in search results.
+Do NOT use for: log files, test output, CSV, build output \u2014 use 'ctx_execute_file' for those.`,inputSchema:M.object({content:M.string().optional().describe("Raw text/markdown to index. Provide this OR path, not both."),path:M.string().optional().describe("File path to read and index (content never enters context). Provide this OR content."),source:M.string().optional().describe("Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')")})},async({content:t,path:e,source:r})=>{if(!t&&!e)return B("ctx_index",{content:[{type:"text",text:"Error: Either content or path must be provided"}],isError:!0});if(e){let n=FE(e,"ctx_index");if(n)return n}try{let n=e?Jj(e):void 0;if(t)rr(Buffer.byteLength(t));else if(n)try{let i=await import("fs");rr(i.readFileSync(n).byteLength)}catch{}let s=await Qn().indexQueued({content:t,path:n,source:r??n,attribution:Qo()});return B("ctx_index",{content:[{type:"text",text:`Indexed ${s.totalChunks} sections (${s.codeChunks} with code) from: ${s.label}
+Use ctx_search(queries: ["..."]) to query this content. Use source: "${s.label}" to scope results.`}]})}catch(n){let o=n instanceof Error?n.message:String(n);return B("ctx_index",{content:[{type:"text",text:`Index error: ${o}`}],isError:!0})}});var Yn=0,Rh=Date.now(),bL=6e4,OE=3,IE=8;function Hh(t){if(typeof t=="string")try{let e=JSON.parse(t);if(Array.isArray(e))return e}catch{}return t}function xL(t){let e=Hh(t);return Array.isArray(e)?e.map((r,n)=>typeof r=="string"?{label:`cmd_${n+1}`,command:r}:r):e}Le.registerTool("ctx_search",{title:"Search Indexed Content",description:`Search indexed content. Requires prior indexing via ctx_batch_execute, ctx_index, or ctx_fetch_and_index. Pass ALL search questions as queries array in ONE call. File-backed sources are auto-refreshed when the source file changes.
+
+TIPS: 2-4 specific terms per query. Use 'source' to scope results.
+
+SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.`,inputSchema:M.object({queries:M.preprocess(Hh,M.array(M.string()).optional().describe("Array of search queries. Batch ALL questions in one call.")),limit:M.number().optional().default(3).describe("Results per query (default: 3)"),source:M.string().optional().describe("Filter to a specific indexed source (partial match)."),contentType:M.enum(["code","prose"]).optional().describe("Filter results by content type: 'code' or 'prose'."),sort:M.enum(["relevance","timeline"]).optional().default("relevance").describe("Sort mode. 'relevance' (default): BM25 ranked, current session only. 'timeline': chronological across current session, prior sessions, and auto-memory.")})},async t=>{try{let e=Qn(),r=t.sort||"relevance";if(r!=="timeline"&&e.getStats().chunks===0)return B("ctx_search",{content:[{type:"text",text:`Knowledge base is empty \u2014 no content has been indexed yet.
+
+ctx_search is a follow-up tool that queries previously indexed content. To gather and index content first, use:
+  \u2022 ctx_batch_execute(commands, queries) \u2014 run commands, auto-index output, and search in one call
+  \u2022 ctx_fetch_and_index(url) \u2014 fetch a URL, index it, then search with ctx_search
+  \u2022 ctx_index(content, source) \u2014 manually index text content
+
+After indexing, ctx_search becomes available for follow-up queries.`}],isError:!0});let n=t,o=[];if(Array.isArray(n.queries)&&n.queries.length>0?o.push(...n.queries):typeof n.query=="string"&&n.query.length>0&&o.push(n.query),o.length===0)return B("ctx_search",{content:[{type:"text",text:"Error: provide query or queries."}],isError:!0});let{limit:s=3,source:i,contentType:a}=t,c=Date.now();if(c-Rh>bL&&(Yn=0,Rh=c),Yn++,Yn>IE)return B("ctx_search",{content:[{type:"text",text:`BLOCKED: ${Yn} search calls in ${Math.round((c-Rh)/1e3)}s. You're flooding context. STOP making individual search calls. Use ctx_batch_execute(commands, queries) for your next research step.`}],isError:!0});let u=Yn>OE?1:Math.min(s,2),d=40*1024,l=0,m=[],f=null;if(r==="timeline")try{let g=Ge(),_=Et(),b=vi({projectDir:_,sessionsDir:g});Oe(b)&&(f=new Qt({dbPath:b}))}catch{}let p=Ar?.getConfigDir()??Ih();r!=="timeline"&&e.refreshStaleSources();try{for(let g of o){if(l>d){m.push(`## ${g}
+(output cap reached)
+`);continue}let _;if(r==="timeline"?_=sE({query:g,limit:u,store:e,sort:r,source:i,contentType:a,sessionDB:f,projectDir:Et(),configDir:p,adapter:Ar??void 0}):_=e.searchWithFallback(g,u,i,a,"like",!1),_.length===0){m.push(`## ${g}
+No results found.`);continue}let b=_.map((y,S)=>{let k=y.origin||"current-session",I=y.timestamp?y.timestamp.slice(0,16).replace("T"," "):"",L=`--- [${k}${I?" | "+I:""} | ${y.source}] ---`,$=`### ${y.title}`,j=ZE(y.content,g,1500,y.highlighted);return`${L}
+${$}
+
+${j}`}).join(`
+
+`);m.push(`## ${g}
+
+${b}`),l+=b.length}}finally{try{f?.close()}catch{}}let h=m.join(`
+
+---
+
+`);if(e.lastRefreshCount>0&&(h=`> Auto-refreshed ${e.lastRefreshCount} stale source${e.lastRefreshCount>1?"s":""} (file changed since indexing).
+
+`+h),Yn>=OE&&(h+=`
+
+\u26A0 search call #${Yn}/${IE} in this window. Results limited to ${u}/query. Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`),h.trim().length===0){let g=e.listSources(),_=g.length>0?`
+Indexed sources: ${g.map(b=>`"${b.label}" (${b.chunkCount} sections)`).join(", ")}`:"";return B("ctx_search",{content:[{type:"text",text:`No results found.${_}`}]})}return B("ctx_search",{content:[{type:"text",text:h}]})}catch(e){let r=e instanceof Error?e.message:String(e);return B("ctx_search",{content:[{type:"text",text:`Search error: ${r}`}],isError:!0})}});var $h=null,Ch=null,Oh=null;function SL(){return $h||($h=Nh(import.meta.url).resolve("turndown")),$h}function vL(){return Ch||(Ch=Nh(import.meta.url).resolve("turndown-plugin-gfm")),Ch}function kL(){return Oh||(Oh=Nh(import.meta.url).resolve("undici")),Oh}function EL(t,e){let r=JSON.stringify(SL()),n=JSON.stringify(vL()),o=JSON.stringify(kL()),s=JSON.stringify(e),i=gu.toString(),a=gu.name||"classifyIp",c=a==="classifyIp"?`var classifyIp = ${i};`:`var ${a} = ${i};
+var classifyIp = ${a};`,u=process.env.CTX_FETCH_STRICT==="1";return`
+const TurndownService = require(${r});
+const { gfm } = require(${n});
+const fs = require('fs');
+const dns = require('no' + 'de:dns');
+const dnsPromises = require('no' + 'de:dns/promises');
+const url = ${JSON.stringify(t)};
+const outputPath = ${s};
+const configuredFetchProxy = process.env.CONTEXT_MODE_FETCH_PROXY || '';
+
+// Strip generic proxy env vars from this subprocess only. A generic outbound
+// proxy (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) would route fetch through
+// an arbitrary target \u2014 DNS resolution happens at the proxy and the
+// in-subprocess DNS rebinding guard never sees the rebound IP. context-mode
+// only allows an explicit loopback proxy via CONTEXT_MODE_FETCH_PROXY below.
+delete process.env.HTTP_PROXY;
+delete process.env.HTTPS_PROXY;
+delete process.env.ALL_PROXY;
+delete process.env.http_proxy;
+delete process.env.https_proxy;
+delete process.env.all_proxy;
+delete process.env.npm_config_proxy;
+delete process.env.npm_config_https_proxy;
+
+function normalizeLoopbackFetchProxy(raw) {
+  if (!raw || !String(raw).trim()) return null;
+  let parsed;
+  try { parsed = new URL(String(raw).trim()); } catch (e) {
+    throw new Error('Invalid CONTEXT_MODE_FETCH_PROXY URL: ' + raw);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('CONTEXT_MODE_FETCH_PROXY must use http:// or https://');
+  }
+  const hostname = parsed.hostname.replace(/^\\[|\\]$/g, '').toLowerCase();
+  const loopback =
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    hostname === '0:0:0:0:0:0:0:1' ||
+    /^127(?:\\.\\d{1,3}){3}$/.test(hostname);
+  if (!loopback) {
+    throw new Error('CONTEXT_MODE_FETCH_PROXY must point to a loopback proxy');
+  }
+  return parsed.toString();
+}
+
+const normalizedFetchProxy = normalizeLoopbackFetchProxy(configuredFetchProxy);
+if (normalizedFetchProxy) {
+  const { ProxyAgent, setGlobalDispatcher } = require(${o});
+  setGlobalDispat
