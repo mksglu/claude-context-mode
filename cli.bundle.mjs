@@ -923,4 +923,50 @@ WHEN TO USE:
 
 After indexing, use 'ctx_search' to retrieve specific sections on-demand.
 When \`path\` is provided, a content hash is stored for automatic stale detection in search results.
-Do NOT use for: log files
+Do NOT use for: log files, test output, CSV, build output \u2014 use 'ctx_execute_file' for those.`,inputSchema:F.object({content:F.string().optional().describe("Raw text/markdown to index. Provide this OR path, not both."),path:F.string().optional().describe("File path to read and index (content never enters context). Provide this OR content."),source:F.string().optional().describe("Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')")})},async({content:t,path:e,source:r})=>{if(!t&&!e)return W("ctx_index",{content:[{type:"text",text:"Error: Either content or path must be provided"}],isError:!0});if(e){let n=HT(e,"ctx_index");if(n)return n}try{let n=e?XH(e):void 0;if(t)vr(Buffer.byteLength(t));else if(n)try{let i=await import("fs");vr(i.readFileSync(n).byteLength)}catch{}let o=await Es().indexQueued({content:t,path:n,source:r??n,attribution:ws()});return W("ctx_index",{content:[{type:"text",text:`Indexed ${o.totalChunks} sections (${o.codeChunks} with code) from: ${o.label}
+Use ctx_search(queries: ["..."]) to query this content. Use source: "${o.label}" to scope results.`}]})}catch(n){let s=n instanceof Error?n.message:String(n);return W("ctx_index",{content:[{type:"text",text:`Index error: ${s}`}],isError:!0})}});ks=0,Qy=Date.now(),h2=6e4,OT=3,IT=8;Ge.registerTool("ctx_search",{title:"Search Indexed Content",description:`Search indexed content. Requires prior indexing via ctx_batch_execute, ctx_index, or ctx_fetch_and_index. Pass ALL search questions as queries array in ONE call. File-backed sources are auto-refreshed when the source file changes.
+
+TIPS: 2-4 specific terms per query. Use 'source' to scope results.
+
+SESSION STATE: If skills, roles, or decisions were set earlier in this conversation, they are still active. Do not discard or contradict them.`,inputSchema:F.object({queries:F.preprocess(h_,F.array(F.string()).optional().describe("Array of search queries. Batch ALL questions in one call.")),limit:F.number().optional().default(3).describe("Results per query (default: 3)"),source:F.string().optional().describe("Filter to a specific indexed source (partial match)."),contentType:F.enum(["code","prose"]).optional().describe("Filter results by content type: 'code' or 'prose'."),sort:F.enum(["relevance","timeline"]).optional().default("relevance").describe("Sort mode. 'relevance' (default): BM25 ranked, current session only. 'timeline': chronological across current session, prior sessions, and auto-memory.")})},async t=>{try{let e=Es(),r=t.sort||"relevance";if(r!=="timeline"&&e.getStats().chunks===0)return W("ctx_search",{content:[{type:"text",text:`Knowledge base is empty \u2014 no content has been indexed yet.
+
+ctx_search is a follow-up tool that queries previously indexed content. To gather and index content first, use:
+  \u2022 ctx_batch_execute(commands, queries) \u2014 run commands, auto-index output, and search in one call
+  \u2022 ctx_fetch_and_index(url) \u2014 fetch a URL, index it, then search with ctx_search
+  \u2022 ctx_index(content, source) \u2014 manually index text content
+
+After indexing, ctx_search becomes available for follow-up queries.`}],isError:!0});let n=t,s=[];if(Array.isArray(n.queries)&&n.queries.length>0?s.push(...n.queries):typeof n.query=="string"&&n.query.length>0&&s.push(n.query),s.length===0)return W("ctx_search",{content:[{type:"text",text:"Error: provide query or queries."}],isError:!0});let{limit:o=3,source:i,contentType:a}=t,c=Date.now();if(c-Qy>h2&&(ks=0,Qy=c),ks++,ks>IT)return W("ctx_search",{content:[{type:"text",text:`BLOCKED: ${ks} search calls in ${Math.round((c-Qy)/1e3)}s. You're flooding context. STOP making individual search calls. Use ctx_batch_execute(commands, queries) for your next research step.`}],isError:!0});let u=ks>OT?1:Math.min(o,2),d=40*1024,l=0,m=[],f=null;if(r==="timeline")try{let g=ot(),b=zt(),_=ua({projectDir:b,sessionsDir:g});je(_)&&(f=new yr({dbPath:_}))}catch{}let p=Xr?.getConfigDir()??n_();r!=="timeline"&&e.refreshStaleSources();try{for(let g of s){if(l>d){m.push(`## ${g}
+(output cap reached)
+`);continue}let b;if(r==="timeline"?b=aT({query:g,limit:u,store:e,sort:r,source:i,contentType:a,sessionDB:f,projectDir:zt(),configDir:p,adapter:Xr??void 0}):b=e.searchWithFallback(g,u,i,a,"like",!1),b.length===0){m.push(`## ${g}
+No results found.`);continue}let _=b.map((y,v)=>{let x=y.origin||"current-session",P=y.timestamp?y.timestamp.slice(0,16).replace("T"," "):"",C=`--- [${x}${P?" | "+P:""} | ${y.source}] ---`,T=`### ${y.title}`,N=m_(y.content,g,1500,y.highlighted);return`${C}
+${T}
+
+${N}`}).join(`
+
+`);m.push(`## ${g}
+
+${_}`),l+=_.length}}finally{try{f?.close()}catch{}}let h=m.join(`
+
+---
+
+`);if(e.lastRefreshCount>0&&(h=`> Auto-refreshed ${e.lastRefreshCount} stale source${e.lastRefreshCount>1?"s":""} (file changed since indexing).
+
+`+h),ks>=OT&&(h+=`
+
+\u26A0 search call #${ks}/${IT} in this window. Results limited to ${u}/query. Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`),h.trim().length===0){let g=e.listSources(),b=g.length>0?`
+Indexed sources: ${g.map(_=>`"${_.label}" (${_.chunkCount} sections)`).join(", ")}`:"";return W("ctx_search",{content:[{type:"text",text:`No results found.${b}`}]})}return W("ctx_search",{content:[{type:"text",text:h}]})}catch(e){let r=e instanceof Error?e.message:String(e);return W("ctx_search",{content:[{type:"text",text:`Search error: ${r}`}],isError:!0})}});e_=null,t_=null,r_=null;v2=1440*60*1e3,AT=3072;Ge.registerTool("ctx_fetch_and_index",{title:"Fetch & Index URL(s)",description:`Fetches URL content, converts HTML to markdown, indexes into searchable knowledge base, and returns a ~3KB preview. Full content stays out of the conversation and is indexed for ctx_search() lookups.
+
+Better than WebFetch: preview is immediate, full content is searchable, raw HTML never enters context.
+
+Content-type aware: HTML is converted to markdown, JSON is chunked by key paths, plain text is indexed directly.
+
+PARALLELIZE I/O: For multi-URL research (library evaluation, migration scans, doc comparisons), pass \`requests: [{url, source}, ...]\` with \`concurrency: 4-8\` \u2014 speeds up by 3-5x on real workloads.
+  \u2705 Use concurrency: 4-8 for: library docs sweep, multi-changelog scan, competitive pricing pages, multi-region docs, GitHub raw file pulls.
+  \u274C Single URL \u2192 use the legacy {url, source} shape (concurrency irrelevant).
+  Example: requests: [{url: 'https://react.dev/...', source: 'react'}, {url: 'https://vuejs.org/...', source: 'vue'}], concurrency: 5.
+  Fetches parallelize up to your concurrency setting; FTS5 indexing serializes the writes after (SQLite single-writer rule).`,inputSchema:F.object({url:F.string().optional().describe("Single URL to fetch and index (legacy single-shape)"),source:F.string().optional().describe("Label for the indexed content when using single `url` (e.g., 'React useEffect docs', 'Supabase Auth API'). For batch, put source in each requests entry."),requests:F.array(F.object({url:F.string().describe("URL to fetch"),source:F.string().optional().describe("Label for this URL's indexed content")})).min(1).optional().describe("Batch shape: array of {url, source?} entries. Use with concurrency>1 for parallel fetch. Each request indexed under its own source label. Output preserves input order."),concurrency:F.coerce.number().int().min(1).max(8).optional().default(1).describe("Max URLs to fetch in parallel (1-8, default: 1). Use 4-8 for I/O-bound multi-URL batches (library docs, changelogs, pricing pages). Capped by os.cpus().length on small machines (response notes when capped). Indexing is always serial regardless \u2014 only fetches race."),force:F.boolean().optional().describe("Skip cache and re-fetch even if content was recently indexed")})},async({url:t,source:e,requests:r,concurrency:n,force:s})=>{let o=r||(t?[{url:t,source:e}]:[]);if(o.length===0)return W("ctx_fetch_and_index",{content:[{type:"text",text:"ctx_fetch_and_index requires either `url` (single) or `requests: [{url, source?}, ...]` (batch)."}],isError:!0});let i=!r&&o.length===1,a=n??1,c=o.map($=>({run:()=>S2($.url,$.source,s)})),{settled:u,effectiveConcurrency:d,capped:l}=await $y(c,{concurrency:a,capByCpuCount:!i&&a>1}),m=[];for(let $=0;$<u.length;$++){let R=u[$];if(R.status==="rejected"){let X=R.reason instanceof Error?R.reason.message:String(R.reason);m.push({kind:"job_error",url:o[$].url,error:X});continue}let L=R.value;if(L.kind==="cached"){Q.cacheHits++,Q.cacheBytesSaved+=L.estimatedBytes;let X=L.estimatedBytes,fe=L.label;setImmediate(()=>G$({sessionDbPath:xa(),source:fe,bytesAvoided:X})),m.push({kind:"cached",label:L.label,chunkCount:L.chunkCount,ageStr:L.ageStr})}else L.kind==="fetch_error"?m.push({kind:"fetch_error",url:L.url,error:L.error,reason:L.reason}):m.push({kind:"fetched",indexed:await k2(L)})}if(i){let $=m[0];if($.kind==="cached")return W("ctx_fetch_and_index",{content:[{type:"text",text:`Cached: **${$.label}** \u2014 ${$.chunkCount} sections, indexed ${$.ageStr} (fresh, TTL: 24h).
+To refresh: call ctx_fetch_and_index again with \`force: true\`.
+
+You MUST call ctx_search() to answer questions about this content \u2014 this cached response contains no content.
+Use: ctx_search(queries: [...], source: "${$.label}")`}]});if($.kind==="fetched"){let R=($.indexed.totalBytes/1024).toFixed(1),L=[`Fetched and indexed **${$.indexed.totalChunks} sections** (${R}KB) from: ${$.indexed.label}`,`Full content indexed outside the conversation \u2014 use ctx_search(queries: [...], source: "${$.indexed.label}") for specific lookups.`,"","---","",$.indexed.preview].join(`
+`);return W("ctx_fetch_and_index",{content:[{type:"text",text:L}]})}if($.kind==="fetch_error"){let R=$.reason==="empty"?`Fetched ${$.url} but got empty content`:$.reason==="read"?`Fetched ${$.url} but could not read subprocess output`:$.reason==="exit"?`Failed to fetch ${$.url}: ${$.error}`:`Fetch error: ${$.error}`;return W("ctx_fetch_and_index",{content:[{type:"text",text:R}],isError:!0})}return W("ctx_fetch
