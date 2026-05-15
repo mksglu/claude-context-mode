@@ -404,4 +404,118 @@ stdout:
 ${n}
 
 stderr:
-${s}`}}var A$=S(()=>{"use strict"});import{execFileSync as XF}from"node:child_process";function QF(t=process.env){let e=String(t.CONTEXT_MODE_PLATFORM??"").toLowerCase()==="codex"?0:9e5,r=t.CONTEXT_MODE_IDLE_TIMEOUT_MS;if(r===void 0)return e;let n=Number.parseInt(r,10);return!Number.isFinite(n)||n<0?e:n}function eH(){if(process.platform==="win32")return NaN;let t=process.ppid;if(!t||t<=1)return NaN;try{let e=XF("ps",["-o","ppid=","-p",String(t)],{encoding:"utf-8",timeout:2e3,stdio:["ignore","pipe","ignore"]}).trim(),r=parseInt(e,10);return Number.isFinite(r)?r:NaN}catch{return NaN}}function tH(t={}){let e=t.getPpid??(()=>process.ppid),r=t.readGrandparentPpid??eH,n=e(),s=r();return()=>{let o=e();return!(o!==n||o===0||o===1||!Number.isNaN(s)&&s>1&&r()===1)}}function nH(t=process.env){let e=t.CONTEXT_MODE_BRIDGE_DEPTH;if(e===void 0)return 3e4;let r=Number.parseInt(e,10);return!Number.isFinite(r)||r<=0?3e4:1e3}function N$(t){let e=t.checkIntervalMs??nH(),r=t.isParentAlive??rH,n=t.idleTimeoutMs??QF(),s=t.now??Date.now,o=!1,i=s(),a=()=>{o||(o=!0,t.onShutdown())},c=()=>{i=s()},u=setInterval(()=>{r()||a()},e);u.unref();let d=null;if(n>0&&!process.stdin.isTTY){let h=Math.max(50,Math.min(Math.floor(n/6),3e4));d=setInterval(()=>{s()-i>n&&a()},h),d.unref()}let l=["SIGTERM","SIGINT"];process.platform!=="win32"&&l.push("SIGHUP");for(let h of l)process.on(h,a);let m=()=>{r()||a()};process.stdin.isTTY||process.stdin.on("end",m);let f=()=>{o=!0,clearInterval(u),d&&clearInterval(d);for(let h of l)process.removeListener(h,a);process.stdin.removeListener("end",m)},p=f;return p.recordActivity=c,p.stop=f,p}var rH,M$=S(()=>{"use strict";rH=tH()});import{createHash as aa}from"node:crypto";import{execFileSync as sH}from"node:child_process";import{existsSync as cl,realpathSync as oH,renameSync as Hy}from"node:fs";import{join as ul}from"node:path";function ca(t){let e=t.replace(/\\/g,"/");return/^\/+$/.test(e)?"/":/^[A-Za-z]:\/+$/.test(e)?`${e.slice(0,2)}/`:e.replace(/\/+$/,"")}function D$(t){let e=t;try{e=oH.native(t)}catch{}let r=ca(e);return process.platform==="win32"||process.platform==="darwin"?r.toLowerCase():r}function L$(t,e){return sH("git",["-C",t,...e],{encoding:"utf-8",timeout:2e3,stdio:["ignore","pipe","ignore"]}).trim()}function iH(t){let e=L$(t,["rev-parse","--show-toplevel"]);return e.length>0?ca(e):null}function aH(t){let e=L$(t,["worktree","list","--porcelain"]).split(/\r?\n/).find(r=>r.startsWith("worktree "))?.
+${s}`}}var A$=S(()=>{"use strict"});import{execFileSync as XF}from"node:child_process";function QF(t=process.env){let e=String(t.CONTEXT_MODE_PLATFORM??"").toLowerCase()==="codex"?0:9e5,r=t.CONTEXT_MODE_IDLE_TIMEOUT_MS;if(r===void 0)return e;let n=Number.parseInt(r,10);return!Number.isFinite(n)||n<0?e:n}function eH(){if(process.platform==="win32")return NaN;let t=process.ppid;if(!t||t<=1)return NaN;try{let e=XF("ps",["-o","ppid=","-p",String(t)],{encoding:"utf-8",timeout:2e3,stdio:["ignore","pipe","ignore"]}).trim(),r=parseInt(e,10);return Number.isFinite(r)?r:NaN}catch{return NaN}}function tH(t={}){let e=t.getPpid??(()=>process.ppid),r=t.readGrandparentPpid??eH,n=e(),s=r();return()=>{let o=e();return!(o!==n||o===0||o===1||!Number.isNaN(s)&&s>1&&r()===1)}}function nH(t=process.env){let e=t.CONTEXT_MODE_BRIDGE_DEPTH;if(e===void 0)return 3e4;let r=Number.parseInt(e,10);return!Number.isFinite(r)||r<=0?3e4:1e3}function N$(t){let e=t.checkIntervalMs??nH(),r=t.isParentAlive??rH,n=t.idleTimeoutMs??QF(),s=t.now??Date.now,o=!1,i=s(),a=()=>{o||(o=!0,t.onShutdown())},c=()=>{i=s()},u=setInterval(()=>{r()||a()},e);u.unref();let d=null;if(n>0&&!process.stdin.isTTY){let h=Math.max(50,Math.min(Math.floor(n/6),3e4));d=setInterval(()=>{s()-i>n&&a()},h),d.unref()}let l=["SIGTERM","SIGINT"];process.platform!=="win32"&&l.push("SIGHUP");for(let h of l)process.on(h,a);let m=()=>{r()||a()};process.stdin.isTTY||process.stdin.on("end",m);let f=()=>{o=!0,clearInterval(u),d&&clearInterval(d);for(let h of l)process.removeListener(h,a);process.stdin.removeListener("end",m)},p=f;return p.recordActivity=c,p.stop=f,p}var rH,M$=S(()=>{"use strict";rH=tH()});import{createHash as aa}from"node:crypto";import{execFileSync as sH}from"node:child_process";import{existsSync as cl,realpathSync as oH,renameSync as Hy}from"node:fs";import{join as ul}from"node:path";function ca(t){let e=t.replace(/\\/g,"/");return/^\/+$/.test(e)?"/":/^[A-Za-z]:\/+$/.test(e)?`${e.slice(0,2)}/`:e.replace(/\/+$/,"")}function D$(t){let e=t;try{e=oH.native(t)}catch{}let r=ca(e);return process.platform==="win32"||process.platform==="darwin"?r.toLowerCase():r}function L$(t,e){return sH("git",["-C",t,...e],{encoding:"utf-8",timeout:2e3,stdio:["ignore","pipe","ignore"]}).trim()}function iH(t){let e=L$(t,["rev-parse","--show-toplevel"]);return e.length>0?ca(e):null}function aH(t){let e=L$(t,["worktree","list","--porcelain"]).split(/\r?\n/).find(r=>r.startsWith("worktree "))?.replace("worktree ","")?.trim();return e?ca(e):null}function ll(t=process.cwd()){let e=process.env.CONTEXT_MODE_SESSION_SUFFIX;if(ia&&ia.projectDir===t&&ia.envSuffix===e)return ia.suffix;let r="";if(e!==void 0)r=e?`__${e}`:"";else try{let n=iH(t),s=aH(t);if(n&&s){let o=D$(n),i=D$(s);o!==i&&(r=`__${aa("sha256").update(o).digest("hex").slice(0,8)}`)}}catch{}return ia={projectDir:t,envSuffix:e,suffix:r},r}function Vr(t){return aa("sha256").update(ca(t)).digest("hex").slice(0,16)}function Wr(t){let e=ca(t),r=process.platform==="darwin"||process.platform==="win32"?e.toLowerCase():e;return aa("sha256").update(r).digest("hex").slice(0,16)}function U$(t){let{projectDir:e,contentDir:r}=t,n=Wr(e),s=ul(r,`${n}.db`);if(cl(s))return s;let o=Vr(e);if(o===n)return s;let i=ul(r,`${o}.db`);if(cl(i))try{Hy(i,s);for(let a of["-wal","-shm"])try{Hy(i+a,s+a)}catch{}}catch{}return s}function ua(t){return cH({...t,ext:".db"})}function cH(t){let{projectDir:e,sessionsDir:r,ext:n}=t,s=t.suffix??ll(e),o=Wr(e),i=ul(r,`${o}${s}${n}`);if(cl(i))return i;let a=Vr(e);if(a===o)return i;let c=ul(r,`${a}${s}${n}`);if(cl(c))try{Hy(c,i)}catch{}return i}function al(t){let e=Number(t);return!Number.isFinite(e)||e<=0?0:Math.floor(e)}var ia,j$,z$,q,yr,la=S(()=>{"use strict";Ss();j$=1e3,z$=5;q={insertEvent:"insertEvent",getEvents:"getEvents",getEventsByType:"getEventsByType",getEventsByPriority:"getEventsByPriority",getEventsByTypeAndPriority:"getEventsByTypeAndPriority",getEventCount:"getEventCount",getLatestAttributedProject:"getLatestAttributedProject",checkDuplicate:"checkDuplicate",evictLowestPriority:"evictLowestPriority",updateMetaLastEvent:"updateMetaLastEvent",ensureSession:"ensureSession",getSessionStats:"getSessionStats",incrementCompactCount:"incrementCompactCount",upsertResume:"upsertResume",getResume:"getResume",markResumeConsumed:"markResumeConsumed",claimLatestUnconsumedResume:"claimLatestUnconsumedResume",deleteEvents:"deleteEvents",deleteMeta:"deleteMeta",deleteResume:"deleteResume",getOldSessions:"getOldSessions",searchEvents:"searchEvents",incrementToolCall:"incrementToolCall",getToolCallTotals:"getToolCallTotals",getToolCallByTool:"getToolCallByTool",getEventBytesSummary:"getEventBytesSummary"},yr=class extends sa{constructor(e){super(e?.dbPath??Py("session"))}stmt(e){return this.stmts.get(e)}initSchema(){try{let r=this.db.pragma("table_xinfo(session_events)").find(n=>n.name==="data_hash");r&&r.hidden!==0&&this.db.exec("DROP TABLE session_events")}catch{}this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 2,
+        data TEXT NOT NULL,
+        project_dir TEXT NOT NULL DEFAULT '',
+        attribution_source TEXT NOT NULL DEFAULT 'unknown',
+        attribution_confidence REAL NOT NULL DEFAULT 0,
+        bytes_avoided INTEGER NOT NULL DEFAULT 0,
+        bytes_returned INTEGER NOT NULL DEFAULT 0,
+        source_hook TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        data_hash TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(session_id, type);
+      CREATE INDEX IF NOT EXISTS idx_session_events_priority ON session_events(session_id, priority);
+
+      CREATE TABLE IF NOT EXISTS session_meta (
+        session_id TEXT PRIMARY KEY,
+        project_dir TEXT NOT NULL,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_event_at TEXT,
+        event_count INTEGER NOT NULL DEFAULT 0,
+        compact_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS session_resume (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        snapshot TEXT NOT NULL,
+        event_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        consumed INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        session_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        calls INTEGER NOT NULL DEFAULT 0,
+        bytes_returned INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, tool)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+    `);try{let e=this.db.pragma("table_xinfo(session_events)"),r=new Set(e.map(n=>n.name));r.has("project_dir")||this.db.exec("ALTER TABLE session_events ADD COLUMN project_dir TEXT NOT NULL DEFAULT ''"),r.has("attribution_source")||this.db.exec("ALTER TABLE session_events ADD COLUMN attribution_source TEXT NOT NULL DEFAULT 'unknown'"),r.has("attribution_confidence")||this.db.exec("ALTER TABLE session_events ADD COLUMN attribution_confidence REAL NOT NULL DEFAULT 0"),r.has("bytes_avoided")||this.db.exec("ALTER TABLE session_events ADD COLUMN bytes_avoided INTEGER NOT NULL DEFAULT 0"),r.has("bytes_returned")||this.db.exec("ALTER TABLE session_events ADD COLUMN bytes_returned INTEGER NOT NULL DEFAULT 0"),this.db.exec("CREATE INDEX IF NOT EXISTS idx_session_events_project ON session_events(session_id, project_dir)")}catch{}}prepareStatements(){this.stmts=new Map;let e=(r,n)=>{this.stmts.set(r,this.db.prepare(n))};e(q.insertEvent,`INSERT INTO session_events (
+         session_id, type, category, priority, data,
+         project_dir, attribution_source, attribution_confidence,
+         bytes_avoided, bytes_returned,
+         source_hook, data_hash
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),e(q.getEvents,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? ORDER BY id ASC LIMIT ?`),e(q.getEventsByType,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND type = ? ORDER BY id ASC LIMIT ?`),e(q.getEventsByPriority,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND priority >= ? ORDER BY id ASC LIMIT ?`),e(q.getEventsByTypeAndPriority,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND type = ? AND priority >= ? ORDER BY id ASC LIMIT ?`),e(q.getEventCount,"SELECT COUNT(*) AS cnt FROM session_events WHERE session_id = ?"),e(q.getLatestAttributedProject,`SELECT project_dir
+       FROM session_events
+       WHERE session_id = ? AND project_dir != ''
+       ORDER BY id DESC
+       LIMIT 1`),e(q.checkDuplicate,`SELECT 1 FROM (
+         SELECT type, data_hash FROM session_events
+         WHERE session_id = ? ORDER BY id DESC LIMIT ?
+       ) AS recent
+       WHERE recent.type = ? AND recent.data_hash = ?
+       LIMIT 1`),e(q.evictLowestPriority,`DELETE FROM session_events WHERE id = (
+         SELECT id FROM session_events WHERE session_id = ?
+         ORDER BY priority ASC, id ASC LIMIT 1
+       )`),e(q.updateMetaLastEvent,`UPDATE session_meta
+       SET last_event_at = datetime('now'), event_count = event_count + 1
+       WHERE session_id = ?`),e(q.ensureSession,"INSERT OR IGNORE INTO session_meta (session_id, project_dir) VALUES (?, ?)"),e(q.getSessionStats,`SELECT session_id, project_dir, started_at, last_event_at, event_count, compact_count
+       FROM session_meta WHERE session_id = ?`),e(q.incrementCompactCount,"UPDATE session_meta SET compact_count = compact_count + 1 WHERE session_id = ?"),e(q.upsertResume,`INSERT INTO session_resume (session_id, snapshot, event_count)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         snapshot = excluded.snapshot,
+         event_count = excluded.event_count,
+         created_at = datetime('now'),
+         consumed = 0`),e(q.getResume,"SELECT snapshot, event_count, consumed FROM session_resume WHERE session_id = ?"),e(q.markResumeConsumed,"UPDATE session_resume SET consumed = 1 WHERE session_id = ?"),e(q.claimLatestUnconsumedResume,`UPDATE session_resume
+       SET consumed = 1
+       WHERE id = (
+         SELECT id FROM session_resume
+         WHERE consumed = 0
+           AND session_id != ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       )
+       RETURNING session_id, snapshot`),e(q.deleteEvents,"DELETE FROM session_events WHERE session_id = ?"),e(q.deleteMeta,"DELETE FROM session_meta WHERE session_id = ?"),e(q.deleteResume,"DELETE FROM session_resume WHERE session_id = ?"),e(q.searchEvents,`SELECT id, session_id, category, type, data, created_at
+       FROM session_events
+       WHERE project_dir = ?
+         AND (data LIKE '%' || ? || '%' ESCAPE '\\' OR category LIKE '%' || ? || '%' ESCAPE '\\')
+         AND (? IS NULL OR category = ?)
+       ORDER BY id ASC
+       LIMIT ?`),e(q.getOldSessions,"SELECT session_id FROM session_meta WHERE started_at < datetime('now', ? || ' days')"),e(q.incrementToolCall,`INSERT INTO tool_calls (session_id, tool, calls, bytes_returned)
+       VALUES (?, ?, 1, ?)
+       ON CONFLICT(session_id, tool) DO UPDATE SET
+         calls = calls + 1,
+         bytes_returned = bytes_returned + excluded.bytes_returned,
+         updated_at = datetime('now')`),e(q.getToolCallTotals,`SELECT COALESCE(SUM(calls), 0) AS calls,
+              COAL
