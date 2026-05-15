@@ -404,4 +404,89 @@ stdout:
 ${n}
 
 stderr:
-${o}`}}import{execFileSync as Mz}from"node:child_process";function zz(t=process.env){let e=String(t.CONTEXT_MODE_PLATFORM??"").toLowerCase()==="codex
+${o}`}}import{execFileSync as Mz}from"node:child_process";function zz(t=process.env){let e=String(t.CONTEXT_MODE_PLATFORM??"").toLowerCase()==="codex"?0:9e5,r=t.CONTEXT_MODE_IDLE_TIMEOUT_MS;if(r===void 0)return e;let n=Number.parseInt(r,10);return!Number.isFinite(n)||n<0?e:n}function jz(){if(process.platform==="win32")return NaN;let t=process.ppid;if(!t||t<=1)return NaN;try{let e=Mz("ps",["-o","ppid=","-p",String(t)],{encoding:"utf-8",timeout:2e3,stdio:["ignore","pipe","ignore"]}).trim(),r=parseInt(e,10);return Number.isFinite(r)?r:NaN}catch{return NaN}}function Lz(t={}){let e=t.getPpid??(()=>process.ppid),r=t.readGrandparentPpid??jz,n=e(),o=r();return()=>{let s=e();return!(s!==n||s===0||s===1||!Number.isNaN(o)&&o>1&&r()===1)}}var Uz=Lz();function Hz(t=process.env){let e=t.CONTEXT_MODE_BRIDGE_DEPTH;if(e===void 0)return 3e4;let r=Number.parseInt(e,10);return!Number.isFinite(r)||r<=0?3e4:1e3}function zk(t){let e=t.checkIntervalMs??Hz(),r=t.isParentAlive??Uz,n=t.idleTimeoutMs??zz(),o=t.now??Date.now,s=!1,i=o(),a=()=>{s||(s=!0,t.onShutdown())},c=()=>{i=o()},u=setInterval(()=>{r()||a()},e);u.unref();let d=null;if(n>0&&!process.stdin.isTTY){let h=Math.max(50,Math.min(Math.floor(n/6),3e4));d=setInterval(()=>{o()-i>n&&a()},h),d.unref()}let l=["SIGTERM","SIGINT"];process.platform!=="win32"&&l.push("SIGHUP");for(let h of l)process.on(h,a);let m=()=>{r()||a()};process.stdin.isTTY||process.stdin.on("end",m);let f=()=>{s=!0,clearInterval(u),d&&clearInterval(d);for(let h of l)process.removeListener(h,a);process.stdin.removeListener("end",m)},p=f;return p.recordActivity=c,p.stop=f,p}import{createHash as xi}from"node:crypto";import{execFileSync as Fz}from"node:child_process";import{existsSync as Vc,realpathSync as Zz,renameSync as gh}from"node:fs";import{join as Wc}from"node:path";var bi;function Si(t){let e=t.replace(/\\/g,"/");return/^\/+$/.test(e)?"/":/^[A-Za-z]:\/+$/.test(e)?`${e.slice(0,2)}/`:e.replace(/\/+$/,"")}function jk(t){let e=t;try{e=Zz.native(t)}catch{}let r=Si(e);return process.platform==="win32"||process.platform==="darwin"?r.toLowerCase():r}function Hk(t,e){return Fz("git",["-C",t,...e],{encoding:"utf-8",timeout:2e3,stdio:["ignore","pipe","ignore"]}).trim()}function Bz(t){let e=Hk(t,["rev-parse","--show-toplevel"]);return e.length>0?Si(e):null}function qz(t){let e=Hk(t,["worktree","list","--porcelain"]).split(/\r?\n/).find(r=>r.startsWith("worktree "))?.replace("worktree ","")?.trim();return e?Si(e):null}function Kc(t=process.cwd()){let e=process.env.CONTEXT_MODE_SESSION_SUFFIX;if(bi&&bi.projectDir===t&&bi.envSuffix===e)return bi.suffix;let r="";if(e!==void 0)r=e?`__${e}`:"";else try{let n=Bz(t),o=qz(t);if(n&&o){let s=jk(n),i=jk(o);s!==i&&(r=`__${xi("sha256").update(s).digest("hex").slice(0,8)}`)}}catch{}return bi={projectDir:t,envSuffix:e,suffix:r},r}function Pr(t){return xi("sha256").update(Si(t)).digest("hex").slice(0,16)}function Rr(t){let e=Si(t),r=process.platform==="darwin"||process.platform==="win32"?e.toLowerCase():e;return xi("sha256").update(r).digest("hex").slice(0,16)}function Fk(t){let{projectDir:e,contentDir:r}=t,n=Rr(e),o=Wc(r,`${n}.db`);if(Vc(o))return o;let s=Pr(e);if(s===n)return o;let i=Wc(r,`${s}.db`);if(Vc(i))try{gh(i,o);for(let a of["-wal","-shm"])try{gh(i+a,o+a)}catch{}}catch{}return o}function vi(t){return Vz({...t,ext:".db"})}function Vz(t){let{projectDir:e,sessionsDir:r,ext:n}=t,o=t.suffix??Kc(e),s=Rr(e),i=Wc(r,`${s}${o}${n}`);if(Vc(i))return i;let a=Pr(e);if(a===s)return i;let c=Wc(r,`${a}${o}${n}`);if(Vc(c))try{gh(c,i)}catch{}return i}var Lk=1e3,Uk=5;function qc(t){let e=Number(t);return!Number.isFinite(e)||e<=0?0:Math.floor(e)}var F={insertEvent:"insertEvent",getEvents:"getEvents",getEventsByType:"getEventsByType",getEventsByPriority:"getEventsByPriority",getEventsByTypeAndPriority:"getEventsByTypeAndPriority",getEventCount:"getEventCount",getLatestAttributedProject:"getLatestAttributedProject",checkDuplicate:"checkDuplicate",evictLowestPriority:"evictLowestPriority",updateMetaLastEvent:"updateMetaLastEvent",ensureSession:"ensureSession",getSessionStats:"getSessionStats",incrementCompactCount:"incrementCompactCount",upsertResume:"upsertResume",getResume:"getResume",markResumeConsumed:"markResumeConsumed",claimLatestUnconsumedResume:"claimLatestUnconsumedResume",deleteEvents:"deleteEvents",deleteMeta:"deleteMeta",deleteResume:"deleteResume",getOldSessions:"getOldSessions",searchEvents:"searchEvents",incrementToolCall:"incrementToolCall",getToolCallTotals:"getToolCallTotals",getToolCallByTool:"getToolCallByTool",getEventBytesSummary:"getEventBytesSummary"},Qt=class extends Tc{constructor(e){super(e?.dbPath??iv("session"))}stmt(e){return this.stmts.get(e)}initSchema(){try{let r=this.db.pragma("table_xinfo(session_events)").find(n=>n.name==="data_hash");r&&r.hidden!==0&&this.db.exec("DROP TABLE session_events")}catch{}this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 2,
+        data TEXT NOT NULL,
+        project_dir TEXT NOT NULL DEFAULT '',
+        attribution_source TEXT NOT NULL DEFAULT 'unknown',
+        attribution_confidence REAL NOT NULL DEFAULT 0,
+        bytes_avoided INTEGER NOT NULL DEFAULT 0,
+        bytes_returned INTEGER NOT NULL DEFAULT 0,
+        source_hook TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        data_hash TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_events_type ON session_events(session_id, type);
+      CREATE INDEX IF NOT EXISTS idx_session_events_priority ON session_events(session_id, priority);
+
+      CREATE TABLE IF NOT EXISTS session_meta (
+        session_id TEXT PRIMARY KEY,
+        project_dir TEXT NOT NULL,
+        started_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_event_at TEXT,
+        event_count INTEGER NOT NULL DEFAULT 0,
+        compact_count INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS session_resume (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        snapshot TEXT NOT NULL,
+        event_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        consumed INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS tool_calls (
+        session_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        calls INTEGER NOT NULL DEFAULT 0,
+        bytes_returned INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, tool)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+    `);try{let e=this.db.pragma("table_xinfo(session_events)"),r=new Set(e.map(n=>n.name));r.has("project_dir")||this.db.exec("ALTER TABLE session_events ADD COLUMN project_dir TEXT NOT NULL DEFAULT ''"),r.has("attribution_source")||this.db.exec("ALTER TABLE session_events ADD COLUMN attribution_source TEXT NOT NULL DEFAULT 'unknown'"),r.has("attribution_confidence")||this.db.exec("ALTER TABLE session_events ADD COLUMN attribution_confidence REAL NOT NULL DEFAULT 0"),r.has("bytes_avoided")||this.db.exec("ALTER TABLE session_events ADD COLUMN bytes_avoided INTEGER NOT NULL DEFAULT 0"),r.has("bytes_returned")||this.db.exec("ALTER TABLE session_events ADD COLUMN bytes_returned INTEGER NOT NULL DEFAULT 0"),this.db.exec("CREATE INDEX IF NOT EXISTS idx_session_events_project ON session_events(session_id, project_dir)")}catch{}}prepareStatements(){this.stmts=new Map;let e=(r,n)=>{this.stmts.set(r,this.db.prepare(n))};e(F.insertEvent,`INSERT INTO session_events (
+         session_id, type, category, priority, data,
+         project_dir, attribution_source, attribution_confidence,
+         bytes_avoided, bytes_returned,
+         source_hook, data_hash
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),e(F.getEvents,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? ORDER BY id ASC LIMIT ?`),e(F.getEventsByType,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND type = ? ORDER BY id ASC LIMIT ?`),e(F.getEventsByPriority,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND priority >= ? ORDER BY id ASC LIMIT ?`),e(F.getEventsByTypeAndPriority,`SELECT id, session_id, type, category, priority, data,
+              project_dir, attribution_source, attribution_confidence,
+              bytes_avoided, bytes_returned,
+              source_hook, created_at, data_hash
+       FROM session_events WHERE session_id = ? AND type = ? AND priority >= ? ORDER BY id ASC LIMIT ?`),e(F.getEventCount,"SELECT COUNT(*) AS cnt FROM session_events WHERE session_id = ?"),e(F.getLatestAttributedProject,`SELECT project_dir
+       FROM session_events
+       WHERE session_id = ? AND project_dir != ''
+       ORDER BY id DESC
+       LIMIT 1`),e(F.checkDuplicate,`SELECT 1 FROM (
+         SELECT type, data_hash FROM session_events
+         WHERE session_id = ? ORDER BY id DESC LIMIT ?
+       ) AS recent
+       WHERE recent.type = ? AND recent.data_hash = ?
+       LIMIT 1`),e(F.evictLowestPriority,`DELETE FROM session_events WHERE id = (
+         SELECT id FROM session_events WHERE session_id = ?
+         ORDER BY priority ASC, id ASC LIMIT 1
+       )`),e(F.updateMetaLastEvent,`UPDATE session_meta
+       SET last_event_at = datetime('no
