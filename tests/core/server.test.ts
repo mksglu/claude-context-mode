@@ -3611,6 +3611,54 @@ describe("buildFetchCode — embedded SSRF guard contract", () => {
     expect(generated).toMatch(/delete process\.env\.all_proxy/);
   });
 
+  test("embedded SSRF classifier is callable as `classifyIp` even when bundler renames the export (#bug-v1.0.133)", () => {
+    // REGRESSION: esbuild renames top-level `classifyIp` to a short name
+    // (e.g. `_h`) in server.bundle.mjs. The previous implementation embedded
+    // `classifyIp.toString()` directly, which yielded `function _h(t){...}`
+    // — but the subprocess template invokes `classifyIp(...)` literally and
+    // the function's own internal recursion uses the bundler-mangled name.
+    // Result was 100% failure of ctx_fetch_and_index in the published build:
+    //   ReferenceError: classifyIp is not defined
+    //     at patchedPromisesLookup (.../script.js:71:19)
+    // The fix must: (1) expose the canonical `classifyIp` identifier in the
+    // embedded scope, AND (2) preserve recursion under whatever name the
+    // bundler chose. Validate by evaluating the embedded source in an
+    // isolated scope and confirming `classifyIp` resolves and works for
+    // both direct calls AND the recursive IPv4-mapped-IPv6 path.
+    expect(generated).toMatch(/var\s+classifyIp\s*=/);
+
+    // Extract the self-contained classifier declaration block (var classifyIp
+    // = function classifyIp(rawIp){...};) and evaluate it in a fresh function
+    // scope where neither `classifyIp` nor any bundler alias exists in the
+    // outer closure. The canonical name MUST resolve and behave.
+    const classifyIpDeclMatch = generated.match(
+      /var\s+\w+\s*=\s*function\s+\w+\s*\(\s*rawIp\s*\)[\s\S]+?\n\};(?:\s*var\s+classifyIp\s*=\s*\w+;)?/,
+    );
+    expect(
+      classifyIpDeclMatch,
+      "embedded classifyIp declaration block must be extractable from buildFetchCode output",
+    ).not.toBeNull();
+    const classifierBlock = classifyIpDeclMatch![0];
+
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const probe = new Function(`
+      ${classifierBlock}
+      return {
+        imds: classifyIp("169.254.169.254"),
+        loopback: classifyIp("127.0.0.1"),
+        publicIp: classifyIp("8.8.8.8"),
+        mapped: classifyIp("::ffff:169.254.169.254"),
+      };
+    `);
+    const result = probe() as Record<string, string>;
+    expect(result.imds).toBe("block");
+    expect(result.loopback).toBe("private");
+    expect(result.publicIp).toBe("public");
+    // IPv4-mapped IPv6 forces the internal recursive call path; if recursion
+    // is broken (bundler-mangled self-reference unresolved), this throws.
+    expect(result.mapped).toBe("block");
+  });
+
   test("patches dns/promises lookup (separate function reference from dns.lookup)", () => {
     // Patching dns.lookup does NOT affect dnsPromises.lookup. Today undici
     // uses callback-form dns.lookup so default fetch is covered, but the

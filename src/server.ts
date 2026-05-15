@@ -2036,7 +2036,25 @@ export function buildFetchCode(url: string, outputPath: string): string {
   // can serve a public IP for the parent's pre-flight ssrfGuard lookup and
   // then a blocked IP (e.g. 169.254.169.254 IMDS) for the subprocess fetch's
   // own lookup — classic DNS rebinding across the parent/child boundary.
-  const classifyIpSrc = classifyIp.toString();
+  //
+  // CRITICAL: bundlers (esbuild) rename top-level identifiers — `classifyIp`
+  // becomes e.g. `_h` in server.bundle.mjs. `classifyIp.toString()` returns
+  // the renamed source `function _h(t){...}`, but the embedded subprocess
+  // template references the literal name `classifyIp` (and the function's
+  // own internal recursion is also `_h(...)`). Result: the subprocess sees
+  // `function _h(t){...; return _h(...)}` injected, then references to
+  // `classifyIp` blow up with `ReferenceError: classifyIp is not defined`.
+  //
+  // Fix: emit `var <fnName> = <fn-expr>; var classifyIp = <fnName>;`. The
+  // named function expression preserves recursion under whatever name the
+  // bundler chose, and the alias re-exposes the canonical `classifyIp`
+  // identifier the rest of the embedded script depends on.
+  const classifyIpInner = classifyIp.toString();
+  const classifyIpFnName = classifyIp.name || "classifyIp";
+  const classifyIpSrc =
+    classifyIpFnName === "classifyIp"
+      ? `var classifyIp = ${classifyIpInner};`
+      : `var ${classifyIpFnName} = ${classifyIpInner};\nvar classifyIp = ${classifyIpFnName};`;
   const strictMode = process.env.CTX_FETCH_STRICT === "1";
   return `
 const TurndownService = require(${turndownPath});
@@ -3041,7 +3059,14 @@ server.registerTool(
             }
             if (sid) {
               conversation = getConversationStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
-              const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
+              // v1.0.133 Slice 3: pass contentDbPath so getRealBytesStats can
+              // join chunks WHERE session_id = sid and fold the indexed
+              // content bytes into the per-conversation bar. Without this,
+              // Mert's session showed ~200B (event metadata only) even with
+              // 49 MB of indexed content sitting in the content DB.
+              // Render-time read-only — no DB mutation, no backfill.
+              const contentDbPath = getStorePath();
+              const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash, contentDbPath });
               const lifeReal = getRealBytesStats({ sessionsDir: getSessionDir() });
               realBytes = { conversation: convReal, lifetime: lifeReal };
             }

@@ -1014,7 +1014,67 @@ export interface RealBytesStats {
   bytesAvoided: number;
   bytesReturned: number;
   snapshotBytes: number;
+  /**
+   * v1.0.133 Slice 3: bytes attributed to this session in the FTS5 content
+   * DB — `SUM(LENGTH(title) + LENGTH(content)) FROM chunks WHERE session_id = ?`.
+   *
+   * Read-only, render-time computation. Populated only when
+   * `getRealBytesStats` is called with both `sessionId` AND `contentDbPath`
+   * (i.e. the conversation tier from ctx_stats). Lifetime / project tiers
+   * leave this at 0 — aggregating across every adapter's content DB is a
+   * separate concern.
+   *
+   * Legacy chunks with empty `session_id` (pre-Slice-1) are NOT backfilled:
+   * the architect rejected the time-window join as unsafe. Old conversations
+   * stay low; new conversations populate honestly.
+   */
+  contentBytes: number;
   totalSavedTokens: number;
+}
+
+/**
+ * v1.0.133 Slice 3: Sum the bytes attributed to one session in the FTS5
+ * content DB.
+ *
+ * Returns `LENGTH(title) + LENGTH(content)` summed across every chunk
+ * whose `session_id` column matches `sessionId`. Best-effort — returns 0
+ * when the DB file is missing, the schema lacks the `session_id` column
+ * (pre-Slice-1 content DBs), or the query fails. Never throws.
+ *
+ * Render-time only. Does NOT mutate the content DB. Architect-approved
+ * because the read-only join carries no risk of cross-session attribution
+ * (the FK was set at chunk insert time by Slice 1).
+ */
+export function getContentBytesForSession(
+  sessionId: string,
+  contentDbPath: string,
+  opts?: { loadDatabase?: () => unknown },
+): number {
+  if (!sessionId || !contentDbPath) return 0;
+  if (!existsSync(contentDbPath)) return 0;
+
+  let DatabaseCtor: ReturnType<typeof loadDatabaseImpl> | null = null;
+  try {
+    DatabaseCtor = opts?.loadDatabase
+      ? (opts.loadDatabase() as ReturnType<typeof loadDatabaseImpl>)
+      : loadDatabaseImpl();
+  } catch { return 0; }
+  if (!DatabaseCtor) return 0;
+
+  try {
+    const db = new DatabaseCtor(contentDbPath, { readonly: true });
+    try {
+      const row = db.prepare(
+        `SELECT COALESCE(SUM(LENGTH(content) + LENGTH(title)), 0) AS bytes
+         FROM chunks WHERE session_id = ?`,
+      ).get(sessionId) as { bytes: number } | undefined;
+      return Number(row?.bytes ?? 0);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -1035,6 +1095,13 @@ export function getRealBytesStats(opts: {
   sessionId?: string;
   sessionsDir?: string;
   worktreeHash?: string;
+  /**
+   * v1.0.133 Slice 3: when set alongside `sessionId`, the function joins
+   * the FTS5 content DB at this path and folds chunk bytes into
+   * `bytesAvoided` + `totalSavedTokens` + `contentBytes`. Render-time
+   * only — no DB writes.
+   */
+  contentDbPath?: string;
   loadDatabase?: () => unknown;
 }): RealBytesStats {
   const empty: RealBytesStats = {
@@ -1042,6 +1109,7 @@ export function getRealBytesStats(opts: {
     bytesAvoided: 0,
     bytesReturned: 0,
     snapshotBytes: 0,
+    contentBytes: 0,
     totalSavedTokens: 0,
   };
 
@@ -1128,11 +1196,27 @@ export function getRealBytesStats(opts: {
     } catch { /* missing tables / corrupt — skip */ }
   }
 
+  // v1.0.133 Slice 3: fold content DB chunk bytes for this session into
+  // bytesAvoided. Skipped silently when caller didn't pass contentDbPath
+  // (lifetime / project tiers, or pre-Slice-3 callers). Treated as
+  // "avoided" because indexed chunks are bytes that would have been
+  // re-inflated into context on every search if the model had to
+  // re-read raw files.
+  let contentBytes = 0;
+  if (opts.sessionId && opts.contentDbPath) {
+    contentBytes = getContentBytesForSession(
+      opts.sessionId,
+      opts.contentDbPath,
+      { loadDatabase: opts.loadDatabase },
+    );
+    bytesAvoided += contentBytes;
+  }
+
   const totalSavedTokens = Math.floor(
     (eventDataBytes + bytesAvoided + snapshotBytes) / 4,
   );
 
-  return { eventDataBytes, bytesAvoided, bytesReturned, snapshotBytes, totalSavedTokens };
+  return { eventDataBytes, bytesAvoided, bytesReturned, snapshotBytes, contentBytes, totalSavedTokens };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1381,6 +1465,7 @@ export function getMultiAdapterRealBytesStats(opts?: {
     bytesAvoided: 0,
     bytesReturned: 0,
     snapshotBytes: 0,
+    contentBytes: 0,
     totalSavedTokens: 0,
   };
   const perAdapter: MultiAdapterRealBytesStats["perAdapter"] = [];
