@@ -1092,53 +1092,17 @@ async function upgrade(opts?: { platform?: string }) {
         throw new Error(`.mcp.json drift check failed: ${message}`);
       }
 
-      // v1.0.X — Issue #XXX — Layer 7 heal: update user-level ~/.claude.json
-      // MCP server registrations that point to old context-mode version dirs.
-      // Users who work around anthropics/claude-code#59310 (plugin MCP servers
-      // don't expose tools to the AI) by registering via `claude mcp add --scope
-      // user` end up with a hardcoded absolute path to the old version dir in
-      // ~/.claude.json. After upgrade the path is stale — this heal detects and
-      // updates any such args to point at the new pluginRoot. Best-effort.
+      // v1.0.X — Layer 7 heal: update user-level ~/.claude.json MCP server
+      // registrations that point to old context-mode version dirs.
+      // (anthropics/claude-code#59310 workaround — see heal-installed-plugins.mjs)
       try {
+        // @ts-expect-error — JS module, no TS declarations
+        const { healClaudeJsonMcpArgs } = await import("../scripts/heal-installed-plugins.mjs");
         const dotClaudeJson = resolve(homedir(), ".claude.json");
-        if (existsSync(dotClaudeJson)) {
-          const raw = readFileSync(dotClaudeJson, "utf-8");
-          const config = JSON.parse(raw) as Record<string, unknown>;
-          const servers = config?.mcpServers as Record<string, unknown> | undefined;
-          if (servers && typeof servers === "object") {
-            let mutated = false;
-            // The cache parent is: <configDir>/plugins/cache/context-mode/context-mode/
-            const cacheParent = resolve(resolveClaudeConfigDir(), "plugins", "cache", "context-mode", "context-mode");
-            for (const srv of Object.values(servers)) {
-              const args = (srv as Record<string, unknown>)?.args;
-              if (!Array.isArray(args)) continue;
-              for (let i = 0; i < args.length; i++) {
-                const arg = args[i];
-                if (typeof arg !== "string") continue;
-                // Detect: arg is inside cacheParent/<some-version>/...
-                const rel = arg.startsWith(cacheParent + "/") || arg.startsWith(cacheParent + "\\")
-                  ? arg.slice(cacheParent.length + 1)
-                  : null;
-                if (!rel) continue;
-                // rel = "<old-version>/rest" — strip the version segment
-                const slashIdx = Math.min(
-                  rel.indexOf("/") === -1 ? Infinity : rel.indexOf("/"),
-                  rel.indexOf("\\") === -1 ? Infinity : rel.indexOf("\\"),
-                );
-                if (!isFinite(slashIdx)) continue;
-                const suffix = rel.slice(slashIdx); // e.g. /start.mjs
-                const newArg = resolve(pluginRoot, suffix.replace(/^[/\\]/, ""));
-                if (newArg !== arg) {
-                  args[i] = newArg;
-                  mutated = true;
-                }
-              }
-            }
-            if (mutated) {
-              writeFileSync(dotClaudeJson, JSON.stringify(config, null, 2), "utf-8");
-              p.log.info(color.dim("  ~/.claude.json user MCP registrations updated → " + newVersion));
-            }
-          }
+        const pluginCacheParent = resolve(resolveClaudeConfigDir(), "plugins", "cache", "context-mode", "context-mode");
+        const result = healClaudeJsonMcpArgs({ dotClaudeJsonPath: dotClaudeJson, pluginCacheParent, newPluginRoot: pluginRoot });
+        if (result.healed && result.healed.length > 0) {
+          p.log.info(color.dim("  ~/.claude.json user MCP registrations updated → " + newVersion));
         }
       } catch {
         /* best effort — never block upgrade */
