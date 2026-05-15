@@ -266,4 +266,121 @@ ${n}`}}};import{cpus as TD}from"node:os";async function rm(t,e){let{concurrency:
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
- 
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#x=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#v=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#k=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label LIKE ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#E=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label = ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#w=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#T=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#P=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label = ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#S=this.#e.prepare("SELECT word FROM vocabulary INDEXED BY idx_vocabulary_word_len WHERE length(word) BETWEEN ? AND ?"),this.#R=this.#e.prepare("SELECT label, chunk_count as chunkCount FROM sources ORDER BY id DESC"),this.#$=this.#e.prepare(`SELECT c.title, c.content, c.content_type, s.label
+       FROM chunks c
+       JOIN sources s ON s.id = c.source_id
+       WHERE c.source_id = ?
+       ORDER BY c.rowid`),this.#C=this.#e.prepare("SELECT chunk_count FROM sources WHERE id = ?"),this.#O=this.#e.prepare("SELECT content FROM chunks WHERE source_id = ?"),this.#A=this.#e.prepare("SELECT label, chunk_count, code_chunk_count, indexed_at, file_path, content_hash FROM sources WHERE label = ?"),this.#I=this.#e.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM sources) AS sources,
+        (SELECT COUNT(*) FROM chunks) AS chunks,
+        (SELECT COUNT(*) FROM chunks WHERE content_type = 'code') AS codeChunks
+    `),this.#N=this.#e.prepare("DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))"),this.#D=this.#e.prepare("DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))"),this.#M=this.#e.prepare("DELETE FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days')")}setDenyChecker(e){this.#o=e}index(e){let{content:r,path:n,source:o}=e,s=typeof r=="string"&&r.length>0;if(!s&&!n)throw new Error("Either content or path must be provided");let i;if(s)i=r;else{let l=cv(n,"r");try{if(!uv(l).isFile())throw new Error(`refusing to index ${n}: not a regular file`);i=av(l,"utf-8")}finally{lv(l)}}let a=o??n??"untitled",c=this.#V(i),u=n??void 0,d=u?dv("sha256").update(i).digest("hex"):void 0;return Ln(()=>this.#f(c,a,i,u,d,e))}indexQueued(e){return Qr(this.#t,()=>this.index(e))}indexPlainText(e,r,n=20,o={}){if(!e||e.trim().length===0)return this.#f([],r,"",void 0,void 0,o);let s=this.#K(e,n);return Ln(()=>this.#f(s.map(i=>({...i,hasCode:!1})),r,e,void 0,void 0,o))}indexPlainTextQueued(e,r,n=20,o={}){return Qr(this.#t,()=>this.indexPlainText(e,r,n,o))}indexJSON(e,r,n=cm,o={}){if(!e||e.trim().length===0)return this.indexPlainText("",r,20,o);let s;try{s=JSON.parse(e)}catch{return this.indexPlainText(e,r,20,o)}let i=[];return this.#H(s,[],i,n),i.length===0?this.indexPlainText(e,r,20,o):Ln(()=>this.#f(i,r,e,void 0,void 0,o))}indexJSONQueued(e,r,n=cm,o={}){return Qr(this.#t,()=>this.indexJSON(e,r,n,o))}#f(e,r,n,o,s,i={}){let a=e.filter(p=>p.hasCode).length,c=i.attribution??i,u=c.sessionId??"",d=c.eventId??"",m=this.#e.transaction(()=>{if(this.#a.run(r),this.#l.run(r),this.#d.run(r),e.length===0){let _=this.#s.run(r,o??null,s??null);return Number(_.lastInsertRowid)}let p=this.#r.run(r,e.length,a,o??null,s??null),h=Number(p.lastInsertRowid),g=new Date().toISOString();for(let _ of e){let b=_.hasCode?"code":"prose";this.#i.run(_.title,_.content,h,b,null,u,d,g),this.#c.run(_.title,_.content,h,b,null,u,d,g)}return h})(),f=i.skipVocabulary||Buffer.byteLength(n)>HD;return n&&!f&&this.#q(n),this.#h++,this.#h%t.OPTIMIZE_EVERY===0&&this.#U(),{sourceId:m,label:r,totalChunks:e.length,codeChunks:a,chunks:e.map(p=>({title:p.title,bytes:Buffer.byteLength(p.content),contentType:p.hasCode?"code":"prose"}))}}#z(e){return e.map(r=>({title:r.title,content:r.content,source:r.label,rank:r.rank,contentType:r.content_type,highlighted:r.highlighted,timestamp:r.timestamp??void 0}))}#m(e,r){return r==="exact"?e:`%${e}%`}search(e,r=3,n,o="AND",s,i="like"){let a=FD(e,o),c,u;return n&&s?(c=i==="exact"?this.#E:this.#k,u=[a,this.#m(n,i),s,r]):n?(c=i==="exact"?this.#y:this.#g,u=[a,this.#m(n,i),r]):s?(c=this.#v,u=[a,s,r]):(c=this.#p,u=[a,r]),Ln(()=>this.#z(c.all(...u)))}searchTrigram(e,r=3,n,o="AND",s,i="like"){let a=ZD(e,o);if(!a)return[];let c,u;return n&&s?(c=i==="exact"?this.#P:this.#T,u=[a,this.#m(n,i),s,r]):n?(c=i==="exact"?this.#x:this.#b,u=[a,this.#m(n,i),r]):s?(c=this.#w,u=[a,s,r]):(c=this.#_,u=[a,r]),Ln(()=>this.#z(c.all(...u)))}fuzzyCorrect(e){let r=e.toLowerCase().trim();if(r.length<3)return null;if(this.#n.has(r)){let u=this.#n.get(r)??null;return this.#n.delete(r),this.#n.set(r,u),u}let n=qD(r.length),o=this.#S.all(r.length-n,r.length+n),s=null,i=n+1,a=!1;for(let{word:u}of o){if(u===r){a=!0;break}let d=BD(r,u);d<i&&(i=d,s=u)}let c=a?null:i<=n?s:null;if(this.#n.size>=t.FUZZY_CACHE_SIZE){let u=this.#n.keys().next().value;u!==void 0&&this.#n.delete(u)}return this.#n.set(r,c),c}#j(e,r,n,o,s="like"){let a=Math.max(r*2,10),c=this.search(e,a,n,"OR",o,s),d=c.length<r||/[./\\:_-]/.test(e)||/[a-z][A-Z]/.test(e)||/\d/.test(e)?this.searchTrigram(e,a,n,"OR",o,s):[],l=new Map,m=f=>`${f.source}::${f.title}`;for(let[f,p]of c.entries()){let h=m(p),g=l.get(h);g?g.score+=1/(60+f+1):l.set(h,{result:p,score:1/(60+f+1)})}for(let[f,p]of d.entries()){let h=m(p),g=l.get(h);g?g.score+=1/(60+f+1):l.set(h,{result:p,score:1/(60+f+1)})}return Array.from(l.values()).sort((f,p)=>p.score-f.score).slice(0,r).map(({result:f,score:p})=>({...f,rank:-p}))}#L(e,r){let n=r.toLowerCase().split(/\s+/).filter(i=>i.length>=2),o=n.filter(i=>!Uo.has(i)),s=o.length>0?o:n;return e.map(i=>{let a=i.title.toLowerCase(),c=s.filter(f=>a.includes(f)).length,u=i.contentType==="code"?.6:.3,d=c>0?u*(c/s.length):0,l=0,m=0;if(s.length>=2){let f=i.content.toLowerCase(),p=s.map(h=>VD(f,h));if(!p.some(h=>h.length===0)){l=1/(1+KD(p)/Math.max(f.length,1));let g=WD(p,s);m=.5*Math.min(1,g/4)}}return{result:i,boost:d+l+m}}).sort((i,a)=>a.boost-i.boost||i.result.rank-a.result.rank).map(({result:i})=>i)}searchWithFallback(e,r=3,n,o,s="like",i=!0){i&&this.refreshStaleSources();let a=this.#j(e,r,n,o,s);if(a.length>0)return this.#L(a,e).map(f=>({...f,matchLayer:"rrf"}));let c=e.toLowerCase().trim().split(/\s+/).filter(m=>m.length>=3&&!Uo.has(m)),u=c.join(" "),l=c.map(m=>this.fuzzyCorrect(m)??m).join(" ");if(l!==u){let m=this.#j(l,r,n,o,s);if(m.length>0)return this.#L(m,l).map(p=>({...p,matchLayer:"rrf-fuzzy"}))}return[]}lastRefreshCount=0;refreshStaleSources(){return this.#B(),this.lastRefreshCount}#B(){this.lastRefreshCount=0;let e=this.#e.prepare("SELECT label, file_path, content_hash, indexed_at FROM sour
