@@ -1062,6 +1062,39 @@ describe("AskUserQuestion Events", () => {
     );
   });
 
+  test("joins multi-select string-array answers", () => {
+    // multiSelect: true on the request means the harness returns the answer
+    // as a string[] in the answers map. Without array handling the extractor
+    // would emit an empty answer despite a valid selection — regression caught
+    // by CodeRabbit on the original fix PR.
+    const QUESTION = "Pick features";
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: QUESTION,
+            header: "Features",
+            options: [
+              { label: "Auth", description: "" },
+              { label: "Billing", description: "" },
+              { label: "Reporting", description: "" },
+            ],
+            multiSelect: true,
+          },
+        ],
+      },
+      tool_response: JSON.stringify({
+        answers: { [QUESTION]: ["Auth", "Reporting"] },
+      }),
+    };
+
+    const events = extractEvents(input);
+    const decisionEvents = events.filter(e => e.type === "decision_question");
+    assert.equal(decisionEvents.length, 1);
+    assert.equal(decisionEvents[0].data, `Q: ${QUESTION} → A: Auth | Reporting`);
+  });
+
   test("falls back to joined answer values when question text does not match a key", () => {
     // Defensive: if the harness ever sends an answers map keyed differently
     // from the question text (renamed key, locale variation), recover the

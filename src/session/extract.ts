@@ -723,15 +723,24 @@ function extractDecision(input: HookInput): SessionEvent[] {
     const parsed = JSON.parse(rawResponse) as { answers?: Record<string, unknown> };
     const answers = parsed?.answers;
     if (answers && typeof answers === "object") {
-      const matched = questionText && typeof answers[questionText] === "string"
-        ? (answers[questionText] as string)
-        : "";
+      // multiSelect: true answers arrive as string[]; single-select arrive as
+      // string. Normalize both into a `" | "`-joined string so neither shape
+      // silently produces an empty answer.
+      const toAnswerText = (value: unknown): string => {
+        if (typeof value === "string") return value;
+        if (Array.isArray(value)) {
+          return value.filter((v): v is string => typeof v === "string").join(" | ");
+        }
+        return "";
+      };
+
+      const matched = questionText ? toAnswerText(answers[questionText]) : "";
       if (matched) {
         answerText = matched;
       } else {
-        const values = Object.values(answers).filter(
-          (v): v is string => typeof v === "string",
-        );
+        const values = Object.values(answers)
+          .map(toAnswerText)
+          .filter((v) => v.length > 0);
         answerText = values.join(" | ");
       }
     }
