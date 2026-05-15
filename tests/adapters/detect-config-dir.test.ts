@@ -102,6 +102,17 @@ describe("detectPlatform — config directory branches", () => {
     expect(signal.confidence).toBe("high");
   });
 
+  it.each<[string, string]>([
+    ["OPENCODE_CLIENT", "desktop"],
+    ["OPENCODE_TERMINAL", "1"],
+  ])("%s wins over a matching config dir", (envName, envValue) => {
+    forceDir(resolve(home, ".codex"));
+    process.env[envName] = envValue;
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("high");
+  });
+
   it("CONTEXT_MODE_PLATFORM override wins over a matching config dir", () => {
     forceDir(resolve(home, ".claude"));
     process.env.CONTEXT_MODE_PLATFORM = "antigravity";

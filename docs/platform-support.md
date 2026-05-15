@@ -167,6 +167,8 @@ OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks a
 
 **Project Directory:** Available via `ctx.directory` in plugin init, not via environment variable
 
+**Desktop markers:** OpenCode desktop shells also export `OPENCODE_CLIENT=desktop` and `OPENCODE_TERMINAL=1`; context-mode treats those as OpenCode identity signals when the CLI markers are absent.
+
 **Configuration:**
 - `opencode.json` or `.opencode/opencode.json`
 - Plugin registered in the `plugin` array with npm package names

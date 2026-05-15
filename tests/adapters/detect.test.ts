@@ -43,6 +43,8 @@ describe("detectPlatform", () => {
     delete process.env.KILO_PID;
     delete process.env.OPENCODE;
     delete process.env.OPENCODE_PID;
+    delete process.env.OPENCODE_CLIENT;
+    delete process.env.OPENCODE_TERMINAL;
     delete process.env.OPENCLAW_HOME;
     delete process.env.OPENCLAW_CLI;
     delete process.env.CODEX_CI;
@@ -119,6 +121,20 @@ describe("detectPlatform", () => {
 
   it("returns opencode when OPENCODE_PID is set", () => {
     process.env.OPENCODE_PID = "12345";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns opencode when OPENCODE_CLIENT=desktop is set", () => {
+    process.env.OPENCODE_CLIENT = "desktop";
+    const signal = detectPlatform();
+    expect(signal.platform).toBe("opencode");
+    expect(signal.confidence).toBe("high");
+  });
+
+  it("returns opencode when OPENCODE_TERMINAL=1 is set", () => {
+    process.env.OPENCODE_TERMINAL = "1";
     const signal = detectPlatform();
     expect(signal.platform).toBe("opencode");
     expect(signal.confidence).toBe("high");

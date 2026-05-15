@@ -26,7 +26,7 @@ const PLATFORM_ENV_VARS_MIRROR = [
   ["antigravity",        ["ANTIGRAVITY_CLI_ALIAS"]],
   ["cursor",             ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
   ["kilo",               ["KILO_PID"]],
-  ["opencode",           ["OPENCODE", "OPENCODE_PID"]],
+  ["opencode",           ["OPENCODE_CLIENT", "OPENCODE_TERMINAL", "OPENCODE", "OPENCODE_PID"]],
   ["zed",                ["ZED_SESSION_ID", "ZED_TERM"]],
   ["codex",              ["CODEX_THREAD_ID", "CODEX_CI"]],
   ["gemini-cli",         ["GEMINI_PROJECT_DIR", "GEMINI_CLI"]],
