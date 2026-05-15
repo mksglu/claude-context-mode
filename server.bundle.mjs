@@ -83,4 +83,63 @@ ${r}`),n==="elixir"&&ev(Ec(this.#i,"mix.exs"))&&(r=`Path.wildcard(Path.join(${JS
 |> Enum.each(&Code.prepend_path/1)
 
 ${r}`);let o=Ec(e,SD(n,process.platform,n==="shell"?this.#o.shell:null));return n==="shell"?QS(o,ED(r,process.env.PATH,process.platform),{encoding:"utf-8",mode:448}):QS(o,r,"utf-8"),o}async#u(e,r,n){let o=Xt?".exe":"",s=e.replace(/\.rs$/,"")+o;try{rv("rustc",[e,"-o",s],{cwd:r,timeout:n===void 0?6e4:Math.min(n,6e4),encoding:"utf-8",stdio:["pipe","pipe","pipe"]})}catch(i){return{stdout:"",stderr:`Compilation failed:
-${i instanceof Error?i.stderr||i.message:String(i)}`,exitCode:1,timedOut:!1}}return this.#a([s],r,r,n)}async#a(e,r,n,o,s=!1){return new Promise(i=>{let a=Xt&&["tsx","ts-node","elixir","bun","dotnet-script"].includes(e[0]),c=e[0],u;Xt&&e.length===2&&e[1]?u=[e[1].replace(/\\/g,"/")]:u=Xt?e.slice(1).map(y=>y.replace(/\\/g,"/")):e.slice(1);let d={cwd:r,stdio:["ignore","pipe
+${i instanceof Error?i.stderr||i.message:String(i)}`,exitCode:1,timedOut:!1}}return this.#a([s],r,r,n)}async#a(e,r,n,o,s=!1){return new Promise(i=>{let a=Xt&&["tsx","ts-node","elixir","bun","dotnet-script"].includes(e[0]),c=e[0],u;Xt&&e.length===2&&e[1]?u=[e[1].replace(/\\/g,"/")]:u=Xt?e.slice(1).map(y=>y.replace(/\\/g,"/")):e.slice(1);let d={cwd:r,stdio:["ignore","pipe","pipe"],env:this.#l(n),detached:!Xt,...vD(process.platform)},l;if(a){let y=[c,...u].map(S=>/\s/.test(S)?JSON.stringify(S):S).join(" ");l=YS(y,[],{...d,shell:!0})}else l=YS(c,u,{...d,shell:!1});let m=!1,f=!1,p=o===void 0?void 0:setTimeout(()=>{if(m=!0,s){f=!0,l.pid&&this.#r.set(l.pid,{proc:l,tmpDir:n}),l.unref(),l.stdout.destroy(),l.stderr.destroy();let y=Buffer.concat(h).toString("utf-8"),S=Buffer.concat(g).toString("utf-8");i({stdout:y,stderr:S,exitCode:0,timedOut:!0,backgrounded:!0})}else wc(l)},o),h=[],g=[],_=0,b=!1;l.stdout.on("data",y=>{_+=y.length,_<=this.#e?h.push(y):b||(b=!0,wc(l))}),l.stderr.on("data",y=>{_+=y.length,_<=this.#e?g.push(y):b||(b=!0,wc(l))}),l.on("close",y=>{if(clearTimeout(p),l.pid){let $=this.#r.get(l.pid);if($){$.hardKillTimer&&clearTimeout($.hardKillTimer),this.#r.delete(l.pid);try{kc($.tmpDir,{recursive:!0,force:!0})}catch{}}}if(f)return;let S=Buffer.concat(h).toString("utf-8"),k=Buffer.concat(g).toString("utf-8");b&&(k+=`
+[output capped at ${(this.#e/1024/1024).toFixed(0)}MB \u2014 process killed]`),i({stdout:S,stderr:k,exitCode:m?1:y??1,timedOut:m})}),l.on("error",y=>{if(clearTimeout(p),l.pid){let S=this.#r.get(l.pid);if(S){S.hardKillTimer&&clearTimeout(S.hardKillTimer),this.#r.delete(l.pid);try{kc(S.tmpDir,{recursive:!0,force:!0})}catch{}}}f||i({stdout:"",stderr:y.message,exitCode:1,timedOut:!1})})})}#l(e){let r=process.env.HOME??process.env.USERPROFILE??e,n=new Set(["BASH_ENV","ENV","PROMPT_COMMAND","PS4","SHELLOPTS","BASHOPTS","CDPATH","INPUTRC","BASH_XTRACEFD","NODE_OPTIONS","NODE_PATH","PYTHONSTARTUP","PYTHONHOME","PYTHONWARNINGS","PYTHONBREAKPOINT","PYTHONINSPECT","RUBYOPT","RUBYLIB","PERL5OPT","PERL5LIB","PERLLIB","PERL5DB","ERL_AFLAGS","ERL_FLAGS","ELIXIR_ERL_OPTIONS","ERL_LIBS","GOFLAGS","CGO_CFLAGS","CGO_LDFLAGS","RUSTC","RUSTC_WRAPPER","RUSTC_WORKSPACE_WRAPPER","CARGO_BUILD_RUSTC","CARGO_BUILD_RUSTC_WRAPPER","RUSTFLAGS","PHPRC","PHP_INI_SCAN_DIR","R_PROFILE","R_PROFILE_USER","R_HOME","DOTNET_STARTUP_HOOKS","DOTNET_ADDITIONAL_DEPS","DOTNET_SHARED_STORE","DOTNET_ROOT","DOTNET_ROOT(x86)","DOTNET_HOST_PATH","CORECLR_PROFILER","CORECLR_PROFILER_PATH","CORECLR_PROFILER_PATH_32","CORECLR_PROFILER_PATH_64","CORECLR_PROFILER_PATH_ARM32","CORECLR_PROFILER_PATH_ARM64","CORECLR_ENABLE_PROFILING","DOTNET_PROFILER_PATH","DOTNET_PROFILER_PATH_32","DOTNET_PROFILER_PATH_64","DOTNET_PROFILER_PATH_ARM32","DOTNET_PROFILER_PATH_ARM64","DOTNET_DiagnosticPorts","DOTNET_BUNDLE_EXTRACT_BASE_DIR","LD_PRELOAD","DYLD_INSERT_LIBRARIES","OPENSSL_CONF","OPENSSL_ENGINES","CC","CXX","AR","GIT_TEMPLATE_DIR","GIT_CONFIG_GLOBAL","GIT_CONFIG_SYSTEM","GIT_EXEC_PATH","GIT_SSH","GIT_SSH_COMMAND","GIT_ASKPASS"]),o={};for(let[s,i]of Object.entries(process.env))i!==void 0&&!n.has(s)&&!s.startsWith("BASH_FUNC_")&&!/^COMPlus_/i.test(s)&&(o[s]=i);if(o.TMPDIR=e,o.HOME=r,o.LANG="en_US.UTF-8",o.PYTHONDONTWRITEBYTECODE="1",o.PYTHONUNBUFFERED="1",o.PYTHONUTF8="1",o.NO_COLOR="1",Xt&&!o.PATH&&o.Path&&(o.PATH=o.Path,delete o.Path),o.PATH||(o.PATH=Xt?"":"/usr/local/bin:/usr/bin:/bin"),Xt){o.MSYS_NO_PATHCONV="1",o.MSYS2_ARG_CONV_EXCL="*";let s="C:\\Program Files\\Git\\usr\\bin",i="C:\\Program Files\\Git\\bin";o.PATH.includes(s)||(o.PATH=`${s};${i};${o.PATH}`)}if(!o.SSL_CERT_FILE){let s=this.#d();s&&(o.SSL_CERT_FILE=s)}return o}#d(){if(this.#s!==void 0)return this.#s;let e=Xt?[]:["/etc/ssl/cert.pem","/etc/ssl/certs/ca-certificates.crt","/etc/pki/tls/certs/ca-bundle.crt","/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"];return this.#s=e.find(r=>ev(r))??null,this.#s}#p(e,r,n){let o=JSON.stringify(e);switch(r){case"javascript":case"typescript":return`const FILE_CONTENT_PATH = ${o};
+const file_path = FILE_CONTENT_PATH;
+const FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");
+${n}`;case"python":return`FILE_CONTENT_PATH = ${o}
+file_path = FILE_CONTENT_PATH
+with open(FILE_CONTENT_PATH, "r", encoding="utf-8") as _f:
+    FILE_CONTENT = _f.read()
+${n}`;case"shell":{let s="'"+e.replace(/'/g,"'\\''")+"'";return`FILE_CONTENT_PATH=${s}
+file_path=${s}
+FILE_CONTENT=$(cat ${s})
+${n}`}case"ruby":return`FILE_CONTENT_PATH = ${o}
+file_path = FILE_CONTENT_PATH
+FILE_CONTENT = File.read(FILE_CONTENT_PATH, encoding: "utf-8")
+${n}`;case"go":return`package main
+
+import (
+	"fmt"
+	"os"
+)
+
+var FILE_CONTENT_PATH = ${o}
+var file_path = FILE_CONTENT_PATH
+
+func main() {
+	b, _ := os.ReadFile(FILE_CONTENT_PATH)
+	FILE_CONTENT := string(b)
+	_ = FILE_CONTENT
+	_ = fmt.Sprint()
+${n}
+}
+`;case"rust":return`#![allow(unused_variables)]
+use std::fs;
+
+fn main() {
+    let file_content_path = ${o};
+    let file_path = file_content_path;
+    let file_content = fs::read_to_string(file_content_path).unwrap();
+${n}
+}
+`;case"php":return`<?php
+$FILE_CONTENT_PATH = ${o};
+$file_path = $FILE_CONTENT_PATH;
+$FILE_CONTENT = file_get_contents($FILE_CONTENT_PATH);
+${n}`;case"perl":return`my $FILE_CONTENT_PATH = ${o};
+my $file_path = $FILE_CONTENT_PATH;
+open(my $fh, '<:encoding(UTF-8)', $FILE_CONTENT_PATH) or die "Cannot open: $!";
+my $FILE_CONTENT = do { local $/; <$fh> };
+close($fh);
+${n}`;case"r":return`FILE_CONTENT_PATH <- ${o}
+file_path <- FILE_CONTENT_PATH
+FILE_CONTENT <- readLines(FILE_CONTENT_PATH, warn=FALSE, encoding="UTF-8")
+FILE_CONTENT <- paste(FILE_CONTENT, collapse="\\n")
+${n}`;case"elixir":return`file_content_path = ${o}
+file_path = file_content_path
+file_content = File.read!(file_content_path)
+${n}`;case"csharp":return`var FILE_CONTENT_PATH = ${o};
+var file_path = FILE_CONTENT_PATH;
+var FILE_CONTENT = System.IO.File.ReadAllText(FILE_CONTENT_PATH);
+${n}`}}};import{cpus as TD}from"node:os";async function rm(t,e){let{concurrency:r,capByCpuCount:n=!1,onSettled:o}=e;if(t.length===0)return{settled:[],effectiveConcurrency:0,capped:!1};let s=Math.max(1,r),i=n?Math.max(1,TD().length):s,a=Math.min(s,i,t.length),c=a<s,u=new Array(t.length),d=0;async function l(){for(;;){let f=d++;if(f>=t.length)return;try{let p=await t[f].run();u[f]={status:"fulfilled",value:p}}catch(p){u[f]={status:"rejected",reason:p}}o?.(f,u[f])}}let m=[];for(let f=0;f<a;f++)m.push(l());return await Promise.allSettled(m),{settled:u,effectiveConcurrency:a,capped:c}}import{createRequire as PD}from"node:module";import{existsSync as RD,unlinkSync as sv,renameSync as $D}from"node:fs";import{tmpdir as CD}from"node:os";import{join as OD}from"node:path";var om=class{#e;constructor(e){this.#e=e}pragma(e){let n=this.#e.prepare(`PRAGMA ${e}`).all();if(!n||n.length===0)return;if(n.length>1)return n;let o=Object.values(n[0]);return o.length===1?o[0]:n[0]}exec(e){let r="",n=null;for(let s=0;s<e.length;s++){let i=e[s];if(n)r+=i,i===n&&(n=null);else if(i==="'"||i==='"')r+=i,n=i;else if(i===";"){let a=r.trim();a&&this.#e.prepare(a).run(),r=""}else r+=i}let o=r.trim();return o&&this.#e.prepare(o).run(),this}prepare(e){let r=this.#e.prepare(e);return{run:(...n)=>r.run(...n),get:(...n)=>{let o=r.get(...n);return o===null?void 0:o},all:(...n)=>r.all(...n),iterate:(...n)=>r.iterate(...n)}}transaction(e){return this.#e.transaction(e)}close(){this.#e.close()}},sm=class{#e;constructor(e){this.#e=e}pragma(e){let n=this.#e.prepare(`PRAGMA ${e}`).all();if(!n||n.length===0)return;if(n.length>1)return n;let o=Object.values(n[0]);return o.length===1?o[0]:n[0]}exec(e){return this.#e.exec(e),this}prepare(e){let r=this.#e.prepare(e);return{run:(...n)=>r.run(...n),get:(...n)=>r.get(...n),all:(...n)=>r.all(...n),iterate:(...n)=>typeof r.iterate=="function"?r.iterate(...n):r.all(...n)[Symbol.iterator]()}}transaction(e){return(...r)=>{this.#e.exec("BEGIN");try{let n=e(...r);return this.#e.exec("COMMIT"),n}catch(n){throw this.#e.exec("ROLLBACK"),n}}}close(){this.#e.close()}},Lo=null;function ID(t){let e=null;try{return e=new t(":memory:"),e.exec("CREATE VIRTUAL TABLE __fts5_probe USING fts5(x)"),!0}catch{return!1}finally{try{e?.close()}catch{}}}function AD(t,e){let r=e!==void 0?e:globalThis.Bun;if(typeof r<"u"&&r!==null)return!0;let n=t??process.versions,[o,s]=(n.node??"0.0.0").split("."),i=Number(o),a=Number(s);return!Number.isFinite(i)||!Number.isFinite(a)?!1:i>22||i===22&&a>=5}function et(){if(!Lo){let t=PD(import.meta.url);if(globalThis.Bun){let e=t(["bun","sqlite"].join(":")).Database;Lo=function(n,o){let s=new e(n,{readonly:o?.readonly,create:!0}),i=new om(s);return o?.timeout&&i.pragma(`busy_timeout = ${o.timeout}`),i}}else if(AD()){let e=null;try{({DatabaseSync:e}=t(["node","sqlite"].join(":")))}catch{e=null}e&&ID(e)?Lo=function(n,o){let s=new e(n,{readOnly:o?.readonly??!1});return new sm(s)}:Lo=t("better-sqlite3")}else Lo=t("better-sqlite3")}return Lo}function ui(t){t.pragma("journal_mode = WAL"),t.pragma("synchronous = NORMAL");try{t.pragma("mmap_size = 268435456")}catch{}}function li(t){if(!RD(t))for(let e of["-wal","-shm"])try{sv(t+e)}catch{}}function im(t){for(let e of["","-wal","-shm"])try{sv(t+e)}catch{}}function di(t){try{t.pragma("wal_checkpoint(TRUNCATE)")}catch{}try{t.close()}catch{}}function iv(t="context-mode"){return OD(CD(),`${t}-${process.pid}.db`)}function ND(t){let e=t instanceof Error?t.message:String(t);return e.includes("SQLITE_BUSY")||e.includes("database is locked")}function DD(t){return t instanceof Error?t:new Error(String(t))}function MD(t){t<=0||Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,t)}function zD(t,e){return new Error(`SQLITE_BUSY: database is locked after ${t.length} retries. Original error: ${e?.message}`)}function Ln(t,e=[100,500,2e3]){let r;for(let n=0;n<=e.length;n++)try{return t()}catch(o){if(!ND(o))throw o;r=DD(o),n<e.length&&MD(e[n])}throw zD(e,r)}function am(t){return t.includes("SQLITE_CORRUPT")||t.includes("SQLITE_NOTADB")||t.includes("database disk image is malformed")||t.includes("file is not a database")}function jD(t){let e=Date.now();for(let r of["","-wal","-shm"])try{$D(t+r,`${t}${r}.corrupt-${e}`)}catch{}}var ci=Symbol.for("__context_mode_live_dbs_v3__"),nm=(()=>{let t=globalThis;return t[ci]||(t[ci]=new Set,process.on("exit",()=>{for(let e of t[ci])di(e);t[ci].clear()})),t[ci]})(),Tc=class{#e;#t;constructor(e){let r=et();this.#e=e,li(e);let n;try{n=new
