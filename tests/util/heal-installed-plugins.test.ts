@@ -852,3 +852,106 @@ describe("healMcpJsonArgs (Issue #531)", () => {
     expect(result.skipped).toBe("no-mcp-json");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// healClaudeJsonMcpArgs
+// ─────────────────────────────────────────────────────────────────────────
+
+import {
+  // @ts-expect-error — JS module, no TS declarations
+  healClaudeJsonMcpArgs,
+} from "../../scripts/heal-installed-plugins.mjs";
+
+describe("healClaudeJsonMcpArgs", () => {
+  it("updates stale version path in args to new pluginRoot", () => {
+    const tmp = makeTmp("ctx-claude-json-");
+    const cacheParent = join(tmp, "plugins", "cache", "context-mode", "context-mode");
+    const oldPluginRoot = join(cacheParent, "1.0.134");
+    const newPluginRoot = join(cacheParent, "1.0.135");
+    mkdirSync(newPluginRoot, { recursive: true });
+
+    const dotClaudeJsonPath = join(tmp, ".claude.json");
+    writeFileSync(dotClaudeJsonPath, JSON.stringify({
+      mcpServers: {
+        plugin_context_mode: {
+          type: "stdio",
+          command: "/home/user/.bun/bin/bun",
+          args: [join(oldPluginRoot, "start.mjs")],
+          env: {},
+        },
+      },
+    }, null, 2));
+
+    const result = healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent: cacheParent, newPluginRoot });
+
+    expect(result.healed).toEqual(["claude-json-mcp-args"]);
+    const updated = JSON.parse(readFileSync(dotClaudeJsonPath, "utf-8"));
+    expect(updated.mcpServers.plugin_context_mode.args[0]).toBe(join(newPluginRoot, "start.mjs"));
+  });
+
+  it("no-ops when args already point at the new version", () => {
+    const tmp = makeTmp("ctx-claude-json-noop-");
+    const cacheParent = join(tmp, "plugins", "cache", "context-mode", "context-mode");
+    const newPluginRoot = join(cacheParent, "1.0.135");
+    mkdirSync(newPluginRoot, { recursive: true });
+
+    const dotClaudeJsonPath = join(tmp, ".claude.json");
+    const original = JSON.stringify({
+      mcpServers: {
+        plugin_context_mode: {
+          args: [join(newPluginRoot, "start.mjs")],
+        },
+      },
+    }, null, 2);
+    writeFileSync(dotClaudeJsonPath, original);
+
+    const result = healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent: cacheParent, newPluginRoot });
+
+    expect(result.healed).toEqual([]);
+    expect(readFileSync(dotClaudeJsonPath, "utf-8")).toBe(original);
+  });
+
+  it("skips when ~/.claude.json does not exist", () => {
+    const result = healClaudeJsonMcpArgs({
+      dotClaudeJsonPath: "/tmp/does-not-exist/.claude.json",
+      pluginCacheParent: "/tmp/cache",
+      newPluginRoot: "/tmp/cache/1.0.135",
+    });
+    expect(result.skipped).toBe("no-claude-json");
+  });
+
+  it("skips when mcpServers is absent", () => {
+    const tmp = makeTmp("ctx-claude-json-noservers-");
+    const dotClaudeJsonPath = join(tmp, ".claude.json");
+    writeFileSync(dotClaudeJsonPath, JSON.stringify({ numStartups: 42 }, null, 2));
+
+    const result = healClaudeJsonMcpArgs({
+      dotClaudeJsonPath,
+      pluginCacheParent: join(tmp, "cache"),
+      newPluginRoot: join(tmp, "cache", "1.0.135"),
+    });
+    expect(result.skipped).toBe("no-mcp-servers");
+  });
+
+  it("ignores args that are not inside the context-mode cache", () => {
+    const tmp = makeTmp("ctx-claude-json-unrelated-");
+    const cacheParent = join(tmp, "plugins", "cache", "context-mode", "context-mode");
+    const newPluginRoot = join(cacheParent, "1.0.135");
+    mkdirSync(newPluginRoot, { recursive: true });
+
+    const dotClaudeJsonPath = join(tmp, ".claude.json");
+    const original = JSON.stringify({
+      mcpServers: {
+        other_server: {
+          args: ["/usr/local/bin/some-other-mcp-server"],
+        },
+      },
+    }, null, 2);
+    writeFileSync(dotClaudeJsonPath, original);
+
+    const result = healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent: cacheParent, newPluginRoot });
+
+    expect(result.healed).toEqual([]);
+    expect(readFileSync(dotClaudeJsonPath, "utf-8")).toBe(original);
+  });
+});
