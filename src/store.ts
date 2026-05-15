@@ -46,10 +46,14 @@ interface IndexOptions {
   path?: string;
   source?: string;
   skipVocabulary?: boolean;
+  attribution?: { sessionId?: string; eventId?: string };
 }
 
 interface InsertOptions {
   skipVocabulary?: boolean;
+  sessionId?: string;
+  eventId?: string;
+  attribution?: { sessionId?: string; eventId?: string };
 }
 
 // Vocabulary extraction feeds fuzzy fallback, but it is CPU-linear in input
@@ -927,34 +931,36 @@ export class ContentStore {
     content: string,
     source: string,
     maxChunkBytes: number = MAX_CHUNK_BYTES,
+    options: InsertOptions = {},
   ): IndexResult {
     if (!content || content.trim().length === 0) {
-      return this.indexPlainText("", source);
+      return this.indexPlainText("", source, 20, options);
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return this.indexPlainText(content, source);
+      return this.indexPlainText(content, source, 20, options);
     }
 
     const chunks: Chunk[] = [];
     this.#walkJSON(parsed, [], chunks, maxChunkBytes);
 
     if (chunks.length === 0) {
-      return this.indexPlainText(content, source);
+      return this.indexPlainText(content, source, 20, options);
     }
 
-    return withRetry(() => this.#insertChunks(chunks, source, content));
+    return withRetry(() => this.#insertChunks(chunks, source, content, undefined, undefined, options));
   }
 
   indexJSONQueued(
     content: string,
     source: string,
     maxChunkBytes: number = MAX_CHUNK_BYTES,
+    options: InsertOptions = {},
   ): Promise<IndexResult> {
-    return enqueueDbWrite(this.#dbPath, () => this.indexJSON(content, source, maxChunkBytes));
+    return enqueueDbWrite(this.#dbPath, () => this.indexJSON(content, source, maxChunkBytes, options));
   }
 
   // ── Shared DB Insertion ──
@@ -973,6 +979,9 @@ export class ContentStore {
     options: InsertOptions = {},
   ): IndexResult {
     const codeChunks = chunks.filter((c) => c.hasCode).length;
+    const attribution = options.attribution ?? options;
+    const sessionIdCol = attribution.sessionId ?? "";
+    const eventIdCol = attribution.eventId ?? "";
 
     // Atomic dedup + insert: delete previous source with same label,
     // then insert new content — all within a single transaction.
@@ -993,8 +1002,8 @@ export class ContentStore {
       const now = new Date().toISOString();
       for (const chunk of chunks) {
         const ct = chunk.hasCode ? "code" : "prose";
-        this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct, null, null, null, now);
-        this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct, null, null, null, now);
+        this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct, null, sessionIdCol, eventIdCol, now);
+        this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct, null, sessionIdCol, eventIdCol, now);
       }
 
       return sourceId;

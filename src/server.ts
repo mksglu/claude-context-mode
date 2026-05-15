@@ -51,7 +51,7 @@ import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
 import { resolveProjectDir } from "./util/project-dir.js";
 import { loadDatabase } from "./db-base.js";
-import { AnalyticsEngine, formatReport, getConversationStats, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
+import { AnalyticsEngine, formatReport, getConversationStats, getContentBytesAllSessions, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -121,6 +121,63 @@ let _sessionEventIndexing = false;
 const SESSION_EVENT_SCAN_DEBOUNCE_MS = 5_000;
 
 /**
+ * Build the FK-attribution object passed to every ContentStore.index*() call
+ * in this process. CLAUDE_SESSION_ID is the only MCP-side handle we have on
+ * the current session — eventId stays undefined because MCP tool invocations
+ * are not paired with PostToolUse event rows at index time (the hook fires
+ * AFTER the tool returns). Empty-string fallback inside #insertChunks keeps
+ * legacy unattributed rows readable.
+ */
+export function currentAttribution(): { sessionId?: string } | undefined {
+  // CLAUDE_SESSION_ID env var is NOT propagated to MCP servers (only to hooks).
+  // Cross-adapter resolution: every adapter (15 of them) sets *_PROJECT_DIR env
+  // and writes session_events via hooks. Read the most-recent session_id from
+  // THIS project's session DB. Works for claude-code/cursor/gemini-cli/codex/
+  // kiro/opencode/zed/kilo/openclaw/qwen-code/vscode-copilot/jetbrains-copilot/
+  // omp/pi/antigravity — no adapter-specific transcript path required.
+  const sessionId = process.env.CLAUDE_SESSION_ID ?? resolveSessionIdFromSessionDB();
+  if (!sessionId) return undefined;
+  return { sessionId };
+}
+
+let __cachedSessionId: { sid: string; checkedAt: number } | undefined;
+/** v1.0.134 SLICE A: opts injection for testability. Production callers pass nothing. */
+export function resolveSessionIdFromSessionDB(opts?: {
+  projectDir?: string;
+  sessionsDir?: string;
+  bypassCache?: boolean;
+}): string | undefined {
+  // 2s cache — ctx_fetch_and_index can fire 5+ chunks/sec; DB open cost adds up.
+  const now = Date.now();
+  if (!opts?.bypassCache && __cachedSessionId && now - __cachedSessionId.checkedAt < 2000) {
+    return __cachedSessionId.sid;
+  }
+  try {
+    const projectDir = opts?.projectDir
+      ?? process.env.CLAUDE_PROJECT_DIR
+      ?? process.env.CONTEXT_MODE_PROJECT_DIR;
+    if (!projectDir) return undefined;
+    const sessionsDir = opts?.sessionsDir ?? getSessionDir();
+    const dbPath = resolveSessionDbPath({ projectDir, sessionsDir });
+    if (!existsSync(dbPath)) return undefined;
+    const Database = loadDatabase();
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const row = db.prepare(
+        "SELECT session_id FROM session_events ORDER BY created_at DESC LIMIT 1"
+      ).get() as { session_id?: string } | undefined;
+      const sid = row?.session_id;
+      if (sid) __cachedSessionId = { sid, checkedAt: now };
+      return sid;
+    } finally {
+      try { db.close(); } catch { /* best-effort */ }
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Auto-index session events files written by SessionStart hook.
  * Scans ~/.claude/context-mode/sessions/ for *-events.md files.
  * CLAUDE_PROJECT_DIR is NOT available to MCP servers — only to hooks —
@@ -140,7 +197,7 @@ function maybeIndexSessionEvents(store: ContentStore): void {
     _sessionEventIndexing = true;
     for (const file of files) {
       const filePath = join(sessionsDir, file);
-      store.indexQueued({ path: filePath, source: "session-events" })
+      store.indexQueued({ path: filePath, source: "session-events", attribution: currentAttribution() })
         .then(() => { try { unlinkSync(filePath); } catch { /* best effort */ } })
         .catch(() => { /* best-effort per file */ })
         .finally(() => { _sessionEventIndexing = false; });
@@ -1417,7 +1474,7 @@ async function indexStdout(
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const store = getStore();
   trackIndexed(Buffer.byteLength(stdout));
-  const indexed = await store.indexQueued({ content: stdout, source });
+  const indexed = await store.indexQueued({ content: stdout, source, attribution: currentAttribution() });
   const intentLine = intent
     ? `\nIntent "${intent}" was not searched synchronously; run ctx_search with the same query and source.`
     : "";
@@ -1454,7 +1511,7 @@ async function intentSearch(
 
   // Index into the PERSISTENT store so user can ctx_search() later
   const persistent = getStore();
-  const indexed = await persistent.indexPlainTextQueued(stdout, source);
+  const indexed = await persistent.indexPlainTextQueued(stdout, source, 20, currentAttribution());
 
   // Search the persistent store directly (porter → trigram → fuzzy)
   let results = persistent.searchWithFallback(intent, maxResults, source);
@@ -1721,7 +1778,7 @@ server.registerTool(
         } catch { /* ignore — file read errors handled by store */ }
       }
       const store = getStore();
-      const result = await store.indexQueued({ content, path: resolvedPath, source: source ?? resolvedPath });
+      const result = await store.indexQueued({ content, path: resolvedPath, source: source ?? resolvedPath, attribution: currentAttribution() });
 
       return trackResponse("ctx_index", {
         content: [
@@ -2514,13 +2571,14 @@ async function indexFetched(f: { url: string; source?: string; markdown: string;
   // `source` label do not overwrite each other (commit 1f1243e). ctx_search()
   // still finds both via LIKE-mode source filter on the `source` substring.
   const storageLabel = composeFetchCacheKey(f.source, f.url);
+  const attribution = currentAttribution();
   let indexed: IndexResult;
   if (f.header === "__CM_CT__:json") {
-    indexed = await store.indexJSONQueued(f.markdown, storageLabel);
+    indexed = await store.indexJSONQueued(f.markdown, storageLabel, undefined, attribution);
   } else if (f.header === "__CM_CT__:text") {
-    indexed = await store.indexPlainTextQueued(f.markdown, storageLabel);
+    indexed = await store.indexPlainTextQueued(f.markdown, storageLabel, 20, attribution);
   } else {
-    indexed = await store.indexQueued({ content: f.markdown, source: storageLabel });
+    indexed = await store.indexQueued({ content: f.markdown, source: storageLabel, attribution });
   }
   // Track AFTER the FTS5 write succeeds — failed indexes shouldn't inflate the counter.
   trackIndexed(Buffer.byteLength(f.markdown));
@@ -2887,6 +2945,7 @@ server.registerTool(
         content: stdout,
         source,
         skipVocabulary: deferQueryResults,
+        attribution: currentAttribution(),
       });
 
       // Build section inventory from the index write result; avoid an immediate
@@ -3067,7 +3126,23 @@ server.registerTool(
               // Render-time read-only — no DB mutation, no backfill.
               const contentDbPath = getStorePath();
               const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash, contentDbPath });
-              const lifeReal = getRealBytesStats({ sessionsDir: getSessionDir() });
+              const lifeRealBase = getRealBytesStats({ sessionsDir: getSessionDir() });
+              // v1.0.134 SLICE C: lifetime tier sums ALL chunks (no
+              // session_id filter). Without this fold, lifetime "kept out"
+              // only counts session_events.bytes_avoided and ignores the
+              // bulk of indexed payload across every prior conversation.
+              const lifeContentBytes = getContentBytesAllSessions(contentDbPath);
+              const lifeReal = {
+                ...lifeRealBase,
+                contentBytes: lifeRealBase.contentBytes + lifeContentBytes,
+                bytesAvoided: lifeRealBase.bytesAvoided + lifeContentBytes,
+                totalSavedTokens: Math.floor(
+                  (lifeRealBase.eventDataBytes
+                    + lifeRealBase.bytesAvoided
+                    + lifeContentBytes
+                    + lifeRealBase.snapshotBytes) / 4,
+                ),
+              };
               realBytes = { conversation: convReal, lifetime: lifeReal };
             }
           } catch { /* never block ctx_stats */ }
