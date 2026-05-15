@@ -1092,6 +1092,10 @@ describe("ctx_index: projectRoot path resolution (#365)", () => {
     delete cleanEnv.PI_PROJECT_DIR;
     delete cleanEnv.PI_WORKSPACE_DIR;
     delete cleanEnv.CONTEXT_MODE_PROJECT_DIR;
+    delete cleanEnv.CONTEXT_MODE_PLATFORM;
+    for (const key of Object.keys(cleanEnv)) {
+      if (key.startsWith("CODEX_")) delete cleanEnv[key];
+    }
 
     const proc = spawn("node", [buildEntry], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -3598,17 +3602,21 @@ import { buildFetchCode } from "../../src/server.js";
 describe("buildFetchCode — embedded SSRF guard contract", () => {
   const generated = buildFetchCode("https://example.com/x", "/tmp/x");
 
-  test("strips proxy env vars (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY)", () => {
-    // A configured outbound proxy would route fetch through an arbitrary
-    // target; DNS resolution would happen at the proxy and the in-subprocess
-    // DNS guard would never see the rebound IP. The generated subprocess
-    // source must delete every proxy env var before any fetch can run.
+  test("strips generic proxy env vars and only allows explicit loopback fetch proxy", () => {
+    // A generic outbound proxy would route fetch through an arbitrary target;
+    // DNS resolution would happen at the proxy and the in-subprocess DNS guard
+    // would never see the rebound IP. The generated subprocess source must
+    // delete generic proxy env vars and only opt in to a loopback proxy via
+    // CONTEXT_MODE_FETCH_PROXY.
     expect(generated).toMatch(/delete process\.env\.HTTP_PROXY/);
     expect(generated).toMatch(/delete process\.env\.HTTPS_PROXY/);
     expect(generated).toMatch(/delete process\.env\.ALL_PROXY/);
     expect(generated).toMatch(/delete process\.env\.http_proxy/);
     expect(generated).toMatch(/delete process\.env\.https_proxy/);
     expect(generated).toMatch(/delete process\.env\.all_proxy/);
+    expect(generated).toContain("CONTEXT_MODE_FETCH_PROXY");
+    expect(generated).toContain("CONTEXT_MODE_FETCH_PROXY must point to a loopback proxy");
+    expect(generated).toContain("setGlobalDispatcher(new ProxyAgent(normalizedFetchProxy))");
   });
 
   test("embedded SSRF classifier is callable as `classifyIp` even when bundler renames the export (#bug-v1.0.133)", () => {
