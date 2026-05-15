@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { existsSync, chmodSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, lstatSync, unlinkSync } from "node:fs";
 import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,39 @@ if (!process.env.CONTEXT_MODE_PROJECT_DIR && safeOriginalCwd) {
 //   - Hook-capable platforms: SessionStart hook injects ROUTING_BLOCK
 //   - Non-hook platforms: server.ts writeRoutingInstructions() on MCP connect
 //   - Future: explicit `context-mode init` command
+
+// ── Linux: re-exec with Bun to avoid better-sqlite3 SIGSEGV (#564) ──
+// server.bundle.mjs has two SQLite paths: bun:sqlite (safe) or better-sqlite3
+// (SIGSEGV on Linux under Node's V8). When invoked via node on Linux, detect
+// a Bun installation and re-exec this file under Bun so the bundle takes the
+// safe path. No-op when already running under Bun or on non-Linux platforms.
+if (typeof globalThis.Bun === "undefined" && process.platform === "linux") {
+  const bunCandidates = [
+    process.env.BUN_INSTALL ? join(process.env.BUN_INSTALL, "bin", "bun") : null,
+    join(homedir(), ".bun", "bin", "bun"),
+    "/usr/local/bin/bun",
+    "/usr/bin/bun",
+  ].filter(Boolean);
+  const bunBin = bunCandidates.find((p) => existsSync(p));
+  if (bunBin) {
+    const child = spawn(bunBin, [fileURLToPath(import.meta.url)], {
+      stdio: ["pipe", "inherit", "inherit"],
+      env: process.env,
+    });
+    process.stdin.on("data", (chunk) => {
+      if (!child.stdin.destroyed) child.stdin.write(chunk);
+    });
+    process.stdin.on("end", () => {});
+    const _keepAlive = setInterval(() => {}, 2147483647);
+    child.on("exit", (code) => {
+      clearInterval(_keepAlive);
+      process.exit(code ?? 0);
+    });
+    // Prevent rest of start.mjs from running — child owns the MCP session.
+    process.stdin.resume();
+    await new Promise(() => {}); // park this process forever
+  }
+}
 
 // ── Self-heal Layer 1: Fix registry → symlink mismatches (anthropics/claude-code#46915) ──
 // Claude Code auto-update can leave installed_plugins.json pointing to a non-existent
