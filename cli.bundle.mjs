@@ -839,4 +839,88 @@ Performance tip: Install Bun for 3-5x faster JS/TS execution`),console.error("  
 
 PREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.
 
-THINK IN CODE: When you need to analyze, count, filter, compare, or process data \u2014 write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,inputSchema:F.object({language:F.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:F.string().describe("Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), IO.puts (Elixir), or Console.WriteLine (C#) to output a summary to context."),timeout:F.coerce.number().optional().describe("Max
+THINK IN CODE: When you need to analyze, count, filter, compare, or process data \u2014 write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,inputSchema:F.object({language:F.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:F.string().describe("Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), IO.puts (Elixir), or Console.WriteLine (C#) to output a summary to context."),timeout:F.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs (which is the right layer for this policy). Pass an explicit value for long-running builds (Gradle/Maven/SBT)."),background:F.boolean().optional().default(!1).describe("Keep process running after timeout (for servers/daemons). Returns partial output without killing the process. IMPORTANT: Do NOT add setTimeout/self-close timers in background scripts \u2014 the process must stay alive until the timeout detaches it. For server+fetch patterns, prefer putting both server and fetch in ONE ctx_execute call instead of using background."),intent:F.string().optional().describe(`What you're looking for in the output. When provided and output is large (>5KB), indexes output into knowledge base and returns section titles + previews \u2014 not full content. Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'.
+
+TIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.`)})},async({language:t,code:e,timeout:r,background:n,intent:s})=>{if(t==="shell"){let o=p_(e,"execute");if(o)return o}else{let o=FT(e,t,"execute");if(o)return o}try{let o=e;(t==="javascript"||t==="typescript")&&(o=`
+// FS read instrumentation \u2014 count bytes read via fs.readFileSync/readFile
+let __cm_fs=0;
+process.on('exit',()=>{if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch{}});
+(function(){
+  try{
+    var f=typeof require!=='undefined'?require('fs'):null;
+    if(!f)return;
+    var ors=f.readFileSync;
+    f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};
+    var orf=f.readFile;
+    if(orf)f.readFile=function(){var a=Array.from(arguments),cb=a.pop();orf.apply(this,a.concat([function(e,d){if(!e&&d){if(Buffer.isBuffer(d))__cm_fs+=d.length;else if(typeof d==='string')__cm_fs+=Buffer.byteLength(d);}cb(e,d);}]));};
+  }catch{}
+})();
+let __cm_net=0;
+// Report network bytes on process exit \u2014 works with both promise and callback patterns.
+// process.on('exit') fires after all I/O completes, unlike .finally() which fires
+// when __cm_main() resolves (immediately for callback-based http.get without await).
+process.on('exit',()=>{if(__cm_net>0)try{process.stderr.write('__CM_NET__:'+__cm_net+'\\n')}catch{}});
+;(function(__cm_req){
+// Intercept globalThis.fetch
+const __cm_f=globalThis.fetch;
+globalThis.fetch=async(...a)=>{const r=await __cm_f(...a);
+try{const cl=r.clone();const b=await cl.arrayBuffer();__cm_net+=b.byteLength}catch{}
+return r};
+// Shadow CJS require with http/https network tracking.
+const __cm_hc=new Map();
+const __cm_hm=new Set(['http','https','node:http','node:https']);
+function __cm_wf(m,origFn){return function(...a){
+  const li=a.length-1;
+  if(li>=0&&typeof a[li]==='function'){const oc=a[li];a[li]=function(res){
+    res.on('data',function(c){__cm_net+=c.length});oc(res);};}
+  const req=origFn.apply(m,a);
+  const oOn=req.on.bind(req);
+  req.on=function(ev,cb,...r){
+    if(ev==='response'){return oOn(ev,function(res){
+      res.on('data',function(c){__cm_net+=c.length});cb(res);
+    },...r);}
+    return oOn(ev,cb,...r);
+  };
+  return req;
+}}
+var require=__cm_req?function(id){
+  const m=__cm_req(id);
+  if(!__cm_hm.has(id))return m;
+  const k=id.replace('node:','');
+  if(__cm_hc.has(k))return __cm_hc.get(k);
+  const w=Object.create(m);
+  if(typeof m.get==='function')w.get=__cm_wf(m,m.get);
+  if(typeof m.request==='function')w.request=__cm_wf(m,m.request);
+  __cm_hc.set(k,w);return w;
+}:__cm_req;
+if(__cm_req){if(__cm_req.resolve)require.resolve=__cm_req.resolve;
+if(__cm_req.cache)require.cache=__cm_req.cache;}
+async function __cm_main(){
+${e}
+}
+__cm_main().catch(e=>{console.error(e);process.exitCode=1});${n?`
+setInterval(()=>{},2147483647);`:""}
+})(typeof require!=='undefined'?require:null);`);let i=await wa.execute({language:t,code:o,timeout:r,background:n}),a=i.stderr?.match(/__CM_NET__:(\d+)/);a&&(Q.bytesSandboxed+=parseInt(a[1]),i.stderr=i.stderr.replace(/\n?__CM_NET__:\d+\n?/g,""));let c=i.stderr?.match(/__CM_FS__:(\d+)/);if(c&&(Q.bytesSandboxed+=parseInt(c[1]),i.stderr=i.stderr.replace(/\n?__CM_FS__:\d+\n?/g,"")),i.timedOut){let d=i.stdout?.trim();return i.backgrounded&&d?W("ctx_execute",{content:[{type:"text",text:`${d}
+
+_(process backgrounded after ${r}ms \u2014 still running)_`}]}):d?W("ctx_execute",{content:[{type:"text",text:`${d}
+
+_(timed out after ${r}ms \u2014 partial output shown above)_`}]}):W("ctx_execute",{content:[{type:"text",text:`Execution timed out after ${r}ms
+
+stderr:
+${i.stderr}`}],isError:!0})}if(i.exitCode!==0){let{isError:d,output:l}=Fy({language:t,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return s&&s.trim().length>0&&Buffer.byteLength(l)>Cl?$l()?(vr(Buffer.byteLength(l)),W("ctx_execute",{content:[{type:"text",text:await No(l,s,d?`execute:${t}:error`:`execute:${t}`)}],isError:d})):W("ctx_execute",{...await ya(l,d?`execute:${t}:error`:`execute:${t}`,s),isError:d}):Buffer.byteLength(l)>Ol?$l()?(vr(Buffer.byteLength(l)),W("ctx_execute",{content:[{type:"text",text:await No(l,"errors failures exceptions",d?`execute:${t}:error`:`execute:${t}`)}],isError:d})):W("ctx_execute",{...await ya(l,d?`execute:${t}:error`:`execute:${t}`,"errors failures exceptions"),isError:d}):W("ctx_execute",{content:[{type:"text",text:l}],isError:d})}let u=i.stdout||"(no output)";return s&&s.trim().length>0&&Buffer.byteLength(u)>Cl?$l()?(vr(Buffer.byteLength(u)),W("ctx_execute",{content:[{type:"text",text:await No(u,s,`execute:${t}`)}]})):W("ctx_execute",await ya(u,`execute:${t}`,s)):Buffer.byteLength(u)>Ol?W("ctx_execute",await ya(u,`execute:${t}`)):W("ctx_execute",{content:[{type:"text",text:u}]})}catch(o){let i=o instanceof Error?o.message:String(o);return W("ctx_execute",{content:[{type:"text",text:`Runtime error: ${i}`}],isError:!0})}});Cl=5e3,Ol=102400,f_=64*1024;Ge.registerTool("ctx_execute_file",{title:"Execute File Processing",description:`Read a bounded-size file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside a managed subprocess; default cap is 50 MiB, override with CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES. Only your printed summary enters context.
+
+PREFER THIS OVER Read/cat for: logs, data files (CSV, JSON, XML), source files, and any file where you need to extract specific information rather than read the entire content. For truly large files, use ctx_execute with streaming/path-based code instead of FILE_CONTENT.
+
+THINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript \u2014 no npm deps, try/catch, null-safe. Node.js + Bun compatible.`,inputSchema:F.object({path:F.string().describe("Absolute file path or relative to project root"),language:F.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:F.string().describe("Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."),timeout:F.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs."),intent:F.string().optional().describe("What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.")})},async({path:t,language:e,code:r,timeout:n,intent:s})=>{let o=HT(t,"ctx_execute_file");if(o)return o;if(e==="shell"){let i=p_(r,"execute_file");if(i)return i}else{let i=FT(r,e,"execute_file");if(i)return i}try{let i=await wa.executeFile({path:t,language:e,code:r,timeout:n});if(i.timedOut)return W("ctx_execute_file",{content:[{type:"text",text:`Timed out processing ${t} after ${n}ms`}],isError:!0});if(i.exitCode!==0){let{isError:c,output:u}=Fy({language:e,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return s&&s.trim().length>0&&Buffer.byteLength(u)>Cl?(vr(Buffer.byteLength(u)),W("ctx_execute_file",{content:[{type:"text",text:await No(u,s,c?`file:${t}:error`:`file:${t}`)}],isError:c})):Buffer.byteLength(u)>Ol?(vr(Buffer.byteLength(u)),W("ctx_execute_file",{content:[{type:"text",text:await No(u,"errors failures exceptions",c?`file:${t}:error`:`file:${t}`)}],isError:c})):W("ctx_execute_file",{content:[{type:"text",text:u}],isError:c})}let a=i.stdout||"(no output)";return s&&s.trim().length>0&&Buffer.byteLength(a)>Cl?(vr(Buffer.byteLength(a)),W("ctx_execute_file",{content:[{type:"text",text:await No(a,s,`file:${t}`)}]})):Buffer.byteLength(a)>Ol?W("ctx_execute_file",await ya(a,`file:${t}`)):W("ctx_execute_file",{content:[{type:"text",text:a}]})}catch(i){let a=i instanceof Error?i.message:String(i);return W("ctx_execute_file",{content:[{type:"text",text:`Runtime error: ${a}`}],isError:!0})}});Ge.registerTool("ctx_index",{title:"Index Content",description:`Index documentation or knowledge content into a searchable BM25 knowledge base. Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. The full content does NOT stay in context \u2014 only a brief summary is returned.
+
+WHEN TO USE:
+- Documentation from Context7, Skills, or MCP tools (API docs, framework guides, code examples)
+- API references (endpoint details, parameter specs, response schemas)
+- MCP tools/list output (exact tool signatures and descriptions)
+- Skill prompts and instructions that are too large for context
+- README files, migration guides, changelog entries
+- Any content with code examples you may need to reference precisely
+
+After indexing, use 'ctx_search' to retrieve specific sections on-demand.
+When \`path\` is provided, a content hash is stored for automatic stale detection in search results.
+Do NOT use for: log files
