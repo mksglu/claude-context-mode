@@ -1660,9 +1660,33 @@ function formatDuration(uptimeMin: string): string {
  * Timezone always uses `Intl.DateTimeFormat().resolvedOptions().timeZone`
  * — that one's always available and correct regardless of platform.
  */
+/**
+ * Validate that a locale string is a usable BCP 47 tag — `Intl.DateTimeFormat`
+ * throws RangeError on POSIX-style identifiers like "C", "POSIX", or anything
+ * the ICU resolver rejects. Ubuntu GHA runners default to `LANG=C.UTF-8`,
+ * which the extraction below stripped to "C" — a valid POSIX locale but NOT
+ * a valid BCP 47 tag, so every downstream `new Intl.DateTimeFormat(locale)`
+ * threw. Caught by CI run 25887250971 / v1.0.134 SLICE B test on Linux.
+ */
+function isUsableBcp47Locale(raw: string): boolean {
+  if (!raw) return false;
+  try {
+    // supportedLocalesOf() throws RangeError on syntactically invalid tags
+    // (e.g. "C"), and returns [] on syntactically-valid but unsupported tags.
+    // Either way, an empty/throw outcome means "don't use this".
+    return Intl.DateTimeFormat.supportedLocalesOf(raw).length > 0
+      // Some hosts return [] for "en" but still accept it in construction —
+      // gate on the actual constructor as the source of truth.
+      || (new Intl.DateTimeFormat(raw), true);
+  } catch {
+    return false;
+  }
+}
+
 export function detectLocaleAndTz(): { locale: string; tz: string } {
   const env = (process.env ?? {}) as Record<string, string | undefined>;
   let locale = env.CONTEXT_MODE_LOCALE ?? "";
+  if (locale && !isUsableBcp47Locale(locale)) locale = "";
   if (!locale) {
     if (process.platform === "darwin") {
       try {
@@ -1675,10 +1699,15 @@ export function detectLocaleAndTz(): { locale: string; tz: string } {
         }).trim();
         if (out) locale = out.replace(/_/g, "-");
       } catch { /* defaults missing or sandbox */ }
+      if (locale && !isUsableBcp47Locale(locale)) locale = "";
     }
     if (!locale && (env.LC_TIME || env.LANG)) {
       const raw = (env.LC_TIME || env.LANG || "").split(".")[0];
       if (raw) locale = raw.replace(/_/g, "-");
+      // POSIX locale identifiers (`C`, `POSIX`) survive the simple extraction
+      // above but blow up `new Intl.DateTimeFormat(locale, ...)`. Drop and
+      // fall through to the host-default branch below.
+      if (locale && !isUsableBcp47Locale(locale)) locale = "";
     }
     if (!locale) {
       try {
@@ -1693,7 +1722,12 @@ export function detectLocaleAndTz(): { locale: string; tz: string } {
       tz = new Intl.DateTimeFormat().resolvedOptions().timeZone;
     } catch { tz = "UTC"; }
   }
-  return { locale: locale || "en-US", tz: tz || "UTC" };
+  // Final belt-and-suspenders: if the locale we settled on is somehow still
+  // unusable (env mutation between detection and return, contributor adding
+  // a new extraction path that skips the validator), fall back to en-US so
+  // formatLocalDateTime / monthDay / weekdayCap never throw at render time.
+  if (!isUsableBcp47Locale(locale)) locale = "en-US";
+  return { locale, tz: tz || "UTC" };
 }
 
 /**

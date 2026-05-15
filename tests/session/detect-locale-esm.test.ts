@@ -45,4 +45,61 @@ describe("detectLocaleAndTz", () => {
       if (orig.override !== undefined) process.env.CONTEXT_MODE_LOCALE = orig.override;
     }
   });
+
+  // Regression: Ubuntu GHA runners default to `LANG=C.UTF-8`. The previous
+  // extractor stripped this to "C" — a valid POSIX locale identifier but NOT
+  // a valid BCP 47 tag — and the downstream `new Intl.DateTimeFormat("C", …)`
+  // in formatLocalDateTime / monthDay / weekdayCap threw `RangeError:
+  // Incorrect locale information provided`. CI run 25887250971 surfaced the
+  // crash via tests/analytics/format-report.test.ts > "v1.0.134 SLICE B"; this
+  // test exercises the exact env shape that broke it. Both POSIX-style values
+  // ("C", "POSIX") must round-trip through detectLocaleAndTz to a usable
+  // BCP 47 tag — we don't care WHICH tag, just that
+  // `new Intl.DateTimeFormat(returnedLocale)` does not throw.
+  it("LANG=C.UTF-8 / POSIX falls back to a usable BCP 47 locale (Linux GHA regression)", () => {
+    const orig = {
+      lang:       process.env.LANG,
+      lcTime:     process.env.LC_TIME,
+      override:   process.env.CONTEXT_MODE_LOCALE,
+    };
+    delete process.env.CONTEXT_MODE_LOCALE;
+    delete process.env.LC_TIME;
+    try {
+      for (const langValue of ["C.UTF-8", "POSIX", "C"]) {
+        process.env.LANG = langValue;
+        const { locale } = detectLocaleAndTz();
+        // The returned locale MUST construct a DateTimeFormat without
+        // throwing — that's the contract every downstream renderer relies on.
+        expect(() => new Intl.DateTimeFormat(locale, { timeZone: "UTC" }))
+          .not.toThrow();
+        // And it must NOT be the raw POSIX identifier we just rejected.
+        expect(locale).not.toBe("C");
+        expect(locale).not.toBe("POSIX");
+      }
+    } finally {
+      if (orig.lang === undefined) delete process.env.LANG;
+      else process.env.LANG = orig.lang;
+      if (orig.lcTime === undefined) delete process.env.LC_TIME;
+      else process.env.LC_TIME = orig.lcTime;
+      if (orig.override !== undefined) process.env.CONTEXT_MODE_LOCALE = orig.override;
+    }
+  });
+
+  // Belt-and-suspenders: even if a contributor sets CONTEXT_MODE_LOCALE to a
+  // garbage value (typo, copy-paste from a POSIX shell config), the env-wins
+  // branch at the top of detectLocaleAndTz must NOT propagate that into the
+  // return value — same risk as LANG=C.UTF-8, different entry point.
+  it("CONTEXT_MODE_LOCALE that is not a valid BCP 47 tag is ignored", () => {
+    const orig = process.env.CONTEXT_MODE_LOCALE;
+    process.env.CONTEXT_MODE_LOCALE = "C"; // POSIX, would throw
+    try {
+      const { locale } = detectLocaleAndTz();
+      expect(locale).not.toBe("C");
+      expect(() => new Intl.DateTimeFormat(locale, { timeZone: "UTC" }))
+        .not.toThrow();
+    } finally {
+      if (orig === undefined) delete process.env.CONTEXT_MODE_LOCALE;
+      else process.env.CONTEXT_MODE_LOCALE = orig;
+    }
+  });
 });

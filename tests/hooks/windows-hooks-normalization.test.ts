@@ -242,7 +242,7 @@ describe("normalizePluginJson", () => {
 // ─────────────────────────────────────────────────────────
 
 describe("normalizeHooksOnStartup", () => {
-  test("no-op when platform is not win32", () => {
+  test("no-op when platform is not win32 or linux (e.g. darwin)", () => {
     const dir = makeTmp();
     const hooksPath = join(dir, "hooks", "hooks.json");
     mkdirSync(join(dir, "hooks"), { recursive: true });
@@ -253,10 +253,30 @@ describe("normalizeHooksOnStartup", () => {
     normalizeHooksOnStartup({
       pluginRoot: dir,
       nodePath: "/usr/bin/node",
-      platform: "linux",
+      platform: "darwin",
     });
 
     expect(readFileSync(hooksPath, "utf-8")).toBe(original);
+  });
+
+  test("normalizes hooks.json on Linux (bare node not in PATH for /bin/sh)", () => {
+    const dir = makeTmp();
+    const hooksPath = join(dir, "hooks", "hooks.json");
+    mkdirSync(join(dir, "hooks"), { recursive: true });
+    const original =
+      '{"hooks":{"X":[{"hooks":[{"command":"node \\"${CLAUDE_PLUGIN_ROOT}/x.mjs\\""}]}]}}';
+    writeFileSync(hooksPath, original);
+
+    normalizeHooksOnStartup({
+      pluginRoot: dir,
+      nodePath: "/home/user/.bun/bin/bun",
+      platform: "linux",
+    });
+
+    const updated = readFileSync(hooksPath, "utf-8");
+    expect(updated).not.toBe(original);
+    expect(updated).toContain("/home/user/.bun/bin/bun");
+    expect(updated).not.toContain("${CLAUDE_PLUGIN_ROOT}");
   });
 
   test("rewrites hooks.json on Windows when placeholder present", () => {

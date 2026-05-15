@@ -1092,6 +1092,22 @@ async function upgrade(opts?: { platform?: string }) {
         throw new Error(`.mcp.json drift check failed: ${message}`);
       }
 
+      // v1.0.X — Layer 7 heal: update user-level ~/.claude.json MCP server
+      // registrations that point to old context-mode version dirs.
+      // (anthropics/claude-code#59310 workaround — see heal-installed-plugins.mjs)
+      try {
+        // @ts-expect-error — JS module, no TS declarations
+        const { healClaudeJsonMcpArgs } = await import("../scripts/heal-installed-plugins.mjs");
+        const dotClaudeJson = resolve(homedir(), ".claude.json");
+        const pluginCacheParent = resolve(resolveClaudeConfigDir(), "plugins", "cache", "context-mode", "context-mode");
+        const result = healClaudeJsonMcpArgs({ dotClaudeJsonPath: dotClaudeJson, pluginCacheParent, newPluginRoot: pluginRoot });
+        if (result.healed && result.healed.length > 0) {
+          p.log.info(color.dim("  ~/.claude.json user MCP registrations updated → " + newVersion));
+        }
+      } catch {
+        /* best effort — never block upgrade */
+      }
+
       // v1.0.114 hotfix — marketplace post-pull assertion: clone (if
       // present) MUST be on newVersion. Mert's case showed marketplace
       // stuck at v1.0.89 — the sync block above swallowed that silently.
