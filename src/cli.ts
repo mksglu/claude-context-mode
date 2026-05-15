@@ -27,6 +27,7 @@ import {
   getAvailableLanguages,
 } from "./runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
+import { ensurePluginCacheIntegrityLoaded } from "./util/plugin-cache-integrity.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
 // v1.0.128 — Issue #559 sibling MCP kill helpers (see PR-559-560-FIX-DESIGN.md).
 import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mcp.js";
@@ -457,6 +458,7 @@ async function doctor(argv: string[] = []): Promise<number> {
   // shape, so the legacy flow is also safe — but the direct existsSync
   // path is strictly preferable when the adapter offers it.
   p.log.step("Checking hook scripts...");
+  await ensurePluginCacheIntegrityLoaded();
   const adapterHealthChecks = adapter.getHealthChecks?.(pluginRoot) ?? [];
   if (adapterHealthChecks.length > 0) {
     for (const hc of adapterHealthChecks) {
