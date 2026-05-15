@@ -2060,6 +2060,7 @@ server.registerTool(
 
 let _turndownPath: string | null = null;
 let _gfmPluginPath: string | null = null;
+let _undiciPath: string | null = null;
 
 function resolveTurndownPath(): string {
   if (!_turndownPath) {
@@ -2077,6 +2078,14 @@ function resolveGfmPluginPath(): string {
   return _gfmPluginPath;
 }
 
+function resolveUndiciPath(): string {
+  if (!_undiciPath) {
+    const require = createRequire(import.meta.url);
+    _undiciPath = require.resolve("undici");
+  }
+  return _undiciPath;
+}
+
 // ─────────────────────────────────────────────────────────
 // Tool: fetch_and_index
 // ─────────────────────────────────────────────────────────
@@ -2087,6 +2096,7 @@ function resolveGfmPluginPath(): string {
 export function buildFetchCode(url: string, outputPath: string): string {
   const turndownPath = JSON.stringify(resolveTurndownPath());
   const gfmPath = JSON.stringify(resolveGfmPluginPath());
+  const undiciPath = JSON.stringify(resolveUndiciPath());
   const escapedOutputPath = JSON.stringify(outputPath);
   // Embed classifyIp into the subprocess so the connect-time DNS lookup is
   // re-validated with the same policy as ssrfGuard. Without this, an attacker
@@ -2121,12 +2131,13 @@ const dns = require('no' + 'de:dns');
 const dnsPromises = require('no' + 'de:dns/promises');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
+const configuredFetchProxy = process.env.CONTEXT_MODE_FETCH_PROXY || '';
 
-// Strip proxy env vars from this subprocess only. A configured outbound
+// Strip generic proxy env vars from this subprocess only. A generic outbound
 // proxy (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) would route fetch through
 // an arbitrary target — DNS resolution happens at the proxy and the
-// in-subprocess DNS rebinding guard never sees the rebound IP. The
-// sandbox fetch path has no legitimate need for an upstream proxy.
+// in-subprocess DNS rebinding guard never sees the rebound IP. context-mode
+// only allows an explicit loopback proxy via CONTEXT_MODE_FETCH_PROXY below.
 delete process.env.HTTP_PROXY;
 delete process.env.HTTPS_PROXY;
 delete process.env.ALL_PROXY;
@@ -2135,6 +2146,33 @@ delete process.env.https_proxy;
 delete process.env.all_proxy;
 delete process.env.npm_config_proxy;
 delete process.env.npm_config_https_proxy;
+
+function normalizeLoopbackFetchProxy(raw) {
+  if (!raw || !String(raw).trim()) return null;
+  let parsed;
+  try { parsed = new URL(String(raw).trim()); } catch (e) {
+    throw new Error('Invalid CONTEXT_MODE_FETCH_PROXY URL: ' + raw);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('CONTEXT_MODE_FETCH_PROXY must use http:// or https://');
+  }
+  const hostname = parsed.hostname.replace(/^\\[|\\]$/g, '').toLowerCase();
+  const loopback =
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    hostname === '0:0:0:0:0:0:0:1' ||
+    /^127(?:\\.\\d{1,3}){3}$/.test(hostname);
+  if (!loopback) {
+    throw new Error('CONTEXT_MODE_FETCH_PROXY must point to a loopback proxy');
+  }
+  return parsed.toString();
+}
+
+const normalizedFetchProxy = normalizeLoopbackFetchProxy(configuredFetchProxy);
+if (normalizedFetchProxy) {
+  const { ProxyAgent, setGlobalDispatcher } = require(${undiciPath});
+  setGlobalDispatcher(new ProxyAgent(normalizedFetchProxy));
+}
 
 ${classifyIpSrc}
 
