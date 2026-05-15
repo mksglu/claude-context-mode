@@ -142,4 +142,198 @@ file_content = File.read!(file_content_path)
 ${n}`;case"csharp":return`var FILE_CONTENT_PATH = ${s};
 var file_path = FILE_CONTENT_PATH;
 var FILE_CONTENT = System.IO.File.ReadAllText(FILE_CONTENT_PATH);
-${n}`}}}});import{cpus as wF}from"node:os";async function $y(t,e){let{concurrency:r,capByCpuCount:n=!1,onSettled:s}=e;if(t.length===0)return{settled:[],effectiveConcurrency:0,capped:!1};let o=Math.max(1,r),i=n?Math.max(1,wF().length):o,a=Math.min(o,i,t.length),c=a<o,u=new Array(t.length),d=0;async function l(){for(;;){let f=d++;if(f>=t.length)return;try{let p=await t[f].run();u[f]={status:"fulfilled",value:p}}catch(p){u[f]={status:"rejected",reason:p}}s?.(f,u[f])}}let m=[];for(let f=0;f<a;f++)m.push(l());return await Promise.allSettled(m),{settled:u,effectiveConcurrency:a,capped:c}}var u$=S(()=>{"use strict"});var y$={};ze(y$,{BunSQLiteAdapter:()=>Qu,NodeSQLiteAdapter:()=>el,SQLiteBase:()=>sa,applyWALPragmas:()=>To,cleanOrphanedWALFiles:()=>Po,closeDB:()=>Ro,defaultDBPath:()=>Py,deleteDBFiles:()=>tl,hasModernSqlite:()=>p$,isSQLiteCorruptionError:()=>rl,loadDatabase:()=>nt,nodeSqliteHasFts5:()=>d$,renameCorruptDB:()=>g$,withRetry:()=>Tn,withRetryAsync:()=>IF});import{createRequire as EF}from"node:module";import{existsSync as $F,unlinkSync as l$,renameSync as TF}from"node:fs";import{tmpdir as PF}from"node:os";import{join as RF}from"node:path";function d$(t){let e=null;try{return e=new t(":memory:"),e.exec("CREATE VIRTUAL TABLE __fts5_probe USING fts5(x)"),!0}catch{return!1}finally{try{e?.close()}catch{}}}function p$(t,e){let r=e!==void 0?e:globalThis.Bun;if(typeof r<"u"&&r!==null)return!0;let n=t??process.versions,[s,o]=(n.node??"0.0.0").split("."),i=Number(s),a=Number(o);return!Number.isFinite(i)||!Number.isFinite(a)?!1:i>22||i===22&&a>=5}function nt(){if(!$o){let t=EF(import.meta.url);if(globalThis.Bun){let e=t(["bun","sqlite"].join(":")).Database;$o=function(n,s){let o=new e(n,{readonly:s?.readonly,create:!0}),i=new Qu(o);return s?.timeout&&i.pragma(`busy_timeout = ${s.timeout}`),i}}else if(p$()){let e=null;try{({DatabaseSync:e}=t(["node","sqlite"].join(":")))}catch{e=null}e&&d$(e)?$o=function(n,s){let o=new e(n,{readOnly:s?.readonly??!1});return new el(o)}:$o=t("better-sqlite3")}else $o=t("better-sqlite3")}return $o}function To(t){t.pragma("journal_mode = WAL"),t.pragma("synchronous = NORMAL");try{t.pragma("mmap_size = 268435456")}catch{}}function Po(t){if(!$F(t))for(let e of["-wal","-shm"])try{l$(t+e)}catch{}}function tl(t){for(let e of["","-wal","-shm"])try{l$(t+e)}catch{}}function Ro(t){try{t.pragma("wal_checkpoint(TRUNCATE)")}catch{}try{t.close()}catch{}}function Py(t="context-mode"){return RF(PF(),`${t}-${process.pid}.db`)}function m$(t){let e=t instanceof Error?t.message:String(t);return e.includes("SQLITE_BUSY")||e.includes("database is locked")}function f$(t){return t instanceof Error?t:new Error(String(t))}function CF(t){t<=0||Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,t)}function OF(t){return t<=0?Promise.resolve():new Promise(e=>setTimeout(e,t))}function h$(t,e){return new Error(`SQLITE_BUSY: database is locked after ${t.length} retries. Original error: ${e?.message}`)}function Tn(t,e=[100,500,2e3]){let r;for(let n=0;n<=e.length;n++)try{return t()}catch(s){if(!m$(s))throw s;r=f$(s),n<e.length&&CF(e[n])}throw h$(e,r)}async function IF(t,e=[100,500,2e3]){let r;for(let n=0;n<=e.length;n++)try{return await t()}catch(s){if(!m$(s))throw s;r=f$(s),n<e.length&&await OF(e[n])}throw h$(e,r)}function rl(t){return t.includes("SQLITE_CORRUPT")||t.includes("SQLITE_NOTADB")||t.includes("database disk image is malformed")||t.includes("file is not a database")}function g$(t){let e=Date.now();for(let r of["","-wal","-shm"])try{TF(t+r,`${t}${r}.corrupt-${e}`)}catch{}}var Qu,el,$o,na,Ty,sa,Ss=S(()=>{"use strict";Qu=class{#e;constructor(e){this.#e=e}pragma(e){let n=this.#e.prepare(`PRAGMA ${e}`).all();if(!n||n.length===0)return;if(n.length>1)return n;let s=Object.values(n[0]);return s.length===1?s[0]:n[0]}exec(e){let r="",n=null;for(let o=0;o<e.length;o++){let i=e[o];if(n)r+=i,i===n&&(n=null);else if(i==="'"||i==='"')r+=i,n=i;else if(i===";"){let a=r.trim();a&&this.#e.prepare(a).run(),r=""}else r+=i}let s=r.trim();return s&&this.#e.prepare(s).run(),this}prepare(e){let r=this.#e.prepare(e);return{run:(...n)=>r.run(...n),get:(...n)=>{let s=r.get(...n);return s===null?void 0:s},all:(...n)=>r.all(...n),iterate:(...n)=>r.iterate(...n)}}transaction(e){return this.#e.transaction(e)}close(){this.#e.close()}},el=class{#e;constructor(e){this.#e=e}pragma(e){let n=this.#e.prepare(`PRAGMA ${e}`).all();if(!n||n.length===0)return;if(n.length>1)return n;let s=Object.values(n[0]);return s.length===1?s[0]:n[0]}exec(e){return this.#e.exec(e),this}prepare(e){let r=this.#e.prepare(e);return{run:(...n)=>r.run(...n),get:(...n)=>r.get(...n),all:(...n)=>r.all(...n),iterate:(...n)=>typeof r.iterate=="function"?r.iterate(...n):r.all(...n)[Symbol.iterator]()}}transaction(e){return(...r)=>{this.#e.exec("BEGIN");try{let n=e(...r);return this.#e.exec("COMMIT"),n}catch(n){throw this.#e.exec("ROLLBACK"),n}}}close(){this.#e.close()}},$o=null;na=Symbol.for("__context_mode_live_dbs_v3__"),Ty=(()=>{let t=globalThis;return t[na]||(t[na]=new Set,process.on("exit",()=>{for(let e of t[na])Ro(e);t[na].clear()})),t[na]})(),sa=class{#e;#t;constructor(e){let r=nt();this.#e=e,Po(e);let n;try{n=new r(e,{timeout:3e4}),To(n)}catch(s){let o=s instanceof Error?s.message:String(s);if(rl(o)){g$(e),Po(e);try{n=new r(e,{timeout:3e4}),To(n)}catch(i){throw new Error(`Failed to create fresh DB after renaming corrupt file: ${i instanceof Error?i.message:String(i)}`)}}else throw s}this.#t=n,Ty.add(this.#t),this.initSchema(),this.prepareStatements()}get db(){return this.#t}get dbPath(){return this.#e}close(){Ty.delete(this.#t),Ro(this.#t)}withRetry(e){return Tn(e)}cleanup(){Ty.delete(this.#t),Ro(this.#t),tl(this.#e)}}});import{resolve as AF}from"node:path";function NF(t){return AF(t)}function Pn(t,e){let r=NF(t),s=(nl.get(r)??Promise.resolve()).catch(()=>{}).then(e),o=s.then(()=>{},()=>{});return nl.set(r,o),o.finally(()=>{nl.get(r)===o&&nl.delete(r)}),s}var nl,sl=S(()=>{"use strict";nl=new Map});import{readFileSync as _$,readdirSync as k$,unlinkSync as Oy,existsSync as Cy,statSync as ol,openSync as b$,fstatSync as v$,closeSync as x$}from"node:fs";import{createHash as S$}from"node:crypto";import{tmpdir as w$}from"node:os";import{join as Iy}from"node:path";function E$(t){let e=new Set,r=[];for(let n of t){let s=n.toLowerCase();e.has(s)||(e.add(s),r.push(n))}return r}function DF(t,e="AND"){let r=E$(t.replace(/['"(){}[\]*:^~]/g," ").split(/\s+/).filter(o=>o.length>0&&!["AND","OR","NOT","NEAR"].includes(o.toUpperCase())));if(r.length===0)return'""';let n=r.filter(o=>!Co.has(o.toLowerCase()));return(n.length>0?n:r).map(o=>`"${o}"`).join(e==="OR"?" OR ":" ")}function jF(t,e="AND"){let r=t.replace(/["'(){}[\]*:^~]/g,"").trim();if(r.length<3)return"";let n=E$(r.split(/\s+/).filter(i=>i.length>=3));if(n.length===0)return"";let s=n.filter(i=>!Co.has(i.toLowerCase()));return(s.length>0?s:n).map(i=>`"${i}"`).join(e==="OR"?" OR ":" ")}function zF(t,e){if(t.length===0)return e.length;if(e.length===0)return t.length;let r=Array.from({length:e.length+1},(n,s)=>s);for(let n=1;n<=t.length;n++){let s=[n];for(let o=1;o<=e.length;o++)s[o]=t[n-1]===e[o-1]?r[o-1]:1+Math.min(r[o],s[o-1],r[o-1]);r=s}return r[e.length]}function LF(t){return t<=4?1:t<=12?2:3}function Ay(){let t=w$(),e=0;try{let r=k$(t);for(let n of r){let s=n.match(/^context-mode-(\d+)\.db$/);if(!s)continue;let o=parseInt(s[1],10);if(o!==process.pid)try{process.kill(o,0)}catch{let i=Iy(t,n);for(let a of["","-wal","-shm"])try{Oy(i+a)}catch{}e++}}}catch{}return e}function Ny(t,e){let r=0;try{if(!Cy(t))return 0;let n=Date.now()-e*24*60*60*1e3,s=k$(t).
+${n}`}}}});import{cpus as wF}from"node:os";async function $y(t,e){let{concurrency:r,capByCpuCount:n=!1,onSettled:s}=e;if(t.length===0)return{settled:[],effectiveConcurrency:0,capped:!1};let o=Math.max(1,r),i=n?Math.max(1,wF().length):o,a=Math.min(o,i,t.length),c=a<o,u=new Array(t.length),d=0;async function l(){for(;;){let f=d++;if(f>=t.length)return;try{let p=await t[f].run();u[f]={status:"fulfilled",value:p}}catch(p){u[f]={status:"rejected",reason:p}}s?.(f,u[f])}}let m=[];for(let f=0;f<a;f++)m.push(l());return await Promise.allSettled(m),{settled:u,effectiveConcurrency:a,capped:c}}var u$=S(()=>{"use strict"});var y$={};ze(y$,{BunSQLiteAdapter:()=>Qu,NodeSQLiteAdapter:()=>el,SQLiteBase:()=>sa,applyWALPragmas:()=>To,cleanOrphanedWALFiles:()=>Po,closeDB:()=>Ro,defaultDBPath:()=>Py,deleteDBFiles:()=>tl,hasModernSqlite:()=>p$,isSQLiteCorruptionError:()=>rl,loadDatabase:()=>nt,nodeSqliteHasFts5:()=>d$,renameCorruptDB:()=>g$,withRetry:()=>Tn,withRetryAsync:()=>IF});import{createRequire as EF}from"node:module";import{existsSync as $F,unlinkSync as l$,renameSync as TF}from"node:fs";import{tmpdir as PF}from"node:os";import{join as RF}from"node:path";function d$(t){let e=null;try{return e=new t(":memory:"),e.exec("CREATE VIRTUAL TABLE __fts5_probe USING fts5(x)"),!0}catch{return!1}finally{try{e?.close()}catch{}}}function p$(t,e){let r=e!==void 0?e:globalThis.Bun;if(typeof r<"u"&&r!==null)return!0;let n=t??process.versions,[s,o]=(n.node??"0.0.0").split("."),i=Number(s),a=Number(o);return!Number.isFinite(i)||!Number.isFinite(a)?!1:i>22||i===22&&a>=5}function nt(){if(!$o){let t=EF(import.meta.url);if(globalThis.Bun){let e=t(["bun","sqlite"].join(":")).Database;$o=function(n,s){let o=new e(n,{readonly:s?.readonly,create:!0}),i=new Qu(o);return s?.timeout&&i.pragma(`busy_timeout = ${s.timeout}`),i}}else if(p$()){let e=null;try{({DatabaseSync:e}=t(["node","sqlite"].join(":")))}catch{e=null}e&&d$(e)?$o=function(n,s){let o=new e(n,{readOnly:s?.readonly??!1});return new el(o)}:$o=t("better-sqlite3")}else $o=t("better-sqlite3")}return $o}function To(t){t.pragma("journal_mode = WAL"),t.pragma("synchronous = NORMAL");try{t.pragma("mmap_size = 268435456")}catch{}}function Po(t){if(!$F(t))for(let e of["-wal","-shm"])try{l$(t+e)}catch{}}function tl(t){for(let e of["","-wal","-shm"])try{l$(t+e)}catch{}}function Ro(t){try{t.pragma("wal_checkpoint(TRUNCATE)")}catch{}try{t.close()}catch{}}function Py(t="context-mode"){return RF(PF(),`${t}-${process.pid}.db`)}function m$(t){let e=t instanceof Error?t.message:String(t);return e.includes("SQLITE_BUSY")||e.includes("database is locked")}function f$(t){return t instanceof Error?t:new Error(String(t))}function CF(t){t<=0||Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,t)}function OF(t){return t<=0?Promise.resolve():new Promise(e=>setTimeout(e,t))}function h$(t,e){return new Error(`SQLITE_BUSY: database is locked after ${t.length} retries. Original error: ${e?.message}`)}function Tn(t,e=[100,500,2e3]){let r;for(let n=0;n<=e.length;n++)try{return t()}catch(s){if(!m$(s))throw s;r=f$(s),n<e.length&&CF(e[n])}throw h$(e,r)}async function IF(t,e=[100,500,2e3]){let r;for(let n=0;n<=e.length;n++)try{return await t()}catch(s){if(!m$(s))throw s;r=f$(s),n<e.length&&await OF(e[n])}throw h$(e,r)}function rl(t){return t.includes("SQLITE_CORRUPT")||t.includes("SQLITE_NOTADB")||t.includes("database disk image is malformed")||t.includes("file is not a database")}function g$(t){let e=Date.now();for(let r of["","-wal","-shm"])try{TF(t+r,`${t}${r}.corrupt-${e}`)}catch{}}var Qu,el,$o,na,Ty,sa,Ss=S(()=>{"use strict";Qu=class{#e;constructor(e){this.#e=e}pragma(e){let n=this.#e.prepare(`PRAGMA ${e}`).all();if(!n||n.length===0)return;if(n.length>1)return n;let s=Object.values(n[0]);return s.length===1?s[0]:n[0]}exec(e){let r="",n=null;for(let o=0;o<e.length;o++){let i=e[o];if(n)r+=i,i===n&&(n=null);else if(i==="'"||i==='"')r+=i,n=i;else if(i===";"){let a=r.trim();a&&this.#e.prepare(a).run(),r=""}else r+=i}let s=r.trim();return s&&this.#e.prepare(s).run(),this}prepare(e){let r=this.#e.prepare(e);return{run:(...n)=>r.run(...n),get:(...n)=>{let s=r.get(...n);return s===null?void 0:s},all:(...n)=>r.all(...n),iterate:(...n)=>r.iterate(...n)}}transaction(e){return this.#e.transaction(e)}close(){this.#e.close()}},el=class{#e;constructor(e){this.#e=e}pragma(e){let n=this.#e.prepare(`PRAGMA ${e}`).all();if(!n||n.length===0)return;if(n.length>1)return n;let s=Object.values(n[0]);return s.length===1?s[0]:n[0]}exec(e){return this.#e.exec(e),this}prepare(e){let r=this.#e.prepare(e);return{run:(...n)=>r.run(...n),get:(...n)=>r.get(...n),all:(...n)=>r.all(...n),iterate:(...n)=>typeof r.iterate=="function"?r.iterate(...n):r.all(...n)[Symbol.iterator]()}}transaction(e){return(...r)=>{this.#e.exec("BEGIN");try{let n=e(...r);return this.#e.exec("COMMIT"),n}catch(n){throw this.#e.exec("ROLLBACK"),n}}}close(){this.#e.close()}},$o=null;na=Symbol.for("__context_mode_live_dbs_v3__"),Ty=(()=>{let t=globalThis;return t[na]||(t[na]=new Set,process.on("exit",()=>{for(let e of t[na])Ro(e);t[na].clear()})),t[na]})(),sa=class{#e;#t;constructor(e){let r=nt();this.#e=e,Po(e);let n;try{n=new r(e,{timeout:3e4}),To(n)}catch(s){let o=s instanceof Error?s.message:String(s);if(rl(o)){g$(e),Po(e);try{n=new r(e,{timeout:3e4}),To(n)}catch(i){throw new Error(`Failed to create fresh DB after renaming corrupt file: ${i instanceof Error?i.message:String(i)}`)}}else throw s}this.#t=n,Ty.add(this.#t),this.initSchema(),this.prepareStatements()}get db(){return this.#t}get dbPath(){return this.#e}close(){Ty.delete(this.#t),Ro(this.#t)}withRetry(e){return Tn(e)}cleanup(){Ty.delete(this.#t),Ro(this.#t),tl(this.#e)}}});import{resolve as AF}from"node:path";function NF(t){return AF(t)}function Pn(t,e){let r=NF(t),s=(nl.get(r)??Promise.resolve()).catch(()=>{}).then(e),o=s.then(()=>{},()=>{});return nl.set(r,o),o.finally(()=>{nl.get(r)===o&&nl.delete(r)}),s}var nl,sl=S(()=>{"use strict";nl=new Map});import{readFileSync as _$,readdirSync as k$,unlinkSync as Oy,existsSync as Cy,statSync as ol,openSync as b$,fstatSync as v$,closeSync as x$}from"node:fs";import{createHash as S$}from"node:crypto";import{tmpdir as w$}from"node:os";import{join as Iy}from"node:path";function E$(t){let e=new Set,r=[];for(let n of t){let s=n.toLowerCase();e.has(s)||(e.add(s),r.push(n))}return r}function DF(t,e="AND"){let r=E$(t.replace(/['"(){}[\]*:^~]/g," ").split(/\s+/).filter(o=>o.length>0&&!["AND","OR","NOT","NEAR"].includes(o.toUpperCase())));if(r.length===0)return'""';let n=r.filter(o=>!Co.has(o.toLowerCase()));return(n.length>0?n:r).map(o=>`"${o}"`).join(e==="OR"?" OR ":" ")}function jF(t,e="AND"){let r=t.replace(/["'(){}[\]*:^~]/g,"").trim();if(r.length<3)return"";let n=E$(r.split(/\s+/).filter(i=>i.length>=3));if(n.length===0)return"";let s=n.filter(i=>!Co.has(i.toLowerCase()));return(s.length>0?s:n).map(i=>`"${i}"`).join(e==="OR"?" OR ":" ")}function zF(t,e){if(t.length===0)return e.length;if(e.length===0)return t.length;let r=Array.from({length:e.length+1},(n,s)=>s);for(let n=1;n<=t.length;n++){let s=[n];for(let o=1;o<=e.length;o++)s[o]=t[n-1]===e[o-1]?r[o-1]:1+Math.min(r[o],s[o-1],r[o-1]);r=s}return r[e.length]}function LF(t){return t<=4?1:t<=12?2:3}function Ay(){let t=w$(),e=0;try{let r=k$(t);for(let n of r){let s=n.match(/^context-mode-(\d+)\.db$/);if(!s)continue;let o=parseInt(s[1],10);if(o!==process.pid)try{process.kill(o,0)}catch{let i=Iy(t,n);for(let a of["","-wal","-shm"])try{Oy(i+a)}catch{}e++}}}catch{}return e}function Ny(t,e){let r=0;try{if(!Cy(t))return 0;let n=Date.now()-e*24*60*60*1e3,s=k$(t).filter(o=>o.endsWith(".db"));for(let o of s)try{let i=Iy(t,o),c=ol(i).mtimeMs<n;if(!c){let u=i+"-wal";if(Cy(u))try{let d=ol(u);d.size>0&&Date.now()-d.mtimeMs>36e5&&(c=!0)}catch{}}if(c){for(let u of["","-wal","-shm"])try{Oy(i+u)}catch{}r++}}catch{}}catch{}return r}function UF(t,e){let r=[],n=t.indexOf(e);for(;n!==-1;)r.push(n),n=t.indexOf(e,n+1);return r}function FF(t,e,r=30){if(t.length<2||e.length<2)return 0;let n=0,s=Math.min(t.length,e.length)-1;for(let o=0;o<s;o++){let i=t[o],a=t[o+1],c=e[o].length,u=0;for(let d of i){let l=d+c,m=l+r;for(;u<a.length&&a[u]<l;)u++;u<a.length&&a[u]<=m&&(n++,u++)}}return n}function HF(t){if(t.length===0)return 1/0;if(t.length===1)return 0;let e=t.map(s=>[...s].sort((o,i)=>o-i)),r=new Array(e.length).fill(0),n=1/0;for(;;){let s=1/0,o=-1/0,i=0;for(let c=0;c<e.length;c++){let u=e[c][r[c]];u<s&&(s=u,i=c),u>o&&(o=u)}let a=o-s;if(a<n&&(n=a),r[i]++,r[i]>=e[i].length)break}return n}var MF,Co,Ry,il,$$=S(()=>{"use strict";Ss();sl();MF=512*1024,Co=new Set(["the","and","for","are","but","not","you","all","can","had","her","was","one","our","out","has","his","how","its","may","new","now","old","see","way","who","did","get","got","let","say","she","too","use","will","with","this","that","from","they","been","have","many","some","them","than","each","make","like","just","over","such","take","into","year","your","good","could","would","about","which","their","there","other","after","should","through","also","more","most","only","very","when","what","then","these","those","being","does","done","both","same","still","while","where","here","were","much","update","updates","updated","deps","dev","tests","test","add","added","fix","fixed","run","running","using"]);Ry=4096;il=class t{#e;#t;#s;#o;#r;#i;#c;#u;#a;#l;#d;#p;#g;#y;#_;#b;#v;#x;#S;#k;#w;#E;#$;#T;#P;#R;#C;#O;#I;#A;#N;#M;#D;#h=0;static OPTIMIZE_EVERY=50;#n=new Map;static FUZZY_CACHE_SIZE=256;constructor(e){let r=nt();this.#t=e??Iy(w$(),`context-mode-${process.pid}.db`),Po(this.#t);let n;try{n=new r(this.#t,{timeout:3e4}),To(n)}catch(s){let o=s instanceof Error?s.message:String(s);if(rl(o)){tl(this.#t),Po(this.#t);try{n=new r(this.#t,{timeout:3e4}),To(n)}catch(i){throw new Error(`Failed to create fresh DB after deleting corrupt file: ${i instanceof Error?i.message:String(i)}`)}}else throw s}this.#e=n,this.#H(),this.#Z()}get dbPath(){return this.#t}cleanup(){try{this.#e.close()}catch{}for(let e of["","-wal","-shm"])try{Oy(this.#t+e)}catch{}}#H(){this.#e.exec(`
+      CREATE TABLE IF NOT EXISTS sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        chunk_count INTEGER NOT NULL DEFAULT 0,
+        code_chunk_count INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        file_path TEXT,
+        content_hash TEXT
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
+        title,
+        content,
+        source_id UNINDEXED,
+        content_type UNINDEXED,
+        source_category UNINDEXED,
+        session_id UNINDEXED,
+        event_id UNINDEXED,
+        timestamp UNINDEXED,
+        tokenize='porter unicode61'
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
+        title,
+        content,
+        source_id UNINDEXED,
+        content_type UNINDEXED,
+        source_category UNINDEXED,
+        session_id UNINDEXED,
+        event_id UNINDEXED,
+        timestamp UNINDEXED,
+        tokenize='trigram'
+      );
+
+      CREATE TABLE IF NOT EXISTS vocabulary (
+        word TEXT PRIMARY KEY
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sources_label ON sources(label);
+      CREATE INDEX IF NOT EXISTS idx_vocabulary_word_len ON vocabulary(length(word));
+    `);try{let e=this.#e.prepare("SELECT name FROM pragma_table_xinfo('chunks')").all(),r=new Set(e.map(n=>n.name));e.length>0&&!r.has("source_category")&&(this.#e.exec("DROP TABLE IF EXISTS chunks"),this.#e.exec("DROP TABLE IF EXISTS chunks_trigram"),this.#e.exec(`
+          CREATE VIRTUAL TABLE chunks USING fts5(
+            title,
+            content,
+            source_id UNINDEXED,
+            content_type UNINDEXED,
+            source_category UNINDEXED,
+            session_id UNINDEXED,
+            event_id UNINDEXED,
+            timestamp UNINDEXED,
+            tokenize='porter unicode61'
+          );
+          CREATE VIRTUAL TABLE chunks_trigram USING fts5(
+            title,
+            content,
+            source_id UNINDEXED,
+            content_type UNINDEXED,
+            source_category UNINDEXED,
+            session_id UNINDEXED,
+            event_id UNINDEXED,
+            timestamp UNINDEXED,
+            tokenize='trigram'
+          );
+        `))}catch{}try{this.#e.exec("ALTER TABLE sources ADD COLUMN file_path TEXT")}catch{}try{this.#e.exec("ALTER TABLE sources ADD COLUMN content_hash TEXT")}catch{}}#Z(){this.#o=this.#e.prepare("INSERT INTO sources (label, chunk_count, code_chunk_count, file_path, content_hash) VALUES (?, 0, 0, ?, ?)"),this.#r=this.#e.prepare("INSERT INTO sources (label, chunk_count, code_chunk_count, file_path, content_hash) VALUES (?, ?, ?, ?, ?)"),this.#i=this.#e.prepare("INSERT INTO chunks (title, content, source_id, content_type, source_category, session_id, event_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),this.#c=this.#e.prepare("INSERT INTO chunks_trigram (title, content, source_id, content_type, source_category, session_id, event_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),this.#u=this.#e.prepare("INSERT OR IGNORE INTO vocabulary (word) VALUES (?)"),this.#a=this.#e.prepare("DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE label = ?)"),this.#l=this.#e.prepare("DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE label = ?)"),this.#d=this.#e.prepare("DELETE FROM sources WHERE label = ?"),this.#p=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#g=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label LIKE ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#y=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#_=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#b=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#v=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#S=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#k=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label LIKE ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#w=this.#e.prepare(`
+      SELECT
+        chunks.title,
+        chunks.content,
+        chunks.content_type,
+        chunks.timestamp,
+        sources.label,
+        bm25(chunks, 5.0, 1.0) AS rank,
+        highlight(chunks, 1, char(2), char(3)) AS highlighted
+      FROM chunks
+      JOIN sources ON sources.id = chunks.source_id
+      WHERE chunks MATCH ? AND sources.label = ? AND chunks.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#E=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigra
