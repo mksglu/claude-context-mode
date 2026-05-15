@@ -573,4 +573,82 @@ ${n}
 
 PREFER THIS OVER BASH for: API calls (gh, curl, aws), test runners (npm test, pytest), git queries (git log, git diff), data processing, and ANY CLI command that may produce large output. Bash should only be used for file mutations, git writes, and navigation.
 
-THINK IN CODE: When you need to analyze, count, filter, compare, or process data \u2014 write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,inpu
+THINK IN CODE: When you need to analyze, count, filter, compare, or process data \u2014 write code that does the work and console.log() only the answer. Do NOT read raw data into context to process mentally. Program the analysis, don't compute it in your reasoning. Write robust, pure JavaScript (no npm dependencies). Use only Node.js built-ins (fs, path, child_process). Always wrap in try/catch. Handle null/undefined. Works on both Node.js and Bun.`,inputSchema:M.object({language:M.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:M.string().describe("Source code to execute. Use console.log (JS/TS), print (Python/Ruby/Perl/R), echo (Shell), echo (PHP), fmt.Println (Go), IO.puts (Elixir), or Console.WriteLine (C#) to output a summary to context."),timeout:M.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs (which is the right layer for this policy). Pass an explicit value for long-running builds (Gradle/Maven/SBT)."),background:M.boolean().optional().default(!1).describe("Keep process running after timeout (for servers/daemons). Returns partial output without killing the process. IMPORTANT: Do NOT add setTimeout/self-close timers in background scripts \u2014 the process must stay alive until the timeout detaches it. For server+fetch patterns, prefer putting both server and fetch in ONE ctx_execute call instead of using background."),intent:M.string().optional().describe(`What you're looking for in the output. When provided and output is large (>5KB), indexes output into knowledge base and returns section titles + previews \u2014 not full content. Use ctx_search(queries: [...]) to retrieve specific sections. Example: 'failing tests', 'HTTP 500 errors'.
+
+TIP: Use specific technical terms, not just concepts. Check 'Searchable terms' in the response for available vocabulary.`)})},async({language:t,code:e,timeout:r,background:n,intent:o})=>{if(t==="shell"){let s=Uh(e,"execute");if(s)return s}else{let s=HE(e,t,"execute");if(s)return s}try{let s=e;(t==="javascript"||t==="typescript")&&(s=`
+// FS read instrumentation \u2014 count bytes read via fs.readFileSync/readFile
+let __cm_fs=0;
+process.on('exit',()=>{if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch{}});
+(function(){
+  try{
+    var f=typeof require!=='undefined'?require('fs'):null;
+    if(!f)return;
+    var ors=f.readFileSync;
+    f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};
+    var orf=f.readFile;
+    if(orf)f.readFile=function(){var a=Array.from(arguments),cb=a.pop();orf.apply(this,a.concat([function(e,d){if(!e&&d){if(Buffer.isBuffer(d))__cm_fs+=d.length;else if(typeof d==='string')__cm_fs+=Buffer.byteLength(d);}cb(e,d);}]));};
+  }catch{}
+})();
+let __cm_net=0;
+// Report network bytes on process exit \u2014 works with both promise and callback patterns.
+// process.on('exit') fires after all I/O completes, unlike .finally() which fires
+// when __cm_main() resolves (immediately for callback-based http.get without await).
+process.on('exit',()=>{if(__cm_net>0)try{process.stderr.write('__CM_NET__:'+__cm_net+'\\n')}catch{}});
+;(function(__cm_req){
+// Intercept globalThis.fetch
+const __cm_f=globalThis.fetch;
+globalThis.fetch=async(...a)=>{const r=await __cm_f(...a);
+try{const cl=r.clone();const b=await cl.arrayBuffer();__cm_net+=b.byteLength}catch{}
+return r};
+// Shadow CJS require with http/https network tracking.
+const __cm_hc=new Map();
+const __cm_hm=new Set(['http','https','node:http','node:https']);
+function __cm_wf(m,origFn){return function(...a){
+  const li=a.length-1;
+  if(li>=0&&typeof a[li]==='function'){const oc=a[li];a[li]=function(res){
+    res.on('data',function(c){__cm_net+=c.length});oc(res);};}
+  const req=origFn.apply(m,a);
+  const oOn=req.on.bind(req);
+  req.on=function(ev,cb,...r){
+    if(ev==='response'){return oOn(ev,function(res){
+      res.on('data',function(c){__cm_net+=c.length});cb(res);
+    },...r);}
+    return oOn(ev,cb,...r);
+  };
+  return req;
+}}
+var require=__cm_req?function(id){
+  const m=__cm_req(id);
+  if(!__cm_hm.has(id))return m;
+  const k=id.replace('node:','');
+  if(__cm_hc.has(k))return __cm_hc.get(k);
+  const w=Object.create(m);
+  if(typeof m.get==='function')w.get=__cm_wf(m,m.get);
+  if(typeof m.request==='function')w.request=__cm_wf(m,m.request);
+  __cm_hc.set(k,w);return w;
+}:__cm_req;
+if(__cm_req){if(__cm_req.resolve)require.resolve=__cm_req.resolve;
+if(__cm_req.cache)require.cache=__cm_req.cache;}
+async function __cm_main(){
+${e}
+}
+__cm_main().catch(e=>{console.error(e);process.exitCode=1});${n?`
+setInterval(()=>{},2147483647);`:""}
+})(typeof require!=='undefined'?require:null);`);let i=await Di.execute({language:t,code:s,timeout:r,background:n}),a=i.stderr?.match(/__CM_NET__:(\d+)/);a&&(G.bytesSandboxed+=parseInt(a[1]),i.stderr=i.stderr.replace(/\n?__CM_NET__:\d+\n?/g,""));let c=i.stderr?.match(/__CM_FS__:(\d+)/);if(c&&(G.bytesSandboxed+=parseInt(c[1]),i.stderr=i.stderr.replace(/\n?__CM_FS__:\d+\n?/g,"")),i.timedOut){let d=i.stdout?.trim();return i.backgrounded&&d?B("ctx_execute",{content:[{type:"text",text:`${d}
+
+_(process backgrounded after ${r}ms \u2014 still running)_`}]}):d?B("ctx_execute",{content:[{type:"text",text:`${d}
+
+_(timed out after ${r}ms \u2014 partial output shown above)_`}]}):B("ctx_execute",{content:[{type:"text",text:`Execution timed out after ${r}ms
+
+stderr:
+${i.stderr}`}],isError:!0})}if(i.exitCode!==0){let{isError:d,output:l}=hh({language:t,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return o&&o.trim().length>0&&Buffer.byteLength(l)>mu?lu()?(rr(Buffer.byteLength(l)),B("ctx_execute",{content:[{type:"text",text:await Yo(l,o,d?`execute:${t}:error`:`execute:${t}`)}],isError:d})):B("ctx_execute",{...await $i(l,d?`execute:${t}:error`:`execute:${t}`,o),isError:d}):Buffer.byteLength(l)>hu?lu()?(rr(Buffer.byteLength(l)),B("ctx_execute",{content:[{type:"text",text:await Yo(l,"errors failures exceptions",d?`execute:${t}:error`:`execute:${t}`)}],isError:d})):B("ctx_execute",{...await $i(l,d?`execute:${t}:error`:`execute:${t}`,"errors failures exceptions"),isError:d}):B("ctx_execute",{content:[{type:"text",text:l}],isError:d})}let u=i.stdout||"(no output)";return o&&o.trim().length>0&&Buffer.byteLength(u)>mu?lu()?(rr(Buffer.byteLength(u)),B("ctx_execute",{content:[{type:"text",text:await Yo(u,o,`execute:${t}`)}]})):B("ctx_execute",await $i(u,`execute:${t}`,o)):Buffer.byteLength(u)>hu?B("ctx_execute",await $i(u,`execute:${t}`)):B("ctx_execute",{content:[{type:"text",text:u}]})}catch(s){let i=s instanceof Error?s.message:String(s);return B("ctx_execute",{content:[{type:"text",text:`Runtime error: ${i}`}],isError:!0})}});async function $i(t,e,r){let n=Qn();rr(Buffer.byteLength(t));let o=await n.indexQueued({content:t,source:e,attribution:Qo()}),s=r?`
+Intent "${r}" was not searched synchronously; run ctx_search with the same query and source.`:"";return{content:[{type:"text",text:`Indexed ${o.totalChunks} sections (${o.codeChunks} with code) from: ${o.label}${s}
+Use ctx_search(queries: ["..."], source: "${o.label}") to query this content.`}]}}var mu=5e3,hu=102400,BE=64*1024;function lu(){return process.env.CONTEXT_MODE_DISABLE_PERF_DEFER==="1"}async function Yo(t,e,r,n=5){let o=t.split(`
+`).length,s=Buffer.byteLength(t),i=Qn(),a=await i.indexPlainTextQueued(t,r,20,Qo()),c=i.searchWithFallback(e,n,r),u=i.getDistinctiveTerms(a.sourceId);if(c.length===0){let l=[`Indexed ${a.totalChunks} sections from "${r}" into knowledge base.`,`No sections matched intent "${e}" in ${o}-line output (${(s/1024).toFixed(1)}KB).`];return u.length>0&&(l.push(""),l.push(`Searchable terms: ${u.join(", ")}`)),l.push(""),l.push("Use ctx_search(queries: [...]) to explore the indexed content."),l.join(`
+`)}let d=[`Indexed ${a.totalChunks} sections from "${r}" into knowledge base.`,`${c.length} sections matched "${e}" (${o} lines, ${(s/1024).toFixed(1)}KB):`,""];for(let l of c){let m=l.content.split(`
+`)[0].slice(0,120);d.push(`  - ${l.title}: ${m}`)}return u.length>0&&(d.push(""),d.push(`Searchable terms: ${u.join(", ")}`)),d.push(""),d.push("Use ctx_search(queries: [...]) to retrieve full content of any section."),d.join(`
+`)}Le.registerTool("ctx_execute_file",{title:"Execute File Processing",description:`Read a bounded-size file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside a managed subprocess; default cap is 50 MiB, override with CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES. Only your printed summary enters context.
+
+PREFER THIS OVER Read/cat for: logs, data files (CSV, JSON, XML), source files, and any file where you need to extract specific information rather than read the entire content. For truly large files, use ctx_execute with streaming/path-based code instead of FILE_CONTENT.
+
+THINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript \u2014 no npm deps, try/catch, null-safe. Node.js + Bun compatible.`,inputSchema:M.object({path:M.string().describe("Absolute file path or relative to project root"),language:M.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:M.string().describe("Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."),timeout:M.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs."),intent:M.string().optional().describe("What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.")})},async({path:t,language:e,code:r,timeout:n,intent:o})=>{let s=FE(t,"ctx_execute_file");if(s)return s;if(e==="shell"){let i=Uh(r,"execute_file");if(i)return i}else{let i=HE(r,e,"execute_file");if(i)return i}try{let i=await Di.executeFile({path:t,language:e,code:r,timeout:n});if(i.timedOut)return B("ctx_execute_file",{content:[{type:"text",text:`Timed out processing ${t} after ${n}ms`}],isError:!0});if(i.exitCode!==0){let{isError:c,output:u}=hh({language:
