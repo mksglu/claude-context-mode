@@ -968,6 +968,54 @@ describe("AskUserQuestion Events", () => {
     assert.ok(decisionEvents[0].data.includes("database"), "should include question text");
   });
 
+  test("extracts selected answer label, not raw JSON blob", () => {
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [{ question: "Which database should we use?", options: [] }],
+      },
+      tool_response: JSON.stringify({
+        questions: [{ question: "Which database should we use?", options: [] }],
+        answers: { "Which database should we use?": "PostgreSQL" },
+      }),
+    };
+
+    const events = extractEvents(input);
+    const ev = events.find(e => e.type === "decision_question");
+    assert.ok(ev, "should produce decision_question event");
+    assert.ok(ev!.data.includes("PostgreSQL"), "should contain selected label");
+    assert.ok(!ev!.data.includes('"questions"'), "must not contain echoed request payload");
+    assert.ok(!ev!.data.includes('"options"'), "must not contain echoed options array");
+  });
+
+  test("falls back gracefully for non-JSON tool_response", () => {
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Continue?", options: [] }] },
+      tool_response: "yes",
+    };
+
+    const events = extractEvents(input);
+    const ev = events.find(e => e.type === "decision_question");
+    assert.ok(ev, "should produce decision_question event");
+    assert.ok(ev!.data.includes("yes"), "should include raw response as fallback");
+  });
+
+  test("extracts answer when question key differs from first question text", () => {
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: { questions: [{ question: "Deploy now?", options: [] }] },
+      tool_response: JSON.stringify({
+        answers: { "Deploy now?": "Skip deployment" },
+      }),
+    };
+
+    const events = extractEvents(input);
+    const ev = events.find(e => e.type === "decision_question");
+    assert.ok(ev, "should produce decision_question event");
+    assert.ok(ev!.data.includes("Skip deployment"), "should contain selected label");
+  });
+
   test("non-AskUserQuestion tool does not produce decision_question", () => {
     const input = {
       tool_name: "Read",

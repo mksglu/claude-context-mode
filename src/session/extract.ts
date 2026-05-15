@@ -713,7 +713,17 @@ function extractDecision(input: HookInput): SessionEvent[] {
     ? String((questions[0] as Record<string, unknown>)["question"] ?? "")
     : "";
 
-  const answer = safeString(String(input.tool_response ?? ""));
+  let answer = safeString(String(input.tool_response ?? ""));
+  try {
+    const parsed = JSON.parse(input.tool_response ?? "");
+    if (parsed && typeof parsed === "object" && "answers" in parsed) {
+      const answers = parsed.answers as Record<string, unknown>;
+      const selected = answers[questionText] ?? Object.values(answers)[0] ?? "";
+      answer = safeString(String(selected));
+    }
+  } catch {
+    // non-JSON tool_response — keep raw string as fallback
+  }
   const summary = questionText
     ? `Q: ${safeString(questionText)} → A: ${answer}`
     : `answer: ${answer}`;
