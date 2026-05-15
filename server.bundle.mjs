@@ -743,4 +743,209 @@ function normalizeLoopbackFetchProxy(raw) {
 const normalizedFetchProxy = normalizeLoopbackFetchProxy(configuredFetchProxy);
 if (normalizedFetchProxy) {
   const { ProxyAgent, setGlobalDispatcher } = require(${o});
-  setGlobalDispat
+  setGlobalDispatcher(new ProxyAgent(normalizedFetchProxy));
+}
+
+${c}
+
+const STRICT = ${JSON.stringify(u)};
+
+// SSRF rebinding defense: every dns.lookup call inside this subprocess
+// (including the one undici performs to connect the fetch socket) is
+// re-validated against the same policy ssrfGuard runs in the parent.
+// Even if a hostname rebinds between the parent's pre-flight check and
+// the subprocess's actual connect, the connect-time lookup re-classifies
+// every returned record and aborts before TCP if any verdict is "block".
+const _origLookup = dns.lookup;
+dns.lookup = function patchedLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  if (typeof options === 'number') { options = { family: options }; }
+  const wantAll = options && options.all;
+  const opts = Object.assign({}, options || {}, { all: true, verbatim: true });
+  _origLookup(hostname, opts, function(err, records) {
+    if (err) return callback(err);
+    if (!Array.isArray(records)) {
+      records = [{ address: records, family: (options && options.family) || 4 }];
+    }
+    for (var i = 0; i < records.length; i++) {
+      var verdict = classifyIp(records[i].address);
+      if (verdict === 'block' || (STRICT && verdict === 'private')) {
+        return callback(new Error(
+          'SSRF blocked at connect-time: ' + hostname +
+          ' resolves to ' + records[i].address +
+          ' (' + verdict + ')'
+        ));
+      }
+    }
+    if (wantAll) callback(null, records);
+    else callback(null, records[0].address, records[0].family);
+  });
+};
+
+// dns/promises is a separate function reference. Patching dns.lookup does
+// NOT affect dnsPromises.lookup. Today undici's connect path uses callback
+// dns.lookup so default fetch is covered, but the invariant is fragile \u2014
+// any future undici switch (or user code calling dnsPromises.lookup
+// directly) would bypass the guard. Patch both to keep the contract.
+const _origPromisesLookup = dnsPromises.lookup;
+dnsPromises.lookup = async function patchedPromisesLookup(hostname, options) {
+  const opts = Object.assign({}, options || {}, { all: true, verbatim: true });
+  const records = await _origPromisesLookup(hostname, opts);
+  const list = Array.isArray(records) ? records : [records];
+  for (var i = 0; i < list.length; i++) {
+    var verdict = classifyIp(list[i].address);
+    if (verdict === 'block' || (STRICT && verdict === 'private')) {
+      throw new Error(
+        'SSRF blocked at connect-time: ' + hostname +
+        ' resolves to ' + list[i].address + ' (' + verdict + ')'
+      );
+    }
+  }
+  return options && options.all
+    ? list
+    : { address: list[0].address, family: list[0].family };
+};
+
+// dns.resolve4 / dns.resolve6 use a different code path (no getaddrinfo,
+// no /etc/hosts) than dns.lookup \u2014 they must be patched separately or the
+// guard is trivially bypassed by any caller using dns.resolve* directly.
+['resolve4', 'resolve6'].forEach(function patchResolve(name) {
+  const _origResolve = dns[name];
+  dns[name] = function patchedResolve(hostname, options, cb) {
+    if (typeof options === 'function') { cb = options; options = undefined; }
+    _origResolve.call(dns, hostname, options || {}, function(err, addrs) {
+      if (err) return cb(err);
+      var withTtl = options && options.ttl;
+      for (var i = 0; i < addrs.length; i++) {
+        var ip = withTtl ? addrs[i].address : addrs[i];
+        var v = classifyIp(ip);
+        if (v === 'block' || (STRICT && v === 'private')) {
+          return cb(new Error(
+            'SSRF blocked at connect-time: ' + hostname +
+            ' resolves to ' + ip + ' (' + v + ')'
+          ));
+        }
+      }
+      cb(null, addrs);
+    });
+  };
+});
+
+// Generic dns.resolve is a polymorphic dispatcher (rrtype-driven). Internally
+// Node delegates to dns.resolve4/dns.resolve6 for A/AAAA, but the patches
+// above hook the *exported* references \u2014 Node's internal dispatcher holds
+// captured originals and bypasses our patch. Patch the wrapper explicitly:
+// classify A/AAAA records the same way; pass through CNAME/MX/TXT/SRV/etc.
+const _origResolveGeneric = dns.resolve;
+dns.resolve = function patchedResolveGeneric(hostname, rrtype, cb) {
+  if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
+  _origResolveGeneric.call(dns, hostname, rrtype, function(err, records) {
+    if (err) return cb(err);
+    if ((rrtype === 'A' || rrtype === 'AAAA') && Array.isArray(records)) {
+      for (var i = 0; i < records.length; i++) {
+        var ip = records[i];
+        var v = classifyIp(ip);
+        if (v === 'block' || (STRICT && v === 'private')) {
+          return cb(new Error(
+            'SSRF blocked at connect-time: ' + hostname +
+            ' resolves to ' + ip + ' (' + v + ')'
+          ));
+        }
+      }
+    }
+    cb(null, records);
+  });
+};
+
+function emit(ct, content) {
+  // Write content to file to bypass executor stdout truncation (100KB limit).
+  // Only the content-type marker goes to stdout.
+  fs.writeFileSync(outputPath, content);
+  console.log('__CM_CT__:' + ct);
+}
+
+// Manual redirect handling: a 3xx Location header can rebind the subprocess
+// fetch to an alternate host the parent's pre-flight ssrfGuard never saw.
+// Even with the connect-time DNS patch, a redirect target that is a literal
+// IP (e.g. http://169.254.169.254/) skips getaddrinfo entirely. Walk the
+// chain manually so every hop runs through classifyIp before the next fetch.
+const MAX_REDIRECTS = 5;
+async function fetchWithManualRedirect(initialUrl) {
+  let currentUrl = initialUrl;
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    const resp = await fetch(currentUrl, { redirect: 'manual' });
+    if (resp.status < 300 || resp.status >= 400) return resp;
+    const location = resp.headers.get('location') || resp.headers.get('Location');
+    if (!location) return resp;
+    if (redirectCount === MAX_REDIRECTS) {
+      throw new Error('SSRF blocked: redirect chain exceeded ' + MAX_REDIRECTS + ' hops');
+    }
+    let nextParsed;
+    try { nextParsed = new URL(location, currentUrl); } catch (e) {
+      throw new Error('SSRF blocked: invalid redirect Location: ' + location);
+    }
+    if (nextParsed.protocol !== 'http:' && nextParsed.protocol !== 'https:') {
+      throw new Error('SSRF blocked: redirect to non-http(s) scheme ' + nextParsed.protocol);
+    }
+    // If the redirect target is a literal IP, classify it directly \u2014 no DNS
+    // lookup will fire and the connect-time guard would never see it.
+    const hostname = nextParsed.hostname.replace(/^[|]$/g, '');
+    const isIpLiteral = /^[0-9.]+$/.test(hostname) || hostname.includes(':');
+    if (isIpLiteral) {
+      const verdict = classifyIp(hostname);
+      if (verdict === 'block' || (STRICT && verdict === 'private')) {
+        throw new Error('SSRF blocked: redirect to ' + hostname + ' (' + verdict + ')');
+      }
+    } else {
+      // Hostname target: resolve and classify every record. The patched
+      // dns.lookup also fires on the next fetch's connect, but checking
+      // here gives a clearer error and short-circuits before TCP setup.
+      const records = await dnsPromises.lookup(hostname, { all: true, verbatim: true });
+      for (const rec of records) {
+        const verdict = classifyIp(rec.address);
+        if (verdict === 'block' || (STRICT && verdict === 'private')) {
+          throw new Error(
+            'SSRF blocked: redirect target ' + hostname +
+            ' resolves to ' + rec.address + ' (' + verdict + ')'
+          );
+        }
+      }
+    }
+    currentUrl = nextParsed.toString();
+  }
+  throw new Error('SSRF blocked: redirect chain exceeded ' + MAX_REDIRECTS + ' hops');
+}
+
+async function main() {
+  const resp = await fetchWithManualRedirect(url);
+  if (!resp.ok) { console.error("HTTP " + resp.status); process.exit(1); }
+  const contentType = resp.headers.get('content-type') || '';
+
+  // --- JSON responses ---
+  if (contentType.includes('application/json') || contentType.includes('+json')) {
+    const text = await resp.text();
+    try {
+      const pretty = JSON.stringify(JSON.parse(text), null, 2);
+      emit('json', pretty);
+    } catch {
+      emit('text', text);
+    }
+    return;
+  }
+
+  // --- HTML responses (default for text/html, application/xhtml+xml) ---
+  if (contentType.includes('text/html') || contentType.includes('application/xhtml')) {
+    const html = await resp.text();
+    const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+    td.use(gfm);
+    td.remove(['script', 'style', 'nav', 'header', 'footer', 'noscript']);
+    emit('html', td.turndown(html));
+    return;
+  }
+
+  // --- Everything else: plain text, CSV, XML, etc. ---
+  const text = await resp.text();
+  emit('text', text);
+}
+main();
+`}var wL=1440*60*1e3,AE=3072;async function TL(t){let e;try{e=new URL(t)}catch{return{kind:"fetch_error",url:t,error:"invalid URL",reason:"exit"}}if(e.protocol!=="http:"&&e.protocol!=="https:")return{kind:"fetch_error",url:t,error:`URL scheme "${e.protocol}" not allowed (only http: and https:)`,reason:"exit"};let r=process.env.CTX_FETCH_STRICT==="1";try{let{lookup:n}=await import("node:dns/promises"),o=await n(e.hostname,{all:!0,verbatim:!0});for(let s of o){let i=gu(s.address);if(i==="block")return{kind:"fetch_error",url:t,error:`URL "${e.hostname}" resolves to ${s.address} \u2014 blocked (link-local / IMDS / multicast / reserved)`,reason:"exit"};if(i==="private"&&r)return{kind:"fetch_error",url:t,error:`URL "${e.hostname}" resolves to private IP ${s.address} \u2014 blocked under CTX_FETCH_STRICT=1`,reason:"exit"}}}catch(n){return{kind:"fetch_error",url:t,error:`DNS lookup failed for "${e.hostname}": ${n instanceof Error?n.message:String(n)}`,reason:"exit"}}return null}function gu(t){let e=t.indexOf("%"),r=e===-1?t:t.slice(0,e),n=r.toLowerCase();if(n.includes(":")){let a=n.match(/^::ffff:([\d.]+)$/);return a?gu(a[1]):n==="::"||n.startsWith("fe8")||n.startsWith("fe9")||n.startsWit
