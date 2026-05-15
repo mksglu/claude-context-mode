@@ -283,6 +283,7 @@ Subagents automatically receive context-mode tool routing via a PreToolUse hook.
 - Using `cat large-file.json` via Bash → entire file in context. Use `ctx_execute_file` instead.
 - Using `gh pr list` via Bash → raw JSON in context. Use `ctx_execute` with `--jq` filter instead.
 - Piping Bash output through `| head -20` → you lose the rest. Use `ctx_execute` to analyze ALL data and print summary.
+- Narrowing `ctx_execute` output upstream of capture → `ctx_execute` captures, `ctx_search` filters; merging the layers drops data that the index never sees. See `references/anti-patterns.md` §8.
 - Running `npm test` via Bash → full test output in context. Use `ctx_execute` to capture and summarize.
 - Calling `browser_snapshot()` WITHOUT `filename` parameter → 135K tokens flood context. **Always** use `browser_snapshot(filename: "/tmp/snap.md")`.
 - Calling `browser_console_messages()` or `browser_network_requests()` WITHOUT `filename` → entire output floods context. **Always** use the `filename` parameter.

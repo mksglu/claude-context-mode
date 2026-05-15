@@ -20,13 +20,18 @@
  * project filter).
  */
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, test } from "vitest";
 import { SessionDB } from "../../src/session/db.js";
-import { getRealBytesStats } from "../../src/session/analytics.js";
+import {
+  getContentBytesForSession,
+  getMultiAdapterRealBytesStats,
+  getRealBytesStats,
+} from "../../src/session/analytics.js";
+import { ContentStore } from "../../src/store.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -166,5 +171,206 @@ describe("getRealBytesStats (Phase 8 renderer source-of-truth)", () => {
     expect(r.bytesAvoided).toBe(0);
     expect(r.bytesReturned).toBe(0);
     expect(r.totalSavedTokens).toBe(0);
+  });
+
+  // ── v1.0.133: stats bar reads content DB chunks (Slice 3 — render-time only) ──
+  //
+  // v1.0.132 wired chunks.session_id (Slice 1) so new chunks carry the FK.
+  // The render path still ignored the content DB, leaving the per-conversation
+  // bar invisible (≈200 B of event metadata). Slice 3 closes the loop with a
+  // read-only join: when ctx_stats fires, sum LENGTH(title)+LENGTH(content)
+  // FROM chunks WHERE session_id = ? and fold it into the bar formula.
+  //
+  // Architect-safe choice: legacy chunks (empty session_id) are NOT backfilled.
+  // Old sessions stay low; new sessions populate honestly.
+
+  test("8.7 getContentBytesForSession sums LENGTH(title)+LENGTH(content) for FK-attributed chunks", () => {
+    const sid = `chunk-${randomUUID()}`;
+    const contentDbPath = join(mkSessionsDir(), `content-${randomUUID()}.db`);
+    const store = new ContentStore(contentDbPath);
+    try {
+      // Two attributed chunks for the target session.
+      store.indexPlainText(
+        "alpha line one\nalpha line two",
+        "src/alpha.ts",
+        20,
+        { sessionId: sid, eventId: "evt-1" },
+      );
+      store.indexPlainText(
+        "beta payload that should be summed",
+        "src/beta.ts",
+        20,
+        { sessionId: sid, eventId: "evt-2" },
+      );
+      // One chunk attributed to a DIFFERENT session — must be excluded.
+      store.indexPlainText(
+        "noise from a sibling session",
+        "src/noise.ts",
+        20,
+        { sessionId: "other-session", eventId: "evt-x" },
+      );
+      // One legacy chunk with empty session_id — must be excluded (no backfill).
+      store.indexPlainText(
+        "legacy chunk no FK",
+        "src/legacy.ts",
+        20,
+      );
+    } finally {
+      store.close();
+    }
+
+    const bytes = getContentBytesForSession(sid, contentDbPath);
+
+    // Two chunks for `sid`: titles "src/alpha.ts" + "src/beta.ts" plus
+    // bodies. Exact arithmetic depends on the markdown chunker (titles may
+    // be re-derived from headings), so assert a sane lower bound that
+    // still proves both attributed chunks were summed, plus an upper
+    // bound that would fail if noise or legacy rows leaked in (they'd
+    // push >200B easily).
+    expect(bytes).toBeGreaterThan(60);
+    expect(bytes).toBeLessThan(200);
+  });
+
+  test("8.8 getContentBytesForSession returns 0 for missing DB or unknown session", () => {
+    expect(getContentBytesForSession("any-sid", join(tmpdir(), `missing-${randomUUID()}.db`))).toBe(0);
+
+    const contentDbPath = join(mkSessionsDir(), `content-${randomUUID()}.db`);
+    const store = new ContentStore(contentDbPath);
+    try {
+      store.indexPlainText("payload", "src/x.ts", 20, { sessionId: "real-sid", eventId: "evt" });
+    } finally {
+      store.close();
+    }
+    expect(getContentBytesForSession("no-such-session", contentDbPath)).toBe(0);
+  });
+
+  test("8.9 getRealBytesStats with contentDbPath folds chunk bytes into bytesAvoided + totalSavedTokens", () => {
+    const dir = mkSessionsDir();
+    const sid = `int-${randomUUID()}`;
+    const dbPath = dbPathFor(dir, "cafebabecafebabe");
+    seed(dbPath, sid, [
+      { type: "sandbox-execute", category: "sandbox", data: "ctx_execute", bytesReturned: 1_000 },
+    ]);
+
+    const contentDbPath = join(dir, `content-${randomUUID()}.db`);
+    const store = new ContentStore(contentDbPath);
+    try {
+      // Big enough payload that the chunk byte sum dwarfs event-data noise
+      // and proves the value flowed through, not just got rounded in.
+      store.indexPlainText(
+        "X".repeat(10_000),
+        "fixture.txt",
+        20,
+        { sessionId: sid, eventId: "evt-int" },
+      );
+    } finally {
+      store.close();
+    }
+
+    const baseline = getRealBytesStats({ sessionId: sid, sessionsDir: dir });
+    const withChunks = getRealBytesStats({ sessionId: sid, sessionsDir: dir, contentDbPath });
+
+    expect(withChunks.bytesAvoided).toBeGreaterThan(baseline.bytesAvoided + 9_000);
+    expect(withChunks.totalSavedTokens).toBeGreaterThan(baseline.totalSavedTokens + 2_000);
+    // bytesReturned untouched — content DB doesn't represent re-served bytes.
+    expect(withChunks.bytesReturned).toBe(baseline.bytesReturned);
+  });
+
+  // ─── v1.0.134 SLICE C — lifetime tier all-chunks aggregate ───────────────
+  // `getContentBytesForSession` filters by session_id (per-conversation tier).
+  // Lifetime tier needs a sibling that sums ALL chunks, regardless of FK,
+  // so the lifetime "kept out" headline reflects the full content store —
+  // not just session_events.bytes_avoided. Without this, a fresh adapter
+  // with 50 MB of indexed but unattributed chunks shows ~0 lifetime bytes.
+  test("lifetime contentBytes sums all chunks (no session_id filter)", async () => {
+    const { getContentBytesAllSessions } = await import(
+      "../../src/session/analytics.js"
+    );
+
+    const contentDbPath = join(mkSessionsDir(), `content-life-${randomUUID()}.db`);
+    const store = new ContentStore(contentDbPath);
+    try {
+      // Three chunks attributed to three different sessions — all should sum.
+      store.indexPlainText("A".repeat(5_000), "src/a.ts", 20, {
+        sessionId: "sess-A",
+        eventId: "evt-a",
+      });
+      store.indexPlainText("B".repeat(5_000), "src/b.ts", 20, {
+        sessionId: "sess-B",
+        eventId: "evt-b",
+      });
+      // One legacy chunk with no session FK — MUST also sum (this is the
+      // whole point of the lifetime aggregate; per-session filter excludes
+      // these but lifetime must include them).
+      store.indexPlainText("C".repeat(5_000), "src/c.ts", 20);
+    } finally {
+      store.close();
+    }
+
+    const total = getContentBytesAllSessions(contentDbPath);
+
+    // Three chunks of 5_000 bytes body each + small title bytes. Lower
+    // bound proves all three rows summed (per-session filter on any one
+    // sid would yield ≤5_000 + title noise ≈ 5_010-ish, never > 14_000).
+    // Upper bound catches accidental double-counting (e.g. JOIN explosion).
+    expect(total).toBeGreaterThan(14_000);
+    expect(total).toBeLessThan(20_000);
+  });
+
+  test("getContentBytesAllSessions returns 0 for missing DB", async () => {
+    const { getContentBytesAllSessions } = await import(
+      "../../src/session/analytics.js"
+    );
+    expect(
+      getContentBytesAllSessions(join(tmpdir(), `missing-${randomUUID()}.db`)),
+    ).toBe(0);
+  });
+
+  // ─── v1.0.134 SLICE C bug — multi-adapter contentBytes accumulation ──────
+  // ARCH-REVIEW-V134-ABC SLICE C verdict: getMultiAdapterRealBytesStats
+  // currently sums eventDataBytes / bytesAvoided / bytesReturned /
+  // snapshotBytes per adapter but NEVER touches contentBytes from each
+  // adapter's content DB. Result: ctx_stats lifetime tier shows the
+  // FIRST adapter's content bytes only, masking 50+ MB of indexed payload
+  // across the other 14 adapters. This test pins the contract that
+  // contentBytes accumulates across every adapter's content/*.db.
+  test("lifetime contentBytes accumulates across multiple adapter content DBs", () => {
+    const home = mkdtempSync(join(tmpdir(), "multi-content-"));
+    cleanups.push(() => { try { rmSync(home, { recursive: true, force: true }); } catch {} });
+
+    // Two adapters with separate content DBs. Sessions dirs must exist
+    // (existsSync gate at the top of the loop) but the multi-adapter
+    // aggregator should still pick up contentBytes from the sibling
+    // content/ tree even when no session_events rows exist.
+    const claudeBase = join(home, ".claude", "context-mode");
+    const codexBase = join(home, ".codex", "context-mode");
+    mkdirSync(join(claudeBase, "sessions"), { recursive: true });
+    mkdirSync(join(codexBase, "sessions"), { recursive: true });
+    mkdirSync(join(claudeBase, "content"), { recursive: true });
+    mkdirSync(join(codexBase, "content"), { recursive: true });
+
+    // ContentStore writes to <dir>/content.db when given a directory or
+    // an explicit path. enumerateAdapterDirs hands back contentDir as
+    // <base>/content — the canonical content DB lives at
+    // <base>/content/content.db (mirrors store.ts default layout).
+    const claudeContent = join(claudeBase, "content", "content.db");
+    const codexContent = join(codexBase, "content", "content.db");
+
+    const a = new ContentStore(claudeContent);
+    try {
+      a.indexPlainText("X".repeat(7_000), "src/x.ts", 20);
+    } finally { a.close(); }
+    const b = new ContentStore(codexContent);
+    try {
+      b.indexPlainText("Y".repeat(11_000), "src/y.ts", 20);
+    } finally { b.close(); }
+
+    const r = getMultiAdapterRealBytesStats({ home });
+
+    // 7_000 + 11_000 = 18_000 bytes of body across both adapter content
+    // DBs (plus tiny title overhead). If the impl only reads the first
+    // adapter's content DB, this asserts ~7_000 — well under 16_000.
+    expect(r.contentBytes).toBeGreaterThan(16_000);
+    expect(r.contentBytes).toBeLessThan(22_000);
   });
 });

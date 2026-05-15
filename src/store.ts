@@ -807,8 +807,14 @@ export class ContentStore {
     content?: string;
     path?: string;
     source?: string;
+    /**
+     * Optional FK metadata recorded on each indexed chunk so per-session
+     * honest-savings stats can join chunks → session_events. When omitted,
+     * chunks fall back to empty-string columns (legacy behaviour).
+     */
+    attribution?: { sessionId?: string; eventId?: string };
   }): IndexResult {
-    const { content, path, source } = options;
+    const { content, path, source, attribution } = options;
 
     // Treat empty string as "no content" so an empty `content` paired with a
     // valid `path` falls back to reading the file. Some MCP clients
@@ -851,7 +857,7 @@ export class ContentStore {
     const filePath = path ?? undefined;
     const contentHash = filePath ? createHash("sha256").update(text).digest("hex") : undefined;
 
-    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash));
+    return withRetry(() => this.#insertChunks(chunks, label, text, filePath, contentHash, attribution));
   }
 
   // ── Index Plain Text ──
@@ -865,9 +871,10 @@ export class ContentStore {
     content: string,
     source: string,
     linesPerChunk: number = 20,
+    attribution?: { sessionId?: string; eventId?: string },
   ): IndexResult {
     if (!content || content.trim().length === 0) {
-      return this.#insertChunks([], source, "");
+      return this.#insertChunks([], source, "", undefined, undefined, attribution);
     }
 
     const chunks = this.#chunkPlainText(content, linesPerChunk);
@@ -876,6 +883,9 @@ export class ContentStore {
       chunks.map((c) => ({ ...c, hasCode: false })),
       source,
       content,
+      undefined,
+      undefined,
+      attribution,
     ));
   }
 
@@ -892,26 +902,27 @@ export class ContentStore {
     content: string,
     source: string,
     maxChunkBytes: number = MAX_CHUNK_BYTES,
+    attribution?: { sessionId?: string; eventId?: string },
   ): IndexResult {
     if (!content || content.trim().length === 0) {
-      return this.indexPlainText("", source);
+      return this.indexPlainText("", source, undefined, attribution);
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
-      return this.indexPlainText(content, source);
+      return this.indexPlainText(content, source, undefined, attribution);
     }
 
     const chunks: Chunk[] = [];
     this.#walkJSON(parsed, [], chunks, maxChunkBytes);
 
     if (chunks.length === 0) {
-      return this.indexPlainText(content, source);
+      return this.indexPlainText(content, source, undefined, attribution);
     }
 
-    return withRetry(() => this.#insertChunks(chunks, source, content));
+    return withRetry(() => this.#insertChunks(chunks, source, content, undefined, undefined, attribution));
   }
 
   // ── Shared DB Insertion ──
@@ -921,8 +932,19 @@ export class ContentStore {
    * into both FTS5 tables within a transaction and extracts vocabulary.
    * Uses cached prepared statements from #prepareStatements().
    */
-  #insertChunks(chunks: Chunk[], label: string, text: string, filePath?: string, contentHash?: string): IndexResult {
+  #insertChunks(
+    chunks: Chunk[],
+    label: string,
+    text: string,
+    filePath?: string,
+    contentHash?: string,
+    attribution?: { sessionId?: string; eventId?: string },
+  ): IndexResult {
     const codeChunks = chunks.filter((c) => c.hasCode).length;
+    // FK columns on chunks. Empty-string fallback preserves the FTS5-friendly
+    // "not-null but unattributed" sentinel used by legacy rows.
+    const sessionIdCol = attribution?.sessionId ?? "";
+    const eventIdCol = attribution?.eventId ?? "";
 
     // Atomic dedup + insert: delete previous source with same label,
     // then insert new content — all within a single transaction.
@@ -943,8 +965,8 @@ export class ContentStore {
       const now = new Date().toISOString();
       for (const chunk of chunks) {
         const ct = chunk.hasCode ? "code" : "prose";
-        this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct, null, null, null, now);
-        this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct, null, null, null, now);
+        this.#stmtInsertChunk.run(chunk.title, chunk.content, sourceId, ct, null, sessionIdCol, eventIdCol, now);
+        this.#stmtInsertChunkTrigram.run(chunk.title, chunk.content, sourceId, ct, null, sessionIdCol, eventIdCol, now);
       }
 
       return sourceId;

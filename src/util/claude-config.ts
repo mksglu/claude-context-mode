@@ -23,7 +23,7 @@
  */
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { createRequire } from "node:module";
+import { detectPlatform, getSessionDirSegments } from "../adapters/detect.js";
 
 export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   const envVal = env.CLAUDE_CONFIG_DIR;
@@ -55,12 +55,18 @@ export function resolveClaudeGlobalSettingsPath(
  *      adapter is non-claude — claude is already covered by entry 2).
  *   2. The claude global settings.json (always — defense in depth).
  *
- * Lazy import of `./adapters/detect.js` keeps this file free of any direct
- * adapter dependency: the detect module itself only `import type`s adapter
- * types at the top level (concrete adapters are loaded dynamically inside
- * `getAdapter()`), so a static import is safe — but we use `createRequire`
- * to make the dependency direction crystal clear and to avoid surprising
- * future maintainers who add eager adapter imports to detect.ts.
+ * Static import of `../adapters/detect.js` is safe — detect.ts only imports
+ * `node:` builtins, `./types.js` (type-only), and `./client-map.js` (pure
+ * data). It does NOT import claude-config back, so no cycle.
+ *
+ * History: this used `createRequire(import.meta.url).resolve(...)` to lazy-
+ * load detect at call time. That pattern requires `require(esm)`, which is
+ * flag-gated on Node 22.x before 22.12 (`--experimental-require-module`).
+ * CI run 25877550371 on Node 22.5 silently failed every detect.* call —
+ * the catch block ate the error and every cross-adapter deny-policy test
+ * returned an empty policy list. Static import sidesteps the require(esm)
+ * gate entirely, so the same code works on every supported Node version
+ * (20.x, 22.5, 22.12+, 24+) without needing the experimental flag.
  *
  * The returned array is deduplicated and order-stable: adapter-specific path
  * first (most specific), claude global second (fallback).
@@ -70,25 +76,10 @@ export function resolveAdapterGlobalSettingsPaths(
 ): string[] {
   const paths: string[] = [];
 
-  // Lazy-load detect module to avoid any chance of an adapter import cycle.
-  // `detect.ts` exports pure functions — `detectPlatform` (env-driven) and
-  // `getSessionDirSegments` (sync map). Neither instantiates an adapter.
-  let detected: { platform: string } | null = null;
-  let segmentsFor: ((p: string) => string[] | null) | null = null;
-  try {
-    const lazyRequire = createRequire(import.meta.url);
-    const detect = lazyRequire("../adapters/detect.js") as {
-      detectPlatform: () => { platform: string };
-      getSessionDirSegments: (p: string) => string[] | null;
-    };
-    detected = detect.detectPlatform();
-    segmentsFor = detect.getSessionDirSegments;
-  } catch {
-    // If detection fails for any reason, fall back to claude-only behavior.
-  }
+  const detected = detectPlatform();
 
-  if (detected && segmentsFor && detected.platform !== "claude-code") {
-    const segments = segmentsFor(detected.platform);
+  if (detected.platform !== "claude-code") {
+    const segments = getSessionDirSegments(detected.platform);
     if (segments && segments.length > 0) {
       paths.push(resolve(homedir(), ...segments, "settings.json"));
     }

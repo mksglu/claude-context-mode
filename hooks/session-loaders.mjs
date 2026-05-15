@@ -74,13 +74,26 @@ export function attributeAndInsertEvents(db, sessionId, events, input, projectDi
     workspaceRoots: Array.isArray(input.workspace_roots) ? input.workspace_roots : [],
     lastKnownProjectDir,
   });
+  // Build a parallel bytesList from event-level bytes_avoided (currently
+  // populated by external_ref's ctx_fetch_and_index preamble parser). When
+  // no event carries a positive value we leave bytesList undefined so
+  // SessionDB falls back to its 0-default for bytes_avoided/bytes_returned
+  // — preserves backward compat with older callers / tests.
+  let bytesList;
+  if (events.some((e) => typeof e?.bytes_avoided === "number" && e.bytes_avoided > 0)) {
+    bytesList = events.map((e) =>
+      typeof e?.bytes_avoided === "number" && e.bytes_avoided > 0
+        ? { bytesAvoided: e.bytes_avoided }
+        : undefined,
+    );
+  }
   // Prefer bulk path (single transaction = single WAL commit). Falls back
   // to per-event insert for older SessionDB instances that lack bulkInsertEvents.
   if (typeof db.bulkInsertEvents === "function") {
-    db.bulkInsertEvents(sessionId, events, hookName, attributions);
+    db.bulkInsertEvents(sessionId, events, hookName, attributions, bytesList);
   } else {
     for (let i = 0; i < events.length; i++) {
-      db.insertEvent(sessionId, events[i], hookName, attributions[i]);
+      db.insertEvent(sessionId, events[i], hookName, attributions[i], bytesList?.[i]);
     }
   }
   return attributions;

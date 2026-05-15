@@ -244,6 +244,32 @@ GOOD — specific and actionable:
 
 ---
 
+## 8. `ctx_execute` Captures, `ctx_search` Filters — Don't Merge the Layers
+
+`ctx_execute` and `ctx_search` are two layers, not one. `ctx_execute` exists to **capture** full output into the index. `ctx_search` exists to **filter** what was captured. When you narrow the output *inside* `ctx_execute` — at the shell layer, in script logic, anywhere upstream of capture — the dropped lines never reach the index. `ctx_search` cannot recover what was never written. You've spent the capture budget and lost the data you'd want to query later, for no context-window benefit: large stdout is already auto-indexed, not returned inline.
+
+The mental model:
+
+```
+┌──────────────────────┐      ┌──────────────────────┐
+│   ctx_execute        │ ───▶ │   ctx_search         │
+│   (capture layer)    │      │   (filter layer)     │
+│                      │      │                      │
+│   produces full      │      │   queries the        │
+│   output into index  │      │   captured index     │
+└──────────────────────┘      └──────────────────────┘
+        ▲                              ▲
+        │                              │
+   Job: capture                   Job: narrow
+   Do NOT narrow here.            Do all narrowing here.
+```
+
+**Rule:** Treat `ctx_execute`'s output as write-once to the index. Run the command in full and let it index. Do every narrowing step downstream, via `ctx_search`. If you find yourself trimming inside `ctx_execute`, you are doing the filter layer's job in the capture layer — stop and move the narrowing to a `ctx_search` call.
+
+**Why the layer separation matters:** the index is what survives across calls and across sessions. Anything you discard before the index is gone permanently from this session's queryable surface. Anything you keep is queryable, repeatedly, with different questions, at zero re-execution cost.
+
+---
+
 ## Summary Checklist
 
 Before using `execute`, verify:

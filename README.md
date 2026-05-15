@@ -124,7 +124,7 @@ This gives you all 11 MCP tools without automatic routing. The model can still u
 <details>
 <summary><strong>Gemini CLI</strong> — one config file, hooks included</summary>
 
-**Prerequisites:** Node.js 18+, Gemini CLI installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Gemini CLI installed.
 
 **Install:**
 
@@ -197,7 +197,7 @@ Full config reference: [`configs/gemini-cli/settings.json`](configs/gemini-cli/s
 <details>
 <summary><strong>VS Code Copilot</strong> — hooks with SessionStart</summary>
 
-**Prerequisites:** Node.js 18+, VS Code with Copilot Chat v0.32+.
+**Prerequisites:** Node.js >= 22.5 (or Bun), VS Code with Copilot Chat v0.32+.
 
 **Install:**
 
@@ -254,7 +254,7 @@ Full hook config including PreCompact: [`configs/vscode-copilot/hooks.json`](con
 <details>
 <summary><strong>JetBrains Copilot</strong> — hooks with SessionStart</summary>
 
-**Prerequisites:** Node.js 18+, JetBrains IDE with GitHub Copilot plugin v1.5.57+.
+**Prerequisites:** Node.js >= 22.5 (or Bun), JetBrains IDE with GitHub Copilot plugin v1.5.57+.
 
 **Install:**
 
@@ -305,7 +305,7 @@ Full setup guide: [`docs/jetbrains-copilot.md`](docs/jetbrains-copilot.md)
 <details>
 <summary><strong>Cursor</strong> — hooks with stop support</summary>
 
-**Prerequisites:** Node.js 18+, Cursor with agent mode.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Cursor with agent mode.
 
 > **🚧 Work in progress** — the Marketplace plugin is **awaiting Cursor team review**. Until it's listed, install via the local-folder path described in Option A. Tracking in [#485](https://github.com/mksglu/context-mode/issues/485) / [#489](https://github.com/mksglu/context-mode/pull/489).
 
@@ -406,7 +406,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 <details>
 <summary><strong>OpenCode</strong> — TypeScript plugin with hooks</summary>
 
-**Prerequisites:** Node.js 18+, OpenCode installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), OpenCode installed.
 
 **Install:**
 
@@ -456,7 +456,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 <details>
 <summary><strong>KiloCode</strong> — TypeScript plugin with hooks</summary>
 
-**Prerequisites:** Node.js 18+, KiloCode installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), KiloCode installed.
 
 **Install:**
 
@@ -541,7 +541,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 <details>
 <summary><strong>Codex CLI</strong> — MCP + hooks</summary>
 
-**Prerequisites:** Node.js 18+, Codex CLI installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Codex CLI installed.
 
 **Install:**
 
@@ -606,7 +606,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 <details>
 <summary><strong>Qwen Code</strong> — MCP + hooks (identical wire protocol to Claude Code)</summary>
 
-**Prerequisites:** Node.js 18+, Qwen Code installed (`npm install -g @qwen-code/qwen-code`).
+**Prerequisites:** Node.js >= 22.5 (or Bun), Qwen Code installed (`npm install -g @qwen-code/qwen-code`).
 
 1. Install context-mode:
 
@@ -660,7 +660,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 <details>
 <summary><strong>Antigravity</strong> — MCP-only, no hooks</summary>
 
-**Prerequisites:** Node.js 18+, Antigravity installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Antigravity installed.
 
 **Install:**
 
@@ -701,7 +701,7 @@ Full configs: [`configs/antigravity/mcp_config.json`](configs/antigravity/mcp_co
 <details>
 <summary><strong>Kiro</strong> — hooks with steering file</summary>
 
-**Prerequisites:** Node.js 18+, Kiro with MCP enabled (Settings > search "MCP").
+**Prerequisites:** Node.js >= 22.5 (or Bun), Kiro with MCP enabled (Settings > search "MCP").
 
 **Install:**
 
@@ -759,7 +759,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>Zed</strong> — MCP-only, no hooks</summary>
 
-**Prerequisites:** Node.js 18+, Zed installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Zed installed.
 
 **Install:**
 
@@ -802,7 +802,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>Pi Coding Agent</strong> — extension with full hook support</summary>
 
-**Prerequisites:** Node.js 18+, Pi Coding Agent installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Pi Coding Agent installed.
 
 **Install:**
 
@@ -849,7 +849,7 @@ Full configs: [`configs/kiro/mcp.json`](configs/kiro/mcp.json) | [`configs/kiro/
 <details>
 <summary><strong>OMP (Oh My Pi)</strong> — plugin with full hook support</summary>
 
-**Prerequisites:** Node.js 18+, Oh My Pi installed.
+**Prerequisites:** Node.js >= 22.5 (or Bun), Oh My Pi installed.
 
 **Install — plugin path (recommended):**
 
@@ -924,7 +924,7 @@ Full configs: [`configs/omp/mcp.json`](configs/omp/mcp.json) | [`configs/omp/SYS
 
 Context Mode uses [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) on Node.js, which ships prebuilt native binaries for most platforms. On glibc >= 2.31 systems (Ubuntu 20.04+, Debian 11+, Fedora 34+, macOS, Windows), `npm install` works without any build tools.
 
-**Linux + Node.js >= 22.13:** Context Mode automatically uses the built-in `node:sqlite` module instead of `better-sqlite3`. This eliminates the native addon entirely, avoiding [sporadic SIGSEGV crashes](https://github.com/nodejs/node/issues/62515) caused by V8's `madvise(MADV_DONTNEED)` corrupting the addon's `.got.plt` section on Linux. No configuration needed — detection is automatic. Falls back to `better-sqlite3` on older Node.js versions.
+**Linux + Node.js >= 22.5:** Context Mode automatically uses the built-in `node:sqlite` module instead of `better-sqlite3`. This eliminates the native addon entirely, avoiding [sporadic SIGSEGV crashes](https://github.com/nodejs/node/issues/62515) caused by V8's `madvise(MADV_DONTNEED)` corrupting the addon's `.got.plt` section on Linux. No configuration needed — detection is automatic. **Linux + Node < 22.5 is unsupported** ([#564](https://github.com/mksglu/context-mode/issues/564)) — `npm install` will fail with remediation instructions.
 
 **Bun users:** No native compilation needed. Context Mode automatically detects Bun and uses the built-in `bun:sqlite` module via a compatibility adapter. `better-sqlite3` and all its build dependencies are skipped entirely.
 
@@ -986,7 +986,7 @@ When output exceeds 5 KB and an `intent` is provided, Context Mode switches to i
 
 ## How the Knowledge Base Works
 
-The `ctx_index` tool chunks markdown content by headings while keeping code blocks intact, then stores them in a **SQLite FTS5** (Full-Text Search 5) virtual table. The SQLite backend is selected automatically at runtime: `bun:sqlite` on Bun, `node:sqlite` on Linux + Node.js >= 22.13, and `better-sqlite3` everywhere else. Search uses **BM25 ranking** — a probabilistic relevance algorithm that scores documents based on term frequency, inverse document frequency, and document length normalization. **Porter stemming** is applied at index time so "running", "runs", and "ran" match the same stem. Titles and headings are weighted **5x** in BM25 scoring for precise navigational queries.
+The `ctx_index` tool chunks markdown content by headings while keeping code blocks intact, then stores them in a **SQLite FTS5** (Full-Text Search 5) virtual table. The SQLite backend is selected automatically at runtime: `bun:sqlite` on Bun, `node:sqlite` on Node.js >= 22.5, and `better-sqlite3` everywhere else. Search uses **BM25 ranking** — a probabilistic relevance algorithm that scores documents based on term frequency, inverse document frequency, and document length normalization. **Porter stemming** is applied at index time so "running", "runs", and "ran" match the same stem. Titles and headings are weighted **5x** in BM25 scoring for precise navigational queries.
 
 When you call `ctx_search`, it returns relevant content snippets focused around matching query terms — not full documents, not approximations, the actual indexed content with smart extraction around what you're looking for. `ctx_fetch_and_index` extends this to URLs: fetch, convert HTML to markdown, chunk, index. The raw page never enters context. Use the `contentType` parameter to filter results by type (e.g. `code` or `prose`).
 
@@ -1360,6 +1360,17 @@ export CTX_FETCH_STRICT=1
 That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. Useful when context-mode runs as a shared service, not on a developer's own machine.
 
 `tool_input` for any `mcp__*` tool call is also redacted before persistence — keys matching `authorization`, `token`, `secret`, `password`, `api_key`, `cookie`, `signature`, `private_key` get masked to `[REDACTED]` so credentials in MCP arguments don't end up in the session DB.
+
+### Lifecycle environment variables
+
+Two runtime knobs control how MCP server processes self-manage. Defaults are safe — only set these to opt-out of the leak-fix introduced in v1.0.132 ([#565](https://github.com/mksglu/context-mode/issues/565) / [#568](https://github.com/mksglu/context-mode/pull/568)).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONTEXT_MODE_IDLE_TIMEOUT_MS` | `900000` (15 min) | An MCP child self-exits cleanly after this many milliseconds of stdin/request inactivity. Hosts like OpenCode and KiloCode open one MCP child per session and per subagent — without this, idle children accumulate to 25+ processes / 1.6 GB RSS in long-lived shells. Set to `0` to disable self-shutdown (rarely needed; useful only for daemons that must outlive their parent). |
+| `CONTEXT_MODE_STARTUP_SWEEP` | `1` (enabled) | At boot, a newly-spawned MCP child reaps any other context-mode MCP server pids that share its parent process (`sameParentOnly: true` — never touches MCP children of a different host). This reclaims accumulated siblings immediately instead of waiting for each idle timer to fire. Set to `0` or `false` to disable (useful when you intentionally want multiple concurrent MCP children under the same host, e.g. multi-tenant test runners). |
+
+Both vars are read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Invalid values (non-numeric `CONTEXT_MODE_IDLE_TIMEOUT_MS`, unrecognized `CONTEXT_MODE_STARTUP_SWEEP`) fall back to defaults silently.
 
 ## Contributing
 

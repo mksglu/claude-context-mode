@@ -19,6 +19,64 @@ import { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServ
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
 
+// ── -2. Issue #564 — Linux SIGSEGV class hard-fail (v1.0.132) ────────
+// On Linux + Node < 22.5 + no Bun, better-sqlite3's native addon is
+// vulnerable to V8 calling `madvise(MADV_DONTNEED)` on memory ranges
+// that overlap the addon's `.got.plt` section, corrupting resolved
+// symbol addresses and causing sporadic SIGSEGV (1-4/hour) — see
+// https://github.com/nodejs/node/issues/62515 and our internal #564.
+//
+// node:sqlite (built-in, no native addon, no .got.plt to corrupt) ships
+// from Node 22.5 onward — that is the contract `hasModernSqlite()` in
+// src/db-base.ts encodes. Six prior fixes (#228, #331, #461, #540,
+// #551, #556) silently assumed users had Node >= 22.5 on Linux; #564
+// is the second confirmed report (after #556) of the same SIGSEGV
+// class on Node 20.
+//
+// The architect mandate for v1.0.132 is HARD-FAIL, not warn-then-
+// degrade. `engines.node >= 22.5.0` in package.json is cosmetic under
+// the default npm `engine-strict=false`, so the contract has to be
+// enforced HERE — preinstall/postinstall is the only place that can
+// `process.exit(1)` across npm/pnpm/yarn.
+//
+// Linux + Bun is allowed through (bun:sqlite sidesteps better-sqlite3
+// entirely). Non-Linux platforms are unaffected by the madvise bug
+// and pass through unchanged.
+{
+  const isLinux = process.platform === "linux";
+  const hasBun =
+    typeof globalThis.Bun !== "undefined" ||
+    typeof process.versions.bun === "string";
+  const [majStr, minStr] = (process.versions.node ?? "0.0.0").split(".");
+  const major = Number(majStr);
+  const minor = Number(minStr);
+  const hasModernNode =
+    Number.isFinite(major) &&
+    Number.isFinite(minor) &&
+    (major > 22 || (major === 22 && minor >= 5));
+  if (isLinux && !hasBun && !hasModernNode) {
+    process.stderr.write(
+      "\n" +
+      "context-mode: install aborted\n" +
+      "  Linux + Node " + (process.versions.node ?? "?") + " is unsupported.\n" +
+      "  context-mode requires Node.js >= 22.5 (or Bun) on Linux to avoid the\n" +
+      "  V8 madvise(MADV_DONTNEED) SIGSEGV affecting better-sqlite3 (1-4/hour).\n" +
+      "  Tracking: https://github.com/nodejs/node/issues/62515\n" +
+      "           https://github.com/mksglu/context-mode/issues/564\n" +
+      "\n" +
+      "  Fix: upgrade Node (recommended)\n" +
+      "    nvm install 22.5 && nvm use 22.5\n" +
+      "    npm install -g context-mode\n" +
+      "\n" +
+      "  Or: run under Bun\n" +
+      "    curl -fsSL https://bun.sh/install | bash\n" +
+      "    bun add -g context-mode\n" +
+      "\n",
+    );
+    process.exit(1);
+  }
+}
+
 /**
  * True when running as a real `npm install -g context-mode`. We use this
  * to keep contributors' local `npm install` runs from rewriting their HOME's

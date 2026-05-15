@@ -1956,6 +1956,34 @@ describe("External Ref Events", () => {
     assert.ok(refs[0].data.includes("github.com/user/repo/pull/100"), "should include PR URL");
     assert.ok(refs[0].data.includes("docs.example.com"), "should include doc URL");
   });
+
+  test("attaches bytes_avoided parsed from ctx_fetch_and_index preamble", () => {
+    // SLICE 2: when a ctx_fetch_and_index call returns its single-fetch
+    // preamble ("Fetched and indexed **N sections** (XKB) from: ..."),
+    // the external_ref event must carry the bytes-avoided figure so the
+    // honest-savings stats line is non-zero. Without this, indexed bytes
+    // never reach the session_events.bytes_avoided column.
+    const input = {
+      tool_name: "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index",
+      tool_input: { url: "https://example.com/guide" },
+      tool_response:
+        "Fetched and indexed **5 sections** (47.50KB) from: example-guide\n" +
+        "Full content indexed in sandbox — use ctx_search(queries: [...], source: \"example-guide\") for specific lookups.\n" +
+        "\n---\n\n" +
+        "Visit https://example.com/guide for the full doc.",
+    };
+
+    const events = extractEvents(input);
+    const refs = events.filter((e) => e.type === "external_ref");
+    assert.equal(refs.length, 1, "external_ref should fire on the preamble");
+    const ref = refs[0] as { type: string; data: string; bytes_avoided?: number };
+    assert.ok(
+      typeof ref.bytes_avoided === "number" && ref.bytes_avoided > 0,
+      `expected bytes_avoided > 0, got ${ref.bytes_avoided}`,
+    );
+    // 47.50KB = 47.50 * 1024 = 48640 bytes
+    assert.equal(ref.bytes_avoided, Math.round(47.5 * 1024));
+  });
 });
 
 // ════════════════════════════════════════════

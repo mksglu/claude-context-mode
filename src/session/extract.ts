@@ -18,6 +18,13 @@ export interface SessionEvent {
   data: string;
   /** 1=critical (rules, files, tasks) … 5=low */
   priority: number;
+  /**
+   * Optional — bytes context-mode prevented from entering the model context
+   * window for this event. Currently populated by external_ref when a
+   * ctx_fetch_and_index tool_response carries the
+   * `Fetched and indexed N sections (XKB)` preamble.
+   */
+  bytes_avoided?: number;
 }
 
 export interface ToolCall {
@@ -778,12 +785,30 @@ function extractExternalRef(input: HookInput): SessionEvent[] {
 
   if (refs.size === 0) return [];
 
-  return [{
+  // ctx_fetch_and_index returns a preamble like
+  //   "Fetched and indexed **5 sections** (47.50KB) from: <label>"
+  // Parse the size to credit bytes_avoided on the event so per-session
+  // honest-savings stats reflect what was kept out of the context window.
+  // KB literal in the preamble is decimal (KB = 1024 bytes per the formatter).
+  let bytesAvoided: number | undefined;
+  const preambleMatch = safeString(input.tool_response).match(
+    /Fetched and indexed[^\(]*\(([\d.]+)\s*KB\)/i,
+  );
+  if (preambleMatch) {
+    const kb = Number(preambleMatch[1]);
+    if (Number.isFinite(kb) && kb > 0) {
+      bytesAvoided = Math.round(kb * 1024);
+    }
+  }
+
+  const event: SessionEvent = {
     type: "external_ref",
     category: "external-ref",
     data: safeString(Array.from(refs).join(", ")),
     priority: 3,
-  }];
+  };
+  if (bytesAvoided !== undefined) event.bytes_avoided = bytesAvoided;
+  return [event];
 }
 
 /**

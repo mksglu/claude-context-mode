@@ -44,7 +44,7 @@ import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
 import { resolveProjectDir } from "./util/project-dir.js";
 import { loadDatabase } from "./db-base.js";
-import { AnalyticsEngine, formatReport, getConversationStats, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
+import { AnalyticsEngine, formatReport, getConversationStats, getContentBytesAllSessions, getLifetimeStats, getMultiAdapterLifetimeStats, getRealBytesStats, OPUS_INPUT_PRICE_PER_TOKEN } from "./session/analytics.js";
 const __pkg_dir = dirname(fileURLToPath(import.meta.url));
 const VERSION: string = (() => {
   for (const rel of ["../package.json", "./package.json"]) {
@@ -101,6 +101,63 @@ writeFileSync(
 let _store: ContentStore | null = null;
 
 /**
+ * Build the FK-attribution object passed to every ContentStore.index*() call
+ * in this process. CLAUDE_SESSION_ID is the only MCP-side handle we have on
+ * the current session — eventId stays undefined because MCP tool invocations
+ * are not paired with PostToolUse event rows at index time (the hook fires
+ * AFTER the tool returns). Empty-string fallback inside #insertChunks keeps
+ * legacy unattributed rows readable.
+ */
+export function currentAttribution(): { sessionId?: string } | undefined {
+  // CLAUDE_SESSION_ID env var is NOT propagated to MCP servers (only to hooks).
+  // Cross-adapter resolution: every adapter (15 of them) sets *_PROJECT_DIR env
+  // and writes session_events via hooks. Read the most-recent session_id from
+  // THIS project's session DB. Works for claude-code/cursor/gemini-cli/codex/
+  // kiro/opencode/zed/kilo/openclaw/qwen-code/vscode-copilot/jetbrains-copilot/
+  // omp/pi/antigravity — no adapter-specific transcript path required.
+  const sessionId = process.env.CLAUDE_SESSION_ID ?? resolveSessionIdFromSessionDB();
+  if (!sessionId) return undefined;
+  return { sessionId };
+}
+
+let __cachedSessionId: { sid: string; checkedAt: number } | undefined;
+/** v1.0.134 SLICE A: opts injection for testability. Production callers pass nothing. */
+export function resolveSessionIdFromSessionDB(opts?: {
+  projectDir?: string;
+  sessionsDir?: string;
+  bypassCache?: boolean;
+}): string | undefined {
+  // 2s cache — ctx_fetch_and_index can fire 5+ chunks/sec; DB open cost adds up.
+  const now = Date.now();
+  if (!opts?.bypassCache && __cachedSessionId && now - __cachedSessionId.checkedAt < 2000) {
+    return __cachedSessionId.sid;
+  }
+  try {
+    const projectDir = opts?.projectDir
+      ?? process.env.CLAUDE_PROJECT_DIR
+      ?? process.env.CONTEXT_MODE_PROJECT_DIR;
+    if (!projectDir) return undefined;
+    const sessionsDir = opts?.sessionsDir ?? getSessionDir();
+    const dbPath = resolveSessionDbPath({ projectDir, sessionsDir });
+    if (!existsSync(dbPath)) return undefined;
+    const Database = loadDatabase();
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const row = db.prepare(
+        "SELECT session_id FROM session_events ORDER BY created_at DESC LIMIT 1"
+      ).get() as { session_id?: string } | undefined;
+      const sid = row?.session_id;
+      if (sid) __cachedSessionId = { sid, checkedAt: now };
+      return sid;
+    } finally {
+      try { db.close(); } catch { /* best-effort */ }
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Auto-index session events files written by SessionStart hook.
  * Scans ~/.claude/context-mode/sessions/ for *-events.md files.
  * CLAUDE_PROJECT_DIR is NOT available to MCP servers — only to hooks —
@@ -116,7 +173,7 @@ function maybeIndexSessionEvents(store: ContentStore): void {
     for (const file of files) {
       const filePath = join(sessionsDir, file);
       try {
-        store.index({ path: filePath, source: "session-events" });
+        store.index({ path: filePath, source: "session-events", attribution: currentAttribution() });
         unlinkSync(filePath);
       } catch { /* best-effort per file */ }
     }
@@ -1315,7 +1372,7 @@ function indexStdout(
 ): { content: Array<{ type: "text"; text: string }> } {
   const store = getStore();
   trackIndexed(Buffer.byteLength(stdout));
-  const indexed = store.index({ content: stdout, source });
+  const indexed = store.index({ content: stdout, source, attribution: currentAttribution() });
   return {
     content: [
       {
@@ -1344,7 +1401,7 @@ function intentSearch(
 
   // Index into the PERSISTENT store so user can ctx_search() later
   const persistent = getStore();
-  const indexed = persistent.indexPlainText(stdout, source);
+  const indexed = persistent.indexPlainText(stdout, source, undefined, currentAttribution());
 
   // Search the persistent store directly (porter → trigram → fuzzy)
   let results = persistent.searchWithFallback(intent, maxResults, source);
@@ -1611,7 +1668,7 @@ server.registerTool(
         } catch { /* ignore — file read errors handled by store */ }
       }
       const store = getStore();
-      const result = store.index({ content, path: resolvedPath, source: source ?? resolvedPath });
+      const result = store.index({ content, path: resolvedPath, source: source ?? resolvedPath, attribution: currentAttribution() });
 
       return trackResponse("ctx_index", {
         content: [
@@ -1923,7 +1980,25 @@ export function buildFetchCode(url: string, outputPath: string): string {
   // can serve a public IP for the parent's pre-flight ssrfGuard lookup and
   // then a blocked IP (e.g. 169.254.169.254 IMDS) for the subprocess fetch's
   // own lookup — classic DNS rebinding across the parent/child boundary.
-  const classifyIpSrc = classifyIp.toString();
+  //
+  // CRITICAL: bundlers (esbuild) rename top-level identifiers — `classifyIp`
+  // becomes e.g. `_h` in server.bundle.mjs. `classifyIp.toString()` returns
+  // the renamed source `function _h(t){...}`, but the embedded subprocess
+  // template references the literal name `classifyIp` (and the function's
+  // own internal recursion is also `_h(...)`). Result: the subprocess sees
+  // `function _h(t){...; return _h(...)}` injected, then references to
+  // `classifyIp` blow up with `ReferenceError: classifyIp is not defined`.
+  //
+  // Fix: emit `var <fnName> = <fn-expr>; var classifyIp = <fnName>;`. The
+  // named function expression preserves recursion under whatever name the
+  // bundler chose, and the alias re-exposes the canonical `classifyIp`
+  // identifier the rest of the embedded script depends on.
+  const classifyIpInner = classifyIp.toString();
+  const classifyIpFnName = classifyIp.name || "classifyIp";
+  const classifyIpSrc =
+    classifyIpFnName === "classifyIp"
+      ? `var classifyIp = ${classifyIpInner};`
+      : `var ${classifyIpFnName} = ${classifyIpInner};\nvar classifyIp = ${classifyIpFnName};`;
   const strictMode = process.env.CTX_FETCH_STRICT === "1";
   return `
 const TurndownService = require(${turndownPath});
@@ -2383,13 +2458,14 @@ function indexFetched(f: { url: string; source?: string; markdown: string; heade
   // `source` label do not overwrite each other (commit 1f1243e). ctx_search()
   // still finds both via LIKE-mode source filter on the `source` substring.
   const storageLabel = composeFetchCacheKey(f.source, f.url);
+  const attribution = currentAttribution();
   let indexed: IndexResult;
   if (f.header === "__CM_CT__:json") {
-    indexed = store.indexJSON(f.markdown, storageLabel);
+    indexed = store.indexJSON(f.markdown, storageLabel, undefined, attribution);
   } else if (f.header === "__CM_CT__:text") {
-    indexed = store.indexPlainText(f.markdown, storageLabel);
+    indexed = store.indexPlainText(f.markdown, storageLabel, undefined, attribution);
   } else {
-    indexed = store.index({ content: f.markdown, source: storageLabel });
+    indexed = store.index({ content: f.markdown, source: storageLabel, attribution });
   }
   // Track AFTER the FTS5 write succeeds — failed indexes shouldn't inflate the counter.
   trackIndexed(Buffer.byteLength(f.markdown));
@@ -2751,7 +2827,7 @@ server.registerTool(
         .map((c) => c.label)
         .join(",")
         .slice(0, 80)}`;
-      const indexed = store.index({ content: stdout, source });
+      const indexed = store.index({ content: stdout, source, attribution: currentAttribution() });
 
       // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
       const allSections = store.getChunksBySource(indexed.sourceId);
@@ -2885,8 +2961,31 @@ server.registerTool(
             }
             if (sid) {
               conversation = getConversationStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
-              const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash });
-              const lifeReal = getRealBytesStats({ sessionsDir: getSessionDir() });
+              // v1.0.133 Slice 3: pass contentDbPath so getRealBytesStats can
+              // join chunks WHERE session_id = sid and fold the indexed
+              // content bytes into the per-conversation bar. Without this,
+              // Mert's session showed ~200B (event metadata only) even with
+              // 49 MB of indexed content sitting in the content DB.
+              // Render-time read-only — no DB mutation, no backfill.
+              const contentDbPath = getStorePath();
+              const convReal = getRealBytesStats({ sessionId: sid, sessionsDir: getSessionDir(), worktreeHash: dbHash, contentDbPath });
+              const lifeRealBase = getRealBytesStats({ sessionsDir: getSessionDir() });
+              // v1.0.134 SLICE C: lifetime tier sums ALL chunks (no
+              // session_id filter). Without this fold, lifetime "kept out"
+              // only counts session_events.bytes_avoided and ignores the
+              // bulk of indexed payload across every prior conversation.
+              const lifeContentBytes = getContentBytesAllSessions(contentDbPath);
+              const lifeReal = {
+                ...lifeRealBase,
+                contentBytes: lifeRealBase.contentBytes + lifeContentBytes,
+                bytesAvoided: lifeRealBase.bytesAvoided + lifeContentBytes,
+                totalSavedTokens: Math.floor(
+                  (lifeRealBase.eventDataBytes
+                    + lifeRealBase.bytesAvoided
+                    + lifeContentBytes
+                    + lifeRealBase.snapshotBytes) / 4,
+                ),
+              };
               realBytes = { conversation: convReal, lifetime: lifeReal };
             }
           } catch { /* never block ctx_stats */ }
@@ -3169,7 +3268,12 @@ server.registerTool(
 // files (events.md, FTS5 store file, stats file) are preserved.
 // Passing both sessionId AND scope:"project" is ambiguous (does the
 // caller want a per-session wipe or a project-wide one?) and is
-// rejected by the schema's refine().
+// rejected by an explicit check in the handler body — NOT a schema-level
+// .refine(). MCP SDK's normalizeObjectSchema() reads `.shape` to project
+// inputSchema → JSON Schema for tools/list; a ZodEffects (refine wrapper)
+// has no `.shape`, so the SDK silently emits `properties: {}`, and Claude
+// Code's strict-input-validation gate then rejects EVERY call to this
+// tool with "input_schema does not support fields". Issue #563.
 server.registerTool(
   "ctx_purge",
   {
@@ -3193,6 +3297,9 @@ server.registerTool(
       "Use sessionId when the user asks to clear a specific conversation's data.\n" +
       "Use scope:'project' ONLY when the user explicitly asks to reset everything.\n" +
       "NEVER call with bare {confirm:true} — always specify the scope.",
+    // NOTE: schema MUST be a plain z.object — no .refine()/.transform()/
+    // .superRefine() wrapper. See block comment above & issue #563. The
+    // cross-field ambiguity check lives in the handler body below.
     inputSchema: z.object({
       confirm: z.boolean().describe(
         "MUST be true. Destructive operation; false returns 'purge cancelled'."
@@ -3207,16 +3314,24 @@ server.registerTool(
         "the entire project (FTS5 + every session + stats). Omit only for the " +
         "deprecated bare-{confirm:true} back-compat path."
       ),
-    }).refine(
-      (v) => !(v.sessionId && v.scope === "project"),
-      {
-        message: "Ambiguous purge: sessionId implies scope:'session', cannot combine with scope:'project'. " +
-          "Use scope:'project' WITHOUT sessionId for the legacy whole-project wipe.",
-        path: ["scope"],
-      },
-    ),
+    }),
   },
   async ({ confirm, sessionId, scope }) => {
+    // Cross-field ambiguity check — formerly a schema .refine(), moved
+    // into the handler so the inputSchema stays a plain ZodObject and
+    // the MCP SDK can serialize `.shape` into JSON Schema (issue #563).
+    // Same human-readable message as the original refine() preserved.
+    if (sessionId && scope === "project") {
+      return trackResponse("ctx_purge", {
+        content: [{
+          type: "text" as const,
+          text:
+            "Ambiguous purge: sessionId implies scope:'session', cannot combine with scope:'project'. " +
+            "Use scope:'project' WITHOUT sessionId for the legacy whole-project wipe.",
+        }],
+        isError: true,
+      });
+    }
     if (!confirm) {
       return trackResponse("ctx_purge", {
         content: [{
@@ -3728,6 +3843,22 @@ server.registerTool(
 // ─────────────────────────────────────────────────────────
 
 async function main() {
+  // Startup sibling sweep (#565). OpenCode/KiloCode spawn one MCP child
+  // per session/subagent and never reap them. When a new MCP child boots
+  // under a host that already has N stale idle siblings (sharing OUR
+  // ppid), reclaim them before opening our own DB / sentinel / stdio.
+  // Best effort — never blocks startup.
+  try {
+    const { startupSiblingSweep } = await import("./util/sibling-mcp.js");
+    const report = await startupSiblingSweep();
+    if (report.totalKilled > 0) {
+      console.error(
+        `Reaped ${report.totalKilled} stale sibling MCP server(s) ` +
+        `(SIGTERM: ${report.terminatedBySigterm}, SIGKILL: ${report.terminatedBySigkill})`,
+      );
+    }
+  } catch { /* best effort */ }
+
   // Clean up stale DB files from previous sessions
   const cleaned = cleanupStaleDBs();
   if (cleaned > 0) {
@@ -3769,7 +3900,36 @@ async function main() {
   process.on("SIGTERM", () => { gracefulShutdown(); });
 
   // Lifecycle guard: detect parent death + stdin close to prevent orphaned processes (#103)
-  startLifecycleGuard({ onShutdown: () => gracefulShutdown() });
+  // Also: idle self-shutdown (#565) — OpenCode/KiloCode open one MCP child per
+  // session AND per subagent and never tear them down for the host's lifetime,
+  // accumulating one stdio child per session (observed: 26 children / 1.6 GB
+  // RSS under a single `opencode serve` parent). Idle timeout reaps quiescent
+  // servers; live ones bump `recordActivity()` on every JSON-RPC request via
+  // the MCP SDK's `_onrequest` hook wrapped below.
+  const lifecycle = startLifecycleGuard({ onShutdown: () => gracefulShutdown() });
+
+  // Wrap the SDK's internal request entry so every JSON-RPC `tools/call`,
+  // `tools/list`, etc. resets the idle timer. We intercept at this layer
+  // rather than per-tool because (a) it covers ALL requests, including
+  // listTools / listPrompts / listResources / ping, and (b) it survives
+  // future tool additions without each handler needing to remember to opt in.
+  //
+  // The cast is necessary because `_onrequest` is intentionally undocumented
+  // in the SDK's public types. Best effort — if the field shape changes in
+  // a future SDK release the lifecycle still works, idle reset just degrades
+  // to "untriggered" which simply means the server lives until the next
+  // ppid/signal-based exit path fires. We never block the request path.
+  try {
+    type SDKServerInternals = { _onrequest?: (...args: unknown[]) => unknown };
+    const inner = (server.server as unknown as SDKServerInternals);
+    const origOnRequest = inner._onrequest;
+    if (typeof origOnRequest === "function") {
+      inner._onrequest = function (this: unknown, ...args: unknown[]) {
+        try { lifecycle.recordActivity(); } catch { /* never break request path */ }
+        return origOnRequest.apply(this, args);
+      };
+    }
+  } catch { /* best effort — see comment above */ }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

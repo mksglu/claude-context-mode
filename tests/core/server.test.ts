@@ -2548,9 +2548,45 @@ describe("ctx_purge scoped handler (issue #520)", () => {
   });
 
   // Slice 6 — schema rejects {confirm, sessionId, scope:"project"} (ambiguous).
-  test("slice 6: schema refuses ambiguous {sessionId + scope:'project'}", () => {
-    // Implemented via z.object(...).refine(...) on the inputSchema.
-    expect(purgeBody).toMatch(/\.refine\(/);
+  // The MCP SDK's normalizeObjectSchema() requires a plain ZodObject so it
+  // can read `.shape` when serializing inputSchema → JSON Schema for
+  // tools/list. A `.refine()` wrapper produces a ZodEffects which has no
+  // `.shape`, so the SDK falls back to `properties: {}` — and Claude Code's
+  // strict-input-validation gate then rejects the tool call before the
+  // handler ever runs. Issue #563.
+  //
+  // Therefore the cross-field check MUST live in the handler body, not on
+  // the schema. Verify (a) the inputSchema is NOT wrapped in refine() and
+  // (b) the handler still rejects the ambiguous combo at runtime.
+  test("slice 6: inputSchema is plain z.object — no .refine/.transform/.superRefine wrapper (#563)", () => {
+    // Locate the inputSchema literal (between `inputSchema:` and the next
+    // top-level handler comma `},`). Anchor narrowly so we only inspect
+    // the schema, not the handler body that legitimately contains checks.
+    const schemaStart = purgeBody.indexOf("inputSchema:");
+    expect(schemaStart).toBeGreaterThan(-1);
+    // The schema literal ends at the matching close of registerTool's
+    // options object — i.e. just before `},\n  async (`.
+    const handlerStart = purgeBody.indexOf("async ({");
+    expect(handlerStart).toBeGreaterThan(schemaStart);
+    const schemaSlice = purgeBody.slice(schemaStart, handlerStart);
+    expect(schemaSlice).not.toMatch(/\.refine\(/);
+    expect(schemaSlice).not.toMatch(/\.superRefine\(/);
+    expect(schemaSlice).not.toMatch(/\.transform\(/);
+  });
+
+  test("slice 6b: handler rejects ambiguous {sessionId + scope:'project'} at runtime (#563)", () => {
+    // The cross-field ambiguity check moved out of the schema into the
+    // handler body. Verify a guard exists that fires when sessionId is
+    // present AND scope === "project", and that it returns isError:true
+    // rather than throwing.
+    const handlerSlice = purgeBody.slice(purgeBody.indexOf("async ({"));
+    expect(handlerSlice).toMatch(
+      /sessionId\s*&&\s*scope\s*===\s*["']project["']|scope\s*===\s*["']project["']\s*&&\s*sessionId/,
+    );
+    expect(handlerSlice).toMatch(/isError:\s*true/);
+    // Human-readable message preserved (matches the original refine() text
+    // so consumers see the same guidance).
+    expect(handlerSlice).toMatch(/[Aa]mbiguous/);
   });
 
   // Slice 7 — schema accepts {confirm:true, sessionId:"<uuid>"}.
@@ -2564,6 +2600,50 @@ describe("ctx_purge scoped handler (issue #520)", () => {
   // handler — not the deep module — to keep purge.ts pure.
   test("slice 8: handler emits deprecation warning when scope+sessionId both omitted", () => {
     expect(purgeBody).toMatch(/console\.warn\([^)]*deprecat/i);
+  });
+
+  // Slice 9 (#563 regression — class-wide guard) — NO registered MCP tool
+  // may wrap its inputSchema in .refine(), .superRefine(), or .transform().
+  // All three produce a ZodEffects, which the MCP SDK's
+  // normalizeObjectSchema() does not recognize (it reads `.shape`), so the
+  // serialized JSON Schema collapses to `properties: {}` — and Claude Code
+  // (and any strict-input client) then refuses every call to that tool
+  // with "input_schema does not support fields". Move cross-field checks
+  // into the handler body. This test catches the entire class for ALL
+  // registered tools, not just ctx_purge.
+  test("slice 9: all registered MCP tools must have non-empty input schema (regression for #563)", () => {
+    // Match every registerTool(...) block — same anchor pattern used by
+    // the per-tool slices above. Greedy [\s\S]*? + line-anchored ^);
+    // terminator = the body of one registerTool call.
+    const blocks = [
+      ...serverSrc.matchAll(
+        /server\.registerTool\(\s*"([^"]+)"[\s\S]*?^\);/gm,
+      ),
+    ];
+    expect(blocks.length).toBeGreaterThan(5);
+
+    const violations: string[] = [];
+    for (const m of blocks) {
+      const name = m[1];
+      const body = m[0];
+      // Isolate just the inputSchema literal (between `inputSchema:` and
+      // the start of the handler arrow `async (`). Tools without an
+      // inputSchema (none currently) are skipped silently.
+      const sIdx = body.indexOf("inputSchema:");
+      if (sIdx < 0) continue;
+      const hIdx = body.indexOf("async (", sIdx);
+      const schemaSlice = hIdx > sIdx ? body.slice(sIdx, hIdx) : body.slice(sIdx);
+      if (/\.refine\(/.test(schemaSlice)) violations.push(`${name}: .refine()`);
+      if (/\.superRefine\(/.test(schemaSlice)) violations.push(`${name}: .superRefine()`);
+      if (/\.transform\(/.test(schemaSlice)) violations.push(`${name}: .transform()`);
+    }
+    expect(
+      violations,
+      "ZodEffects on inputSchema breaks MCP SDK normalizeObjectSchema → JSON " +
+        "Schema collapses to properties:{} → Claude Code rejects with " +
+        "'input_schema does not support fields'. Move cross-field checks into " +
+        "the handler body. See issue #563.",
+    ).toEqual([]);
   });
 });
 
@@ -3501,6 +3581,54 @@ describe("buildFetchCode — embedded SSRF guard contract", () => {
     expect(generated).toMatch(/delete process\.env\.http_proxy/);
     expect(generated).toMatch(/delete process\.env\.https_proxy/);
     expect(generated).toMatch(/delete process\.env\.all_proxy/);
+  });
+
+  test("embedded SSRF classifier is callable as `classifyIp` even when bundler renames the export (#bug-v1.0.133)", () => {
+    // REGRESSION: esbuild renames top-level `classifyIp` to a short name
+    // (e.g. `_h`) in server.bundle.mjs. The previous implementation embedded
+    // `classifyIp.toString()` directly, which yielded `function _h(t){...}`
+    // — but the subprocess template invokes `classifyIp(...)` literally and
+    // the function's own internal recursion uses the bundler-mangled name.
+    // Result was 100% failure of ctx_fetch_and_index in the published build:
+    //   ReferenceError: classifyIp is not defined
+    //     at patchedPromisesLookup (.../script.js:71:19)
+    // The fix must: (1) expose the canonical `classifyIp` identifier in the
+    // embedded scope, AND (2) preserve recursion under whatever name the
+    // bundler chose. Validate by evaluating the embedded source in an
+    // isolated scope and confirming `classifyIp` resolves and works for
+    // both direct calls AND the recursive IPv4-mapped-IPv6 path.
+    expect(generated).toMatch(/var\s+classifyIp\s*=/);
+
+    // Extract the self-contained classifier declaration block (var classifyIp
+    // = function classifyIp(rawIp){...};) and evaluate it in a fresh function
+    // scope where neither `classifyIp` nor any bundler alias exists in the
+    // outer closure. The canonical name MUST resolve and behave.
+    const classifyIpDeclMatch = generated.match(
+      /var\s+\w+\s*=\s*function\s+\w+\s*\(\s*rawIp\s*\)[\s\S]+?\n\};(?:\s*var\s+classifyIp\s*=\s*\w+;)?/,
+    );
+    expect(
+      classifyIpDeclMatch,
+      "embedded classifyIp declaration block must be extractable from buildFetchCode output",
+    ).not.toBeNull();
+    const classifierBlock = classifyIpDeclMatch![0];
+
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const probe = new Function(`
+      ${classifierBlock}
+      return {
+        imds: classifyIp("169.254.169.254"),
+        loopback: classifyIp("127.0.0.1"),
+        publicIp: classifyIp("8.8.8.8"),
+        mapped: classifyIp("::ffff:169.254.169.254"),
+      };
+    `);
+    const result = probe() as Record<string, string>;
+    expect(result.imds).toBe("block");
+    expect(result.loopback).toBe("private");
+    expect(result.publicIp).toBe("public");
+    // IPv4-mapped IPv6 forces the internal recursive call path; if recursion
+    // is broken (bundler-mangled self-reference unresolved), this throws.
+    expect(result.mapped).toBe("block");
   });
 
   test("patches dns/promises lookup (separate function reference from dns.lookup)", () => {
@@ -4537,5 +4665,90 @@ describe("startup banner suppressed in stdio transport mode", () => {
 
     expect(stderr).not.toContain("Context Mode MCP server");
     expect(stderr).not.toContain("Detected runtimes:");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v1.0.134 SLICE A — cross-adapter session attribution
+// CLAUDE_SESSION_ID env var is NOT propagated to MCP servers (only hooks).
+// `resolveSessionIdFromSessionDB` must read the most-recent session_id from
+// THIS project's session DB so chunk attribution works on every adapter
+// (cursor, codex, gemini, kiro, opencode, etc.) without relying on env.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("v1.0.134 SLICE A — cross-adapter currentAttribution session DB fallback", () => {
+  test("currentAttribution falls back to session DB when CLAUDE_SESSION_ID env not set (cross-adapter)", async () => {
+    const { resolveSessionIdFromSessionDB, currentAttribution } = await import(
+      "../../src/server.js"
+    );
+    const { SessionDB, resolveSessionDbPath } = await import(
+      "../../src/session/db.js"
+    );
+
+    const sessionsDir = mkdtempSync(join(tmpdir(), "slice-a-sessions-"));
+    const projectDir = mkdtempSync(join(tmpdir(), "slice-a-proj-"));
+    try {
+      const dbPath = resolveSessionDbPath({ projectDir, sessionsDir });
+      const expectedSid = "11111111-2222-3333-4444-555566667777";
+
+      const sdb = new SessionDB({ dbPath });
+      try {
+        sdb.ensureSession(expectedSid, projectDir);
+        sdb.insertEvent(
+          expectedSid,
+          {
+            type: "tool_use",
+            category: "file",
+            priority: 1,
+            data: "src/x.ts",
+            project_dir: projectDir,
+            attribution_source: "test",
+            attribution_confidence: 1,
+          },
+          "test",
+        );
+      } finally {
+        sdb.close();
+      }
+
+      // Ensure env path is NOT taken — both env vars unset.
+      const prevSid = process.env.CLAUDE_SESSION_ID;
+      const prevProjDir = process.env.CLAUDE_PROJECT_DIR;
+      const prevCmProjDir = process.env.CONTEXT_MODE_PROJECT_DIR;
+      delete process.env.CLAUDE_SESSION_ID;
+      delete process.env.CLAUDE_PROJECT_DIR;
+      delete process.env.CONTEXT_MODE_PROJECT_DIR;
+      try {
+        // bypassCache: this test runs after others may have populated the cache.
+        const sid = resolveSessionIdFromSessionDB({
+          projectDir,
+          sessionsDir,
+          bypassCache: true,
+        });
+        expect(sid).toBe(expectedSid);
+
+        // currentAttribution wraps it the same way for prod callers — when the
+        // env var is unset it must surface the DB-resolved sid via the
+        // wrapper too. We re-set CONTEXT_MODE_PROJECT_DIR so the wrapper's
+        // own (cache-bypassed by 2s window starting fresh) call also resolves.
+        process.env.CONTEXT_MODE_PROJECT_DIR = projectDir;
+        // Wait long enough that the previous lookup's 2s cache won't shadow
+        // the wrapper's own resolveSessionIdFromSessionDB call (env-driven path).
+        // Easier: bypass via a direct call shape — the wrapper just composes.
+        const attr = currentAttribution();
+        // Either the env-resolved path returned the same sid, or — if cache
+        // beat us — at least it's not the empty/undefined case. The hard
+        // assertion is the DB lookup above; here we only confirm the
+        // wrapper's contract (returns { sessionId } when sid resolves).
+        expect(attr?.sessionId).toBeTruthy();
+      } finally {
+        if (prevSid !== undefined) process.env.CLAUDE_SESSION_ID = prevSid;
+        if (prevProjDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjDir;
+        if (prevCmProjDir !== undefined) process.env.CONTEXT_MODE_PROJECT_DIR = prevCmProjDir;
+        else delete process.env.CONTEXT_MODE_PROJECT_DIR;
+      }
+    } finally {
+      try { rmSync(sessionsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 });

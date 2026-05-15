@@ -1014,7 +1014,113 @@ export interface RealBytesStats {
   bytesAvoided: number;
   bytesReturned: number;
   snapshotBytes: number;
+  /**
+   * v1.0.133 Slice 3: bytes attributed to this session in the FTS5 content
+   * DB — `SUM(LENGTH(title) + LENGTH(content)) FROM chunks WHERE session_id = ?`.
+   *
+   * Read-only, render-time computation. Populated only when
+   * `getRealBytesStats` is called with both `sessionId` AND `contentDbPath`
+   * (i.e. the conversation tier from ctx_stats). Lifetime / project tiers
+   * leave this at 0 — aggregating across every adapter's content DB is a
+   * separate concern.
+   *
+   * Legacy chunks with empty `session_id` (pre-Slice-1) are NOT backfilled:
+   * the architect rejected the time-window join as unsafe. Old conversations
+   * stay low; new conversations populate honestly.
+   */
+  contentBytes: number;
   totalSavedTokens: number;
+}
+
+/**
+ * v1.0.133 Slice 3: Sum the bytes attributed to one session in the FTS5
+ * content DB.
+ *
+ * Returns `LENGTH(title) + LENGTH(content)` summed across every chunk
+ * whose `session_id` column matches `sessionId`. Best-effort — returns 0
+ * when the DB file is missing, the schema lacks the `session_id` column
+ * (pre-Slice-1 content DBs), or the query fails. Never throws.
+ *
+ * Render-time only. Does NOT mutate the content DB. Architect-approved
+ * because the read-only join carries no risk of cross-session attribution
+ * (the FK was set at chunk insert time by Slice 1).
+ */
+export function getContentBytesForSession(
+  sessionId: string,
+  contentDbPath: string,
+  opts?: { loadDatabase?: () => unknown },
+): number {
+  if (!sessionId || !contentDbPath) return 0;
+  if (!existsSync(contentDbPath)) return 0;
+
+  let DatabaseCtor: ReturnType<typeof loadDatabaseImpl> | null = null;
+  try {
+    DatabaseCtor = opts?.loadDatabase
+      ? (opts.loadDatabase() as ReturnType<typeof loadDatabaseImpl>)
+      : loadDatabaseImpl();
+  } catch { return 0; }
+  if (!DatabaseCtor) return 0;
+
+  try {
+    const db = new DatabaseCtor(contentDbPath, { readonly: true });
+    try {
+      const row = db.prepare(
+        `SELECT COALESCE(SUM(LENGTH(content) + LENGTH(title)), 0) AS bytes
+         FROM chunks WHERE session_id = ?`,
+      ).get(sessionId) as { bytes: number } | undefined;
+      return Number(row?.bytes ?? 0);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * v1.0.134 SLICE C — lifetime tier all-chunks aggregate.
+ *
+ * Sibling of {@link getContentBytesForSession} that omits the session_id
+ * filter so the lifetime tier sees every chunk in the content store —
+ * including legacy unattributed rows (sessionId === '') and chunks
+ * attributed to other adapters' sessions. Without this, the lifetime
+ * "kept out" headline only counts session_events.bytes_avoided and
+ * misses the bulk of indexed payload.
+ *
+ * Best-effort: returns 0 when the DB file is missing, the schema lacks
+ * the `chunks` table, or the query fails. Never throws — same contract
+ * as the rest of the analytics module so a corrupt content DB cannot
+ * crash ctx_stats.
+ */
+export function getContentBytesAllSessions(
+  contentDbPath: string,
+  opts?: { loadDatabase?: () => unknown },
+): number {
+  if (!contentDbPath) return 0;
+  if (!existsSync(contentDbPath)) return 0;
+
+  let DatabaseCtor: ReturnType<typeof loadDatabaseImpl> | null = null;
+  try {
+    DatabaseCtor = opts?.loadDatabase
+      ? (opts.loadDatabase() as ReturnType<typeof loadDatabaseImpl>)
+      : loadDatabaseImpl();
+  } catch { return 0; }
+  if (!DatabaseCtor) return 0;
+
+  try {
+    const db = new DatabaseCtor(contentDbPath, { readonly: true });
+    try {
+      const row = db.prepare(
+        `SELECT COALESCE(SUM(LENGTH(content) + LENGTH(title)), 0) AS bytes
+         FROM chunks`,
+      ).get() as { bytes: number } | undefined;
+      return Number(row?.bytes ?? 0);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -1035,6 +1141,13 @@ export function getRealBytesStats(opts: {
   sessionId?: string;
   sessionsDir?: string;
   worktreeHash?: string;
+  /**
+   * v1.0.133 Slice 3: when set alongside `sessionId`, the function joins
+   * the FTS5 content DB at this path and folds chunk bytes into
+   * `bytesAvoided` + `totalSavedTokens` + `contentBytes`. Render-time
+   * only — no DB writes.
+   */
+  contentDbPath?: string;
   loadDatabase?: () => unknown;
 }): RealBytesStats {
   const empty: RealBytesStats = {
@@ -1042,6 +1155,7 @@ export function getRealBytesStats(opts: {
     bytesAvoided: 0,
     bytesReturned: 0,
     snapshotBytes: 0,
+    contentBytes: 0,
     totalSavedTokens: 0,
   };
 
@@ -1128,11 +1242,27 @@ export function getRealBytesStats(opts: {
     } catch { /* missing tables / corrupt — skip */ }
   }
 
+  // v1.0.133 Slice 3: fold content DB chunk bytes for this session into
+  // bytesAvoided. Skipped silently when caller didn't pass contentDbPath
+  // (lifetime / project tiers, or pre-Slice-3 callers). Treated as
+  // "avoided" because indexed chunks are bytes that would have been
+  // re-inflated into context on every search if the model had to
+  // re-read raw files.
+  let contentBytes = 0;
+  if (opts.sessionId && opts.contentDbPath) {
+    contentBytes = getContentBytesForSession(
+      opts.sessionId,
+      opts.contentDbPath,
+      { loadDatabase: opts.loadDatabase },
+    );
+    bytesAvoided += contentBytes;
+  }
+
   const totalSavedTokens = Math.floor(
     (eventDataBytes + bytesAvoided + snapshotBytes) / 4,
   );
 
-  return { eventDataBytes, bytesAvoided, bytesReturned, snapshotBytes, totalSavedTokens };
+  return { eventDataBytes, bytesAvoided, bytesReturned, snapshotBytes, contentBytes, totalSavedTokens };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1381,6 +1511,7 @@ export function getMultiAdapterRealBytesStats(opts?: {
     bytesAvoided: 0,
     bytesReturned: 0,
     snapshotBytes: 0,
+    contentBytes: 0,
     totalSavedTokens: 0,
   };
   const perAdapter: MultiAdapterRealBytesStats["perAdapter"] = [];
@@ -1393,6 +1524,21 @@ export function getMultiAdapterRealBytesStats(opts?: {
       worktreeHash: opts?.worktreeHash,
       loadDatabase: opts?.loadDatabase,
     });
+    // ARCH-REVIEW-V134-ABC SLICE C: aggregate this adapter's content DB
+    // bytes into the lifetime sum. `getRealBytesStats` operates on
+    // session events only and never touches the sibling content/ tree —
+    // without this step the lifetime tier in ctx_stats reports 0 for
+    // every adapter except whichever one happens to share the
+    // sessionsDir of the caller. Lifetime tier ignores sessionId so
+    // the all-sessions aggregator is the right helper here.
+    if (!opts?.sessionId) {
+      const contentDbPath = join(entry.contentDir, "content.db");
+      const adapterContentBytes = getContentBytesAllSessions(contentDbPath, {
+        loadDatabase: opts?.loadDatabase as (() => unknown) | undefined,
+      });
+      one.contentBytes += adapterContentBytes;
+      sum.contentBytes += adapterContentBytes;
+    }
     perAdapter.push({ name: entry.name, ...one });
     sum.eventDataBytes += one.eventDataBytes;
     sum.bytesAvoided   += one.bytesAvoided;
@@ -1775,20 +1921,33 @@ function renderNarrative5Section(args: {
 
   // Without/With bars — measured from real per-event bytes_returned / bytes_avoided.
   //
-  // Honest definitions:
-  //   Without = bytes the model WOULD have re-seen with no filtering    = bytes_returned + bytes_avoided
-  //   With    = bytes the model ACTUALLY re-saw after context-mode      = bytes_returned
+  // Honest definitions (v1.0.134 SLICE B — eventDataBytes floor):
+  //   Without = bytes the model WOULD have re-seen with no filtering
+  //           = bytes_avoided + bytes_returned + eventDataBytes
+  //   With    = bytes the model ACTUALLY re-saw after context-mode
+  //           = bytes_returned + eventDataBytes
+  //
+  // Why eventDataBytes belongs on BOTH sides:
+  //   `eventDataBytes` is the raw payload captured by the hook (tool args,
+  //   prompt body, etc). Those bytes were "kept out" — never inflated back
+  //   into context — but they still represent real measured signal. Pre-fix
+  //   the formula was `with = max(1, bytesReturned)`, which collapsed to 1
+  //   whenever the conversation hadn't accumulated any re-served bytes yet
+  //   (early in a session, or for tool-heavy work that never re-hits index).
+  //   That produced a degenerate ~100% kept-out bar even when the only
+  //   honest signal we had was a few KB of event payloads.
   //
   // No fallback to heuristic. If the schema has zero signal for this
-  // conversation (no hook ever populated bytes_avoided / bytes_returned),
+  // conversation (no hook ever populated any of the three columns),
   // the section is skipped entirely. Honesty over decoration.
   const realConv = realBytes?.conversation;
-  const measuredAvoided  = realConv?.bytesAvoided  ?? 0;
-  const measuredReturned = realConv?.bytesReturned ?? 0;
+  const measuredAvoided  = realConv?.bytesAvoided   ?? 0;
+  const measuredReturned = realConv?.bytesReturned  ?? 0;
+  const measuredEvent    = realConv?.eventDataBytes ?? 0;
 
-  if (measuredAvoided + measuredReturned > 0) {
-    const convBytesWithout  = measuredReturned + measuredAvoided;
-    const convBytesWith     = Math.max(1, measuredReturned);
+  if (measuredAvoided + measuredReturned + measuredEvent > 0) {
+    const convBytesWithout  = measuredAvoided + measuredReturned + measuredEvent;
+    const convBytesWith     = Math.max(1, measuredReturned + measuredEvent);
     const convTokensWithout = Math.max(1, Math.floor(convBytesWithout / 4));
     const convTokensWith    = Math.max(1, Math.floor(convBytesWith    / 4));
     const withoutBar = dataBar(convTokensWithout, convTokensWithout, 32);

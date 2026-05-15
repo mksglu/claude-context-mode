@@ -34,6 +34,8 @@ import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mc
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
 import { healPluginJsonMcpServers, healMcpJsonArgs } from "../scripts/heal-installed-plugins.mjs";
+// @ts-expect-error — JS module, no TS declarations
+import { detectWindowsVsYear } from "../scripts/heal-better-sqlite3.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
 // duplicated here so the cli bundle does not pull server.ts top-level boot side effects.
 // Keep in sync — pure data, no I/O.
@@ -355,6 +357,41 @@ async function doctor(): Promise<number> {
 
   // Runtime check
   p.note(getRuntimeSummary(runtimes), "Runtimes");
+
+  // ── Issue #564 — Linux + Node < 22.5 + no Bun is unsafe ────────────
+  // V8's madvise(MADV_DONTNEED) can corrupt better-sqlite3's native addon
+  // `.got.plt` on Linux, causing sporadic SIGSEGV (1-4/hour). The 22.5
+  // gate (`hasModernSqlite()` in src/db-base.ts:226-244) is the contract:
+  // at or above it we use node:sqlite (built-in, no native addon, no
+  // .got.plt to corrupt); below it we fall through to better-sqlite3
+  // which WILL crash. engines.node + a hard-fail postinstall guard this
+  // at install time, but doctor() surfaces it for already-installed users
+  // (and for adapters whose MCP host swallows stderr during install).
+  // Refs:
+  //   - https://github.com/nodejs/node/issues/62515
+  //   - https://github.com/mksglu/context-mode/issues/564
+  {
+    const { hasModernSqlite } = await import("./db-base.js");
+    if (
+      process.platform === "linux" &&
+      !hasModernSqlite() &&
+      !hasBunRuntime()
+    ) {
+      criticalFails++;
+      p.log.error(
+        color.red("Node version: FAIL") +
+          ` — Linux + Node ${process.versions.node} is unsafe (SIGSEGV)` +
+          color.dim(
+            "\n  context-mode requires Node.js >= 22.5 (or Bun) on Linux to avoid the" +
+            "\n  V8 madvise(MADV_DONTNEED) SIGSEGV in better-sqlite3 (1-4/hour)." +
+            "\n  Refs: https://github.com/nodejs/node/issues/62515" +
+            "\n        https://github.com/mksglu/context-mode/issues/564" +
+            "\n  Fix:  nvm install 22.5 && nvm use 22.5 && npm install -g context-mode" +
+            "\n  Or:   curl -fsSL https://bun.sh/install | bash && bun add -g context-mode",
+          ),
+      );
+    }
+  }
 
   // Speed tier
   if (hasBunRuntime()) {
@@ -873,10 +910,12 @@ async function upgrade(opts?: { platform?: string }) {
 
       // Step 2: Install dependencies + build
       s.start("Installing dependencies & building");
+      const vsYear = detectWindowsVsYear();
       npmExecFile(["install", "--no-audit", "--no-fund"], {
         cwd: srcDir,
         stdio: "pipe",
         timeout: 120000,
+        ...(vsYear ? { env: { ...process.env, npm_config_msvs_version: vsYear } } : {}),
       });
       npmExecFile(["run", "build"], {
         cwd: srcDir,

@@ -273,6 +273,59 @@ describe("Basic Indexing", () => {
     assert.ok(stats.chunks >= 1);
     store.close();
   });
+
+  test("attribution flows through to chunks.session_id and chunks.event_id (#FK)", () => {
+    // SLICE 1: index*() must accept an optional `attribution` so chunks rows
+    // carry the session/event that triggered them. Hardcoded "" defeats the
+    // FK to session_events that powers per-session honest-savings stats.
+    const dbPath = join(
+      tmpdir(),
+      `context-mode-attrfk-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+    const store = new ContentStore(dbPath);
+    store.index({
+      content: "# Hello\n\nAttribution test body.",
+      source: "attr-doc",
+      attribution: { sessionId: "sess-FK-1", eventId: "evt-FK-9" },
+    } as Parameters<typeof store.index>[0]);
+
+    store.indexPlainText(
+      "log line one\nlog line two\nlog line three",
+      "attr-plain",
+      20,
+      { sessionId: "sess-FK-2", eventId: "evt-FK-10" },
+    );
+
+    store.indexJSON(
+      JSON.stringify({ a: 1, b: { c: "x" } }),
+      "attr-json",
+      undefined,
+      { sessionId: "sess-FK-3", eventId: "evt-FK-11" },
+    );
+
+    // Read raw rows back through a fresh handle to confirm persisted columns.
+    store.close();
+    const Database = loadDatabase();
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const rows = db
+        .prepare(
+          "SELECT title, source_id, session_id, event_id FROM chunks WHERE session_id != '' ORDER BY rowid",
+        )
+        .all() as Array<{ title: string; session_id: string; event_id: string }>;
+      const sessions = rows.map((r) => r.session_id);
+      const events = rows.map((r) => r.event_id);
+      assert.ok(rows.length >= 3, `expected attributed chunks across 3 indexers, got ${rows.length}`);
+      assert.ok(sessions.includes("sess-FK-1"), "index() must persist sessionId");
+      assert.ok(sessions.includes("sess-FK-2"), "indexPlainText() must persist sessionId");
+      assert.ok(sessions.includes("sess-FK-3"), "indexJSON() must persist sessionId");
+      assert.ok(events.includes("evt-FK-9"), "index() must persist eventId");
+      assert.ok(events.includes("evt-FK-10"), "indexPlainText() must persist eventId");
+      assert.ok(events.includes("evt-FK-11"), "indexJSON() must persist eventId");
+    } finally {
+      closeDB(db);
+    }
+  });
 });
 
 describe("Heading-Aware Chunking", () => {
