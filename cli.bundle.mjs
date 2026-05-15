@@ -336,4 +336,53 @@ ${n}`}}}});import{cpus as wF}from"node:os";async function $y(t,e){let{concurrenc
       SELECT
         chunks_trigram.title,
         chunks_trigram.content,
-        chunks_trigra
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#$=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label LIKE ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#T=this.#e.prepare(`
+      SELECT
+        chunks_trigram.title,
+        chunks_trigram.content,
+        chunks_trigram.content_type,
+        chunks_trigram.timestamp,
+        sources.label,
+        bm25(chunks_trigram, 5.0, 1.0) AS rank,
+        highlight(chunks_trigram, 1, char(2), char(3)) AS highlighted
+      FROM chunks_trigram
+      JOIN sources ON sources.id = chunks_trigram.source_id
+      WHERE chunks_trigram MATCH ? AND sources.label = ? AND chunks_trigram.content_type = ?
+      ORDER BY rank
+      LIMIT ?
+    `),this.#x=this.#e.prepare("SELECT word FROM vocabulary INDEXED BY idx_vocabulary_word_len WHERE length(word) BETWEEN ? AND ?"),this.#P=this.#e.prepare("SELECT label, chunk_count as chunkCount FROM sources ORDER BY id DESC"),this.#R=this.#e.prepare(`SELECT c.title, c.content, c.content_type, s.label
+       FROM chunks c
+       JOIN sources s ON s.id = c.source_id
+       WHERE c.source_id = ?
+       ORDER BY c.rowid`),this.#C=this.#e.prepare("SELECT chunk_count FROM sources WHERE id = ?"),this.#O=this.#e.prepare("SELECT content FROM chunks WHERE source_id = ?"),this.#A=this.#e.prepare("SELECT label, chunk_count, code_chunk_count, indexed_at, file_path, content_hash FROM sources WHERE label = ?"),this.#I=this.#e.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM sources) AS sources,
+        (SELECT COUNT(*) FROM chunks) AS chunks,
+        (SELECT COUNT(*) FROM chunks WHERE content_type = 'code') AS codeChunks
+    `),this.#N=this.#e.prepare("DELETE FROM chunks WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))"),this.#M=this.#e.prepare("DELETE FROM chunks_trigram WHERE source_id IN (SELECT id FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days'))"),this.#D=this.#e.prepare("DELETE FROM sources WHERE datetime(indexed_at) < datetime('now', '-' || ? || ' days')")}setDenyChecker(e){this.#s=e}index(e){let{content:r,path:n,source:s}=e,o=typeof r=="string"&&r.length>0;if(!o&&!n)throw new Error("Either content or path must be provided");let i;if(o)i=r;else{let l=b$(n,"r");try{if(!v$(l).isFile())throw new Error(`refusing to index ${n}: not a regular file`);i=_$(l,"utf-8")}finally{x$(l)}}let a=s??n??"untitled",c=this.#V(i),u=n??void 0,d=u?S$("sha256").update(i).digest("hex"):void 0;return Tn(()=>this.#m(c,a,i,u,d,e))}indexQueued(e){return Pn(this.#t,()=>this.index(e))}indexPlainText(e,r,n=20,s={}){if(!e||e.trim().length===0)return this.#m([],r,"",void 0,void 0,s);let o=this.#G(e,n);return Tn(()=>this.#m(o.map(i=>({...i,hasCode:!1})),r,e,void 0,void 0,s))}indexPlainTextQueued(e,r,n=20,s={}){return Pn(this.#t,()=>this.indexPlainText(e,r,n,s))}indexJSON(e,r,n=Ry,s={}){if(!e||e.trim().length===0)return this.indexPlainText("",r,20,s);let o;try{o=JSON.parse(e)}catch{return this.indexPlainText(e,r,20,s)}let i=[];return this.#F(o,[],i,n),i.length===0?this.indexPlainText(e,r,20,s):Tn(()=>this.#m(i,r,e,void 0,void 0,s))}indexJSONQueued(e,r,n=Ry,s={}){return Pn(this.#t,()=>this.indexJSON(e,r,n,s))}#m(e,r,n,s,o,i={}){let a=e.filter(p=>p.hasCode).length,c=i.attribution??i,u=c.sessionId??"",d=c.eventId??"",m=this.#e.transaction(()=>{if(this.#a.run(r),this.#l.run(r),this.#d.run(r),e.length===0){let b=this.#o.run(r,s??null,o??null);return Number(b.lastInsertRowid)}let p=this.#r.run(r,e.length,a,s??null,o??null),h=Number(p.lastInsertRowid),g=new Date().toISOString();for(let b of e){let _=b.hasCode?"code":"prose";this.#i.run(b.title,b.content,h,_,null,u,d,g),this.#c.run(b.title,b.content,h,_,null,u,d,g)}return h})(),f=i.skipVocabulary||Buffer.byteLength(n)>MF;return n&&!f&&this.#q(n),this.#h++,this.#h%t.OPTIMIZE_EVERY===0&&this.#U(),{sourceId:m,label:r,totalChunks:e.length,codeChunks:a,chunks:e.map(p=>({title:p.title,bytes:Buffer.byteLength(p.content),contentType:p.hasCode?"code":"prose"}))}}#j(e){return e.map(r=>({title:r.title,content:r.content,source:r.label,rank:r.rank,contentType:r.content_type,highlighted:r.highlighted,timestamp:r.timestamp??void 0}))}#f(e,r){return r==="exact"?e:`%${e}%`}search(e,r=3,n,s="AND",o,i="like"){let a=DF(e,s),c,u;return n&&o?(c=i==="exact"?this.#w:this.#k,u=[a,this.#f(n,i),o,r]):n?(c=i==="exact"?this.#y:this.#g,u=[a,this.#f(n,i),r]):o?(c=this.#S,u=[a,o,r]):(c=this.#p,u=[a,r]),Tn(()=>this.#j(c.all(...u)))}searchTrigram(e,r=3,n,s="AND",o,i="like"){let a=jF(e,s);if(!a)return[];let c,u;return n&&o?(c=i==="exact"?this.#T:this.#$,u=[a,this.#f(n,i),o,r]):n?(c=i==="exact"?this.#v:this.#b,u=[a,this.#f(n,i),r]):o?(c=this.#E,u=[a,o,r]):(c=this.#_,u=[a,r]),Tn(()=>this.#j(c.all(...u)))}fuzzyCorrect(e){let r=e.toLowerCase().trim();if(r.length<3)return null;if(this.#n.has(r)){let u=this.#n.get(r)??null;return this.#n.delete(r),this.#n.set(r,u),u}let n=LF(r.length),s=this.#x.all(r.length-n,r.length+n),o=null,i=n+1,a=!1;for(let{word:u}of s){if(u===r){a=!0;break}let d=zF(r,u);d<i&&(i=d,o=u)}let c=a?null:i<=n?o:null;if(this.#n.size>=t.FUZZY_CACHE_SIZE){let u=this.#n.keys().next().value;u!==void 0&&this.#n.delete(u)}return this.#n.set(r,c),c}#z(e,r,n,s,o="like"){let a=Math.max(r*2,10),c=this.search(e,a,n,"OR",s,o),d=c.length<r||/[./\\:_-]/.test(e)||/[a-z][A-Z]/.test(e)||/\d/.test(e)?this.searchTrigram(e,a,n,"OR",s,o):[],l=new Map,m=f=>`${f.source}::${f.title}`;for(let[f,p]of c.entries()){let h=m(p),g=l.get(h);g?g.score+=1/(60+f+1):l.set(h,{result:p,score:1/(60+f+1)})}for(let[f,p]of d.entries()){let h=m(p),g=l.get(h);g?g.score+=1/(60+f+1):l.set(h,{result:p,score:1/(60+f+1)})}return Array.from(l.values()).sort((f,p)=>p.score-f.score).slice(0,r).map(({result:f,score:p})=>({...f,rank:-p}))}#L(e,r){let n=r.toLowerCase().split(/\s+/).filter(i=>i.length>=2),s=n.filter(i=>!Co.has(i)),o=s.length>0?s:n;return e.map(i=>{let a=i.title.toLowerCase(),c=o.filter(f=>a.includes(f)).length,u=i.contentType==="code"?.6:.3,d=c>0?u*(c/o.length):0,l=0,m=0;if(o.length>=2){let f=i.content.toLowerCase(),p=o.map(h=>UF(f,h));if(!p.some(h=>h.length===0)){l=1/(1+HF(p)/Math.max(f.length,1));let g=FF(p,o);m=.5*Math.min(1,g/4)}}return{result:i,boost:d+l+m}}).sort((i,a)=>a.boost-i.boost||i.result.rank-a.result.rank).map(({result:i})=>i)}searchWithFallback(e,r=3,n,s,o="like",i=!0){i&&this.refreshStaleSources();let a=this.#z(e,r,n,s,o);if(a.length>0)return this.#L(a,e).map(f=>({...f,matchLayer:"rrf"}));let c=e.toLowerCase().trim().split(/\s+/).filter(m=>m.length>=3&&!Co.has(m)),u=c.join(" "),l=c.map(m=>this.fuzzyCorrect(m)??m).join(" ");if(l!==u){let m=this.#z(l,r,n,s,o);if(m.length>0)return this.#L(m,l).map(p=>({...p,matchLayer:"rrf-fuzzy"}))}return[]}lastRefreshCount=0;refreshStaleSources(){return this.#B(),this.lastRefreshCount}#B(){this.lastRefreshCount=0;let e=this.#e.prepare("SELECT label, file_path, content_hash, indexed_at FROM sources WHERE file_path IS NOT NULL").all();for(let r of e)try{if(!Cy(r.file_path)||this.#s&&this.#s(r.file_path))continue;let n=ol(r.file_path).mtime,s=new Date(r.indexed_at+"Z");if(n<=s)continue;let o=b$(r.file_path,"r"),i;try{if(!v$(o).isFile())continue;i=_$(o,"utf-8")}finally{x$(o)}if(S$("sha256").update(i).digest("hex")===r.content_hash)continue;this.index({content:i,path:r.file_path,source:r.label}),this.lastRefreshCount++}catch{}}getSourceMeta(e){let r=this.#A.get(e);return r?{label:r.label,chunkCount:r.chunk_count,codeChunkCount:r.code_chunk_count,indexedAt:r.indexed_at,filePath:r.file_path??null,contentHash:r.content_hash??null}:null}listSources(){return this.#P.all()}getChunksBySource(e){return this.#R.all(e).map(n=>({title:n.title,content:n.content,source:n.label,rank:0,contentType:n.content_type}))}getDistinctiveTerms(e,r=40){let n=this.#C.get(e);if(!n||n.chunk_count<3)return[];let s=n.chunk_count,o=2,i=Math.max(3,Math.ceil(s*.4)),a=new Map;for(let d of this.#O.iterate(e)){let l=new Set(d.content.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(m=>m.length>=3&&!Co.has(m)));for(let m of l)a.set(m,(a.get(m)??0)+1)}return Array.from(a.entries()).filter(([,d])=>d>=o&&d<=i).map(([d,l])=>{let m=Math.log(s/l),f=Math.min(d.length/20,.5),p=/[_]/.test(d),h=d.length>=12,g=p?1.5:h?.8:0;return{word:d,score:m+f+g}}).sort((d,l)=>l.score-d.score).slice(0,r).map(d=>d.word)}getStats(){let e=this.#I.get();return{sources:e?.sources??0,chunks:e?.chunks??0,codeChunks:e?.codeChunks??0}}cleanupStaleSources(e){return this.#e.transaction(s=>(this.#N.run(s),this.#M.run(s),this.#D.run(s)))(e).changes}getDBSizeBytes(){try{return ol(this.#t).size}catch{return 0}}#U(){try{this.#e.exec("INSERT INTO chunks(chunks) VALUES('optimize')"),this.#e.exec("INSERT INTO chunks_trigram(chunks_trigram) VALUES('optimize')")}catch{}}close(){this.#h>0&&this.#U(),Ro(this.#e)}#q(e){let r=e.toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(o=>o.length>=3&&!Co.has(o)),n=[...new Set(r)],s=0;this.#e.transaction(()=>{for(let o of n){let i=this.#u.run(o);s+=i.changes}})(),s>0&&this.#n.clear()}#V(e,r=Ry){let n=[],s=e.split(`
+`),o=[],i=[],a="",c=()=>{let d=i.join(`
+`).trim();if(d.length===0)return;let l=this.#X(o,a),m=i.some(_=>/^`{3,}/.test(_));if(Buffer.byteLength(d)<=r){n.push({title:l,content:d,hasCode:m}),i=[];return}let f=d.split(/\n\n+/),p=[],h=0,g=1,b=()=>{if(
