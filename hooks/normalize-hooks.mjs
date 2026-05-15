@@ -142,12 +142,15 @@ export function normalizePluginJson(content, nodePath, pluginRoot) {
  * Options:
  *   - pluginRoot: absolute path to plugin install dir (e.g. __dirname of start.mjs)
  *   - nodePath:   process.execPath
- *   - platform:   process.platform (only "win32" triggers a write)
+ *   - platform:   process.platform ("win32" and "linux" trigger a write)
  *
  * Best-effort — never throws.
  */
 export function normalizeHooksOnStartup({ pluginRoot, nodePath, platform }) {
-  if (platform !== "win32") return;
+  // Normalize on Windows (MSYS path mangling, #369/#372/#378) and Linux
+  // (bare `node` not in PATH when invoked via /bin/sh, e.g. nvm users).
+  // macOS ships a system node so bare `node` resolves reliably there.
+  if (platform !== "win32" && platform !== "linux") return;
   if (!pluginRoot || !nodePath) return;
 
   // hooks/hooks.json
