@@ -125,3 +125,117 @@ describe("start.mjs — Issue #531 Layer 5b .mcp.json args heal", () => {
     expect(block).toContain("healMcpJsonArgs");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #577 — start.mjs cache-heal layer MUST honor CLAUDE_CONFIG_DIR.
+//
+// Bug claim (justdoGIT, 2026-05-15):
+//   The auto-deployed cache-heal hook system in start.mjs hardcodes
+//   `~/.claude/...` paths instead of respecting the CLAUDE_CONFIG_DIR env var.
+//   When CLAUDE_CONFIG_DIR redirects config elsewhere:
+//     1. Looks for installed_plugins.json at the wrong path (silent no-op)
+//     2. Creates an unwanted ~/.claude/ directory
+//
+// Two surfaces are affected:
+//   A) start.mjs ITSELF — globalHooksDir, settingsPath, and the Layer 1 / 3+4
+//      registry/cache paths (lines that resolve(homedir(), ".claude", ...)).
+//   B) The auto-deployed cache-heal hook SCRIPT TEMPLATE that start.mjs writes
+//      to disk — once written to ~/.claude/hooks/, that script also needs to
+//      honor CLAUDE_CONFIG_DIR at its OWN runtime (not at start.mjs render
+//      time), because users may set the env var AFTER install.
+//
+// Fix pattern: mirror session-helpers.mjs::resolveConfigDir — read
+// CLAUDE_CONFIG_DIR (with leading-~ expansion), fall back to ~/.claude when
+// unset/empty. Same shape already lives in hooks/run-hook.mjs:33 ("Mirrors
+// session-helpers.mjs::resolveConfigDir for #453").
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("start.mjs — Issue #577 CLAUDE_CONFIG_DIR honoring", () => {
+  test("cache-heal layer reads CLAUDE_CONFIG_DIR env var", () => {
+    // The fix introduces (or mirrors) a resolveClaudeConfigDir helper that
+    // checks process.env.CLAUDE_CONFIG_DIR. Either the literal env-var name
+    // or a clearly-named helper must appear in start.mjs.
+    const hasEnvRead = /process\.env\.CLAUDE_CONFIG_DIR/.test(startSrc);
+    const hasHelper = /resolveClaudeConfigDir|getClaudeConfigDir/.test(
+      startSrc,
+    );
+    expect(hasEnvRead || hasHelper).toBe(true);
+  });
+
+  test("no remaining hardcoded resolve(homedir(), '.claude', ...) for plugin paths", () => {
+    // After the fix, plugin-cache and settings paths must be derived from
+    // the resolved config dir — not from a hardcoded ~/.claude segment.
+    // We allow the bare-fallback inside the resolver itself; everything
+    // else with a trailing path segment must go through the helper.
+    const offenders: string[] = [];
+    const lines = startSrc.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const stripped = line.replace(/\/\/.*$/, "").trim();
+      if (!stripped) continue;
+      // The isPluginInstallPath regex literally matches ".claude/plugins/" —
+      // that's a path-shape detector, not a path constructor, so it's fine.
+      if (stripped.includes("isPluginInstallPath")) continue;
+      if (stripped.includes("/[/\\\\]\\.claude")) continue;
+      // The fallback inside the resolver itself
+      // (`return resolve(homedir(), ".claude")` with no additional segments)
+      // is the documented default — keep it allowed.
+      const fallbackOnly = /return\s+resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*\)/;
+      if (fallbackOnly.test(line)) continue;
+      // The pattern we're hunting: resolve(homedir(), ".claude", <segment>, ...)
+      if (/resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*,/.test(line)) {
+        offenders.push(`L${i + 1}: ${line.trim()}`);
+      }
+    }
+    expect(
+      offenders,
+      `start.mjs still hardcodes ~/.claude in ${offenders.length} place(s):\n${offenders.join(
+        "\n",
+      )}`,
+    ).toEqual([]);
+  });
+
+  test("globalHooksDir is derived from the resolved config dir, not hardcoded", () => {
+    const ghdLine = startSrc
+      .split("\n")
+      .find((l) => /globalHooksDir\s*=/.test(l));
+    expect(ghdLine, "globalHooksDir assignment must exist in start.mjs").toBeDefined();
+    expect(ghdLine!).not.toMatch(
+      /resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*,\s*["']hooks["']\s*\)/,
+    );
+  });
+
+  test("settings.json registration path is derived from the resolved config dir", () => {
+    // The "Register the hook" block must compute settingsPath via the
+    // resolved config dir, not via a hardcoded literal.
+    const idx = startSrc.indexOf("Register the hook");
+    expect(idx).toBeGreaterThan(-1);
+    const block = startSrc.slice(idx, idx + 500);
+    expect(block).not.toMatch(
+      /resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*,\s*["']settings\.json["']\s*\)/,
+    );
+  });
+
+  test("auto-deployed heal script template honors CLAUDE_CONFIG_DIR at its own runtime", () => {
+    // The embedded `healScript` template literal becomes
+    // $CLAUDE_CONFIG_DIR/hooks/context-mode-cache-heal.mjs. Its OWN runtime
+    // — i.e. when Claude Code spawns it on SessionStart — must also honor
+    // CLAUDE_CONFIG_DIR. So the template literal itself has to embed the
+    // env-var read; baking the value at start.mjs render time would freeze
+    // the heal script to whatever CLAUDE_CONFIG_DIR was set to at install.
+    const startOfTpl = startSrc.indexOf("const healScript = `");
+    expect(startOfTpl).toBeGreaterThan(-1);
+    const endMarker = "writeFileSync(healHookPath, healScript";
+    const endIdx = startSrc.indexOf(endMarker, startOfTpl);
+    expect(endIdx).toBeGreaterThan(startOfTpl);
+    const tpl = startSrc.slice(startOfTpl, endIdx);
+
+    expect(tpl).toContain("CLAUDE_CONFIG_DIR");
+
+    // Embedded resolve() calls inside the template must NOT be the
+    // hardcoded ~/.claude form.
+    const tplBadForm =
+      /resolve\(\s*homedir\(\)\s*,\s*["']\.claude["']\s*,\s*["']plugins["']/;
+    expect(tpl).not.toMatch(tplBadForm);
+  });
+});

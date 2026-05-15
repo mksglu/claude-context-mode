@@ -1361,6 +1361,7 @@ async function upgrade(opts?: { platform?: string }) {
       stdio: "inherit",
       timeout: 30000,
       cwd: pluginRoot,
+      env: { ...process.env, CONTEXT_MODE_PLATFORM: detection.platform },
     });
   } catch {
     p.log.warn(

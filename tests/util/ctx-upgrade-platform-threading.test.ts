@@ -78,4 +78,14 @@ describe("cli.ts upgrade() honors --platform flag (issue #542)", () => {
     const upgradeBody = cliSrc.slice(upgradeIdx, upgradeIdx + 14000);
     expect(upgradeBody).toMatch(/--platform|platformOverride|opts\.platform/);
   });
+
+  test("upgrade() passes CONTEXT_MODE_PLATFORM into the nested doctor check", () => {
+    // The final verification step must not rediscover Claude Code via ~/.claude
+    // after upgrade() has already resolved OpenCode. Thread the chosen platform
+    // into the spawned doctor process so the child stays on the same path.
+    const upgradeIdx = cliSrc.indexOf("async function upgrade");
+    const upgradeBody = cliSrc.slice(upgradeIdx);
+    expect(upgradeBody).toContain('execFileSync("node", [cliPath, "doctor"], {');
+    expect(upgradeBody).toContain('CONTEXT_MODE_PLATFORM: detection.platform');
+  });
 });

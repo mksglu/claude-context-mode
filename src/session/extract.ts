@@ -713,7 +713,44 @@ function extractDecision(input: HookInput): SessionEvent[] {
     ? String((questions[0] as Record<string, unknown>)["question"] ?? "")
     : "";
 
-  const answer = safeString(String(input.tool_response ?? ""));
+  // tool_response is a JSON string that echoes the full request payload
+  // alongside the answers map: {"questions":[...],"answers":{"<q>":"<label>"}}.
+  // Stringifying the raw blob leaks the echoed questions/options into the
+  // event row and surfaces as "Unhandled case: [object Object]" downstream.
+  const rawResponse = String(input.tool_response ?? "");
+  let answerText = "";
+  try {
+    const parsed = JSON.parse(rawResponse) as { answers?: Record<string, unknown> };
+    const answers = parsed?.answers;
+    if (answers && typeof answers === "object") {
+      // multiSelect: true answers arrive as string[]; single-select arrive as
+      // string. Normalize both into a `" | "`-joined string so neither shape
+      // silently produces an empty answer.
+      const toAnswerText = (value: unknown): string => {
+        if (typeof value === "string") return value;
+        if (Array.isArray(value)) {
+          return value.filter((v): v is string => typeof v === "string").join(" | ");
+        }
+        return "";
+      };
+
+      const matched = questionText ? toAnswerText(answers[questionText]) : "";
+      if (matched) {
+        answerText = matched;
+      } else {
+        const values = Object.values(answers)
+          .map(toAnswerText)
+          .filter((v) => v.length > 0);
+        answerText = values.join(" | ");
+      }
+    }
+  } catch {
+    // Non-JSON tool_response — fail safe with empty answer rather than
+    // leaking the raw text (which would re-introduce the original bug
+    // for any future caller that sends a non-JSON payload).
+  }
+
+  const answer = safeString(answerText);
   const summary = questionText
     ? `Q: ${safeString(questionText)} → A: ${answer}`
     : `answer: ${answer}`;

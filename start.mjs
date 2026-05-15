@@ -9,6 +9,24 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
 process.chdir(__dirname);
 
+// Resolve the Claude Code config dir, honoring $CLAUDE_CONFIG_DIR (incl. leading ~).
+// Mirrors hooks/session-helpers.mjs::resolveConfigDir and hooks/run-hook.mjs (#453).
+// Inlined here because start.mjs runs before any other module loads — we cannot
+// dynamic-import session-helpers without circularity through the bundle path.
+// Fix for #577: cache-heal layer below was hardcoding ~/.claude regardless of
+// the env var, silently no-op'ing for users with a non-default config dir AND
+// creating an unwanted ~/.claude/ directory on disk.
+function resolveClaudeConfigDir() {
+  const envVal = process.env.CLAUDE_CONFIG_DIR;
+  if (envVal && envVal.trim() !== "") {
+    if (envVal.startsWith("~")) {
+      return resolve(homedir(), envVal.replace(/^~[/\\]?/, ""));
+    }
+    return resolve(envVal);
+  }
+  return resolve(homedir(), ".claude");
+}
+
 // Plugin-install-path guard (mirror of src/util/project-dir.ts isPluginInstallPath
 // — duplicated here because start.mjs ships as raw JS and cannot import TS).
 // When Claude Code runs `/ctx-upgrade` it kills + respawns the MCP server with
@@ -84,7 +102,8 @@ if (cacheMatch) {
   try {
     const cacheParent = cacheMatch[1];
     const myVersion = cacheMatch[2];
-    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const claudeConfigDir = resolveClaudeConfigDir();
+    const ipPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
 
     // Forward heal: if a newer version dir exists, update registry
     const dirs = readdirSync(cacheParent).filter((d) =>
@@ -116,7 +135,7 @@ if (cacheMatch) {
     }
 
     // Reverse heal: if registry points to non-existent dir, create symlink to us
-    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    const cacheRoot = resolve(claudeConfigDir, "plugins", "cache");
     if (existsSync(ipPath)) {
       const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
       for (const [key, entries] of Object.entries(ip.plugins || {})) {
@@ -158,9 +177,10 @@ try {
   const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
-  const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-  const pluginCacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
-  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  const claudeConfigDir = resolveClaudeConfigDir();
+  const registryPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
+  const pluginCacheRoot = resolve(claudeConfigDir, "plugins", "cache");
+  const settingsPath = resolve(claudeConfigDir, "settings.json");
   try { healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey }); }
   catch { /* best effort */ }
   // v1.0.116: Claude Code's plugin loader reads settings.json.enabledPlugins
@@ -224,7 +244,12 @@ try {
   const { buildHookCommand, selfHealCacheHealHook, ensureShebangAndExecBit } =
     await import("./hooks/cache-heal-utils.mjs");
 
-  const globalHooksDir = resolve(homedir(), ".claude", "hooks");
+  // #577: honor $CLAUDE_CONFIG_DIR — without this, Claude Code spawns hooks
+  // from $CLAUDE_CONFIG_DIR/settings.json but we deploy them to ~/.claude/hooks/
+  // and register them in ~/.claude/settings.json. The mismatch silently
+  // disables the heal AND creates an unwanted ~/.claude directory.
+  const claudeConfigDir = resolveClaudeConfigDir();
+  const globalHooksDir = resolve(claudeConfigDir, "hooks");
   const healHookPath = resolve(globalHooksDir, "context-mode-cache-heal.mjs");
   // Clean up old bash version if it exists
   const oldBashHook = resolve(globalHooksDir, "context-mode-cache-heal.sh");
@@ -236,14 +261,17 @@ try {
     const healScript = `#!/usr/bin/env node
 // context-mode plugin cache self-heal (auto-deployed)
 // Fixes anthropics/claude-code#46915: auto-update breaks CLAUDE_PLUGIN_ROOT
+// Honors CLAUDE_CONFIG_DIR (#577) — checked at this script's runtime so users
+// who set CLAUDE_CONFIG_DIR after install still get healed correctly.
 // Pure Node.js — no bash/shell dependency.
 import{existsSync,readdirSync,statSync,symlinkSync,lstatSync,unlinkSync,readFileSync}from"node:fs";
 import{dirname,join,resolve,sep}from"node:path";
 import{homedir}from"node:os";
+function cfgDir(){const e=process.env.CLAUDE_CONFIG_DIR;if(e&&e.trim()!==""){return e.startsWith("~")?resolve(homedir(),e.replace(/^~[/\\\\]?/,"")):resolve(e)}return resolve(homedir(),".claude")}
 try{
-  const f=resolve(homedir(),".claude","plugins","installed_plugins.json");
+  const f=resolve(cfgDir(),"plugins","installed_plugins.json");
   if(!existsSync(f))process.exit(0);
-  const cacheRoot=resolve(homedir(),".claude","plugins","cache");
+  const cacheRoot=resolve(cfgDir(),"plugins","cache");
   const ip=JSON.parse(readFileSync(f,"utf-8"));
   for(const[k,es]of Object.entries(ip.plugins||{})){
     if(k!=="context-mode@context-mode")continue;
@@ -271,8 +299,9 @@ try{
     try { ensureShebangAndExecBit(healHookPath); } catch { /* best effort */ }
   }
 
-  // Register the hook in ~/.claude/settings.json (Claude Code doesn't auto-discover hook files)
-  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  // Register the hook in $CLAUDE_CONFIG_DIR/settings.json (Claude Code doesn't auto-discover hook files).
+  // #577: must follow the same dir resolution as globalHooksDir above.
+  const settingsPath = resolve(claudeConfigDir, "settings.json");
   if (existsSync(settingsPath)) {
     const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
     const hooks = settings.hooks ?? {};

@@ -1057,13 +1057,20 @@ describe("start.mjs CLI self-heal", () => {
 
   test("start.mjs CLI self-heal is after ensure-deps import and before server import", () => {
     const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
-    const ensureDepsIdx = src.indexOf("ensure-deps.mjs");
-    const selfHealIdx = src.indexOf('cli.bundle.mjs');
-    const serverImportIdx = src.indexOf('server.bundle.mjs');
-    expect(ensureDepsIdx).toBeGreaterThan(-1);
-    expect(selfHealIdx).toBeGreaterThan(-1);
-    expect(serverImportIdx).toBeGreaterThan(-1);
-    // Self-heal must be between ensure-deps import and server import
+    // Anchor on actual statements, not raw filename mentions. The Linux Bun
+    // re-exec change in commit f985afa added a documentation comment that
+    // names `server.bundle.mjs` near the top of the file; `indexOf` matched
+    // THAT comment instead of the actual `await import("./server.bundle.mjs")`,
+    // pushing the assertion to compare selfHealIdx=16381 < commentIdx=2347 →
+    // FAIL on otherwise-correct ordering. Use uniquely-shaped statement
+    // fragments so a future comment cannot shift the test's compass.
+    const ensureDepsIdx    = src.indexOf('import "./hooks/ensure-deps.mjs"');
+    const selfHealIdx      = src.indexOf('if (!existsSync(resolve(__dirname, "cli.bundle.mjs"))');
+    const serverImportIdx  = src.indexOf('await import("./server.bundle.mjs")');
+    expect(ensureDepsIdx,   "ensure-deps import statement missing").toBeGreaterThan(-1);
+    expect(selfHealIdx,     "cli.bundle.mjs self-heal block missing").toBeGreaterThan(-1);
+    expect(serverImportIdx, "server.bundle.mjs await-import missing").toBeGreaterThan(-1);
+    // Self-heal must be between ensure-deps import and server import.
     expect(selfHealIdx).toBeGreaterThan(ensureDepsIdx);
     expect(selfHealIdx).toBeLessThan(serverImportIdx);
   });
