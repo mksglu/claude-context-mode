@@ -520,6 +520,38 @@ function healCacheMidSession(): void {
   } catch { /* best effort */ }
 }
 
+const MAX_TOOL_RESPONSE_BYTES = 96 * 1024;
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  return Buffer.from(text).subarray(0, maxBytes).toString("utf8").trimEnd();
+}
+
+export function capToolResultResponse(response: ToolResult, maxBytes = MAX_TOOL_RESPONSE_BYTES): ToolResult {
+  let remaining = maxBytes;
+  let truncated = false;
+  const suffix = "\n\n...[truncated by context-mode response cap — full content remains indexed; use ctx_search() for details]";
+
+  response.content = response.content.map((item) => {
+    if (truncated) return { ...item, text: "" };
+    const bytes = Buffer.byteLength(item.text);
+    if (bytes <= remaining) {
+      remaining -= bytes;
+      return item;
+    }
+
+    truncated = true;
+    const suffixBytes = Buffer.byteLength(suffix);
+    const budget = Math.max(0, remaining - suffixBytes);
+    return {
+      ...item,
+      text: truncateUtf8(item.text, budget) + suffix,
+    };
+  });
+
+  return response;
+}
+
 function trackResponse(toolName: string, response: ToolResult): ToolResult {
   // Mid-session cache heal — one-shot, first tool call
   healCacheMidSession();
@@ -530,6 +562,8 @@ function trackResponse(toolName: string, response: ToolResult): ToolResult {
       `⚠️ context-mode v${VERSION} outdated → v${_latestVersion} available. Upgrade: ${hint}\n\n` +
       response.content[0].text;
   }
+
+  response = capToolResultResponse(response);
 
   const bytes = response.content.reduce(
     (sum, c) => sum + Buffer.byteLength(c.text),
@@ -963,6 +997,37 @@ export function formatBatchQueryResults(
   sections.push(`\n> **Tip:** Results are scoped to this batch only. To search across all indexed sources, use \`ctx_search(queries: [...])\`.`);
 
   return sections;
+}
+
+export function formatIndexedSectionsInventory(
+  sections: Array<{ title: string; content: string }>,
+  maxItems = 200,
+  maxBytes = 24 * 1024,
+): { inventory: string[]; sectionTitles: string[] } {
+  const inventory: string[] = ["## Indexed Sections", ""];
+  const sectionTitles: string[] = [];
+  let bytesUsed = Buffer.byteLength(inventory.join("\n"));
+  let shown = 0;
+
+  for (const s of sections) {
+    const bytes = Buffer.byteLength(s.content);
+    const line = `- ${s.title} (${(bytes / 1024).toFixed(1)}KB)`;
+    const lineBytes = Buffer.byteLength(line) + 1;
+    if (shown >= maxItems || bytesUsed + lineBytes > maxBytes) break;
+    inventory.push(line);
+    sectionTitles.push(s.title);
+    bytesUsed += lineBytes;
+    shown++;
+  }
+
+  const omitted = sections.length - shown;
+  if (omitted > 0) {
+    inventory.push(
+      `- ... ${omitted} more sections omitted from response; use ctx_search(queries: [...]) for indexed content.`,
+    );
+  }
+
+  return { inventory, sectionTitles };
 }
 
 // ─────────────────────────────────────────────────────────
@@ -2831,13 +2896,7 @@ server.registerTool(
 
       // Build section inventory — direct query by source_id (no FTS5 MATCH needed)
       const allSections = store.getChunksBySource(indexed.sourceId);
-      const inventory: string[] = ["## Indexed Sections", ""];
-      const sectionTitles: string[] = [];
-      for (const s of allSections) {
-        const bytes = Buffer.byteLength(s.content);
-        inventory.push(`- ${s.title} (${(bytes / 1024).toFixed(1)}KB)`);
-        sectionTitles.push(s.title);
-      }
+      const { inventory, sectionTitles } = formatIndexedSectionsInventory(allSections);
 
       // Run all search queries — source scoped only.
       // Cross-source search remains available via explicit ctx_search().

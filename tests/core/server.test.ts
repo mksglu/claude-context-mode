@@ -2898,6 +2898,8 @@ describe("batch_execute FS read tracking", () => {
 
 import {
   buildBatchNodeOptionsPrefix,
+  capToolResultResponse,
+  formatIndexedSectionsInventory,
   runBatchCommands,
   type BatchCommand,
 } from "../../src/server.js";
@@ -3159,6 +3161,37 @@ describe("runBatchCommands edge cases", () => {
       "C:\\Temp\\cm-fs-preload.js",
     );
     expect(prefix).toBe('set "NODE_OPTIONS=--require C:\\Temp\\cm-fs-preload.js" && ');
+  });
+});
+
+describe("ctx_batch_execute response caps", () => {
+  test("indexed section inventory is capped for huge batches", () => {
+    const sections = Array.from({ length: 5000 }, (_, i) => ({
+      title: `section-${i}`,
+      content: `needle ${i}\n`.repeat(20),
+    }));
+
+    const { inventory, sectionTitles } = formatIndexedSectionsInventory(sections);
+    const text = inventory.join("\n");
+
+    expect(sectionTitles.length).toBeLessThanOrEqual(200);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(25 * 1024);
+    expect(text).toContain("more sections omitted");
+    expect(text).not.toContain("section-4999");
+  });
+
+  test("tool response cap truncates oversized text before MCP transport write", () => {
+    const result = capToolResultResponse({
+      content: [
+        { type: "text" as const, text: "x".repeat(1000) },
+        { type: "text" as const, text: "y".repeat(1000) },
+      ],
+    }, 256);
+
+    const text = result.content.map((c) => c.text).join("");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(256);
+    expect(text).toContain("truncated by context-mode response cap");
+    expect(result.content[1].text).toBe("");
   });
 });
 
