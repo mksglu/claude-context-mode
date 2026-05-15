@@ -676,6 +676,78 @@ describe("formatReport", () => {
 });
 
 // ─────────────────────────────────────────────────────────
+// v1.0.134 SLICE B — narrative bar uses eventDataBytes as floor
+// When `bytes_returned == 0` (a fresh session that hasn't measured any
+// re-served bytes yet) the previous formula degenerated to:
+//   convBytesWith    = max(1, 0)           = 1     ← tiny denominator
+//   convBytesWithout = 0 + measuredAvoided = N     ← real numerator
+// → ratio = ~100% kept-out, even when the only signal we have is the
+// captured event payload itself. The fix: include `eventDataBytes` (raw
+// captured payload bytes — also bytes we kept the model from re-seeing)
+// in BOTH sides of the ratio so the With bar reflects something honest.
+// ─────────────────────────────────────────────────────────
+describe("v1.0.134 SLICE B — narrative bar uses eventDataBytes when bytes_returned=0", () => {
+  it("bar ratio uses eventDataBytes when bytes_returned=0 (no degenerate 100%)", () => {
+    const report = makeReport({
+      savings: {
+        ...makeReport().savings,
+        total_calls: 5,
+        total_bytes_returned: 1000,
+        kept_out: 5000,
+      },
+    });
+
+    // Triggers the narrative-5-section path (conversation.events > 0).
+    const conversation = {
+      sessionId: "slice-b-test",
+      events: 12,
+      dbCount: 1,
+      daysAlive: 1.5,
+      snapshotBytes: 0,
+      snapshotsConsumed: 0,
+      byCategory: [],
+      firstEventMs: Date.now() - 86_400_000,
+      lastEventMs: Date.now(),
+    } as const;
+
+    const conversationRealBytes = {
+      // The signal that USED to be ignored by the bar formula.
+      eventDataBytes: 50_000,
+      bytesAvoided: 10_000,
+      bytesReturned: 0, // ← the degenerate-100% trigger before the fix
+      snapshotBytes: 0,
+      contentBytes: 0,
+      totalSavedTokens: Math.floor((50_000 + 10_000) / 4),
+    };
+
+    const output = formatReport(report, "1.0.134", null, {
+      conversation: conversation as any,
+      realBytes: { conversation: conversationRealBytes as any },
+    });
+
+    // The bar lines must render (signal > 0 from eventDataBytes).
+    const lines = output.split("\n");
+    const ratioLine = lines.find((l) =>
+      l.includes("kept out of context") && l.includes("%"),
+    );
+    expect(ratioLine, `bar summary line missing in output:\n${output}`)
+      .toBeDefined();
+
+    // Parse "  NN% kept out of context · ..." — must NOT be ~100%.
+    const m = ratioLine!.match(/(\d+)%\s+kept out of context/);
+    expect(m, `cannot parse ratio from line: ${ratioLine}`).not.toBeNull();
+    const pct = Number(m![1]);
+    // Honest ratio after fix:
+    //   With    = bytesReturned + eventDataBytes = 0 + 50000 = 50000
+    //   Without = bytesAvoided + bytesReturned + eventDataBytes = 60000
+    //   kept-out ≈ 1 - 50000/60000 ≈ 16.67%
+    // Pre-fix this was ~100%. The hard assertion is: no longer degenerate.
+    expect(pct).toBeLessThan(95);
+    expect(pct).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
 // PR-B — Issue #2 (lifetime monotonic) + Issue #3 (PO copy)
 // ─────────────────────────────────────────────────────────
 

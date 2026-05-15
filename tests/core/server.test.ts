@@ -4667,3 +4667,88 @@ describe("startup banner suppressed in stdio transport mode", () => {
     expect(stderr).not.toContain("Detected runtimes:");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v1.0.134 SLICE A — cross-adapter session attribution
+// CLAUDE_SESSION_ID env var is NOT propagated to MCP servers (only hooks).
+// `resolveSessionIdFromSessionDB` must read the most-recent session_id from
+// THIS project's session DB so chunk attribution works on every adapter
+// (cursor, codex, gemini, kiro, opencode, etc.) without relying on env.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("v1.0.134 SLICE A — cross-adapter currentAttribution session DB fallback", () => {
+  test("currentAttribution falls back to session DB when CLAUDE_SESSION_ID env not set (cross-adapter)", async () => {
+    const { resolveSessionIdFromSessionDB, currentAttribution } = await import(
+      "../../src/server.js"
+    );
+    const { SessionDB, resolveSessionDbPath } = await import(
+      "../../src/session/db.js"
+    );
+
+    const sessionsDir = mkdtempSync(join(tmpdir(), "slice-a-sessions-"));
+    const projectDir = mkdtempSync(join(tmpdir(), "slice-a-proj-"));
+    try {
+      const dbPath = resolveSessionDbPath({ projectDir, sessionsDir });
+      const expectedSid = "11111111-2222-3333-4444-555566667777";
+
+      const sdb = new SessionDB({ dbPath });
+      try {
+        sdb.ensureSession(expectedSid, projectDir);
+        sdb.insertEvent(
+          expectedSid,
+          {
+            type: "tool_use",
+            category: "file",
+            priority: 1,
+            data: "src/x.ts",
+            project_dir: projectDir,
+            attribution_source: "test",
+            attribution_confidence: 1,
+          },
+          "test",
+        );
+      } finally {
+        sdb.close();
+      }
+
+      // Ensure env path is NOT taken — both env vars unset.
+      const prevSid = process.env.CLAUDE_SESSION_ID;
+      const prevProjDir = process.env.CLAUDE_PROJECT_DIR;
+      const prevCmProjDir = process.env.CONTEXT_MODE_PROJECT_DIR;
+      delete process.env.CLAUDE_SESSION_ID;
+      delete process.env.CLAUDE_PROJECT_DIR;
+      delete process.env.CONTEXT_MODE_PROJECT_DIR;
+      try {
+        // bypassCache: this test runs after others may have populated the cache.
+        const sid = resolveSessionIdFromSessionDB({
+          projectDir,
+          sessionsDir,
+          bypassCache: true,
+        });
+        expect(sid).toBe(expectedSid);
+
+        // currentAttribution wraps it the same way for prod callers — when the
+        // env var is unset it must surface the DB-resolved sid via the
+        // wrapper too. We re-set CONTEXT_MODE_PROJECT_DIR so the wrapper's
+        // own (cache-bypassed by 2s window starting fresh) call also resolves.
+        process.env.CONTEXT_MODE_PROJECT_DIR = projectDir;
+        // Wait long enough that the previous lookup's 2s cache won't shadow
+        // the wrapper's own resolveSessionIdFromSessionDB call (env-driven path).
+        // Easier: bypass via a direct call shape — the wrapper just composes.
+        const attr = currentAttribution();
+        // Either the env-resolved path returned the same sid, or — if cache
+        // beat us — at least it's not the empty/undefined case. The hard
+        // assertion is the DB lookup above; here we only confirm the
+        // wrapper's contract (returns { sessionId } when sid resolves).
+        expect(attr?.sessionId).toBeTruthy();
+      } finally {
+        if (prevSid !== undefined) process.env.CLAUDE_SESSION_ID = prevSid;
+        if (prevProjDir !== undefined) process.env.CLAUDE_PROJECT_DIR = prevProjDir;
+        if (prevCmProjDir !== undefined) process.env.CONTEXT_MODE_PROJECT_DIR = prevCmProjDir;
+        else delete process.env.CONTEXT_MODE_PROJECT_DIR;
+      }
+    } finally {
+      try { rmSync(sessionsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
