@@ -26,6 +26,7 @@ setInterval(() => {}, 1000);
 `);
   const child = spawn(TSX_PATH, [script], {
     cwd: process.cwd(),
+    env: { ...process.env, CONTEXT_MODE_IDLE_TIMEOUT_MS: "0" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   child.on("close", () => { try { unlinkSync(script); } catch {} });
