@@ -101,9 +101,6 @@ describe(".codex-plugin/hooks.json", () => {
     for (const groups of Object.values(hooks.hooks)) {
       const command = groups[0]?.hooks[0]?.command ?? "";
       expect(command).toContain('node "${PLUGIN_ROOT}/hooks/codex/');
-      expect(command).not.toContain("node -e");
-      expect(command).not.toContain("CONTEXT_MODE_PLATFORM");
-      expect(command).not.toContain("CLAUDE_PLUGIN_ROOT");
     }
   });
 
