@@ -1157,6 +1157,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 **Kiro** — Partial coverage. Native `preToolUse` and `postToolUse` hooks capture tool events and enforce sandbox routing. `agentSpawn` (the Kiro equivalent of SessionStart) is not yet implemented, so session restore after compaction is not available. Requires manually copying `KIRO.md` to your project root. Auto-detected via MCP protocol handshake (`clientInfo.name`).
 
 **Pi Coding Agent** — High coverage. The extension registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). File edits, git ops, errors, and tasks are fully tracked. Session restore after compaction works via the extension's event hooks.
+Tool call output can be collapsed/expanded with the default Pi's default keybinding (Ctrl+O)
 
 **OMP (Oh My Pi)** — High coverage. The plugin (installed via `omp plugin install context-mode`) registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). Storage roots cleanly under `~/.omp/context-mode/` so OMP and Pi installs never share state (issue [#473](https://github.com/mksglu/context-mode/issues/473)). Auto-detected via `PI_CODING_AGENT_DIR` env var or presence of `~/.omp/`.
 
