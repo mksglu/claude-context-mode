@@ -636,14 +636,68 @@ describe("routePreToolUse", () => {
       }
     });
 
-    it("respects the once-per-session guidance throttle", () => {
-      const first = routePreToolUse("mcp__slack__post_message", {});
-      expect(first).not.toBeNull();
-      expect(first!.action).toBe("context");
+    // #567 follow-up — the external-MCP nudge is intentionally periodic, not
+    // one-shot. A single nudge gets lost in MCP-heavy sessions (50+ Jira
+    // calls) once context compaction kicks in, so we re-fire every N calls to
+    // keep the guidance in the model's recent window.
+    it("re-fires guidance every N calls (default cadence = 10)", () => {
+      const calls = Array.from({ length: 22 }, (_, i) =>
+        routePreToolUse(`mcp__slack__tool_${i}`, {}),
+      );
 
-      // Second call in the same session — guidanceOnce should suppress it.
+      // Fires on the 1st, 11th, 21st calls — null in between.
+      const fired = calls.map((c) => c?.action === "context");
+      const expected = calls.map((_, i) => i % 10 === 0);
+      expect(fired).toEqual(expected);
+    });
+
+    it("honors CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY to tune cadence", () => {
+      const prev = process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+      try {
+        process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = "3";
+        const calls = Array.from({ length: 7 }, (_, i) =>
+          routePreToolUse(`mcp__notion__tool_${i}`, {}),
+        );
+        const fired = calls.map((c) => c?.action === "context");
+        // period=3 → fires on calls 1, 4, 7 (indices 0, 3, 6).
+        expect(fired).toEqual([true, false, false, true, false, false, true]);
+      } finally {
+        if (prev === undefined) delete process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+        else process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = prev;
+      }
+    });
+
+    it("falls back to default cadence on invalid env values", () => {
+      const prev = process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+      try {
+        // Out-of-range, NaN, negative — all coerce to the default (10).
+        for (const v of ["0", "-1", "9999", "not-a-number", ""]) {
+          process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = v;
+          resetGuidanceThrottle();
+          const first = routePreToolUse("mcp__slack__a", {});
+          const second = routePreToolUse("mcp__slack__b", {});
+          expect(first?.action, `value=${JSON.stringify(v)}`).toBe("context");
+          // With default=10, the 2nd call must NOT fire.
+          expect(second, `value=${JSON.stringify(v)}`).toBeNull();
+        }
+      } finally {
+        if (prev === undefined) delete process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+        else process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = prev;
+      }
+    });
+
+    it("resetGuidanceThrottle resets the periodic counter", () => {
+      // Burn one call to advance the counter.
+      const first = routePreToolUse("mcp__slack__post_message", {});
+      expect(first?.action).toBe("context");
       const second = routePreToolUse("mcp__slack__list_users", {});
       expect(second).toBeNull();
+
+      // Reset clears both the in-memory throttle and the periodic counter so
+      // the next call re-fires from tick 1 (e.g. start of a fresh session).
+      resetGuidanceThrottle();
+      const afterReset = routePreToolUse("mcp__slack__list_users", {});
+      expect(afterReset?.action).toBe("context");
     });
 
     it("does NOT match plain Bash/Read/etc as external MCP", () => {
