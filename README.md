@@ -424,7 +424,10 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
      "mcp": {
        "context-mode": {
          "type": "local",
-         "command": ["context-mode"]
+         "command": ["context-mode"],
+         "environment": {
+           "CONTEXT_MODE_IDLE_TIMEOUT_MS": "900000"
+         }
        }
      },
      "plugin": ["context-mode"]
@@ -474,7 +477,10 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
      "mcp": {
        "context-mode": {
          "type": "local",
-         "command": ["context-mode"]
+         "command": ["context-mode"],
+         "environment": {
+           "CONTEXT_MODE_IDLE_TIMEOUT_MS": "900000"
+         }
        }
      },
      "plugin": ["context-mode"]
@@ -545,6 +551,45 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 
 **Install:**
 
+1. Add the context-mode marketplace and install the plugin from Codex's plugin UI:
+
+   ```bash
+   codex plugin marketplace add mksglu/context-mode
+   ```
+
+2. Enable plugin-provided hooks while the Codex feature is still gated:
+
+   ```toml
+   [features]
+   plugin_hooks = true
+   hooks = true
+   ```
+
+   > **Feature flag note:** Current Codex builds expose hooks under `[features].hooks`
+   > (or `codex --enable hooks`). Prefer `[features].hooks`; `[features].codex_hooks`
+   > remains accepted as a legacy alias in current Codex builds. Bundled plugin hooks
+   > additionally require `plugin_hooks` until Codex enables plugin hooks by default.
+
+3. Restart Codex CLI and verify MCP with `ctx stats`.
+
+   `ctx stats` proves the plugin MCP server is installed and reachable; it does
+   not prove hooks are trusted or running.
+
+4. Review and trust the context-mode plugin hooks if Codex prompts for hook
+   approval. Plugin hooks are only active after both feature flags are enabled
+   and Codex has accepted the hook commands.
+
+The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
+`skills/`, and bundled hooks via `.codex-plugin/hooks.json`. No manual
+`[mcp_servers.context-mode]` block or `$CODEX_HOME/hooks.json` is needed when
+`plugin_hooks` is enabled and the plugin hooks are trusted.
+
+> **Node/PATH note:** context-mode still needs `node` visible to the Codex process.
+> The plugin removes manual Codex config, but it does not vendor Node or inherit
+> login-shell PATH fixes automatically.
+
+**Manual fallback for Codex builds without `plugin_hooks`:**
+
 1. Install context-mode globally:
 
    ```bash
@@ -561,11 +606,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
    command = "context-mode"
    ```
 
-   > **Feature flag note:** Current Codex builds expose hooks under `[features].hooks`
-   > (or `codex --enable hooks`). Prefer `[features].hooks`; `[features].codex_hooks`
-   > remains accepted as a legacy alias in current Codex builds.
-
-3. Add hooks for routing enforcement and session tracking. Create `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json` when `CODEX_HOME` is unset):
+3. Create `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json` when `CODEX_HOME` is unset):
 
    ```json
    {
@@ -597,9 +638,9 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 
 5. Restart Codex CLI.
 
-**Verify:** Start a session and type `ctx stats`. Context-mode tools should appear and respond.
+**Verify:** Start a session and type `ctx stats` to verify MCP. To verify hook routing, confirm Codex lists/trusts the context-mode plugin hooks, then run a command that matches the routing rules.
 
-**Routing:** MCP tools work. Hook-based routing is active when `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json` is configured. The `AGENTS.md` file provides routing instructions for model awareness.
+**Routing:** MCP tools work after plugin install. Plugin hook routing is active only when `hooks` and `plugin_hooks` are enabled and Codex trusts the plugin hook commands. Manual hook routing is active when `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json` is configured. The `AGENTS.md` file provides routing instructions for model awareness.
 
 </details>
 
@@ -1157,6 +1198,7 @@ Detailed event data is also indexed into FTS5 for on-demand retrieval via `ctx_s
 **Kiro** — Partial coverage. Native `preToolUse` and `postToolUse` hooks capture tool events and enforce sandbox routing. `agentSpawn` (the Kiro equivalent of SessionStart) is not yet implemented, so session restore after compaction is not available. Requires manually copying `KIRO.md` to your project root. Auto-detected via MCP protocol handshake (`clientInfo.name`).
 
 **Pi Coding Agent** — High coverage. The extension registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). File edits, git ops, errors, and tasks are fully tracked. Session restore after compaction works via the extension's event hooks.
+Tool call output can be collapsed/expanded with the default Pi's default keybinding (Ctrl+O)
 
 **OMP (Oh My Pi)** — High coverage. The plugin (installed via `omp plugin install context-mode`) registers all key lifecycle events: `tool_call` (PreToolUse), `tool_result` (PostToolUse), `session_start` (SessionStart), and `session_before_compact` (PreCompact). Storage roots cleanly under `~/.omp/context-mode/` so OMP and Pi installs never share state (issue [#473](https://github.com/mksglu/context-mode/issues/473)). Auto-detected via `PI_CODING_AGENT_DIR` env var or presence of `~/.omp/`.
 
@@ -1363,14 +1405,20 @@ That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. U
 
 ### Lifecycle environment variables
 
-Two runtime knobs control how MCP server processes self-manage. Defaults are safe — only set these to opt-out of the leak-fix introduced in v1.0.132 ([#565](https://github.com/mksglu/context-mode/issues/565) / [#568](https://github.com/mksglu/context-mode/pull/568)).
+Two runtime knobs control how MCP server processes self-manage. Defaults are conservative after [#592](https://github.com/mksglu/context-mode/issues/592): idle self-shutdown is disabled unless a host config explicitly opts in. OpenCode and KiloCode opt in because they open one MCP child per session/subagent; Claude Code/Codex/editor hosts keep registered tool handles after a clean MCP exit and therefore must not idle-exit by default.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CONTEXT_MODE_IDLE_TIMEOUT_MS` | `900000` (15 min) | An MCP child self-exits cleanly after this many milliseconds of stdin/request inactivity. Hosts like OpenCode and KiloCode open one MCP child per session and per subagent — without this, idle children accumulate to 25+ processes / 1.6 GB RSS in long-lived shells. Set to `0` to disable self-shutdown (rarely needed; useful only for daemons that must outlive their parent). |
+| `CONTEXT_MODE_IDLE_TIMEOUT_MS` | `0` (disabled) | When set to a positive integer, an MCP child self-exits cleanly after this many milliseconds of stdin/request inactivity. OpenCode and KiloCode configs set `900000` (15 min) because those hosts can accumulate one MCP child per session/subagent. Leave disabled for hosts that do not auto-respawn after MCP EOF (Claude Code, Codex, editor MCP clients) or ctx_* tools may go stale after idle. |
 | `CONTEXT_MODE_STARTUP_SWEEP` | `1` (enabled) | At boot, a newly-spawned MCP child reaps any other context-mode MCP server pids that share its parent process (`sameParentOnly: true` — never touches MCP children of a different host). This reclaims accumulated siblings immediately instead of waiting for each idle timer to fire. Set to `0` or `false` to disable (useful when you intentionally want multiple concurrent MCP children under the same host, e.g. multi-tenant test runners). |
 
-Both vars are read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Invalid values (non-numeric `CONTEXT_MODE_IDLE_TIMEOUT_MS`, unrecognized `CONTEXT_MODE_STARTUP_SWEEP`) fall back to defaults silently.
+Both vars are read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Invalid/non-numeric `CONTEXT_MODE_IDLE_TIMEOUT_MS` values fall back to `0` (disabled); unrecognized `CONTEXT_MODE_STARTUP_SWEEP` values fall back to enabled.
+
+### Routing-guidance environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY` | `10` | Cadence (in tool calls) at which the PreToolUse hook re-injects the "wrap large external-MCP payloads in `ctx_execute`" guidance. The original implementation ([#529](https://github.com/mksglu/context-mode/pull/529)) fired only once per session, which got lost after context compaction in MCP-heavy sessions (e.g. 50+ Jira/Slack/Notion calls — see [#567](https://github.com/mksglu/context-mode/issues/567) follow-up). The default re-fires every 10th matching call, keeping the guidance in the model's recent window. Range `[1, 100]`; invalid values fall back to `10`. Set to `1` for "every call" (most aggressive — adds ~250 tokens/call) or to a larger value for less frequent reminders. |
 
 ## Contributing
 

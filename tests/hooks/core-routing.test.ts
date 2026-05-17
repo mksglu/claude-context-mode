@@ -24,6 +24,8 @@ let routePreToolUse: (
   toolName: string,
   toolInput: Record<string, unknown>,
   projectDir?: string,
+  platform?: string,
+  sessionId?: string,
 ) => {
   action: string;
   reason?: string;
@@ -86,6 +88,21 @@ describe("routePreToolUse", () => {
       expect(result).not.toBeNull();
       expect(result!.action).toBe("modify");
       expect(result!.updatedInput).toBeDefined();
+      expect((result!.updatedInput as Record<string, string>).command).toContain(
+        "curl/wget blocked",
+      );
+    });
+
+    it("denies Codex exec_command cmd payloads like Bash command payloads", () => {
+      const result = routePreToolUse(
+        "exec_command",
+        { cmd: "curl https://example.com" },
+        undefined,
+        "codex",
+        "codex-cmd-curl",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.action).toBe("modify");
       expect((result!.updatedInput as Record<string, string>).command).toContain(
         "curl/wget blocked",
       );
@@ -527,6 +544,60 @@ describe("routePreToolUse", () => {
     });
   });
 
+  describe("Codex exec_command security policy", () => {
+    let projectDir: string;
+    let homeDir: string;
+    let codexDir: string;
+    let previousHome: string | undefined;
+    let previousCodexHome: string | undefined;
+    let previousPlatform: string | undefined;
+
+    beforeAll(async () => {
+      await initSecurity(resolve(process.cwd(), "build"));
+    });
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(tmpdir(), "ctx-codex-exec-project-"));
+      homeDir = mkdtempSync(join(tmpdir(), "ctx-codex-home-"));
+      codexDir = join(homeDir, ".codex");
+      mkdirSync(codexDir, { recursive: true });
+      writeFileSync(
+        join(codexDir, "settings.json"),
+        JSON.stringify({ permissions: { deny: ["Bash(echo blocked)"] } }),
+        "utf-8",
+      );
+      previousHome = process.env.HOME;
+      previousCodexHome = process.env.CODEX_HOME;
+      previousPlatform = process.env.CONTEXT_MODE_PLATFORM;
+      process.env.HOME = homeDir;
+      process.env.CODEX_HOME = codexDir;
+      process.env.CONTEXT_MODE_PLATFORM = "codex";
+    });
+
+    afterEach(() => {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      if (previousPlatform === undefined) delete process.env.CONTEXT_MODE_PLATFORM;
+      else process.env.CONTEXT_MODE_PLATFORM = previousPlatform;
+      try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+      try { rmSync(homeDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it("denies Codex exec_command cmd payloads from .codex settings", () => {
+      const result = routePreToolUse(
+        "exec_command",
+        { cmd: "echo blocked" },
+        projectDir,
+        "codex",
+        "codex-cmd-policy",
+      );
+      expect(result?.action).toBe("deny");
+      expect(result?.reason).toContain("deny pattern");
+    });
+  });
+
   // ─── Routing block content ──────────────────────────────
 
   describe("routing block content", () => {
@@ -636,14 +707,68 @@ describe("routePreToolUse", () => {
       }
     });
 
-    it("respects the once-per-session guidance throttle", () => {
-      const first = routePreToolUse("mcp__slack__post_message", {});
-      expect(first).not.toBeNull();
-      expect(first!.action).toBe("context");
+    // #567 follow-up — the external-MCP nudge is intentionally periodic, not
+    // one-shot. A single nudge gets lost in MCP-heavy sessions (50+ Jira
+    // calls) once context compaction kicks in, so we re-fire every N calls to
+    // keep the guidance in the model's recent window.
+    it("re-fires guidance every N calls (default cadence = 10)", () => {
+      const calls = Array.from({ length: 22 }, (_, i) =>
+        routePreToolUse(`mcp__slack__tool_${i}`, {}),
+      );
 
-      // Second call in the same session — guidanceOnce should suppress it.
+      // Fires on the 1st, 11th, 21st calls — null in between.
+      const fired = calls.map((c) => c?.action === "context");
+      const expected = calls.map((_, i) => i % 10 === 0);
+      expect(fired).toEqual(expected);
+    });
+
+    it("honors CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY to tune cadence", () => {
+      const prev = process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+      try {
+        process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = "3";
+        const calls = Array.from({ length: 7 }, (_, i) =>
+          routePreToolUse(`mcp__notion__tool_${i}`, {}),
+        );
+        const fired = calls.map((c) => c?.action === "context");
+        // period=3 → fires on calls 1, 4, 7 (indices 0, 3, 6).
+        expect(fired).toEqual([true, false, false, true, false, false, true]);
+      } finally {
+        if (prev === undefined) delete process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+        else process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = prev;
+      }
+    });
+
+    it("falls back to default cadence on invalid env values", () => {
+      const prev = process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+      try {
+        // Out-of-range, NaN, negative — all coerce to the default (10).
+        for (const v of ["0", "-1", "9999", "not-a-number", ""]) {
+          process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = v;
+          resetGuidanceThrottle();
+          const first = routePreToolUse("mcp__slack__a", {});
+          const second = routePreToolUse("mcp__slack__b", {});
+          expect(first?.action, `value=${JSON.stringify(v)}`).toBe("context");
+          // With default=10, the 2nd call must NOT fire.
+          expect(second, `value=${JSON.stringify(v)}`).toBeNull();
+        }
+      } finally {
+        if (prev === undefined) delete process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY;
+        else process.env.CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY = prev;
+      }
+    });
+
+    it("resetGuidanceThrottle resets the periodic counter", () => {
+      // Burn one call to advance the counter.
+      const first = routePreToolUse("mcp__slack__post_message", {});
+      expect(first?.action).toBe("context");
       const second = routePreToolUse("mcp__slack__list_users", {});
       expect(second).toBeNull();
+
+      // Reset clears both the in-memory throttle and the periodic counter so
+      // the next call re-fires from tick 1 (e.g. start of a fresh session).
+      resetGuidanceThrottle();
+      const afterReset = routePreToolUse("mcp__slack__list_users", {});
+      expect(afterReset?.action).toBe("context");
     });
 
     it("does NOT match plain Bash/Read/etc as external MCP", () => {
