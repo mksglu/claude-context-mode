@@ -315,11 +315,21 @@ export class MCPStdioClient {
   }
 
   async callTool(name: string, args: unknown): Promise<MCPCallResult> {
+    if (this.exited) await this.respawn();
     return this.request<MCPCallResult>(
       "tools/call",
       { name, arguments: args ?? {} },
       DEFAULT_CALL_TIMEOUT_MS,
     );
+  }
+
+  private async respawn(): Promise<void> {
+    this.child = null;
+    this.buffer = "";
+    this.exited = false;
+    this.initialized = false;
+    this.start();
+    await this.initialize();
   }
 
   shutdown(): void {

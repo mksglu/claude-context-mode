@@ -18,7 +18,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { dirname, resolve, sep } from "node:path";
 
 /**
  * @typedef {Object} HealResult
@@ -392,5 +393,86 @@ export function healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey }) {
     }
   }
 
+  // Upgrade already calls this helper after installing the new pluginRoot.
+  // Keep user-scope `claude mcp add --scope user` registrations aligned here
+  // without touching src/cli.ts in this scoped backport.
+  try {
+    const userResult = healClaudeJsonMcpArgs({
+      dotClaudeJsonPath: resolve(homedir(), ".claude.json"),
+      pluginCacheParent: dirname(resolvedRoot),
+      newPluginRoot: resolvedRoot,
+    });
+    for (const item of userResult.healed || []) {
+      if (!healed.includes(item)) healed.push(item);
+    }
+  } catch { /* best effort */ }
+
   return { healed };
+}
+
+/**
+ * Heal user-level ~/.claude.json MCP server registrations that point to an
+ * old context-mode version dir in the plugin cache.
+ *
+ * Users who work around the Claude Code plugin MCP tool-exposure bug
+ * (anthropics/claude-code#59310) by running `claude mcp add --scope user`
+ * end up with an absolute path to a specific version dir in ~/.claude.json.
+ * After /ctx-upgrade that path is stale — this heal detects and updates it.
+ *
+ * @param {{
+ *   dotClaudeJsonPath: string,
+ *   pluginCacheParent: string,
+ *   newPluginRoot: string,
+ * }} opts
+ * @returns {HealResult}
+ */
+export function healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent, newPluginRoot }) {
+  if (!dotClaudeJsonPath || !existsSync(dotClaudeJsonPath)) {
+    return { healed: [], skipped: "no-claude-json" };
+  }
+
+  let raw;
+  try { raw = readFileSync(dotClaudeJsonPath, "utf-8"); }
+  catch (err) { return { healed: [], error: `read-failed: ${(err && err.message) || err}` }; }
+
+  let config;
+  try { config = JSON.parse(raw); }
+  catch (err) { return { healed: [], error: `parse-failed: ${(err && err.message) || err}` }; }
+
+  const servers = config && config.mcpServers;
+  if (!servers || typeof servers !== "object") {
+    return { healed: [], skipped: "no-mcp-servers" };
+  }
+
+  const cacheParentFwd = pluginCacheParent.replace(/\\/g, "/");
+  let mutated = false;
+
+  for (const srv of Object.values(servers)) {
+    if (!srv || typeof srv !== "object" || !Array.isArray(srv.args)) continue;
+    for (let i = 0; i < srv.args.length; i++) {
+      const arg = srv.args[i];
+      if (typeof arg !== "string") continue;
+      const argFwd = arg.replace(/\\/g, "/");
+      if (!argFwd.startsWith(cacheParentFwd + "/")) continue;
+      const rel = argFwd.slice(cacheParentFwd.length + 1);
+      const slashIdx = rel.indexOf("/");
+      if (slashIdx < 0) continue;
+      const suffix = rel.slice(slashIdx + 1);
+      const newArg = resolve(newPluginRoot, suffix);
+      if (newArg !== arg) {
+        srv.args[i] = newArg;
+        mutated = true;
+      }
+    }
+  }
+
+  if (!mutated) return { healed: [] };
+
+  try {
+    writeFileSync(dotClaudeJsonPath, JSON.stringify(config, null, 2), "utf-8");
+  } catch (err) {
+    return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
+  }
+
+  return { healed: ["claude-json-mcp-args"] };
 }

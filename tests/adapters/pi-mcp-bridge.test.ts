@@ -156,3 +156,96 @@ describe("bootstrapMCPTools — no JS runtime + execPath is pi (#516)", () => {
     stderrSpy.mockRestore();
   });
 });
+
+// Slice 5 — respawn after idle self-shutdown (#583)
+//
+// Regression: in v1.0.132 the MCP server gained an idle self-shutdown
+// (#565/#568, lifecycle.ts). When the Pi-spawned child exits cleanly
+// after CONTEXT_MODE_IDLE_TIMEOUT_MS of inactivity, Pi keeps the
+// previously-registered tool handles, but the bridge client has
+// `exited=true` and every subsequent request rejects with
+// "MCP server has exited". The user sees a permanently broken set of
+// `ctx_*` tools until they restart Pi.
+//
+// Fix: when `callTool()` is invoked on an exited client, respawn the
+// MCP child + re-`initialize()` transparently before issuing the call,
+// so already-registered Pi tools recover on the very next use.
+describe("MCPStdioClient — respawns after idle self-shutdown (#583)", () => {
+  it("re-spawns the child when callTool is invoked after exit, and the call succeeds", async () => {
+    // Fake MCP server: handles initialize, tools/list, tools/call.
+    // On its FIRST process incarnation it exits cleanly after the first
+    // tools/call — mirroring lifecycle.ts gracefulShutdown(0) firing on
+    // idle. A marker file on disk distinguishes the original child from
+    // the respawned one so the second incarnation stays alive.
+    const markerPath = join(scratch, "first-incarnation-marker");
+    const fakePath = join(scratch, "exit-after-call.mjs");
+    writeFileSync(
+      fakePath,
+      `
+      const fs = require("node:fs");
+      const MARKER = ${JSON.stringify(markerPath)};
+      const isFirst = !fs.existsSync(MARKER);
+      let line = "";
+      let callCount = 0;
+      process.stdin.on("data", (chunk) => {
+        line += chunk.toString("utf-8");
+        let idx;
+        while ((idx = line.indexOf("\\n")) >= 0) {
+          const raw = line.slice(0, idx).trim();
+          line = line.slice(idx + 1);
+          if (!raw) continue;
+          let msg;
+          try { msg = JSON.parse(raw); } catch { continue; }
+          if (msg.method === "initialize") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }) + "\\n");
+          } else if (msg.method === "tools/list") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "ping", description: "p", inputSchema: { type: "object" } }] } }) + "\\n");
+          } else if (msg.method === "tools/call") {
+            callCount++;
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "pong-pid-" + process.pid }] } }) + "\\n");
+            // First incarnation: mimic idle self-shutdown after one call.
+            if (isFirst && callCount === 1) {
+              fs.writeFileSync(MARKER, "1");
+              setTimeout(() => process.exit(0), 10);
+            }
+          }
+        }
+      });
+      // Keep the event loop alive until stdin closes / we exit.
+      setInterval(() => {}, 60000);
+      `,
+      "utf-8",
+    );
+
+    const { MCPStdioClient } = await import("../../src/adapters/pi/mcp-bridge.js");
+    const client = new MCPStdioClient(fakePath);
+    client.start();
+    await client.initialize();
+
+    // First call: succeeds, then the fake server exits cleanly.
+    const r1 = await client.callTool("ping", {});
+    const t1 = r1.content?.[0]?.text ?? "";
+    expect(t1).toMatch(/^pong-pid-/);
+    const pid1 = t1.replace(/^pong-pid-/, "");
+
+    // Wait for the child to actually exit so the client observes onExit.
+    await new Promise<void>((resolve) => {
+      const wait = () => {
+        if ((client as unknown as { exited: boolean }).exited) return resolve();
+        setTimeout(wait, 25);
+      };
+      wait();
+    });
+
+    // Second call: MUST NOT reject with "MCP server has exited" — the
+    // client should respawn and re-initialize transparently.
+    const r2 = await client.callTool("ping", {});
+    const t2 = r2.content?.[0]?.text ?? "";
+    expect(t2).toMatch(/^pong-pid-/);
+    const pid2 = t2.replace(/^pong-pid-/, "");
+    // New PID proves a fresh child was spawned, not the original.
+    expect(pid2).not.toBe(pid1);
+
+    client.shutdown();
+  }, 15_000);
+});

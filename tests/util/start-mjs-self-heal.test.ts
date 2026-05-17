@@ -125,3 +125,85 @@ describe("start.mjs — Issue #531 Layer 5b .mcp.json args heal", () => {
     expect(block).toContain("healMcpJsonArgs");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Issue #577 — start.mjs cache-heal layer MUST honor CLAUDE_CONFIG_DIR.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("start.mjs — Issue #577 CLAUDE_CONFIG_DIR honoring", () => {
+  test("cache-heal layer reads CLAUDE_CONFIG_DIR env var", () => {
+    const hasEnvRead = /process\.env\.CLAUDE_CONFIG_DIR/.test(startSrc);
+    const hasHelper = /resolveClaudeConfigDir|getClaudeConfigDir/.test(
+      startSrc,
+    );
+    expect(hasEnvRead || hasHelper).toBe(true);
+  });
+
+  test("no remaining hardcoded resolve(homedir(), '.claude', ...) for plugin paths", () => {
+    const offenders: string[] = [];
+    const lines = startSrc.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const stripped = line.replace(/\/\/.*$/, "").trim();
+      if (!stripped) continue;
+      if (stripped.includes("isPluginInstallPath")) continue;
+      if (stripped.includes("/[/\\\\]\\.claude")) continue;
+      const fallbackOnly = /return\s+resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*\)/;
+      if (fallbackOnly.test(line)) continue;
+      if (/resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*,/.test(line)) {
+        offenders.push(`L${i + 1}: ${line.trim()}`);
+      }
+    }
+    expect(
+      offenders,
+      `start.mjs still hardcodes ~/.claude in ${offenders.length} place(s):\n${offenders.join(
+        "\n",
+      )}`,
+    ).toEqual([]);
+  });
+
+  test("globalHooksDir is derived from the resolved config dir, not hardcoded", () => {
+    const ghdLine = startSrc
+      .split("\n")
+      .find((l) => /globalHooksDir\s*=/.test(l));
+    expect(ghdLine, "globalHooksDir assignment must exist in start.mjs").toBeDefined();
+    expect(ghdLine!).not.toMatch(
+      /resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*,\s*["']hooks["']\s*\)/,
+    );
+  });
+
+  test("settings.json registration path is derived from the resolved config dir", () => {
+    const idx = startSrc.indexOf("Register the hook");
+    expect(idx).toBeGreaterThan(-1);
+    const block = startSrc.slice(idx, idx + 500);
+    expect(block).not.toMatch(
+      /resolve\s*\(\s*homedir\s*\(\s*\)\s*,\s*["']\.claude["']\s*,\s*["']settings\.json["']\s*\)/,
+    );
+  });
+
+  test("auto-deployed heal script template honors CLAUDE_CONFIG_DIR at its own runtime", () => {
+    const startOfTpl = startSrc.indexOf("const healScript = `");
+    expect(startOfTpl).toBeGreaterThan(-1);
+    const endMarker = "writeFileSync(healHookPath, healScript";
+    const endIdx = startSrc.indexOf(endMarker, startOfTpl);
+    expect(endIdx).toBeGreaterThan(startOfTpl);
+    const tpl = startSrc.slice(startOfTpl, endIdx);
+
+    expect(tpl).toContain("CLAUDE_CONFIG_DIR");
+
+    const tplBadForm =
+      /resolve\(\s*homedir\(\)\s*,\s*["']\.claude["']\s*,\s*["']plugins["']/;
+    expect(tpl).not.toMatch(tplBadForm);
+  });
+});
+
+describe("start.mjs — Linux Bun re-exec", () => {
+  test("imports spawn and checks for Linux Node before server import", () => {
+    expect(startSrc).toMatch(/import\s+\{\s*execSync,\s*spawn\s*\}/);
+    expect(startSrc).toContain('process.platform === "linux"');
+    expect(startSrc).toContain("globalThis.Bun");
+    expect(startSrc.indexOf("re-exec with Bun")).toBeLessThan(
+      startSrc.indexOf('import "./hooks/ensure-deps.mjs"'),
+    );
+  });
+});

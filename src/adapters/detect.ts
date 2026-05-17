@@ -11,7 +11,9 @@
  *                     CLAUDE_PROJECT_DIR, CLAUDE_SESSION_ID | ~/.claude/
  *   - Gemini CLI:     GEMINI_PROJECT_DIR (hooks), GEMINI_CLI (MCP) | ~/.gemini/
  *   - KiloCode:       KILO, KILO_PID | ~/.config/kilo/
- *   - OpenCode:       OPENCODE, OPENCODE_PID | ~/.config/opencode/
+ *   - OpenCode:       OPENCODE_PROJECT_DIR, OPENCODE_CLIENT,
+ *                     OPENCODE_TERMINAL, OPENCODE, OPENCODE_PID |
+ *                     ~/.config/opencode/
  *   - OpenClaw:       OPENCLAW_HOME, OPENCLAW_CLI | ~/.openclaw/
  *   - Codex CLI:      CODEX_CI, CODEX_THREAD_ID | ~/.codex/
  *   - Cursor:         CURSOR_TRACE_ID (MCP), CURSOR_CLI (terminal) | ~/.cursor/
@@ -169,12 +171,15 @@ const _PLATFORM_ENV_VARS_RAW: ReadonlyArray<readonly [PlatformId, readonly Platf
     { name: "KILO_PID", role: "identification" },
   ]],
   // opencode — sst/opencode packages/opencode/src/index.ts:108-109 sets
-  // OPENCODE=1 + OPENCODE_PID=<pid> on every CLI invocation.
+  // OPENCODE=1 + OPENCODE_PID=<pid> on CLI invocations. OpenCode desktop
+  // shells also expose OPENCODE_CLIENT=desktop and OPENCODE_TERMINAL=1.
   // OPENCODE_PROJECT_DIR is the documented workspace var (consumed by the
   // legacy resolver cascade) — listed first so the workspace cascade picks
   // it up under strict mode.
   ["opencode", [
     { name: "OPENCODE_PROJECT_DIR", role: "workspace" },
+    { name: "OPENCODE_CLIENT",      role: "identification" },
+    { name: "OPENCODE_TERMINAL",    role: "identification" },
     { name: "OPENCODE",             role: "identification" },
     { name: "OPENCODE_PID",         role: "identification" },
   ]],

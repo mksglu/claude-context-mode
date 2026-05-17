@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { existsSync, chmodSync, readFileSync, writeFileSync, readdirSync, symlinkSync, mkdirSync, lstatSync, unlinkSync } from "node:fs";
 import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,19 @@ import { homedir } from "node:os";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
 process.chdir(__dirname);
+
+// Resolve the Claude Code config dir, honoring $CLAUDE_CONFIG_DIR (incl. leading ~).
+// Mirrors hooks/session-helpers.mjs::resolveConfigDir and hooks/run-hook.mjs (#453).
+function resolveClaudeConfigDir() {
+  const envVal = process.env.CLAUDE_CONFIG_DIR;
+  if (envVal && envVal.trim() !== "") {
+    if (envVal.startsWith("~")) {
+      return resolve(homedir(), envVal.replace(/^~[/\\]?/, ""));
+    }
+    return resolve(envVal);
+  }
+  return resolve(homedir(), ".claude");
+}
 
 // Plugin-install-path guard (mirror of src/util/project-dir.ts isPluginInstallPath
 // — duplicated here because start.mjs ships as raw JS and cannot import TS).
@@ -41,6 +54,39 @@ if (!process.env.CONTEXT_MODE_PROJECT_DIR && safeOriginalCwd) {
 //   - Non-hook platforms: server.ts writeRoutingInstructions() on MCP connect
 //   - Future: explicit `context-mode init` command
 
+// ── Linux: re-exec with Bun to avoid better-sqlite3 SIGSEGV (#564) ──
+// server.bundle.mjs has two SQLite paths: bun:sqlite (safe) or better-sqlite3
+// (SIGSEGV on Linux under Node's V8). When invoked via node on Linux, detect
+// a Bun installation and re-exec this file under Bun so the bundle takes the
+// safe path. No-op when already running under Bun or on non-Linux platforms.
+if (typeof globalThis.Bun === "undefined" && process.platform === "linux") {
+  const bunCandidates = [
+    process.env.BUN_INSTALL ? join(process.env.BUN_INSTALL, "bin", "bun") : null,
+    join(homedir(), ".bun", "bin", "bun"),
+    "/usr/local/bin/bun",
+    "/usr/bin/bun",
+  ].filter(Boolean);
+  const bunBin = bunCandidates.find((p) => existsSync(p));
+  if (bunBin) {
+    const child = spawn(bunBin, [fileURLToPath(import.meta.url)], {
+      stdio: ["pipe", "inherit", "inherit"],
+      env: process.env,
+    });
+    process.stdin.on("data", (chunk) => {
+      if (!child.stdin.destroyed) child.stdin.write(chunk);
+    });
+    process.stdin.on("end", () => {});
+    const keepAlive = setInterval(() => {}, 2147483647);
+    child.on("exit", (code) => {
+      clearInterval(keepAlive);
+      process.exit(code ?? 0);
+    });
+    // Prevent rest of start.mjs from running — child owns the MCP session.
+    process.stdin.resume();
+    await new Promise(() => {});
+  }
+}
+
 // ── Self-heal Layer 1: Fix registry → symlink mismatches (anthropics/claude-code#46915) ──
 // Claude Code auto-update can leave installed_plugins.json pointing to a non-existent
 // directory. We detect this and create symlinks so hooks find the right path.
@@ -51,7 +97,8 @@ if (cacheMatch) {
   try {
     const cacheParent = cacheMatch[1];
     const myVersion = cacheMatch[2];
-    const ipPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
+    const claudeConfigDir = resolveClaudeConfigDir();
+    const ipPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
 
     // Forward heal: if a newer version dir exists, update registry
     const dirs = readdirSync(cacheParent).filter((d) =>
@@ -83,7 +130,7 @@ if (cacheMatch) {
     }
 
     // Reverse heal: if registry points to non-existent dir, create symlink to us
-    const cacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
+    const cacheRoot = resolve(claudeConfigDir, "plugins", "cache");
     if (existsSync(ipPath)) {
       const ip = JSON.parse(readFileSync(ipPath, "utf-8"));
       for (const [key, entries] of Object.entries(ip.plugins || {})) {
@@ -125,9 +172,10 @@ try {
   const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
-  const registryPath = resolve(homedir(), ".claude", "plugins", "installed_plugins.json");
-  const pluginCacheRoot = resolve(homedir(), ".claude", "plugins", "cache");
-  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  const claudeConfigDir = resolveClaudeConfigDir();
+  const registryPath = resolve(claudeConfigDir, "plugins", "installed_plugins.json");
+  const pluginCacheRoot = resolve(claudeConfigDir, "plugins", "cache");
+  const settingsPath = resolve(claudeConfigDir, "settings.json");
   try { healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey }); }
   catch { /* best effort */ }
   // v1.0.116: Claude Code's plugin loader reads settings.json.enabledPlugins
@@ -191,7 +239,8 @@ try {
   const { buildHookCommand, selfHealCacheHealHook, ensureShebangAndExecBit } =
     await import("./hooks/cache-heal-utils.mjs");
 
-  const globalHooksDir = resolve(homedir(), ".claude", "hooks");
+  const claudeConfigDir = resolveClaudeConfigDir();
+  const globalHooksDir = resolve(claudeConfigDir, "hooks");
   const healHookPath = resolve(globalHooksDir, "context-mode-cache-heal.mjs");
   // Clean up old bash version if it exists
   const oldBashHook = resolve(globalHooksDir, "context-mode-cache-heal.sh");
@@ -203,14 +252,16 @@ try {
     const healScript = `#!/usr/bin/env node
 // context-mode plugin cache self-heal (auto-deployed)
 // Fixes anthropics/claude-code#46915: auto-update breaks CLAUDE_PLUGIN_ROOT
+// Honors CLAUDE_CONFIG_DIR (#577) at hook runtime.
 // Pure Node.js — no bash/shell dependency.
 import{existsSync,readdirSync,statSync,symlinkSync,lstatSync,unlinkSync,readFileSync}from"node:fs";
 import{dirname,join,resolve,sep}from"node:path";
 import{homedir}from"node:os";
+function cfgDir(){const e=process.env.CLAUDE_CONFIG_DIR;if(e&&e.trim()!==""){return e.startsWith("~")?resolve(homedir(),e.replace(/^~[/\\\\]?/,"")):resolve(e)}return resolve(homedir(),".claude")}
 try{
-  const f=resolve(homedir(),".claude","plugins","installed_plugins.json");
+  const f=resolve(cfgDir(),"plugins","installed_plugins.json");
   if(!existsSync(f))process.exit(0);
-  const cacheRoot=resolve(homedir(),".claude","plugins","cache");
+  const cacheRoot=resolve(cfgDir(),"plugins","cache");
   const ip=JSON.parse(readFileSync(f,"utf-8"));
   for(const[k,es]of Object.entries(ip.plugins||{})){
     if(k!=="context-mode@context-mode")continue;
@@ -238,8 +289,8 @@ try{
     try { ensureShebangAndExecBit(healHookPath); } catch { /* best effort */ }
   }
 
-  // Register the hook in ~/.claude/settings.json (Claude Code doesn't auto-discover hook files)
-  const settingsPath = resolve(homedir(), ".claude", "settings.json");
+  // Register the hook in $CLAUDE_CONFIG_DIR/settings.json (Claude Code doesn't auto-discover hook files).
+  const settingsPath = resolve(claudeConfigDir, "settings.json");
   if (existsSync(settingsPath)) {
     const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
     const hooks = settings.hooks ?? {};

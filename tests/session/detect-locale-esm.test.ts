@@ -45,4 +45,44 @@ describe("detectLocaleAndTz", () => {
       if (orig.override !== undefined) process.env.CONTEXT_MODE_LOCALE = orig.override;
     }
   });
+
+  it("LANG=C.UTF-8 / POSIX falls back to a usable BCP 47 locale", () => {
+    const orig = {
+      lang: process.env.LANG,
+      lcTime: process.env.LC_TIME,
+      override: process.env.CONTEXT_MODE_LOCALE,
+    };
+    delete process.env.CONTEXT_MODE_LOCALE;
+    delete process.env.LC_TIME;
+    try {
+      for (const langValue of ["C.UTF-8", "POSIX", "C"]) {
+        process.env.LANG = langValue;
+        const { locale } = detectLocaleAndTz();
+        expect(() => new Intl.DateTimeFormat(locale, { timeZone: "UTC" }))
+          .not.toThrow();
+        expect(locale).not.toBe("C");
+        expect(locale).not.toBe("POSIX");
+      }
+    } finally {
+      if (orig.lang === undefined) delete process.env.LANG;
+      else process.env.LANG = orig.lang;
+      if (orig.lcTime === undefined) delete process.env.LC_TIME;
+      else process.env.LC_TIME = orig.lcTime;
+      if (orig.override !== undefined) process.env.CONTEXT_MODE_LOCALE = orig.override;
+    }
+  });
+
+  it("CONTEXT_MODE_LOCALE that is not a valid BCP 47 tag is ignored", () => {
+    const orig = process.env.CONTEXT_MODE_LOCALE;
+    process.env.CONTEXT_MODE_LOCALE = "C";
+    try {
+      const { locale } = detectLocaleAndTz();
+      expect(locale).not.toBe("C");
+      expect(() => new Intl.DateTimeFormat(locale, { timeZone: "UTC" }))
+        .not.toThrow();
+    } finally {
+      if (orig === undefined) delete process.env.CONTEXT_MODE_LOCALE;
+      else process.env.CONTEXT_MODE_LOCALE = orig;
+    }
+  });
 });
