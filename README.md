@@ -1397,17 +1397,6 @@ That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. U
 
 `tool_input` for any `mcp__*` tool call is also redacted before persistence — keys matching `authorization`, `token`, `secret`, `password`, `api_key`, `cookie`, `signature`, `private_key` get masked to `[REDACTED]` so credentials in MCP arguments don't end up in the session DB.
 
-### Lifecycle environment variables
-
-Two runtime knobs control how MCP server processes self-manage. Defaults are safe — only set these to opt-out of the leak-fix introduced in v1.0.132 ([#565](https://github.com/mksglu/context-mode/issues/565) / [#568](https://github.com/mksglu/context-mode/pull/568)).
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CONTEXT_MODE_IDLE_TIMEOUT_MS` | `900000` (15 min) | An MCP child self-exits cleanly after this many milliseconds of stdin/request inactivity. Hosts like OpenCode and KiloCode open one MCP child per session and per subagent — without this, idle children accumulate to 25+ processes / 1.6 GB RSS in long-lived shells. Set to `0` to disable self-shutdown (rarely needed; useful only for daemons that must outlive their parent). |
-| `CONTEXT_MODE_STARTUP_SWEEP` | `1` (enabled) | At boot, a newly-spawned MCP child reaps any other context-mode MCP server pids that share its parent process (`sameParentOnly: true` — never touches MCP children of a different host). This reclaims accumulated siblings immediately instead of waiting for each idle timer to fire. Set to `0` or `false` to disable (useful when you intentionally want multiple concurrent MCP children under the same host, e.g. multi-tenant test runners). |
-
-Both vars are read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Invalid values (non-numeric `CONTEXT_MODE_IDLE_TIMEOUT_MS`, unrecognized `CONTEXT_MODE_STARTUP_SWEEP`) fall back to defaults silently.
-
 ### Routing-guidance environment variables
 
 | Variable | Default | Purpose |
