@@ -185,6 +185,7 @@ describe("Codex marketplace discovery contract — v0.130.0", () => {
       ".agents/plugins/marketplace.json",
       ".codex-plugin/plugin.json",
       ".codex-plugin/mcp.json",
+      ".codex-plugin/hooks.json",
     ];
     for (const rel of filesToCheck) {
       const absPath = join(REPO_ROOT, rel);

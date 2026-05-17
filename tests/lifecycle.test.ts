@@ -377,8 +377,8 @@ describe.skipIf(isWindows)("Lifecycle Guard — Integration (real process)", () 
 });
 
 describe("Lifecycle Guard — idle timeout (#565)", () => {
-  test("idleTimeoutForEnv: default is 15 minutes", () => {
-    assert.equal(idleTimeoutForEnv({}), 15 * 60 * 1000);
+  test("idleTimeoutForEnv: default is disabled (0) unless host config opts in", () => {
+    assert.equal(idleTimeoutForEnv({}), 0);
   });
 
   test("idleTimeoutForEnv: env override respected", () => {
@@ -389,9 +389,9 @@ describe("Lifecycle Guard — idle timeout (#565)", () => {
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "0" }), 0);
   });
 
-  test("idleTimeoutForEnv: malformed env falls back to default", () => {
-    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "garbage" }), 15 * 60 * 1000);
-    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "-1" }), 15 * 60 * 1000);
+  test("idleTimeoutForEnv: malformed env falls back to disabled (safe default)", () => {
+    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "garbage" }), 0);
+    assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "-1" }), 0);
   });
 
   test("shuts down when no activity for idleTimeoutMs", async () => {

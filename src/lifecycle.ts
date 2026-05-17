@@ -26,7 +26,7 @@ export interface LifecycleGuardOptions {
   /**
    * Idle shutdown threshold in ms (#565). When the server has handled no
    * MCP activity for this long, `onShutdown` fires. `0` disables.
-   * Default: env `CONTEXT_MODE_IDLE_TIMEOUT_MS`, else 15 minutes.
+   * Default: env `CONTEXT_MODE_IDLE_TIMEOUT_MS`, else 0 (disabled).
    * Skipped on TTY stdin (interactive dev / OpenCode ts-plugin standalone).
    *
    * Pair with the returned `recordActivity()` callback — call it on every
@@ -55,20 +55,20 @@ export interface LifecycleGuardHandle {
 /**
  * Resolve the idle-shutdown threshold (#565).
  *
- * OpenCode + KiloCode open a fresh MCP client per session AND per subagent
- * task, but never tear them down for the host's lifetime. A host alive for
- * a working day accumulates one stdio child per session — observed live at
- * 26 children / 1.6 GB RSS under a single `opencode serve` parent.
+ * Idle shutdown is OFF by default (#592) because most hosts (Claude
+ * Code, Codex, editor MCP clients) keep registered tool handles after a
+ * clean MCP child exit and do NOT transparently respawn on the next call.
+ * The global 15 min default introduced in #568 solved OpenCode's child
+ * accumulation, but stranded ctx_* tools in Claude Code/Codex-style
+ * hosts once the MCP server exited cleanly while the editor stayed alive.
  *
- * None of the existing exit paths (ppid poll, grandparent reparent, stdin
- * EOF, SIGTERM) fire while the host stays alive. Idle shutdown is the
- * structural fix: a server with no work to do should release its memory.
+ * Hosts that are known to benefit from idle shutdown MUST opt in via
+ * CONTEXT_MODE_IDLE_TIMEOUT_MS in their MCP config. Today that is
+ * OpenCode/KiloCode (their configs set 900000 = 15 min). Users and test
+ * harnesses can also opt in explicitly with any positive integer.
  *
- * Default 15 min strikes a balance — long enough that a paused
- * conversation does not pay a cold-start on every resume, short enough
- * that 8 hours of unused sessions do not pin GB of RAM.
- *
- * Set env to `0` to disable entirely.
+ * Missing or malformed env = 0 (disabled, safe default). Set env to
+ * `0` to disable explicitly.
  *
  * Exported for unit-testing.
  */
@@ -76,9 +76,9 @@ export function idleTimeoutForEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   const raw = env.CONTEXT_MODE_IDLE_TIMEOUT_MS;
-  if (raw === undefined) return 15 * 60 * 1000;
+  if (raw === undefined) return 0;
   const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) return 15 * 60 * 1000;
+  if (!Number.isFinite(n) || n < 0) return 0;
   return n;
 }
 

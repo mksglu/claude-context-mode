@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./platform.mjs";
 import "../suppress-stderr.mjs";
 import "../ensure-deps.mjs";
 /**

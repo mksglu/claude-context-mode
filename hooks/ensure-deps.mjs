@@ -19,7 +19,7 @@
  * @see https://github.com/mksglu/context-mode/issues/203
  */
 
-import { existsSync, copyFileSync } from "node:fs";
+import { existsSync, copyFileSync, renameSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -127,6 +127,18 @@ function probeNativeInProcess(pluginRoot) {
   }
 }
 
+function replaceActiveNativeBinaryFromCache(abiCachePath, binaryPath) {
+  const tmpPath = `${binaryPath}.staging-${process.pid}-${Date.now()}`;
+  try {
+    copyFileSync(abiCachePath, tmpPath);
+    codesignBinary(tmpPath);
+    renameSync(tmpPath, binaryPath);
+  } catch (err) {
+    try { unlinkSync(tmpPath); } catch { /* best effort cleanup */ }
+    throw err;
+  }
+}
+
 export function ensureNativeCompat(pluginRoot) {
   // Pre-compute paths regardless of runtime — the Bun branch below uses
   // them to seed the ABI cache (#543) so the next /ctx-upgrade boot (under
@@ -161,8 +173,7 @@ export function ensureNativeCompat(pluginRoot) {
 
     // Fast path: cached binary for this ABI already exists — swap in
     if (existsSync(abiCachePath)) {
-      copyFileSync(abiCachePath, binaryPath);
-      codesignBinary(binaryPath);
+      replaceActiveNativeBinaryFromCache(abiCachePath, binaryPath);
       if (skipProbe) return; // Trust the cached binary — skip SIGSEGV-prone probe
       // Validate via child process — dlopen cache is per-process, so in-process
       // require() can't detect a swapped binary on disk (#148)
