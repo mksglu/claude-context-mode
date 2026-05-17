@@ -484,6 +484,7 @@ export default function piExtension(pi: any): void {
         minPriority: 3,
         limit: 50,
       });
+      let behavioralDirective = "";
       if (activeEvents.length > 0) {
         const buildAuto = await getAutoInjection(pluginRoot);
         let memoryContext = "";
@@ -494,6 +495,14 @@ export default function piExtension(pi: any): void {
               data: String(e.data ?? ""),
             })),
           );
+          const bdMatch = memoryContext.match(/(<behavioral_directive>\n[^<]*\n<\/behavioral_directive>)/);
+          if (bdMatch) {
+            behavioralDirective = bdMatch[1];
+            memoryContext = memoryContext.replace(bdMatch[1], "");
+            if (memoryContext.match(/^<session_state[^>]*>\s*<\/session_state>\s*$/)) {
+              memoryContext = "";
+            }
+          }
         }
         // Fallback (or if helper produced empty output): inline 500-token cap.
         if (!memoryContext) {
@@ -517,6 +526,8 @@ export default function piExtension(pi: any): void {
         parts.push(resume.snapshot);
         db.markResumeConsumed(_sessionId);
       }
+
+      if (behavioralDirective) parts.push(behavioralDirective);
 
       // Return modified systemPrompt only if we added something beyond existing.
       const baseLen = existingPrompt ? 1 : 0;
