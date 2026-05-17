@@ -223,7 +223,7 @@ describe("killSiblingMcpServers", () => {
   });
 });
 
-describe("startupSiblingSweep (#565)", () => {
+describe("startupSiblingSweep (#565, gated #592 follow-up to #595)", () => {
   test("CONTEXT_MODE_STARTUP_SWEEP=0 disables sweep entirely", async () => {
     const report = await startupSiblingSweep({ CONTEXT_MODE_STARTUP_SWEEP: "0" });
     assert.deepEqual(report, { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 });
@@ -234,15 +234,23 @@ describe("startupSiblingSweep (#565)", () => {
     assert.deepEqual(report, { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 });
   });
 
-  test("default-enabled: no throw, returns empty when no siblings", async () => {
-    // We can't easily inject discover/kill into startupSiblingSweep, but
-    // we CAN verify it never throws and returns a well-formed report on a
-    // clean machine. The realistic call is gated by `sameParentOnly: true`
-    // + our own ppid — vitest itself does not match the regex, so the
-    // sweep finds no candidates and returns the empty report.
+  test("default-off for non-OpenCode hosts (#592)", async () => {
+    // Reaping a sibling on Claude Code/Codex strands the host's MCP client
+    // — same symptom #592 reports for the idle-shutdown path. The sweep
+    // therefore must NOT engage by default on those hosts.
     const report = await startupSiblingSweep({});
+    assert.deepEqual(report, { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 });
+  });
+
+  test("auto-on for OpenCode hosts (well-formed report on clean box)", async () => {
+    const report = await startupSiblingSweep({ OPENCODE_PROJECT_DIR: "/tmp/x" });
     assert.equal(typeof report.terminatedBySigterm, "number");
     assert.equal(typeof report.terminatedBySigkill, "number");
+    assert.equal(typeof report.totalKilled, "number");
+  });
+
+  test("CONTEXT_MODE_STARTUP_SWEEP=1 force-enables on any host", async () => {
+    const report = await startupSiblingSweep({ CONTEXT_MODE_STARTUP_SWEEP: "1" });
     assert.equal(typeof report.totalKilled, "number");
   });
 });

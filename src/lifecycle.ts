@@ -52,23 +52,42 @@ export interface LifecycleGuardHandle {
   stop: () => void;
 }
 
+/** OpenCode/Kilo idle-shutdown threshold — 15 min, same value as their shipped configs. */
+const OPENCODE_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
 /**
- * Resolve the idle-shutdown threshold (#565).
+ * Detect a host that originated the #565 child-accumulation case.
  *
- * Idle shutdown is OFF by default (#592) because most hosts (Claude
- * Code, Codex, editor MCP clients) keep registered tool handles after a
- * clean MCP child exit and do NOT transparently respawn on the next call.
- * The global 15 min default introduced in #568 solved OpenCode's child
- * accumulation, but stranded ctx_* tools in Claude Code/Codex-style
- * hosts once the MCP server exited cleanly while the editor stayed alive.
+ * #595 ships `CONTEXT_MODE_IDLE_TIMEOUT_MS=900000` in `configs/opencode/opencode.json`
+ * and `configs/kilo/kilo.json` so fresh installs are protected. Existing
+ * users with a customised / pinned MCP config will NOT pick up that env
+ * unless they re-pull the shipped config. We additionally key off env
+ * vars OpenCode itself always injects into spawned MCP children
+ * (`OPENCODE_PROJECT_DIR`, `OPENCODE_DEBUG`) so the protection engages
+ * for them too — no user action required.
  *
- * Hosts that are known to benefit from idle shutdown MUST opt in via
- * CONTEXT_MODE_IDLE_TIMEOUT_MS in their MCP config. Today that is
- * OpenCode/KiloCode (their configs set 900000 = 15 min). Users and test
- * harnesses can also opt in explicitly with any positive integer.
+ * Other hosts (Claude Code, Codex, editor MCP clients) stay default-off
+ * because they cannot transparently respawn the MCP child on next call
+ * (#592 root cause).
+ */
+export function hostNeedsIdleShutdown(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return Boolean(env.OPENCODE_PROJECT_DIR ?? env.OPENCODE_DEBUG);
+}
+
+/**
+ * Resolve the idle-shutdown threshold (#565, revised #592 / #595).
  *
- * Missing or malformed env = 0 (disabled, safe default). Set env to
- * `0` to disable explicitly.
+ * Default OFF for hosts that do not auto-respawn the MCP child (Claude
+ * Code, Codex, editor MCP clients) — see {@link hostNeedsIdleShutdown}
+ * for the rationale and detection logic. Auto-on to
+ * {@link OPENCODE_IDLE_TIMEOUT_MS} when an OpenCode-class host is
+ * detected, even when the user has not picked up the shipped config
+ * with the explicit `CONTEXT_MODE_IDLE_TIMEOUT_MS=900000` env block.
+ *
+ * `CONTEXT_MODE_IDLE_TIMEOUT_MS` always wins: explicit `0` disables
+ * even on OpenCode, explicit positive integer enables on any host.
  *
  * Exported for unit-testing.
  */
@@ -76,10 +95,11 @@ export function idleTimeoutForEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): number {
   const raw = env.CONTEXT_MODE_IDLE_TIMEOUT_MS;
-  if (raw === undefined) return 0;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
+  if (raw !== undefined) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return hostNeedsIdleShutdown(env) ? OPENCODE_IDLE_TIMEOUT_MS : 0;
 }
 
 /** Read grandparent PID via `ps -o ppid= -p $PPID`. Returns NaN on failure or Windows. */

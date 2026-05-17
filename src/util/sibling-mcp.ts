@@ -320,10 +320,17 @@ export async function killSiblingMcpServers(
  * idle siblings, this sweep reclaims them at boot rather than waiting for
  * the idle timeout to fire on each one independently.
  *
- * Gated by env (default-on but easy to disable):
+ * Gated to OpenCode-class hosts only (#592 follow-up): killing a sibling
+ * MCP child on a host whose MCP client cannot transparently respawn
+ * surfaces as `MCP server has exited` — the exact symptom #592 reports
+ * for the idle-shutdown path. The sweep is therefore default-off for
+ * Claude Code/Codex/editor MCP clients and only auto-engages when the
+ * runtime env indicates an OpenCode-class host. The CONTEXT_MODE_STARTUP_SWEEP
+ * env can always force either direction:
  *
- *   CONTEXT_MODE_STARTUP_SWEEP=0   → disabled
- *   CONTEXT_MODE_STARTUP_SWEEP=1   → enabled (default)
+ *   CONTEXT_MODE_STARTUP_SWEEP=0|false   → disabled everywhere
+ *   CONTEXT_MODE_STARTUP_SWEEP=1|true    → enabled everywhere
+ *   (unset)                              → auto: on for OpenCode/Kilo only
  *
  * Safety:
  *   - `sameParentOnly: true` — never touches MCP children of a different host.
@@ -340,6 +347,10 @@ export async function startupSiblingSweep(
   const empty: KillReport = { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 };
   const raw = env.CONTEXT_MODE_STARTUP_SWEEP;
   if (raw === "0" || raw === "false") return empty;
+  if (raw !== "1" && raw !== "true") {
+    const isOpenCode = Boolean(env.OPENCODE_PROJECT_DIR ?? env.OPENCODE_DEBUG);
+    if (!isOpenCode) return empty;
+  }
 
   try {
     const pids = discoverSiblingMcpPids({

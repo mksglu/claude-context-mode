@@ -9,7 +9,7 @@ import { describe, test, assert } from "vitest";
 import { spawn, execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { startLifecycleGuard, makeDefaultIsParentAlive, idleTimeoutForEnv } from "../src/lifecycle.js";
+import { startLifecycleGuard, makeDefaultIsParentAlive, idleTimeoutForEnv, hostNeedsIdleShutdown } from "../src/lifecycle.js";
 
 const TSX_PATH = execSync("which tsx", { encoding: "utf-8" }).trim();
 
@@ -392,6 +392,33 @@ describe("Lifecycle Guard — idle timeout (#565)", () => {
   test("idleTimeoutForEnv: malformed env falls back to disabled (safe default)", () => {
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "garbage" }), 0);
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "-1" }), 0);
+  });
+
+  test("hostNeedsIdleShutdown: OPENCODE_PROJECT_DIR / OPENCODE_DEBUG flag the host", () => {
+    assert.equal(hostNeedsIdleShutdown({}), false);
+    assert.equal(hostNeedsIdleShutdown({ OPENCODE_PROJECT_DIR: "/tmp/x" }), true);
+    assert.equal(hostNeedsIdleShutdown({ OPENCODE_DEBUG: "1" }), true);
+  });
+
+  test("idleTimeoutForEnv: auto-on for OpenCode runtime (#592 follow-up to #595)", () => {
+    // Belt-and-suspenders: even when the shipped config env isn't picked up
+    // (existing user with a pinned opencode.json), OpenCode's own injected
+    // env vars still engage the protection.
+    assert.equal(
+      idleTimeoutForEnv({ OPENCODE_PROJECT_DIR: "/tmp/x" }),
+      15 * 60 * 1000,
+    );
+    assert.equal(
+      idleTimeoutForEnv({ OPENCODE_DEBUG: "1" }),
+      15 * 60 * 1000,
+    );
+  });
+
+  test("idleTimeoutForEnv: explicit CONTEXT_MODE_IDLE_TIMEOUT_MS=0 wins over OpenCode auto-on", () => {
+    assert.equal(
+      idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "0", OPENCODE_PROJECT_DIR: "/tmp/x" }),
+      0,
+    );
   });
 
   test("shuts down when no activity for idleTimeoutMs", async () => {
