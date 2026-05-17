@@ -249,3 +249,239 @@ describe("MCPStdioClient — respawns after idle self-shutdown (#583)", () => {
     client.shutdown();
   }, 15_000);
 });
+
+// ── #583 follow-up: hardening on top of the original respawn-on-exit fix ──
+//
+// The original #583 patch put the respawn guard in `callTool()` only.
+// The follow-up moves it into `request()` (covering `tools/list` and
+// `initialize` paths after idle exit) AND adds a single-flight guard so
+// concurrent callers don't each spawn their own child and leak orphans.
+describe("MCPStdioClient — request() respawns for any method after idle exit (#583 follow-up)", () => {
+  it("listTools() after an idle exit triggers respawn (not just callTool)", async () => {
+    // Fake server: exits after the FIRST tools/list response. The bridge
+    // must respawn on the next listTools() invocation — proving the
+    // respawn guard fires for `tools/list`, not only `tools/call`.
+    const markerPath = join(scratch, "first-incarnation-marker-list");
+    const fakePath = join(scratch, "exit-after-list.mjs");
+    writeFileSync(
+      fakePath,
+      `
+      import { existsSync, writeFileSync } from "node:fs";
+      const MARKER = ${JSON.stringify(markerPath)};
+      const isFirst = !existsSync(MARKER);
+      let line = "";
+      let listCount = 0;
+      process.stdin.on("data", (chunk) => {
+        line += chunk.toString("utf-8");
+        let idx;
+        while ((idx = line.indexOf("\\n")) >= 0) {
+          const raw = line.slice(0, idx).trim();
+          line = line.slice(idx + 1);
+          if (!raw) continue;
+          let msg;
+          try { msg = JSON.parse(raw); } catch { continue; }
+          if (msg.method === "initialize") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }) + "\\n");
+          } else if (msg.method === "tools/list") {
+            listCount++;
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "ping-pid-" + process.pid, description: "p", inputSchema: { type: "object" } }] } }) + "\\n");
+            if (isFirst && listCount === 1) {
+              writeFileSync(MARKER, "1");
+              setTimeout(() => process.exit(0), 10);
+            }
+          }
+        }
+      });
+      setInterval(() => {}, 60000);
+      `,
+      "utf-8",
+    );
+
+    const { MCPStdioClient } = await import("../../src/adapters/pi/mcp-bridge.js");
+    const client = new MCPStdioClient(fakePath);
+    client.start();
+    await client.initialize();
+
+    // First listTools: original incarnation responds, then exits.
+    const tools1 = await client.listTools();
+    expect(tools1).toHaveLength(1);
+    const pid1 = tools1[0].name.replace(/^ping-pid-/, "");
+
+    // Wait for the child to actually exit.
+    await new Promise<void>((resolve) => {
+      const wait = () => {
+        if ((client as unknown as { exited: boolean }).exited) return resolve();
+        setTimeout(wait, 25);
+      };
+      wait();
+    });
+
+    // Second listTools: should respawn + re-init, NOT reject. Bug class:
+    // pre-fix, this would reject with "MCP server has exited" because the
+    // respawn guard lived in callTool only and tools/list went straight
+    // through request().
+    const tools2 = await client.listTools();
+    expect(tools2).toHaveLength(1);
+    const pid2 = tools2[0].name.replace(/^ping-pid-/, "");
+    expect(pid2).not.toBe(pid1);
+
+    client.shutdown();
+  }, 15_000);
+
+  it("concurrent callTool() invocations after exit share ONE respawn (no orphan children)", async () => {
+    // Failure mode without the single-flight guard: caller A and caller B
+    // both observe `this.exited === true`, both invoke respawn(), each
+    // spawns a child. The loser of the race overwrites `this.child` and
+    // its child becomes an orphan with no `.kill()` reference.
+    //
+    // The fake server marks every PID it spawns under a directory. After
+    // two concurrent calls, exactly ONE new PID should be observed.
+    const markerPath = join(scratch, "first-incarnation-marker-concurrent");
+    const pidsDir = join(scratch, "spawned-pids-concurrent");
+    const fakePath = join(scratch, "exit-after-call-concurrent.mjs");
+    writeFileSync(
+      fakePath,
+      `
+      import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+      import { join as joinPath } from "node:path";
+      const MARKER = ${JSON.stringify(markerPath)};
+      const PIDS_DIR = ${JSON.stringify(pidsDir)};
+      mkdirSync(PIDS_DIR, { recursive: true });
+      // Record this process pid the moment we boot — covers both the
+      // first incarnation AND any respawned child.
+      writeFileSync(joinPath(PIDS_DIR, String(process.pid)), "1");
+      const isFirst = !existsSync(MARKER);
+      let line = "";
+      let callCount = 0;
+      process.stdin.on("data", (chunk) => {
+        line += chunk.toString("utf-8");
+        let idx;
+        while ((idx = line.indexOf("\\n")) >= 0) {
+          const raw = line.slice(0, idx).trim();
+          line = line.slice(idx + 1);
+          if (!raw) continue;
+          let msg;
+          try { msg = JSON.parse(raw); } catch { continue; }
+          if (msg.method === "initialize") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }) + "\\n");
+          } else if (msg.method === "tools/list") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "ping", description: "p", inputSchema: { type: "object" } }] } }) + "\\n");
+          } else if (msg.method === "tools/call") {
+            callCount++;
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "pong-" + process.pid }] } }) + "\\n");
+            if (isFirst && callCount === 1) {
+              writeFileSync(MARKER, "1");
+              setTimeout(() => process.exit(0), 10);
+            }
+          }
+        }
+      });
+      setInterval(() => {}, 60000);
+      `,
+      "utf-8",
+    );
+
+    const { MCPStdioClient } = await import("../../src/adapters/pi/mcp-bridge.js");
+    const client = new MCPStdioClient(fakePath);
+    client.start();
+    await client.initialize();
+
+    // First call: original incarnation responds and exits.
+    await client.callTool("ping", {});
+
+    // Wait for exit.
+    await new Promise<void>((resolve) => {
+      const wait = () => {
+        if ((client as unknown as { exited: boolean }).exited) return resolve();
+        setTimeout(wait, 25);
+      };
+      wait();
+    });
+
+    // Now fire TWO callTool invocations simultaneously — both see
+    // `this.exited === true`. Without single-flight, both would call
+    // respawn(), each spawning its own child. With single-flight, only
+    // one child should be spawned and both calls share it.
+    const [r1, r2] = await Promise.all([
+      client.callTool("ping", {}),
+      client.callTool("ping", {}),
+    ]);
+    const respPid1 = (r1.content?.[0]?.text ?? "").replace(/^pong-/, "");
+    const respPid2 = (r2.content?.[0]?.text ?? "").replace(/^pong-/, "");
+    // Both calls must resolve through the SAME respawned child.
+    expect(respPid1).toBe(respPid2);
+
+    // Filesystem evidence: exactly two pids ever marked (original +
+    // one respawn). If two respawns raced, we'd see 3 pid files.
+    const { readdirSync } = await import("node:fs");
+    const recordedPids = readdirSync(pidsDir);
+    expect(recordedPids).toHaveLength(2);
+
+    client.shutdown();
+  }, 20_000);
+
+  it("respawn() resets state in the documented order — `exited=false` BEFORE initialize()", async () => {
+    // Pin the sequencing contract called out in respawn()'s JSDoc.
+    // If a future refactor moves `this.exited = false` to AFTER
+    // `await this.initialize()`, the recursive request("initialize", ...)
+    // inside respawn would see `exited === true` and re-enter respawn
+    // forever (infinite loop, not just a stale reject).
+    //
+    // We exercise the path: state ALL clears before initialize fires.
+    const fakePath = join(scratch, "introspect-respawn.mjs");
+    writeFileSync(
+      fakePath,
+      `
+      let line = "";
+      process.stdin.on("data", (chunk) => {
+        line += chunk.toString("utf-8");
+        let idx;
+        while ((idx = line.indexOf("\\n")) >= 0) {
+          const raw = line.slice(0, idx).trim();
+          line = line.slice(idx + 1);
+          if (!raw) continue;
+          let msg;
+          try { msg = JSON.parse(raw); } catch { continue; }
+          if (msg.method === "initialize") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }) + "\\n");
+          } else if (msg.method === "tools/call") {
+            process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "ok" }] } }) + "\\n");
+          }
+        }
+      });
+      setInterval(() => {}, 60000);
+      `,
+      "utf-8",
+    );
+
+    const { MCPStdioClient } = await import("../../src/adapters/pi/mcp-bridge.js");
+    const client = new MCPStdioClient(fakePath);
+    client.start();
+    await client.initialize();
+
+    // Force the exited flag, then trigger a callTool — request() should
+    // run respawn, which must reset state before initialize() fires.
+    const internal = client as unknown as {
+      exited: boolean;
+      initialized: boolean;
+      child: unknown;
+    };
+
+    // Mark it as exited manually (simulating the post-onExit state
+    // without actually killing the child — keeps test deterministic).
+    internal.exited = true;
+
+    // callTool must succeed via the respawn path. If `exited` is not
+    // cleared before the recursive request("initialize", ...) call,
+    // this hangs forever and the test times out at the per-it limit.
+    const res = await client.callTool("ping", {});
+    expect((res.content?.[0]?.text ?? "")).toBe("ok");
+
+    // Post-call invariants — proves respawn finished cleanly.
+    expect(internal.exited).toBe(false);
+    expect(internal.initialized).toBe(true);
+    expect(internal.child).not.toBeNull();
+
+    client.shutdown();
+  }, 15_000);
+});

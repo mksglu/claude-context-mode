@@ -966,6 +966,158 @@ describe("AskUserQuestion Events", () => {
     assert.equal(decisionEvents[0].category, "decision");
     assert.equal(decisionEvents[0].priority, 2);
     assert.ok(decisionEvents[0].data.includes("database"), "should include question text");
+    // The selected option label MUST appear as the answer.
+    assert.ok(
+      decisionEvents[0].data.includes("PostgreSQL"),
+      "should include the selected answer label",
+    );
+    // The raw answers map must NOT leak into the event data.
+    assert.ok(
+      !decisionEvents[0].data.includes('"answers"'),
+      "must not embed the raw answers map",
+    );
+  });
+
+  test("extracts only the selected label when tool_response echoes the request payload", () => {
+    // Real Claude Code harness shape: the tool_response echoes the full
+    // request (questions + options) alongside the answers map. The extractor
+    // must NOT leak the echoed payload into the event data — that's what
+    // produced "Unhandled case: [object Object]" toasts on SessionStart.
+    const QUESTION = "Which database should we use?";
+    const SELECTED = "PostgreSQL";
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: QUESTION,
+            header: "Database",
+            options: [
+              { label: "PostgreSQL", description: "Relational DB" },
+              { label: "MongoDB", description: "Document DB" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+      tool_response: JSON.stringify({
+        questions: [
+          {
+            question: QUESTION,
+            header: "Database",
+            options: [
+              { label: "PostgreSQL", description: "Relational DB" },
+              { label: "MongoDB", description: "Document DB" },
+            ],
+            multiSelect: false,
+          },
+        ],
+        answers: { [QUESTION]: SELECTED },
+      }),
+    };
+
+    const events = extractEvents(input);
+    const decisionEvents = events.filter(e => e.type === "decision_question");
+    assert.equal(decisionEvents.length, 1);
+    assert.equal(decisionEvents[0].data, `Q: ${QUESTION} → A: ${SELECTED}`);
+    // Must not embed the echoed request payload.
+    assert.ok(
+      !decisionEvents[0].data.includes('"questions":['),
+      "must not embed the echoed questions array",
+    );
+    assert.ok(
+      !decisionEvents[0].data.includes('"options":['),
+      "must not embed the echoed options array",
+    );
+    assert.ok(
+      !decisionEvents[0].data.includes("[object Object]"),
+      "must not stringify objects as [object Object]",
+    );
+  });
+
+  test("falls back safely when tool_response is not valid JSON", () => {
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Pick one",
+            header: "Choice",
+            options: [{ label: "A", description: "" }],
+            multiSelect: false,
+          },
+        ],
+      },
+      tool_response: "not-json at all { broken",
+    };
+
+    const events = extractEvents(input);
+    const decisionEvents = events.filter(e => e.type === "decision_question");
+    assert.equal(decisionEvents.length, 1);
+    // Empty answer rather than leaking the malformed raw text.
+    assert.equal(decisionEvents[0].data, "Q: Pick one → A: ");
+    assert.ok(
+      !decisionEvents[0].data.includes("not-json"),
+      "must not leak the raw non-JSON response",
+    );
+  });
+
+  test("joins multi-select string-array answers", () => {
+    // multiSelect: true on the request means the harness returns the answer
+    // as a string[] in the answers map. Without array handling the extractor
+    // would emit an empty answer despite a valid selection — regression caught
+    // by CodeRabbit on the original fix PR.
+    const QUESTION = "Pick features";
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: QUESTION,
+            header: "Features",
+            options: [
+              { label: "Auth", description: "" },
+              { label: "Billing", description: "" },
+              { label: "Reporting", description: "" },
+            ],
+            multiSelect: true,
+          },
+        ],
+      },
+      tool_response: JSON.stringify({
+        answers: { [QUESTION]: ["Auth", "Reporting"] },
+      }),
+    };
+
+    const events = extractEvents(input);
+    const decisionEvents = events.filter(e => e.type === "decision_question");
+    assert.equal(decisionEvents.length, 1);
+    assert.equal(decisionEvents[0].data, `Q: ${QUESTION} → A: Auth | Reporting`);
+  });
+
+  test("falls back to joined answer values when question text does not match a key", () => {
+    // Defensive: if the harness ever sends an answers map keyed differently
+    // from the question text (renamed key, locale variation), recover the
+    // string values rather than leaving the answer empty.
+    const input = {
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Original question",
+            header: "Q",
+            options: [{ label: "Yes", description: "" }],
+            multiSelect: false,
+          },
+        ],
+      },
+      tool_response: JSON.stringify({ answers: { "Renamed key": "Yes" } }),
+    };
+
+    const events = extractEvents(input);
+    const decisionEvents = events.filter(e => e.type === "decision_question");
+    assert.equal(decisionEvents.length, 1);
+    assert.equal(decisionEvents[0].data, "Q: Original question → A: Yes");
   });
 
   test("non-AskUserQuestion tool does not produce decision_question", () => {
