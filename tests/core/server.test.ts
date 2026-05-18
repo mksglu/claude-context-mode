@@ -2907,13 +2907,18 @@ describe("batch_execute FS read tracking", () => {
 import {
   BATCH_QUERY_HOT_PATH_MAX_BYTES,
   buildBatchNodeOptionsPrefix,
+  capToolResponseText,
+  formatBatchInventory,
   formatDeferredBatchQueryGuidance,
+  formatIndexedSourceList,
+  instrumentJavaScriptForExecution,
   runBatchCommands,
   shouldDeferBatchQueryResults,
+  shouldIndexToolOutput,
   type BatchCommand,
 } from "../../src/server.js";
 
-interface MockResult { stdout: string; timedOut?: boolean; }
+interface MockResult { stdout: string; exitCode?: number; timedOut?: boolean; }
 
 function mkMockExecutor(
   handler: (code: string, timeout: number | undefined) => Promise<MockResult> | MockResult,
@@ -2945,6 +2950,49 @@ describe("ctx_batch_execute large-output query deferral", () => {
       if (original === undefined) delete process.env.CONTEXT_MODE_DISABLE_PERF_DEFER;
       else process.env.CONTEXT_MODE_DISABLE_PERF_DEFER = original;
     }
+  });
+});
+
+describe("tool response caps and inventory formatting", () => {
+  test("shouldIndexToolOutput trips above 20 lines or byte cap", () => {
+    expect(shouldIndexToolOutput(Array.from({ length: 21 }, (_, i) => `l${i}`).join("\n"))).toBe(true);
+    expect(shouldIndexToolOutput("short\noutput")).toBe(false);
+    expect(shouldIndexToolOutput("x".repeat(9 * 1024))).toBe(true);
+  });
+
+  test("formatBatchInventory caps section list and reports omitted count", () => {
+    const sections = Array.from({ length: 205 }, (_, i) => ({ title: `section-${i}`, bytes: 1024 }));
+    const inventory = formatBatchInventory(sections, "batch:many");
+    expect(inventory.join("\n")).toContain("5 more sections omitted");
+    expect(inventory.length).toBeLessThanOrEqual(203);
+  });
+
+  test("capToolResponseText applies byte cap with guidance", () => {
+    const text = capToolResponseText("x".repeat(2000), 1024);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1100);
+    expect(text).toContain("response capped");
+    expect(text).toContain("ctx_search");
+  });
+
+  test("formatIndexedSourceList caps no-result source inventory", () => {
+    const sources = Array.from({ length: 30 }, (_, i) => ({ label: `s${i}`, chunkCount: i + 1 }));
+    const text = formatIndexedSourceList(sources, 3);
+    expect(text).toContain('"s0"');
+    expect(text).toContain("27 more sources omitted");
+    expect(text).not.toContain('"s29"');
+  });
+});
+
+describe("ctx_execute JS/TS instrumentation", () => {
+  test("static ESM snippets stay top-level, CJS snippets stay wrapped", () => {
+    const esm = instrumentJavaScriptForExecution("import path from 'node:path';\nexport const x = 1;\nconsole.log(path.sep);");
+    expect(esm).toContain("createRequire");
+    expect(esm).toContain("export const x = 1");
+    expect(esm).not.toContain("async function __cm_main");
+
+    const cjs = instrumentJavaScriptForExecution("const fs = require('fs');\nconsole.log(1);");
+    expect(cjs).toContain("async function __cm_main");
+    expect(cjs).toContain("var require=__cm_wrapRequire");
   });
 });
 
@@ -3022,6 +3070,19 @@ describe("runBatchCommands serial path (concurrency=1)", () => {
     expect(timedOut).toBe(false);
     expect(outputs).toHaveLength(3);
     expect(outputs.every((o) => !o.includes("skipped"))).toBe(true);
+  });
+
+  test("silent nonzero exit is surfaced and tracked", async () => {
+    const exec = mkMockExecutor(() => ({ stdout: "", exitCode: 1 }));
+    const cmds: BatchCommand[] = [{ label: "FAIL", command: "false" }];
+    const { outputs, failedCommands } = await runBatchCommands(
+      cmds,
+      { timeout: 1000, concurrency: 1, nodeOptsPrefix: NOOP_PREFIX },
+      exec,
+    );
+    expect(outputs[0]).toContain("(no output)");
+    expect(outputs[0]).toContain("(exit code 1)");
+    expect(failedCommands).toEqual([{ label: "FAIL", exitCode: 1 }]);
   });
 
   test("no timeout: per-command timeout passed to executor is undefined", async () => {
@@ -3145,6 +3206,25 @@ describe("runBatchCommands parallel path (concurrency>1)", () => {
     expect(totalBytes).toBe(300);
     // markers stripped from output
     expect(outputs.join("")).not.toContain("__CM_FS__");
+  });
+
+  test("parallel nonzero exit is surfaced without cancelling siblings", async () => {
+    const exec = mkMockExecutor((code) => code.includes("bad")
+      ? { stdout: "", exitCode: 1 }
+      : { stdout: "ok", exitCode: 0 });
+    const cmds: BatchCommand[] = [
+      { label: "bad", command: "false bad" },
+      { label: "good", command: "echo good" },
+    ];
+    const { outputs, failedCommands, timedOut } = await runBatchCommands(
+      cmds,
+      { timeout: 1000, concurrency: 2, nodeOptsPrefix: NOOP_PREFIX },
+      exec,
+    );
+    expect(timedOut).toBe(false);
+    expect(outputs[0]).toContain("(exit code 1)");
+    expect(outputs[1]).toContain("ok");
+    expect(failedCommands).toEqual([{ label: "bad", exitCode: 1 }]);
   });
 });
 

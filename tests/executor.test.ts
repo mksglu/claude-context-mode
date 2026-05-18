@@ -8,6 +8,7 @@ import {
   buildScriptFilename,
   buildShellScriptContent,
   buildSpawnOptions,
+  hasStaticEsmSyntax,
   resolveExecuteFileMaxBytes,
 } from "../src/executor.js";
 import {
@@ -304,6 +305,39 @@ describe.runIf(runtimes.typescript)("TypeScript Execution", () => {
       assert.equal(r.exitCode, 0);
       assert.ok(r.stdout.includes("doubled: 2, 4, 6"));
     });
+
+    test("TS: static ESM import executes", async () => {
+      const r = await executor.execute({
+        language: "typescript",
+        code: `
+          import { basename } from "node:path";
+          console.log("esm-import:", basename("/tmp/example.txt"));
+        `,
+      });
+      assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stdout.includes("esm-import: example.txt"));
+    });
+
+    test("TS: static export and top-level await execute", async () => {
+      const r = await executor.execute({
+        language: "typescript",
+        code: `
+          export const value = await Promise.resolve(42);
+          console.log("esm-export:", value);
+        `,
+      });
+      assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stdout.includes("esm-export: 42"));
+    });
+});
+
+describe("hasStaticEsmSyntax", () => {
+  test("detects static import/export but not dynamic import", () => {
+    expect(hasStaticEsmSyntax("import { readFileSync } from 'node:fs';")).toBe(true);
+    expect(hasStaticEsmSyntax("export const value = 1;")).toBe(true);
+    expect(hasStaticEsmSyntax("const mod = await import('node:fs');")).toBe(false);
+    expect(hasStaticEsmSyntax("const fs = require('fs');")).toBe(false);
+  });
 });
 
 describe.runIf(runtimes.python)("Python Execution", () => {
@@ -1003,6 +1037,21 @@ describe("execute_file (FILE_CONTENT)", () => {
     });
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.includes("admins: Alice, Charlie"));
+  });
+
+  test.runIf(runtimes.typescript)("execute_file: TypeScript static ESM reads FILE_CONTENT", async () => {
+    const r = await executor.executeFile({
+      path: testFile,
+      language: "typescript",
+      code: `
+        import { basename } from "node:path";
+        export const fileName = basename(FILE_CONTENT_PATH);
+        const data = JSON.parse(FILE_CONTENT);
+        console.log("ts-esm-file:", fileName, data.users.length);
+      `,
+    });
+    assert.equal(r.exitCode, 0, `stderr: ${r.stderr}`);
+    assert.ok(r.stdout.includes("ts-esm-file: test-data.json 3"));
   });
 
     test.runIf(runtimes.python)("execute_file: Python reads FILE_CONTENT", async () => {

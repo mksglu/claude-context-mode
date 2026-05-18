@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { homedir, tmpdir, cpus } from "node:os";
 import { request as httpsRequest } from "node:https";
 import { z } from "zod";
-import { PolyglotExecutor } from "./executor.js";
+import { PolyglotExecutor, hasStaticEsmSyntax } from "./executor.js";
 import { runPool, type PoolJob } from "./runPool.js";
 import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
 import { composeFetchCacheKey } from "./fetch-cache.js";
@@ -45,7 +45,7 @@ import {
 } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter, type PlatformId } from "./adapters/types.js";
-import { detectPlatform, getSessionDirSegments } from "./adapters/detect.js";
+import { detectPlatform, getAdapter, getSessionDirSegments } from "./adapters/detect.js";
 import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
@@ -214,6 +214,10 @@ function maybeIndexSessionEvents(store: ContentStore): void {
 // hardcoded configDir detection in tool handlers.
 
 let _detectedAdapter: HookAdapter | null = null;
+let _detectedPlatform: PlatformId | null = null;
+let _detectedAdapterPlatform: PlatformId | null = null;
+let _adapterRefreshInFlight: PlatformId | null = null;
+let _codexHookHealStarted = false;
 
 // Tracks the ctx_insight dashboard child so shutdown can terminate it.
 // See ctx_insight handler + shutdown() in main().
@@ -236,12 +240,47 @@ function resolveClaudeConfigRoot(): string {
 async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
   if (_detectedAdapter) return _detectedAdapter;
   try {
-    const { getAdapter } = await import("./adapters/detect.js");
-    const signal = detectPlatform();
+    const signal = { platform: _detectedPlatform ?? detectPlatform().platform };
     return await getAdapter(signal.platform);
   } catch {
     return null;
   }
+}
+
+function refreshDetectedPlatformFromClientInfo(): void {
+  try {
+    const clientInfo = server.server.getClientVersion();
+    if (!clientInfo) return;
+    const signal = detectPlatform(clientInfo);
+    _detectedPlatform = signal.platform;
+    if (_detectedAdapterPlatform === signal.platform || _adapterRefreshInFlight === signal.platform) return;
+    _adapterRefreshInFlight = signal.platform;
+    void getAdapter(signal.platform)
+      .then((adapter) => {
+        _detectedAdapter = adapter;
+        _detectedAdapterPlatform = signal.platform;
+      })
+      .catch(() => { /* best effort */ })
+      .finally(() => {
+        if (_adapterRefreshInFlight === signal.platform) _adapterRefreshInFlight = null;
+      });
+  } catch { /* best effort */ }
+}
+
+function runtimePluginRoot(): string {
+  return existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
+}
+
+function healCodexHooksMidSession(): void {
+  if (_codexHookHealStarted) return;
+  let platform: PlatformId | undefined = _detectedPlatform ?? undefined;
+  try { platform ??= detectPlatform().platform; } catch { /* ignore */ }
+  if (platform !== "codex") return;
+  _codexHookHealStarted = true;
+  const pluginRoot = runtimePluginRoot();
+  void import("./adapters/codex/index.js")
+    .then(({ CodexAdapter }) => { new CodexAdapter().configureAllHooks(pluginRoot); })
+    .catch(() => { /* best effort */ });
 }
 
 /**
@@ -257,7 +296,7 @@ function getSessionDir(): string {
   // Code/Codex (single-segment roots), reroute through their config-dir
   // contracts so the pre-detection window does not split-state with hooks.
   try {
-    const signal = detectPlatform();
+    const signal = { platform: _detectedPlatform ?? detectPlatform().platform };
     const segments = getSessionDirSegments(signal.platform);
     if (segments) {
       let root = join(homedir(), ...segments);
@@ -294,6 +333,7 @@ function getProjectDir(): string {
     process.env.PWD ?? "",
     process.cwd(),
     _detectedAdapter?.name ?? "",
+    _detectedPlatform ?? "",
   ].join("\0");
   const now = Date.now();
   if (_projectDirCache && _projectDirCache.key === cacheKey && _projectDirCache.expiresAt > now) {
@@ -331,7 +371,7 @@ function getProjectDir(): string {
   let transcriptsRoot: string | undefined;
   let strictPlatform: PlatformId | undefined;
   try {
-    const detected = detectPlatform().platform;
+    const detected = _detectedPlatform ?? detectPlatform().platform;
     strictPlatform = detected;
     if (detected === "claude-code") {
       transcriptsRoot = join(homedir(), ".claude", "projects");
@@ -577,8 +617,10 @@ function healCacheMidSession(): void {
 }
 
 function trackResponse(toolName: string, response: ToolResult): ToolResult {
+  refreshDetectedPlatformFromClientInfo();
   // Mid-session cache heal — one-shot, first tool call
   healCacheMidSession();
+  healCodexHooksMidSession();
   // Prepend version outdated warning if needed
   if (shouldShowVersionWarning() && response.content.length > 0) {
     const hint = getUpgradeHint();
@@ -1051,6 +1093,61 @@ export function formatDeferredBatchQueryGuidance(queries: string[], source: stri
   ];
 }
 
+export const MCP_TOOL_RESPONSE_MAX_BYTES = 96 * 1024;
+export const BATCH_INVENTORY_MAX_SECTIONS = 200;
+export const BATCH_INVENTORY_MAX_BYTES = 24 * 1024;
+export const SEARCH_SOURCE_LIST_MAX = 25;
+
+export function capToolResponseText(
+  text: string,
+  maxBytes = MCP_TOOL_RESPONSE_MAX_BYTES,
+): string {
+  const bytes = Buffer.byteLength(text);
+  if (bytes <= maxBytes) return text;
+  const suffix =
+    `\n\n[response capped at ${(maxBytes / 1024).toFixed(0)}KB; ` +
+    "full output is indexed, use ctx_search with the returned source label]";
+  const room = Math.max(0, maxBytes - Buffer.byteLength(suffix) - 8);
+  return Buffer.from(text).subarray(0, room).toString("utf-8") + suffix;
+}
+
+export function formatBatchInventory(
+  sections: Array<{ title: string; bytes: number }>,
+  source: string,
+): string[] {
+  const inventory: string[] = ["## Indexed Sections", ""];
+  let bytesUsed = 0;
+  let emitted = 0;
+  for (const s of sections) {
+    if (emitted >= BATCH_INVENTORY_MAX_SECTIONS) break;
+    const line = `- ${s.title} (${(s.bytes / 1024).toFixed(1)}KB)`;
+    const nextBytes = bytesUsed + Buffer.byteLength(line) + 1;
+    if (nextBytes > BATCH_INVENTORY_MAX_BYTES) break;
+    inventory.push(line);
+    bytesUsed = nextBytes;
+    emitted++;
+  }
+  const omitted = sections.length - emitted;
+  if (omitted > 0) {
+    inventory.push(
+      `- ... ${omitted} more sections omitted; use ctx_search(queries: ["..."], source: ${JSON.stringify(source)})`,
+    );
+  }
+  return inventory;
+}
+
+export function formatIndexedSourceList(
+  sources: Array<{ label: string; chunkCount: number }>,
+  maxSources = SEARCH_SOURCE_LIST_MAX,
+): string {
+  if (sources.length === 0) return "";
+  const visible = sources.slice(0, maxSources)
+    .map((s) => `"${s.label}" (${s.chunkCount} sections)`);
+  const omitted = sources.length - visible.length;
+  if (omitted > 0) visible.push(`... ${omitted} more sources omitted`);
+  return visible.join(", ");
+}
+
 // ─────────────────────────────────────────────────────────
 // batch_execute runner — used by ctx_batch_execute handler
 // ─────────────────────────────────────────────────────────
@@ -1060,6 +1157,7 @@ export interface BatchCommand { label: string; command: string; }
 export interface BatchRunResult {
   outputs: string[];
   timedOut: boolean;
+  failedCommands: Array<{ label: string; exitCode: number }>;
 }
 
 export interface BatchRunOptions {
@@ -1075,7 +1173,7 @@ export interface BatchRunOptions {
 }
 
 interface BatchExecutor {
-  execute(input: { language: "shell"; code: string; timeout: number | undefined }): Promise<{ stdout: string; timedOut?: boolean }>;
+  execute(input: { language: "shell"; code: string; timeout: number | undefined }): Promise<{ stdout: string; exitCode?: number; timedOut?: boolean }>;
 }
 
 function quotePosixSingle(value: string): string {
@@ -1102,7 +1200,12 @@ export function buildBatchNodeOptionsPrefix(shellPath: string, preloadPath: stri
   return `NODE_OPTIONS=${quotePosixSingle(option)} `;
 }
 
-function formatCommandOutput(label: string, raw: string, onFsBytes?: (bytes: number) => void): string {
+function formatCommandOutput(
+  label: string,
+  raw: string,
+  onFsBytes?: (bytes: number) => void,
+  exitCode?: number,
+): string {
   let output = raw || "(no output)";
   const fsMatches = output.matchAll(/__CM_FS__:(\d+)/g);
   let cmdFsBytes = 0;
@@ -1111,7 +1214,10 @@ function formatCommandOutput(label: string, raw: string, onFsBytes?: (bytes: num
     onFsBytes?.(cmdFsBytes);
     output = output.replace(/__CM_FS__:\d+\n?/g, "");
   }
-  return `# ${label}\n\n${output}\n`;
+  const status = exitCode !== undefined && exitCode !== 0
+    ? `\n(exit code ${exitCode})`
+    : "";
+  return `# ${label}\n\n${output}${status}\n`;
 }
 
 /**
@@ -1133,6 +1239,7 @@ export async function runBatchCommands(
     // When `timeout` is undefined, no shared budget is enforced; each
     // command runs to completion (Issue #406).
     const outputs: string[] = [];
+    const failedCommands: Array<{ label: string; exitCode: number }> = [];
     const startTime = Date.now();
     let timedOut = false;
     for (let i = 0; i < commands.length; i++) {
@@ -1153,7 +1260,10 @@ export async function runBatchCommands(
         code: `${nodeOptsPrefix}${cmd.command} 2>&1`,
         timeout: perCmdTimeout,
       });
-      outputs.push(formatCommandOutput(cmd.label, result.stdout, onFsBytes));
+      outputs.push(formatCommandOutput(cmd.label, result.stdout, onFsBytes, result.exitCode));
+      if (!result.timedOut && result.exitCode !== undefined && result.exitCode !== 0) {
+        failedCommands.push({ label: cmd.label, exitCode: result.exitCode });
+      }
       if (result.timedOut) {
         timedOut = true;
         for (let j = i + 1; j < commands.length; j++) {
@@ -1162,13 +1272,13 @@ export async function runBatchCommands(
         break;
       }
     }
-    return { outputs, timedOut };
+    return { outputs, timedOut, failedCommands };
   }
 
   // Parallel path — delegated to the shared runPool primitive.
   // Each job returns { output, timedOut }; runPool handles in-flight cap,
   // throw isolation (Promise.allSettled semantics), and order preservation.
-  const jobs: PoolJob<{ output: string; timedOut: boolean }>[] = commands.map((cmd) => ({
+  const jobs: PoolJob<{ output: string; timedOut: boolean; exitCode?: number }>[] = commands.map((cmd) => ({
     run: async () => {
       const result = await executor.execute({
         language: "shell",
@@ -1177,34 +1287,116 @@ export async function runBatchCommands(
       });
       // Always route partial stdout through formatCommandOutput so __CM_FS__
       // markers are stripped + counted, even when the command timed out.
-      const formatted = formatCommandOutput(cmd.label, result.stdout, onFsBytes);
+      const formatted = formatCommandOutput(cmd.label, result.stdout, onFsBytes, result.exitCode);
       const output = result.timedOut
         ? formatted.replace(/\n$/, "") + `\n(timed out after ${timeout ?? "?"}ms)\n`
         : formatted;
-      return { output, timedOut: !!result.timedOut };
+      return { output, timedOut: !!result.timedOut, exitCode: result.exitCode };
     },
   }));
 
   const { settled } = await runPool(jobs, { concurrency });
   const outputs: string[] = new Array(commands.length);
+  const failedCommands: Array<{ label: string; exitCode: number }> = [];
   let timedOut = false;
   for (let i = 0; i < settled.length; i++) {
     const r = settled[i];
     if (r.status === "fulfilled") {
       outputs[i] = r.value.output;
       if (r.value.timedOut) timedOut = true;
+      if (!r.value.timedOut && r.value.exitCode !== undefined && r.value.exitCode !== 0) {
+        failedCommands.push({ label: commands[i].label, exitCode: r.value.exitCode });
+      }
     } else {
       // Isolated executor throw (spawn EAGAIN, ENOMEM, EMFILE, …) — siblings keep running.
       const message = r.reason instanceof Error ? r.reason.message : String(r.reason);
       outputs[i] = `# ${commands[i].label}\n\n(executor error: ${message})\n`;
     }
   }
-  return { outputs, timedOut };
+  return { outputs, timedOut, failedCommands };
 }
 
 // ─────────────────────────────────────────────────────────
 // Tool: execute
 // ─────────────────────────────────────────────────────────
+
+function jsInstrumentationBody(): string {
+  return `
+let __cm_fs=0;
+process.on('exit',()=>{if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch{}});
+(function(){
+  try{
+    var f=__cm_req?__cm_req('fs'):null;
+    if(!f)return;
+    var ors=f.readFileSync;
+    f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};
+    var orf=f.readFile;
+    if(orf)f.readFile=function(){var a=Array.from(arguments),cb=a.pop();orf.apply(this,a.concat([function(e,d){if(!e&&d){if(Buffer.isBuffer(d))__cm_fs+=d.length;else if(typeof d==='string')__cm_fs+=Buffer.byteLength(d);}cb(e,d);}]));};
+  }catch{}
+})();
+let __cm_net=0;
+process.on('exit',()=>{if(__cm_net>0)try{process.stderr.write('__CM_NET__:'+__cm_net+'\\n')}catch{}});
+const __cm_f=globalThis.fetch;
+if(typeof __cm_f==='function'){
+globalThis.fetch=async(...a)=>{const r=await __cm_f(...a);
+try{const cl=r.clone();const b=await cl.arrayBuffer();__cm_net+=b.byteLength}catch{}
+return r};
+}
+const __cm_hc=new Map();
+const __cm_hm=new Set(['http','https','node:http','node:https']);
+function __cm_wf(m,origFn){return function(...a){
+  const li=a.length-1;
+  if(li>=0&&typeof a[li]==='function'){const oc=a[li];a[li]=function(res){
+    res.on('data',function(c){__cm_net+=c.length});oc(res);};}
+  const req=origFn.apply(m,a);
+  const oOn=req.on.bind(req);
+  req.on=function(ev,cb,...r){
+    if(ev==='response'){return oOn(ev,function(res){
+      res.on('data',function(c){__cm_net+=c.length});cb(res);
+    },...r);}
+    return oOn(ev,cb,...r);
+  };
+  return req;
+}}
+function __cm_wrapRequire(baseReq){return baseReq?function(id){
+  const m=baseReq(id);
+  if(!__cm_hm.has(id))return m;
+  const k=id.replace('node:','');
+  if(__cm_hc.has(k))return __cm_hc.get(k);
+  const w=Object.create(m);
+  if(typeof m.get==='function')w.get=__cm_wf(m,m.get);
+  if(typeof m.request==='function')w.request=__cm_wf(m,m.request);
+  __cm_hc.set(k,w);return w;
+}:baseReq;}
+`;
+}
+
+export function instrumentJavaScriptForExecution(
+  code: string,
+  background = false,
+): string {
+  const isEsm = hasStaticEsmSyntax(code);
+  const tail = background ? "\nsetInterval(()=>{},2147483647);" : "";
+  if (isEsm) {
+    return `import { createRequire as __cm_createRequire } from 'node:module';
+const __cm_req=__cm_createRequire(import.meta.url);
+${jsInstrumentationBody()}
+const require=__cm_wrapRequire(__cm_req);
+if(__cm_req){if(__cm_req.resolve)require.resolve=__cm_req.resolve;
+if(__cm_req.cache)require.cache=__cm_req.cache;}
+${code}${tail}`;
+  }
+  return `;(function(__cm_req){
+${jsInstrumentationBody()}
+var require=__cm_wrapRequire(__cm_req);
+if(__cm_req){if(__cm_req.resolve)require.resolve=__cm_req.resolve;
+if(__cm_req.cache)require.cache=__cm_req.cache;}
+async function __cm_main(){
+${code}
+}
+__cm_main().catch(e=>{console.error(e);process.exitCode=1});${tail}
+})(typeof require!=='undefined'?require:null);`;
+}
 
 server.registerTool(
   "ctx_execute",
@@ -1264,72 +1456,11 @@ server.registerTool(
     }
 
     try {
-      // For JS/TS: wrap in async IIFE with fetch + http/https interceptors to track network bytes
+      // For JS/TS: add fetch/http/fs instrumentation. Static ESM snippets stay
+      // top-level so `import`/`export` and top-level await remain valid.
       let instrumentedCode = code;
       if (language === "javascript" || language === "typescript") {
-        // Wrap user code in a closure that shadows CJS require with http/https interceptor.
-        // globalThis.require does NOT work because CJS require is module-scoped, not global.
-        // The closure approach (function(__cm_req){ var require=...; })(require) correctly
-        // shadows the CJS require for all code inside, including __cm_main().
-        instrumentedCode = `
-// FS read instrumentation — count bytes read via fs.readFileSync/readFile
-let __cm_fs=0;
-process.on('exit',()=>{if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch{}});
-(function(){
-  try{
-    var f=typeof require!=='undefined'?require('fs'):null;
-    if(!f)return;
-    var ors=f.readFileSync;
-    f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};
-    var orf=f.readFile;
-    if(orf)f.readFile=function(){var a=Array.from(arguments),cb=a.pop();orf.apply(this,a.concat([function(e,d){if(!e&&d){if(Buffer.isBuffer(d))__cm_fs+=d.length;else if(typeof d==='string')__cm_fs+=Buffer.byteLength(d);}cb(e,d);}]));};
-  }catch{}
-})();
-let __cm_net=0;
-// Report network bytes on process exit — works with both promise and callback patterns.
-// process.on('exit') fires after all I/O completes, unlike .finally() which fires
-// when __cm_main() resolves (immediately for callback-based http.get without await).
-process.on('exit',()=>{if(__cm_net>0)try{process.stderr.write('__CM_NET__:'+__cm_net+'\\n')}catch{}});
-;(function(__cm_req){
-// Intercept globalThis.fetch
-const __cm_f=globalThis.fetch;
-globalThis.fetch=async(...a)=>{const r=await __cm_f(...a);
-try{const cl=r.clone();const b=await cl.arrayBuffer();__cm_net+=b.byteLength}catch{}
-return r};
-// Shadow CJS require with http/https network tracking.
-const __cm_hc=new Map();
-const __cm_hm=new Set(['http','https','node:http','node:https']);
-function __cm_wf(m,origFn){return function(...a){
-  const li=a.length-1;
-  if(li>=0&&typeof a[li]==='function'){const oc=a[li];a[li]=function(res){
-    res.on('data',function(c){__cm_net+=c.length});oc(res);};}
-  const req=origFn.apply(m,a);
-  const oOn=req.on.bind(req);
-  req.on=function(ev,cb,...r){
-    if(ev==='response'){return oOn(ev,function(res){
-      res.on('data',function(c){__cm_net+=c.length});cb(res);
-    },...r);}
-    return oOn(ev,cb,...r);
-  };
-  return req;
-}}
-var require=__cm_req?function(id){
-  const m=__cm_req(id);
-  if(!__cm_hm.has(id))return m;
-  const k=id.replace('node:','');
-  if(__cm_hc.has(k))return __cm_hc.get(k);
-  const w=Object.create(m);
-  if(typeof m.get==='function')w.get=__cm_wf(m,m.get);
-  if(typeof m.request==='function')w.request=__cm_wf(m,m.request);
-  __cm_hc.set(k,w);return w;
-}:__cm_req;
-if(__cm_req){if(__cm_req.resolve)require.resolve=__cm_req.resolve;
-if(__cm_req.cache)require.cache=__cm_req.cache;}
-async function __cm_main(){
-${code}
-}
-__cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nsetInterval(()=>{},2147483647);' : ''}
-})(typeof require!=='undefined'?require:null);`;
+        instrumentedCode = instrumentJavaScriptForExecution(code, background);
       }
       const result = await executor.execute({ language, code: instrumentedCode, timeout, background });
 
@@ -1403,7 +1534,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
           });
         }
         // Auto-index large error output into FTS5 — no data loss
-        if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
+        if (shouldIndexToolOutput(output) || Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
           if (!perfDeferDisabled()) {
             return trackResponse("ctx_execute", {
               ...(await indexStdout(output, isError ? `execute:${language}:error` : `execute:${language}`, "errors failures exceptions")),
@@ -1442,7 +1573,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
       }
 
       // Auto-index large stdout into FTS5 — return pointer, not raw content
-      if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
+      if (shouldIndexToolOutput(stdout) || Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
         return trackResponse("ctx_execute", await indexStdout(stdout, `execute:${language}`));
       }
 
@@ -1494,7 +1625,14 @@ async function indexStdout(
 
 const INTENT_SEARCH_THRESHOLD = 5_000; // bytes — ~80-100 lines
 const LARGE_OUTPUT_THRESHOLD = 102_400; // 100KB — auto-index into FTS5, return pointer
+export const RAW_TOOL_OUTPUT_MAX_LINES = 20;
+export const RAW_TOOL_OUTPUT_MAX_BYTES = 8 * 1024;
 export const BATCH_QUERY_HOT_PATH_MAX_BYTES = 64 * 1024;
+
+export function shouldIndexToolOutput(text: string): boolean {
+  return Buffer.byteLength(text) > RAW_TOOL_OUTPUT_MAX_BYTES
+    || text.split(/\r?\n/).length > RAW_TOOL_OUTPUT_MAX_LINES;
+}
 
 function perfDeferDisabled(): boolean {
   return process.env.CONTEXT_MODE_DISABLE_PERF_DEFER === "1";
@@ -1652,7 +1790,7 @@ server.registerTool(
           });
         }
         // Auto-index large error output into FTS5 — no data loss
-        if (Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
+        if (shouldIndexToolOutput(output) || Buffer.byteLength(output) > LARGE_OUTPUT_THRESHOLD) {
           trackIndexed(Buffer.byteLength(output));
           return trackResponse("ctx_execute_file", {
             content: [
@@ -1681,7 +1819,7 @@ server.registerTool(
       }
 
       // Auto-index large stdout into FTS5 — return pointer, not raw content
-      if (Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
+      if (shouldIndexToolOutput(stdout) || Buffer.byteLength(stdout) > LARGE_OUTPUT_THRESHOLD) {
         return trackResponse("ctx_execute_file", await indexStdout(stdout, `file:${path}`));
       }
 
@@ -1950,6 +2088,7 @@ server.registerTool(
       const MAX_TOTAL = 40 * 1024; // 40KB total cap
       let totalSize = 0;
       const sections: string[] = [];
+      let matchedAny = false;
 
       // Open SessionDB once before the loop (Blocker 4: avoid open/close per query)
       let timelineDB: InstanceType<typeof SessionDB> | null = null;
@@ -1998,6 +2137,7 @@ server.registerTool(
           sections.push(`## ${q}\nNo results found.`);
           continue;
         }
+        matchedAny = true;
 
         const formatted = results
           .map((r, i) => {
@@ -2018,6 +2158,11 @@ server.registerTool(
       }
 
       let output = sections.join("\n\n---\n\n");
+      if (!matchedAny) {
+        const sources = store.listSources();
+        const sourceList = formatIndexedSourceList(sources);
+        if (sourceList) output += `\n\nIndexed sources: ${sourceList}`;
+      }
 
       // Report auto-refreshed stale sources
       if (store.lastRefreshCount > 0) {
@@ -2034,7 +2179,7 @@ server.registerTool(
       if (output.trim().length === 0) {
         const sources = store.listSources();
         const sourceList = sources.length > 0
-          ? `\nIndexed sources: ${sources.map((s) => `"${s.label}" (${s.chunkCount} sections)`).join(", ")}`
+          ? `\nIndexed sources: ${formatIndexedSourceList(sources)}`
           : "";
         return trackResponse("ctx_search", {
           content: [{ type: "text" as const, text: `No results found.${sourceList}` }],
@@ -2965,7 +3110,7 @@ server.registerTool(
 
       // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
       // Concurrency>1 switches to a worker pool with per-command timeouts.
-      const { outputs: perCommandOutputs, timedOut } = await runBatchCommands(
+      const { outputs: perCommandOutputs, timedOut, failedCommands } = await runBatchCommands(
         commands,
         {
           timeout,
@@ -3015,10 +3160,7 @@ server.registerTool(
         title: s.title,
         bytes: Buffer.byteLength(s.content),
       }));
-      const inventory: string[] = ["## Indexed Sections", ""];
-      for (const s of allSections) {
-        inventory.push(`- ${s.title} (${(s.bytes / 1024).toFixed(1)}KB)`);
-      }
+      const inventory = formatBatchInventory(allSections, source);
 
       // Run source-scoped searches only for bounded outputs. For very large
       // batches, FTS write + vocabulary + N fresh searches can dominate the
@@ -3032,10 +3174,17 @@ server.registerTool(
         ? store.getDistinctiveTerms(indexed.sourceId)
         : [];
 
+      const failedSummary = failedCommands.length > 0
+        ? ` Failed ${failedCommands.length} command${failedCommands.length === 1 ? "" : "s"} (${failedCommands
+          .slice(0, 8)
+          .map((f) => `${f.label}: exit ${f.exitCode}`)
+          .join(", ")}${failedCommands.length > 8 ? `, ... ${failedCommands.length - 8} more` : ""}).`
+        : "";
       const output = [
         `Executed ${commands.length} commands (${totalLines} lines, ${(totalBytes / 1024).toFixed(1)}KB). ` +
           `Indexed ${indexed.totalChunks} sections. ` +
-          (deferQueryResults ? `Deferred ${queries.length} queries.` : `Searched ${queries.length} queries.`),
+          (deferQueryResults ? `Deferred ${queries.length} queries.` : `Searched ${queries.length} queries.`) +
+          failedSummary,
         "",
         ...inventory,
         "",
@@ -3046,7 +3195,8 @@ server.registerTool(
       ].join("\n");
 
       return trackResponse("ctx_batch_execute", {
-        content: [{ type: "text" as const, text: output }],
+        content: [{ type: "text" as const, text: capToolResponseText(output) }],
+        isError: failedCommands.length > 0 && failedCommands.length === commands.length,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -4074,7 +4224,11 @@ async function main() {
   const mcpSentinel = join(mcpSentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
   // Clean up own DB + backgrounded processes + preload script on shutdown
+  let shutdownStarted = false;
+  let gracefulShutdownStarted = false;
   const shutdown = () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     executor.cleanupBackgrounded();
     if (_store) _store.close(); // persist DB for --continue sessions
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
@@ -4086,6 +4240,8 @@ async function main() {
     }
   };
   const gracefulShutdown = async () => {
+    if (gracefulShutdownStarted) return;
+    gracefulShutdownStarted = true;
     // Final stats flush — bypass throttle so the last 0-500ms of
     // bytes_indexed / bytes_returned aren't silently lost on SIGTERM/SIGINT
     // (PR #401 grill-me review B1: persistStats early-returns inside throttle
@@ -4156,10 +4312,11 @@ async function main() {
 
   // Detect platform adapter — stored for platform-aware session paths
   try {
-    const { detectPlatform, getAdapter } = await import("./adapters/detect.js");
     const clientInfo = server.server.getClientVersion();
     const signal = detectPlatform(clientInfo ?? undefined);
+    _detectedPlatform = signal.platform;
     _detectedAdapter = await getAdapter(signal.platform);
+    _detectedAdapterPlatform = signal.platform;
     if (clientInfo) {
       console.error(`MCP client: ${clientInfo.name} v${clientInfo.version} → ${signal.platform}`);
     }

@@ -82,6 +82,11 @@ export function buildShellScriptContent(
   return `export PATH=${quoteForPosixShell(inheritedPath)}\n${code}`;
 }
 
+export function hasStaticEsmSyntax(code: string): boolean {
+  const source = code.replace(/^#!.*(?:\r?\n|$)/, "");
+  return /(^|\n)\s*(?:import\s+(?:type\s+)?(?:["'{*]|\w)|export\s+(?:type\s+)?(?:\*|\{|\w|default|async|class|const|let|var|function|interface|type|enum|namespace))/m.test(source);
+}
+
 /**
  * Resolve the real OS temp directory, bypassing any TMPDIR env override.
  * os.tmpdir() reads TMPDIR from the environment, which some shells/tools
@@ -674,6 +679,9 @@ export class PolyglotExecutor {
     switch (language) {
       case "javascript":
       case "typescript":
+        if (hasStaticEsmSyntax(code)) {
+          return `import { readFileSync as __cm_readFileSync } from "node:fs";\nconst FILE_CONTENT_PATH = ${escaped};\nconst file_path = FILE_CONTENT_PATH;\nconst FILE_CONTENT = __cm_readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
+        }
         return `const FILE_CONTENT_PATH = ${escaped};\nconst file_path = FILE_CONTENT_PATH;\nconst FILE_CONTENT = require("fs").readFileSync(FILE_CONTENT_PATH, "utf-8");\n${code}`;
       case "python":
         return `FILE_CONTENT_PATH = ${escaped}\nfile_path = FILE_CONTENT_PATH\nwith open(FILE_CONTENT_PATH, "r", encoding="utf-8") as _f:\n    FILE_CONTENT = _f.read()\n${code}`;
