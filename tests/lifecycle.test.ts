@@ -386,15 +386,8 @@ describe("Lifecycle Guard — idle timeout (#565)", () => {
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_PLATFORM: "codex" }), 0);
   });
 
-  test("idleTimeoutForEnv: env override respected", () => {
+  test("idleTimeoutForEnv: env override respected on unknown platform", () => {
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "60000" }), 60_000);
-    assert.equal(
-      idleTimeoutForEnv({
-        CONTEXT_MODE_PLATFORM: "codex",
-        CONTEXT_MODE_IDLE_TIMEOUT_MS: "60000",
-      }),
-      60_000,
-    );
   });
 
   test("idleTimeoutForEnv: env=0 disables", () => {
@@ -404,6 +397,108 @@ describe("Lifecycle Guard — idle timeout (#565)", () => {
   test("idleTimeoutForEnv: malformed env falls back to disabled (safe default)", () => {
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "garbage" }), 0);
     assert.equal(idleTimeoutForEnv({ CONTEXT_MODE_IDLE_TIMEOUT_MS: "-1" }), 0);
+  });
+
+  // Fixed-transport env-isolation contract (#592 follow-up). The shell of a
+  // user with co-resident OpenCode (which sets CONTEXT_MODE_IDLE_TIMEOUT_MS
+  // = 900000) can leak that var into a Claude Code / Codex / Cursor session
+  // launched from the same terminal. Without isolation, the leaked env
+  // would cull MCP children that the host's tool registry still references.
+  test("idleTimeoutForEnv: ignores leaked env under explicit Claude Code platform", () => {
+    assert.equal(
+      idleTimeoutForEnv(
+        { CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000" },
+        { platform: "claude-code" },
+      ),
+      0,
+    );
+  });
+
+  test("idleTimeoutForEnv: ignores leaked env under explicit Codex platform", () => {
+    assert.equal(
+      idleTimeoutForEnv(
+        { CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000" },
+        { platform: "codex" },
+      ),
+      0,
+    );
+  });
+
+  test("idleTimeoutForEnv: honors env under OpenCode (intended consumer)", () => {
+    assert.equal(
+      idleTimeoutForEnv(
+        { CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000" },
+        { platform: "opencode" },
+      ),
+      900_000,
+    );
+  });
+
+  test("idleTimeoutForEnv: honors env under Kilo (intended consumer)", () => {
+    assert.equal(
+      idleTimeoutForEnv(
+        { CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000" },
+        { platform: "kilo" },
+      ),
+      900_000,
+    );
+  });
+
+  test("idleTimeoutForEnv: ignores leaked env when env-detect sees fixed-transport host", () => {
+    // No explicit platform — function falls back to env-marker detection
+    // and recognises Claude Code via CLAUDE_CODE_ENTRYPOINT.
+    assert.equal(
+      idleTimeoutForEnv({
+        CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000",
+        CLAUDE_CODE_ENTRYPOINT: "cli",
+      }),
+      0,
+    );
+  });
+
+  test("idleTimeoutForEnv: opencode env beats Claude Code env (intended consumer wins)", () => {
+    // Edge case — if OPENCODE=1 fires before CLAUDE_CODE_ENTRYPOINT, the
+    // env-detect path must side with the consumer that explicitly opted in.
+    assert.equal(
+      idleTimeoutForEnv(
+        { CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000", OPENCODE: "1" },
+        { platform: "opencode" },
+      ),
+      900_000,
+    );
+  });
+
+  test("idleTimeoutForEnv: ignores leaked env under Codex thread marker", () => {
+    assert.equal(
+      idleTimeoutForEnv({
+        CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000",
+        CODEX_THREAD_ID: "thread-1",
+      }),
+      0,
+    );
+  });
+
+  test("idleTimeoutForEnv: CONTEXT_MODE_IDLE_TIMEOUT_MS_FORCE=1 overrides everywhere", () => {
+    // Fixed-transport host + FORCE=1 → honor env.
+    assert.equal(
+      idleTimeoutForEnv(
+        {
+          CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000",
+          CONTEXT_MODE_IDLE_TIMEOUT_MS_FORCE: "1",
+        },
+        { platform: "claude-code" },
+      ),
+      900_000,
+    );
+    // Codex via env marker + FORCE=1 → honor env.
+    assert.equal(
+      idleTimeoutForEnv({
+        CONTEXT_MODE_IDLE_TIMEOUT_MS: "900000",
+        CONTEXT_MODE_IDLE_TIMEOUT_MS_FORCE: "1",
+        CODEX_THREAD_ID: "thread-1",
+      }),
+      900_000,
+    );
   });
 
   test("shuts down when no activity for idleTimeoutMs", async () => {

@@ -131,3 +131,31 @@ describe("startLifecycleGuard — stdin EOF triggers immediate parent-alive rech
     cleanup();
   });
 });
+
+/**
+ * Bundle-level pin for the stderr listener regression. server.ts USED to
+ * register `process.stderr.on("error", shutdownOnBrokenStdio)` which made
+ * any downstream consumer that closed stderr (e.g. host wrappers that only
+ * mirror stdout) kill the JSON-RPC channel mid-response. The fix removes
+ * the stderr listener while keeping the stdout one — see PR-A in
+ * `/Users/sborisov/.claude/plans/toasty-whistling-reddy.md`.
+ *
+ * We assert this at the bundle text level (server.bundle.mjs) because
+ * exercising the listener wiring in main() requires booting the entire
+ * server (env handshake, sentinels, DB) which has its own startup-cost
+ * test scaffolding elsewhere.
+ */
+describe("server bundle — stderr 'error' listener removed (PR-A)", () => {
+  it("server.bundle.mjs registers stdout 'error' but not stderr 'error'", async () => {
+    const { readFileSync, existsSync } = await import("node:fs");
+    const path = "server.bundle.mjs";
+    if (!existsSync(path)) {
+      // Bundle not built in this environment — skip rather than fail.
+      // `npm run build` rebuilds the bundle before publish.
+      return;
+    }
+    const text = readFileSync(path, "utf-8");
+    expect(text).toContain('process.stdout.on("error"');
+    expect(text).not.toContain('process.stderr.on("error"');
+  });
+});

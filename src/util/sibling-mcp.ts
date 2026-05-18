@@ -30,6 +30,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { PlatformId } from "../adapters/types.js";
+
 /** Inject `child_process.execFileSync` for tests. Must return stdout as utf-8. */
 export type RunCommand = (cmd: string, args: readonly string[]) => string;
 
@@ -100,6 +102,14 @@ export interface CodexHostDetectionOptions {
   /** Extra explicit arg0 marker path for tests or alternate hosts. */
   arg0Path?: string;
 }
+
+/**
+ * Options for {@link isFixedTransportHost}. Alias of
+ * {@link CodexHostDetectionOptions} — Codex-specific probes are the only
+ * non-env injection point; every other fixed-transport host is detected by
+ * plain env markers.
+ */
+export type FixedTransportHostOptions = CodexHostDetectionOptions;
 
 // Match every shape an installed context-mode MCP server can take in argv:
 //
@@ -259,6 +269,77 @@ export function isCodexFixedTransportHost(
     }
   }
   return false;
+}
+
+/**
+ * Identification env vars per fixed-transport host. These hosts keep the
+ * stdio MCP transport pinned to the session and don't transparently respawn
+ * after a child exits — killing a same-parent sibling there strands their
+ * registered tool handles ("Transport closed" instead of cold-start).
+ *
+ * Codex appears here via `CODEX_THREAD_ID` / `CODEX_CI`; additional Codex-
+ * specific probes (parent-cmdline + arg0) live in `isCodexFixedTransportHost`
+ * for launchers where those env vars don't propagate.
+ *
+ * Excluded:
+ *   - kiro — no reliable env marker; sweep stays on (low signal).
+ *   - opencode, kilo, pi, omp, openclaw — NOT fixed-transport (sweep targets).
+ *
+ * Kept inline rather than imported from `src/adapters/detect.ts` so this
+ * module stays fast-path (no FS, no env-detect side effects) and avoids
+ * import cycles.
+ */
+const FIXED_TRANSPORT_ENV_MARKERS: ReadonlyArray<readonly [PlatformId, readonly string[]]> = [
+  ["claude-code",       ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PLUGIN_ROOT", "CLAUDE_SESSION_ID"]],
+  ["codex",             ["CODEX_THREAD_ID", "CODEX_CI"]],
+  ["cursor",            ["CURSOR_TRACE_ID", "CURSOR_CLI"]],
+  ["jetbrains-copilot", ["IDEA_INITIAL_DIRECTORY"]],
+  ["antigravity",       ["ANTIGRAVITY_CLI_ALIAS"]],
+  ["zed",               ["ZED_SESSION_ID", "ZED_TERM"]],
+  ["gemini-cli",        ["GEMINI_CLI", "GEMINI_PROJECT_DIR"]],
+  ["qwen-code",         ["QWEN_PROJECT_DIR"]],
+  ["vscode-copilot",    ["VSCODE_PID", "VSCODE_CWD"]],
+];
+
+/**
+ * Platform-id membership view of {@link FIXED_TRANSPORT_ENV_MARKERS}. Lets
+ * callers that already know the platform (e.g. from MCP clientInfo) short-
+ * circuit without re-walking the env table. Exported so `lifecycle.ts` can
+ * reuse the single source of truth.
+ */
+export const FIXED_TRANSPORT_PLATFORMS: ReadonlySet<PlatformId> = new Set(
+  FIXED_TRANSPORT_ENV_MARKERS.map(([p]) => p),
+);
+
+/**
+ * Env-only check: is the current process running under a host that keeps a
+ * fixed (per-session) MCP stdio transport? Such hosts do NOT respawn the
+ * server on the next call, so reaping a same-parent sibling at startup
+ * strands their registered tool handles.
+ *
+ * Composes the cheap env-marker table with the existing Codex parent-cmdline /
+ * arg0 probes — Codex needs those because its native env markers don't
+ * propagate through every launcher (`npx`, marketplace shim, etc.).
+ *
+ * VSCODE_PID/VSCODE_CWD leak into every VS Code child (e.g. a Claude Code
+ * CLI launched from the integrated terminal). Both interpretations are
+ * fixed-transport, so the result is the same — no disambiguator needed
+ * here. `detectPlatformFromEnv` resolves the distinction when it matters.
+ */
+export function isFixedTransportHost(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: FixedTransportHostOptions = {},
+): boolean {
+  const override = String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase();
+  if (override && FIXED_TRANSPORT_PLATFORMS.has(override as PlatformId)) return true;
+
+  for (const [, vars] of FIXED_TRANSPORT_ENV_MARKERS) {
+    if (vars.some((v) => env[v])) return true;
+  }
+
+  // Codex-specific fallback probes (parent-cmdline + arg0). These cover
+  // launchers where CODEX_THREAD_ID / CODEX_CI did not propagate.
+  return isCodexFixedTransportHost(env, opts);
 }
 
 /**
@@ -459,15 +540,17 @@ export async function startupSiblingSweep(
 
 export function shouldRunStartupSiblingSweep(
   env: NodeJS.ProcessEnv = process.env,
-  opts: CodexHostDetectionOptions = {},
+  opts: FixedTransportHostOptions = {},
 ): boolean {
   if (isTruthyEnv(env.CONTEXT_MODE_STARTUP_SWEEP_FORCE)) return true;
 
-  // Codex keeps a fixed stdio transport for the thread. Killing a same-parent
-  // sibling from another Codex thread leaves that thread with Transport closed
-  // instead of forcing Codex to spawn a replacement. Native Codex env markers
-  // and parent-process markers are available before MCP clientInfo can be read.
-  if (isCodexFixedTransportHost(env, opts)) return false;
+  // Fixed-transport hosts (Codex, Claude Code, Cursor, VS Code Copilot,
+  // JetBrains Copilot, Antigravity, Zed, Gemini CLI, Qwen Code) keep a
+  // pinned stdio transport per session. Killing a same-parent sibling from
+  // another concurrent session there leaves the surviving session with
+  // "Transport closed" instead of a cold-start respawn. Sweep stays default-
+  // ON for opencode/kilo/pi/omp/openclaw (their direct cause for #565).
+  if (isFixedTransportHost(env, opts)) return false;
 
   if (isFalsyEnv(env.CONTEXT_MODE_STARTUP_SWEEP)) return false;
   if (isTruthyEnv(env.CONTEXT_MODE_STARTUP_SWEEP)) return true;

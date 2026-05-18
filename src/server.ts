@@ -46,7 +46,7 @@ import {
 } from "./session/persist-tool-calls.js";
 import { searchAllSources } from "./search/unified.js";
 import { buildNodeCommand, type HookAdapter, type PlatformId } from "./adapters/types.js";
-import { detectPlatform, getAdapter, getSessionDirSegments } from "./adapters/detect.js";
+import { detectPlatform, detectPlatformFromEnv, getAdapter, getSessionDirSegments } from "./adapters/detect.js";
 import { resolveCodexConfigDir } from "./adapters/codex/paths.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
@@ -4277,6 +4277,11 @@ async function main() {
   process.on("SIGINT", () => { gracefulShutdown(); });
   process.on("SIGTERM", () => { gracefulShutdown(); });
 
+  // stdout is the MCP JSON-RPC channel — EPIPE there means our peer is gone
+  // and there is no point staying up. stderr is logging-only; EPIPE/EBADF
+  // there must NOT kill the JSON-RPC channel (e.g. a host that ignores
+  // stderr after the first read can race the listener and trip a shutdown
+  // mid-response).
   const shutdownOnBrokenStdio = (err: unknown) => {
     const code = (err as NodeJS.ErrnoException | undefined)?.code;
     if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
@@ -4284,7 +4289,6 @@ async function main() {
     }
   };
   process.stdout.on("error", shutdownOnBrokenStdio);
-  process.stderr.on("error", shutdownOnBrokenStdio);
 
   // Lifecycle guard: detect parent death + stdin close to prevent orphaned processes (#103)
   // Also: idle self-shutdown (#565) — OpenCode/KiloCode open one MCP child per
@@ -4293,7 +4297,15 @@ async function main() {
   // RSS under a single `opencode serve` parent). Idle timeout reaps quiescent
   // servers; live ones bump `recordActivity()` on every JSON-RPC request via
   // the MCP SDK's `_onrequest` hook wrapped below.
-  const lifecycle = startLifecycleGuard({ onShutdown: () => gracefulShutdown() });
+  //
+  // Detected platform is forwarded so `idleTimeoutForEnv` can ignore a
+  // CONTEXT_MODE_IDLE_TIMEOUT_MS leaked into a fixed-transport host's env
+  // (e.g. Claude Code spawned from a shell that already had OpenCode set
+  // 900_000 in its rc files).
+  const lifecycle = startLifecycleGuard({
+    onShutdown: () => gracefulShutdown(),
+    platform: detectPlatformFromEnv(process.env),
+  });
 
   // Wrap the SDK's internal request entry so every JSON-RPC `tools/call`,
   // `tools/list`, etc. resets the idle timer. We intercept at this layer

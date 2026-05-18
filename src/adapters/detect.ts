@@ -354,6 +354,53 @@ export function getSessionDirSegments(platform: string): string[] | null {
 }
 
 /**
+ * Pure env-only platform detection. Walks `PLATFORM_ENV_VARS` in registry
+ * order and returns the first `role === "identification"` (or `workspace`
+ * with `detect !== false`) marker it finds. Reuses the VSCODE_PID
+ * disambiguator (`claudeCodeHasContextModePlugin`) so a Claude Code CLI
+ * launched from a VS Code integrated terminal doesn't get misclassified
+ * as `vscode-copilot`.
+ *
+ * Returns `"unknown"` when no env marker fires — callers that need a
+ * filesystem-aware fallback should use {@link detectPlatform} instead.
+ *
+ * Issue #565/#592 — consumed by `startLifecycleGuard` to decide whether
+ * `CONTEXT_MODE_IDLE_TIMEOUT_MS` inherited from a co-resident host's shell
+ * should be honored or ignored. Pure env-scan, NO filesystem reads except
+ * for the cached #539 probe.
+ */
+export function detectPlatformFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): PlatformId {
+  // Explicit override wins.
+  const platformOverride = env.CONTEXT_MODE_PLATFORM;
+  if (platformOverride) {
+    const validPlatforms: PlatformId[] = [
+      "claude-code", "gemini-cli", "kilo", "opencode", "codex",
+      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity",
+      "kiro", "pi", "omp", "zed", "qwen-code",
+    ];
+    if (validPlatforms.includes(platformOverride as PlatformId)) {
+      return platformOverride as PlatformId;
+    }
+  }
+
+  for (const [platform, vars] of PLATFORM_ENV_VARS) {
+    if (vars.some((v) => v.detect !== false && env[v.name])) {
+      // Issue #539 disambiguator parity with detectPlatform(): env-vars
+      // alone would resolve a Claude Code CLI launched from the VS Code
+      // integrated terminal as vscode-copilot.
+      if (platform === "vscode-copilot" && claudeCodeHasContextModePlugin()) {
+        return "claude-code";
+      }
+      return platform;
+    }
+  }
+
+  return "unknown";
+}
+
+/**
  * Detect the current platform by checking env vars and config dirs.
  *
  * @param clientInfo - Optional MCP clientInfo from initialize handshake.
