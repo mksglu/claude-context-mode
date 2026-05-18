@@ -36,7 +36,7 @@ function resolveClaudeConfigDir() {
 // the env auto-set in that case; getProjectDir() defends a second time inside
 // server.ts via resolveProjectDir(). See src/util/project-dir.ts.
 const isPluginInstallPath = (p) =>
-  /[/\\]\.claude[/\\]plugins[/\\](cache|marketplaces)[/\\]/.test(p);
+  /[/\\]\.(?:claude|codex|cursor|openclaw)[/\\](?:plugins|extensions)[/\\](?:cache|marketplaces|local|installed|registry)[/\\]/.test(p);
 const safeOriginalCwd = isPluginInstallPath(originalCwd) ? null : originalCwd;
 
 if (!process.env.CLAUDE_PROJECT_DIR && safeOriginalCwd) {

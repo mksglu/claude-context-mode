@@ -52,9 +52,8 @@ const LEGACY_NON_STRICT_CANDIDATES: readonly string[] = [
  */
 
 /**
- * Detect whether a path lives inside the Claude Code plugin install tree —
- * specifically `<home>/.claude/plugins/cache/<plugin>/<plugin>/<version>/`
- * or the marketplace mirror `<home>/.claude/plugins/marketplaces/...`.
+ * Detect whether a path lives inside a plugin install tree, not the user's
+ * project. Covers Claude plus Codex/Cursor/OpenClaw plugin caches.
  *
  * Cross-OS: matches both POSIX (`/`) and Windows (`\`) path separators.
  * Independent of `home` location — we only care about the `.claude/plugins/`
@@ -62,7 +61,7 @@ const LEGACY_NON_STRICT_CANDIDATES: readonly string[] = [
  */
 export function isPluginInstallPath(p: string): boolean {
   if (!p) return false;
-  return /[/\\]\.claude[/\\]plugins[/\\](cache|marketplaces)[/\\]/.test(p);
+  return /[/\\]\.(?:claude|codex|cursor|openclaw)[/\\](?:plugins|extensions)[/\\](?:cache|marketplaces|local|installed|registry)[/\\]/.test(p);
 }
 
 /**

@@ -71,6 +71,12 @@ describe("isPluginInstallPath", () => {
     expect(isPluginInstallPath("/Users/x/.claude/plugins/marketplaces/context-mode")).toBe(true);
   });
 
+  it("matches Codex, Cursor, and OpenClaw plugin install paths", () => {
+    expect(isPluginInstallPath("/Users/x/.codex/plugins/cache/context-mode/context-mode/1.0.136")).toBe(true);
+    expect(isPluginInstallPath("/Users/x/.cursor/plugins/marketplaces/context-mode")).toBe(true);
+    expect(isPluginInstallPath("/Users/x/.openclaw/extensions/cache/context-mode/context-mode/1.0.136")).toBe(true);
+  });
+
   it("matches Windows plugin cache paths (backslash + drive letter)", () => {
     expect(isPluginInstallPath("C:\\Users\\x\\.claude\\plugins\\cache\\foo\\foo\\1.0.0")).toBe(true);
   });
