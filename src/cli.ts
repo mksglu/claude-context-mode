@@ -33,7 +33,7 @@ import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mc
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
-import { healPluginJsonMcpServers, healMcpJsonArgs } from "../scripts/heal-installed-plugins.mjs";
+import { healPluginJsonMcpServers, healMcpJsonArgs, sweepStaleMcpJson } from "../scripts/heal-installed-plugins.mjs";
 // @ts-expect-error — JS module, no TS declarations
 import { detectWindowsVsYear } from "../scripts/heal-better-sqlite3.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
@@ -945,23 +945,13 @@ async function upgrade(opts?: { platform?: string }) {
         } catch { /* some files may not exist in source */ }
       }
 
-      // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
-      // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
-      // (#181) deletes after upgrade — breaking MCP server resolution. The literal
-      // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
-      // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
-      const mcpConfig = {
-        mcpServers: {
-          "context-mode": {
-            command: "node",
-            args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
-          },
-        },
-      };
-      writeFileSync(
-        resolve(pluginRoot, ".mcp.json"),
-        JSON.stringify(mcpConfig, null, 2) + "\n",
-      );
+      // Issue #609: stopped writing .mcp.json into plugin cache dirs. CC plugin
+      // manager reads .claude-plugin/plugin.json mcpServers natively (proven by
+      // PR #523's plugin.json heal — pointless if CC ignored that file). A
+      // per-version .mcp.json is redundant legacy from #411 era and the
+      // previous-version copy is exactly what CC discovers stale post auto-
+      // update → MODULE_NOT_FOUND. Layer 8 sweep cleans existing prev-version
+      // .mcp.json instead — see Layer 8 block below the drift assertion.
 
       // Normalize hooks.json + plugin.json against the REAL pluginRoot now that
       // files have been copied. Two reasons:
@@ -1090,6 +1080,20 @@ async function upgrade(opts?: { platform?: string }) {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(`.mcp.json drift check failed: ${message}`);
+      }
+
+      // Issue #609 — Layer 8 sweep: delete stale .mcp.json from any prev-version
+      // cache dir under <pluginCacheRoot>/context-mode/context-mode/<X.Y.Z>/.
+      // Eliminates the discovery-confusion that causes CC to launch from a
+      // cleaned previous-version dir post auto-update.
+      try {
+        const pluginCacheRoot = resolve(resolveClaudeConfigDir(), "plugins", "cache");
+        const result = sweepStaleMcpJson({ pluginRoot, pluginCacheRoot });
+        if (result.swept && result.swept.length > 0) {
+          p.log.info(color.dim(`  swept stale .mcp.json: ${result.swept.join(", ")}`));
+        }
+      } catch {
+        /* best effort — never block upgrade */
       }
 
       // v1.0.X — Layer 7 heal: update user-level ~/.claude.json MCP server

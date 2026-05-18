@@ -231,6 +231,7 @@ describe("Issue #531 — asymmetric-drift invariant", () => {
           "export function healSettingsEnabledPlugins() { return { healed: [] }; }",
           "export function healPluginJsonMcpServers() { return { healed: [] }; }",
           "export function healMcpJsonArgs() { return { healed: [] }; }",
+          "export function sweepStaleMcpJson() { return { healed: [] }; }",
           "",
         ].join("\n"),
       );

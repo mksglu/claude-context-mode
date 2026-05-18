@@ -14,7 +14,7 @@ import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { healBetterSqlite3Binding } from "./heal-better-sqlite3.mjs";
-import { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } from "./heal-installed-plugins.mjs";
+import { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs, sweepStaleMcpJson } from "./heal-installed-plugins.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, "..");
@@ -197,10 +197,20 @@ if (isGlobalInstall()) {
               healedAny = true;
             }
           } catch { /* per-entry best effort */ }
+          // Issue #609 — Layer 8 sweep: delete stale `.mcp.json` from any
+          // prev-version cache dir so CC stops booting the plugin with
+          // CLAUDE_PLUGIN_ROOT pointing at a cleaned previous version.
+          // Idempotent — first installPath does the work, later iterations no-op.
+          try {
+            const r = sweepStaleMcpJson({ pluginRoot: installPath, pluginCacheRoot: cacheRoot });
+            if (r && Array.isArray(r.swept) && r.swept.length > 0) {
+              healedAny = true;
+            }
+          } catch { /* per-entry best effort */ }
         }
       }
       if (healedAny) {
-        process.stderr.write("context-mode: healed mcpServers args (Issues #523 + #531)\n");
+        process.stderr.write("context-mode: healed mcpServers args (Issues #523 + #531 + #609)\n");
       }
     }
   } catch { /* never block install */ }

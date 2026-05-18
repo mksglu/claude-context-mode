@@ -142,41 +142,41 @@ describe("cli.bundle.mjs — marketplace install support", () => {
 // ── .mcp.json — MCP server config ────────────────────────────────────
 
 describe(".mcp.json — MCP server config", () => {
-  it("upgrade writes cached .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (#411)", () => {
+  it("upgrade does NOT write .mcp.json into plugin cache dir (#609)", () => {
+    // Issue #609: CC plugin manager reads .claude-plugin/plugin.json mcpServers
+    // natively (proven by healPluginJsonMcpServers — #523). Per-version .mcp.json
+    // in cache dirs was a #411-era legacy that became the root cause of #609:
+    // CC discovers the stale previous-version .mcp.json post auto-update, sets
+    // CLAUDE_PLUGIN_ROOT to that cleaned dir, fails MODULE_NOT_FOUND.
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     const upgradeStart = src.indexOf("async function upgrade");
     const upgradeSrc = src.slice(upgradeStart);
-    // items array must NOT include .mcp.json (it's written dynamically)
+    // items array must NOT include .mcp.json (never shipped in tarball).
     const itemsMatch = upgradeSrc.match(/const items\s*=\s*\[([\s\S]*?)\];/);
     expect(itemsMatch).not.toBeNull();
     expect(itemsMatch![1]).not.toContain(".mcp.json");
-    // Must write .mcp.json dynamically with placeholder, not absolute path.
-    // Absolute paths break when sessionstart.mjs (#181) deletes old version dirs.
-    expect(upgradeSrc).toContain('resolve(pluginRoot, ".mcp.json")');
-    expect(upgradeSrc).not.toContain('resolve(pluginRoot, "start.mjs")');
-    expect(upgradeSrc).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    // Architectural lock: upgrade() MUST NOT call writeFileSync on .mcp.json.
+    expect(upgradeSrc).not.toMatch(/writeFileSync\s*\(\s*[\s\S]{0,80}\.mcp\.json/);
   });
 
-  it("upgrade .mcp.json placeholder is resilient to version cleanup (#411)", () => {
-    // Simulate two upgrade runs into different pluginRoot dirs and assert both
-    // produce identical placeholder-based args (no absolute paths to old dirs).
+  it("upgrade invokes sweepStaleMcpJson to clean prev-version cache dirs (#609)", () => {
+    // Layer 8 sweep — single source of truth shared with start.mjs HEAL
+    // and scripts/postinstall.mjs. cli.ts upgrade() MUST invoke the sweep
+    // after the existing heal/assertion chain so /ctx-upgrade also self-heals.
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    expect(src).toMatch(
+      /import\s*\{[^}]*sweepStaleMcpJson[^}]*\}\s*from\s+["']\.\.\/scripts\/heal-installed-plugins\.mjs["']/,
+    );
     const upgradeStart = src.indexOf("async function upgrade");
     const upgradeSrc = src.slice(upgradeStart);
-    // Extract the literal mcpConfig args entry — must be a string literal
-    // with ${CLAUDE_PLUGIN_ROOT}, not a runtime resolve(pluginRoot, ...) call.
-    const argsMatch = upgradeSrc.match(/args:\s*\[([^\]]+)\]/);
-    expect(argsMatch).not.toBeNull();
-    const argsContent = argsMatch![1];
-    // Must NOT depend on pluginRoot at write-time
-    expect(argsContent).not.toContain("pluginRoot");
-    expect(argsContent).not.toContain("resolve(");
-    // Must contain the literal placeholder
-    expect(argsContent).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
-    // Two simulated runs would produce identical JSON regardless of pluginRoot
-    // because the args value is a static string literal.
-    const literalCount = (upgradeSrc.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/start\.mjs/g) || []).length;
-    expect(literalCount).toBeGreaterThanOrEqual(1);
+    expect(upgradeSrc).toContain("sweepStaleMcpJson({");
+    // Sweep must run AFTER the .mcp.json drift-check block — same ordering
+    // contract as the plugin.json / .mcp.json heals. Match the literal call
+    // shape so leading comment mentions don't satisfy the assertion.
+    const driftIdx = upgradeSrc.indexOf(".mcp.json drift check failed");
+    const sweepIdx = upgradeSrc.indexOf("sweepStaleMcpJson({");
+    expect(driftIdx).toBeGreaterThan(-1);
+    expect(sweepIdx).toBeGreaterThan(driftIdx);
   });
 
   it("plugin manifest keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {

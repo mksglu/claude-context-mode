@@ -174,7 +174,7 @@ if (cacheMatch) {
 // truth) so users who fix themselves via `npm install -g context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
 try {
-  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } =
+  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs, sweepStaleMcpJson } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
   const claudeConfigDir = resolveClaudeConfigDir();
@@ -219,6 +219,15 @@ try {
               pluginRoot: installPath,
               pluginCacheRoot,
               pluginKey,
+            });
+          } catch { /* best effort — per-entry */ }
+          // Issue #609 — Layer 8 sweep: delete `.mcp.json` from any
+          // prev-version cache dir so CC never boots from a cleaned
+          // previous-version path. Idempotent across entries.
+          try {
+            sweepStaleMcpJson({
+              pluginRoot: installPath,
+              pluginCacheRoot,
             });
           } catch { /* best effort — per-entry */ }
         }

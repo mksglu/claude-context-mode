@@ -17,7 +17,7 @@
  * @see https://github.com/anthropics/claude-code/issues/46915
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
 /**
@@ -393,6 +393,90 @@ export function healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey }) {
   }
 
   return { healed };
+}
+
+// ── Layer 8 (Issue #609) — Sweep stale `.mcp.json` from prev-version cache dirs ──
+//
+// After Claude Code's native plugin manager auto-updates `<X.Y.Z>` → `<X.Y.Z+1>`,
+// the previous version's `.mcp.json` (written by an earlier `/ctx-upgrade` run)
+// stays behind. CC scans the cache tree, finds the stale `.mcp.json` at
+// `<…>/context-mode/context-mode/<old-version>/.mcp.json`, sets
+// `CLAUDE_PLUGIN_ROOT=<old-version>`, then tries `node <old-version>/start.mjs`
+// → MODULE_NOT_FOUND because the auto-update cleaned start.mjs out of the
+// previous version dir but missed the sibling `.mcp.json`.
+//
+// CC plugin manager reads `.claude-plugin/plugin.json` mcpServers natively
+// (see PR #523's healPluginJsonMcpServers — pointless if CC didn't honor it).
+// `.mcp.json` in cache dirs is redundant legacy from #411 era. Sweeping it
+// makes #609 structurally impossible.
+//
+// Single source of truth shared by:
+//   - `start.mjs` HEAL (every MCP boot)
+//   - `scripts/postinstall.mjs` (every `npm install -g context-mode`)
+// ─────────────────────────────────────────────────────────────────────────
+
+const VERSION_DIR_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+
+/** Extract X.Y.Z version from a context-mode cache pluginRoot. Returns null
+ * for npm-global / dev-checkout layouts — caller skips sweep in those cases. */
+function extractCacheVersion(pluginRoot) {
+  if (!pluginRoot) return null;
+  const fwd = String(pluginRoot).replace(/\\/g, "/");
+  const m = /context-mode\/context-mode\/([0-9]+\.[0-9]+\.[0-9]+)(?:\/|$)/.exec(fwd);
+  return m ? m[1] : null;
+}
+
+/**
+ * Delete `.mcp.json` from every sibling version dir under
+ * `<pluginCacheRoot>/context-mode/context-mode/<X.Y.Z>/` whose version
+ * does NOT match the current `pluginRoot`. Best-effort: per-file errors
+ * never abort the loop.
+ *
+ * @param {{
+ *   pluginRoot: string,
+ *   pluginCacheRoot: string,
+ * }} opts
+ * @returns {HealResult & { swept?: string[] }}
+ */
+export function sweepStaleMcpJson({ pluginRoot, pluginCacheRoot }) {
+  if (!pluginRoot || !pluginCacheRoot) {
+    return { healed: [], skipped: "missing-args" };
+  }
+
+  const currentVersion = extractCacheVersion(pluginRoot);
+  if (!currentVersion) {
+    return { healed: [], skipped: "not-cache-layout" };
+  }
+
+  // Path-traversal guard: pluginRoot must live inside pluginCacheRoot.
+  const resolvedRoot = resolve(pluginRoot);
+  const cacheRootWithSep = resolve(pluginCacheRoot) + sep;
+  if (!resolvedRoot.startsWith(cacheRootWithSep)) {
+    return { healed: [], skipped: "outside-cache-root" };
+  }
+
+  const parent = resolve(pluginCacheRoot, "context-mode", "context-mode");
+  if (!existsSync(parent)) {
+    return { healed: [], skipped: "no-parent" };
+  }
+
+  let entries;
+  try { entries = readdirSync(parent); }
+  catch (err) { return { healed: [], error: `readdir-failed: ${(err && err.message) || err}` }; }
+
+  const swept = [];
+  for (const entry of entries) {
+    if (entry === currentVersion) continue;
+    if (!VERSION_DIR_RE.test(entry)) continue;
+    const stale = resolve(parent, entry, ".mcp.json");
+    if (!existsSync(stale)) continue;
+    try {
+      unlinkSync(stale);
+      swept.push(`${entry}/.mcp.json`);
+    } catch { /* per-file best effort */ }
+  }
+
+  return { healed: swept, swept };
 }
 
 /**
