@@ -152,6 +152,144 @@ describe("Issue #531 — asymmetric-drift invariant", () => {
       .toMatch(/assert-asymmetric-drift|asymmetric-drift/);
   });
 
+  // ── PR #620 slice 5 — Tier C portability invariant (#613) ─────────────
+  // PR #620 fixed the live regression in vscode-copilot + jetbrains-copilot
+  // (commit f5c9d02 had baked absolute process.execPath + script paths into
+  // workspace-committed `.github/hooks/context-mode.json` etc.). The fix was
+  // surgical at the adapter layer; nothing structural prevents a future
+  // contributor from accidentally re-introducing the same bug class in any
+  // of the 15 adapters under configs/.
+  //
+  // This invariant scans every committed config template under configs/**
+  // and asserts that no string value contains an absolute path, an fnm
+  // session shim, a `process.execPath` literal, or a tilde-prefixed
+  // home-dir path. Allowed shapes: bare commands ("context-mode", "node"),
+  // CLI dispatcher form ("context-mode hook <platform> <event>"),
+  // placeholders (${CLAUDE_PLUGIN_ROOT}), schema URLs.
+  //
+  // The persistence-tier rule (ISSUE-613-VERDICT §6.1):
+  //   Tier C (workspace-committed, cross-machine, multi-user) MUST be
+  //   born portable -- no heal seam exists for files that ship in users'
+  //   git history.
+  //
+  // This catches the bug class at PR-review time across the entire
+  // configs/ surface, not just the two adapters PR #620 fixed.
+  test("configs/** templates ship no absolute paths, fnm shims, or shell-expansion paths (#613 PR #620)", () => {
+    // Recursively enumerate every .json file under configs/.
+    const { readdirSync, statSync } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("node:fs") as typeof import("node:fs");
+    const { join } = require("node:path") as typeof import("node:path");
+
+    function walk(dir: string): string[] {
+      const out: string[] = [];
+      for (const entry of readdirSync(dir)) {
+        const p = join(dir, entry);
+        const s = statSync(p);
+        if (s.isDirectory()) out.push(...walk(p));
+        else if (entry.endsWith(".json")) out.push(p);
+      }
+      return out;
+    }
+
+    const files = walk(resolve(ROOT, "configs"));
+    // Sanity: configs/ should ship multiple adapter templates. If this is
+    // ever 0 the test silently passes -- guard against that.
+    expect(files.length, "configs/ should contain at least one .json template").toBeGreaterThan(0);
+
+    // Forbidden patterns -- each captures a different way the bug class
+    // re-surfaces in practice:
+    const forbidden: { name: string; re: RegExp }[] = [
+      // Unix absolute home directories (PII leak per ISSUE-613-VERDICT
+      // multi-hat §Security; also the #613 reporter symptom shape).
+      { name: "unix /Users absolute path", re: /^\/Users\// },
+      { name: "unix /home absolute path", re: /^\/home\// },
+      // Windows absolute paths (drive-letter + separator).
+      { name: "Windows drive-letter absolute", re: /^[A-Za-z]:[/\\]/ },
+      // UNC paths.
+      { name: "Windows UNC path", re: /^\\\\/ },
+      // fnm session-ephemeral shim -- the literal #613 reporter saw.
+      // Per fnm-rs docs this directory is per-shell-session per-PID
+      // ephemeral; baking it into any committable file is invalid.
+      { name: "fnm session shim", re: /fnm_multishells/ },
+      // process.execPath as a string literal: indicates the generator
+      // baked node's runtime binary path into the JSON (the f5c9d02
+      // anti-pattern PR #620 reverted in two adapters).
+      { name: "process.execPath literal", re: /process\.execPath/ },
+      // Tilde-prefixed paths: shells expand `~` but JSON consumers do
+      // not. A committed `~/...` value would resolve literally on
+      // every platform (and fail). Also a Windows-safety violation.
+      { name: "literal tilde path", re: /^~[/\\]/ },
+      // ${HOME} shell-expansion: same issue -- not JSON-portable, only
+      // the spawned shell expands it; cross-platform consumers don't.
+      { name: "${HOME} shell expansion", re: /\$\{?HOME\}?[/\\]/ },
+    ];
+
+    interface Offence {
+      file: string;
+      jsonPath: string;
+      value: string;
+      pattern: string;
+    }
+    const offences: Offence[] = [];
+
+    function recurse(node: unknown, file: string, path: string): void {
+      if (typeof node === "string") {
+        for (const f of forbidden) {
+          if (f.re.test(node)) {
+            offences.push({
+              file,
+              jsonPath: path || "$",
+              value: node.length > 120 ? node.slice(0, 117) + "..." : node,
+              pattern: f.name,
+            });
+          }
+        }
+      } else if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) recurse(node[i], file, `${path}[${i}]`);
+      } else if (node && typeof node === "object") {
+        for (const [k, v] of Object.entries(node)) {
+          recurse(v, file, `${path}.${k}`);
+        }
+      }
+    }
+
+    for (const abs of files) {
+      const rel = abs.slice(ROOT.length + 1).replace(/\\/g, "/");
+      const raw = readFileSync(abs, "utf-8");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (err) {
+        throw new Error(`configs/ template is not valid JSON: ${rel} -- ${(err as Error).message}`);
+      }
+      recurse(parsed, rel, "");
+    }
+
+    if (offences.length > 0) {
+      const lines = offences.map(
+        (o) => `  - ${o.file}:${o.jsonPath} = ${JSON.stringify(o.value)} [${o.pattern}]`,
+      );
+      throw new Error(
+        [
+          `${offences.length} Tier C portability violation(s) in configs/ (PR #620 / #613):`,
+          ...lines,
+          "",
+          "Workspace-committed config templates ship to every user's git tree.",
+          "Per ISSUE-613-VERDICT 6.1, Tier C files MUST be born portable -- no",
+          "heal seam exists for files committed to user repos. Allowed shapes:",
+          "  - CLI dispatcher: \"context-mode hook <platform> <event>\"",
+          "  - Bare command:   \"context-mode\" / \"node\"",
+          "  - Placeholder:    \"${CLAUDE_PLUGIN_ROOT}/...\"",
+          "  - Schema URL:     \"https://.../config.json\"",
+          "",
+          "Forbidden: absolute paths, fnm session shims, process.execPath literals,",
+          "literal `~/...` or `${HOME}/...` (not JSON-portable; Windows-unsafe).",
+        ].join("\n"),
+      );
+    }
+  });
+
   // ── Regression guard for the postinstall-heal scope bug ──────────────
   // CI run 25734987495 (Windows-latest) failed on `npm run build` because
   // scripts/postinstall.mjs section 4 called `normalizeHooksOnStartup`
@@ -231,6 +369,10 @@ describe("Issue #531 — asymmetric-drift invariant", () => {
           "export function healSettingsEnabledPlugins() { return { healed: [] }; }",
           "export function healPluginJsonMcpServers() { return { healed: [] }; }",
           "export function healMcpJsonArgs() { return { healed: [] }; }",
+          // Issue #609 — sweepStaleMcpJson replaced per-entry healMcpJsonArgs.
+          // Stubbed alongside healMcpJsonArgs for backwards compatibility with
+          // any in-flight callers that still import it.
+          "export function sweepStaleMcpJson() { return { removed: [] }; }",
           "",
         ].join("\n"),
       );

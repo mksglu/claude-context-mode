@@ -1,5 +1,3 @@
-import { buildNodeCommand } from "../types.js";
-
 /**
  * adapters/vscode-copilot/hooks — VS Code Copilot hook definitions and matchers.
  *
@@ -81,21 +79,37 @@ export function isContextModeHook(
 
 /**
  * Build the hook command string for a given hook type.
- * Uses absolute node path to avoid PATH issues (homebrew, nvm, volta, etc.).
- * Falls back to CLI dispatcher if pluginRoot is not provided.
+ *
+ * Always emits the CLI dispatcher form
+ * (`context-mode hook vscode-copilot <event>`) — the `pluginRoot` argument
+ * is accepted for API compatibility but intentionally ignored.
+ *
+ * Why the dispatcher form is mandatory here (Issue #613 — Tier C contract):
+ *   `.github/hooks/context-mode.json` is a **workspace-committed** file
+ *   (upstream: refs/platforms/vscode-copilot/assets/prompts/skills/
+ *   agent-customization/references/hooks.md line 7 — "Workspace
+ *   (team-shared)"). It lands in every teammate's `git status`. Embedding
+ *   `process.execPath` or any absolute pluginRoot path here:
+ *     - Leaks PII (username, `C:/Users/<user>/...` paths).
+ *     - Breaks cross-machine portability (fnm/nvm/volta/brew shims are
+ *       per-shell-session ephemeral; the path goes stale immediately on
+ *       Windows + fnm).
+ *
+ * Commit `f5c9d02` (2026-03-06) added an absolute-path branch when a
+ * pluginRoot was passed. It solved a real PATH-availability bug on
+ * Brew/nvm setups by going too far — the CLI then always passes
+ * pluginRoot, so the portable form became unreachable in production
+ * and every `/ctx-upgrade` baked a non-portable command into the
+ * committed config. This reverts to the pre-`f5c9d02` shape.
+ *
+ * For users without a global install, the recovery path is the same as
+ * every other CLI-dispatcher adapter (cursor, codex):
+ *   `npm install -g context-mode`
  */
-export function buildHookCommand(hookType: HookType, pluginRoot?: string): string {
+export function buildHookCommand(hookType: HookType, _pluginRoot?: string): string {
   const scriptName = HOOK_SCRIPTS[hookType];
   if (!scriptName) {
     throw new Error(`No script defined for hook type: ${hookType}`);
-  }
-  if (pluginRoot) {
-    // v1.0.107 fix — was `${pluginRoot}/hooks/${scriptName}` which resolved to
-    // the Claude-Code generic hook (`hooks/pretooluse.mjs`) instead of the
-    // VSCode-specific wrapper at `hooks/vscode-copilot/pretooluse.mjs`. JetBrains
-    // adapter already had the correct subdir (jetbrains-copilot/hooks.ts:98)
-    // so this brings VSCode to parity.
-    return buildNodeCommand(`${pluginRoot}/hooks/vscode-copilot/${scriptName}`);
   }
   return `context-mode hook vscode-copilot ${hookType.toLowerCase()}`;
 }

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { JetBrainsCopilotAdapter } from "../../src/adapters/jetbrains-copilot/index.js";
+import { HOOK_TYPES, HOOK_SCRIPTS, buildHookCommand } from "../../src/adapters/jetbrains-copilot/hooks.js";
 import { hashProjectDirCanonical, resolveSessionDbPath } from "../../src/session/db.js";
 
 describe("JetBrainsCopilotAdapter", () => {
@@ -228,6 +229,56 @@ describe("JetBrainsCopilotAdapter", () => {
         sessionId: "jb-sess-123",
       });
       expect(event.sessionId).toBe("jb-sess-123");
+    });
+  });
+
+  // ── buildHookCommand portability — Tier C lock (Issue #613) ────
+  //
+  // JetBrains Copilot hook config lives at `.github/hooks/context-mode.json`
+  // — same workspace-committed (team-shared) tier as VS Code Copilot.
+  // See `tests/adapters/vscode-copilot.test.ts` for the full archaeology;
+  // this suite is the JetBrains-side enforcement of the same Tier C
+  // contract.
+
+  describe("buildHookCommand portability (Issue #613 Tier C lock)", () => {
+    it("emits CLI dispatcher form when no pluginRoot is passed", () => {
+      const cmd = buildHookCommand(HOOK_TYPES.PRE_TOOL_USE);
+      expect(cmd).toBe("context-mode hook jetbrains-copilot pretooluse");
+    });
+
+    it("emits CLI dispatcher form EVEN WHEN pluginRoot is passed (Tier C — workspace-committed)", () => {
+      const fakeAbsRoot = "/Users/test/AppData/Local/fnm_multishells/12345_67890/node_modules/context-mode";
+      const cmd = buildHookCommand(HOOK_TYPES.PRE_TOOL_USE, fakeAbsRoot);
+      expect(cmd).toBe("context-mode hook jetbrains-copilot pretooluse");
+      expect(cmd).not.toContain("/Users/");
+      expect(cmd).not.toContain("fnm_multishells");
+      expect(cmd).not.toContain("node.exe");
+      expect(cmd).not.toContain(process.execPath);
+      expect(cmd).not.toContain(fakeAbsRoot);
+    });
+
+    it("emits portable form for every hook type that has a script", () => {
+      // JetBrains declares Stop/SubagentStart/SubagentStop in HOOK_TYPES but
+      // has no matching HOOK_SCRIPTS entries (orphan declarations until
+      // their script set lands). Only test hook types with scripts.
+      for (const hookType of Object.keys(HOOK_SCRIPTS)) {
+        const cmd = buildHookCommand(hookType as keyof typeof HOOK_SCRIPTS, "/any/abs/path");
+        expect(cmd.startsWith("context-mode hook jetbrains-copilot ")).toBe(true);
+        expect(cmd).not.toContain("/any/abs/path");
+      }
+    });
+
+    it("configureAllHooks writes only portable commands into .github/hooks/context-mode.json", () => {
+      const reg = adapter.generateHookConfig("/any/abs/plugin/root");
+      for (const entries of Object.values(reg)) {
+        for (const entry of entries) {
+          for (const hook of entry.hooks) {
+            expect(hook.command).toMatch(/^context-mode hook jetbrains-copilot /);
+            expect(hook.command).not.toContain("/any/abs/plugin/root");
+            expect(hook.command).not.toContain(process.execPath);
+          }
+        }
+      }
     });
   });
 });

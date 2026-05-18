@@ -33,7 +33,7 @@ import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mc
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
-import { healPluginJsonMcpServers, healMcpJsonArgs } from "../scripts/heal-installed-plugins.mjs";
+import { healPluginJsonMcpServers, sweepStaleMcpJson } from "../scripts/heal-installed-plugins.mjs";
 // @ts-expect-error — JS module, no TS declarations
 import { detectWindowsVsYear } from "../scripts/heal-better-sqlite3.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
@@ -595,6 +595,184 @@ async function doctor(): Promise<number> {
     );
   }
 
+  // ── Issue #613 — proactive Tier C absolute-path detection ───────────
+  // PR #620 fixed `buildHookCommand` for vscode-copilot + jetbrains-copilot
+  // so future writes are CLI-dispatcher-shape. But users who ran
+  // /ctx-upgrade on v1.0.136 or earlier are still carrying poisoned
+  // committable files in their workspace:
+  //   - `.github/hooks/context-mode.json`      (vscode-copilot, team-shared)
+  //   - `.jetbrains/copilot/hooks.json`        (jetbrains-copilot, team-shared)
+  //   - `.cursor/hooks.json`                   (cursor, team-shared)
+  // Per ISSUE-613-VERDICT §6.1 these are Tier C — workspace-committed
+  // cross-machine config. Doctor scans them for absolute paths and
+  // fnm_multishells shims; if found, FAIL with `ctx_upgrade` remediation.
+  // Per ISSUE-604-VERDICT §11 ("silent-green doctor while hooks are dead
+  // is itself a P0 trust bug") — surface poison BEFORE the user hits a
+  // runtime failure.
+  p.log.step("Checking team-shared hook configs in your workspace...");
+  {
+    const projectDir = process.cwd();
+    const tierCFiles = [
+      ".github/hooks/context-mode.json",
+      ".cursor/hooks.json",
+      ".jetbrains/copilot/hooks.json",
+    ];
+    let tierCFails = 0;
+    let tierCChecked = 0;
+
+    // Detect absolute-path patterns that should never appear in a
+    // workspace-committed config. Per Mert's standing Windows-safety rule:
+    // handle both `/` and `\\` separators.
+    function isAbsoluteOrShimPath(s: string): boolean {
+      // unix absolute
+      if (s.startsWith("/")) return true;
+      // Windows drive-letter absolute (e.g. C:/, C:\)
+      if (/^[A-Za-z]:[/\\]/.test(s)) return true;
+      // Windows UNC or escaped-backslash absolute fragments
+      if (s.includes("\\\\")) return true;
+      // fnm shim hint — issue #613 reporter's exact stderr shape
+      if (s.includes("fnm_multishells")) return true;
+      // process.execPath literal baked into JSON
+      if (s.includes("process.execPath")) return true;
+      return false;
+    }
+
+    function recurseStrings(node: unknown, hit: (s: string) => void): void {
+      if (typeof node === "string") {
+        hit(node);
+      } else if (Array.isArray(node)) {
+        for (const item of node) recurseStrings(item, hit);
+      } else if (node && typeof node === "object") {
+        for (const v of Object.values(node)) recurseStrings(v, hit);
+      }
+    }
+
+    for (const rel of tierCFiles) {
+      const abs = resolve(projectDir, rel);
+      if (!existsSync(abs)) continue; // missing config → SKIP, no false fail
+      tierCChecked++;
+      try {
+        const parsed = JSON.parse(readFileSync(abs, "utf-8"));
+        const offenders: string[] = [];
+        recurseStrings(parsed, (s) => {
+          if (isAbsoluteOrShimPath(s)) offenders.push(s);
+        });
+        if (offenders.length > 0) {
+          criticalFails++;
+          tierCFails++;
+          // Truncate to one example to keep output readable; show count.
+          const example = offenders[0].length > 100
+            ? offenders[0].slice(0, 97) + "..."
+            : offenders[0];
+          p.log.error(
+            color.red(`Hook config: FAIL`) +
+              ` — ${rel} has your machine's local paths baked in` +
+              color.dim(
+                "\n  This file is committed to git, so teammates and CI will get your path and the hooks will break for them." +
+                `\n  Found ${offenders.length} hard-coded path(s), e.g.: ${example}` +
+                "\n  Fix: run /context-mode:ctx-upgrade — it rewrites the file to a portable form that works on every machine." +
+                "\n  Details: https://github.com/mksglu/context-mode/issues/613",
+              ),
+          );
+        } else {
+          p.log.success(
+            color.green("Hook config: PASS") +
+              color.dim(` — ${rel} is portable (no hard-coded paths)`),
+          );
+        }
+      } catch (err: unknown) {
+        // Malformed JSON should not crash doctor; warn and move on.
+        const msg = err instanceof Error ? err.message : String(err);
+        p.log.warn(
+          color.yellow(`Hook config: WARN`) +
+            ` — ${rel} is not valid JSON` +
+            color.dim(
+              "\n  Doctor cannot scan it for portability issues until the file parses." +
+              "\n  Fix: open the file and check it in a JSON validator, or delete it and run /context-mode:ctx-upgrade to regenerate." +
+              `\n  Parser said: ${msg.slice(0, 160)}`,
+            ),
+        );
+      }
+    }
+    if (tierCChecked === 0) {
+      p.log.info(
+        color.dim("Hook config: SKIP — no team-shared hook configs found in this workspace"),
+      );
+    } else if (tierCFails === 0) {
+      // already individual PASS messages above; no need for a summary
+    }
+  }
+
+  // ── Issue #609 — proactive stale `.mcp.json` detection ──────────────
+  // PR #620 deleted the per-version cache `.mcp.json` write from cli.ts
+  // and shipped `sweepStaleMcpJson` to clean up any pre-existing copies.
+  // But users on the field may still have stale `.mcp.json` files left
+  // by /ctx-upgrade flows that ran before PR #620 (or by Claude Code's
+  // native auto-update copying a poisoned file forward). Surface those
+  // as WARN (recoverable — next ctx_upgrade sweeps them) so the user
+  // knows what to do instead of being told everything is green while
+  // the file lingers on disk.
+  // Per ISSUE-604-VERDICT §11 same trust contract as Tier C check above.
+  p.log.step("Checking for leftover .mcp.json files from older versions...");
+  {
+    const cacheRoot = join(
+      homedir(),
+      ".claude",
+      "plugins",
+      "cache",
+      "context-mode",
+      "context-mode",
+    );
+    if (!existsSync(cacheRoot)) {
+      p.log.info(
+        color.dim("Leftover .mcp.json check: SKIP — no plugin cache exists yet (Claude Code has not installed context-mode here)"),
+      );
+    } else {
+      let staleCount = 0;
+      const staleVersions: string[] = [];
+      try {
+        const versionDirs = readdirSync(cacheRoot);
+        for (const v of versionDirs) {
+          const candidate = join(cacheRoot, v, ".mcp.json");
+          if (existsSync(candidate)) {
+            staleCount++;
+            if (staleVersions.length < 5) staleVersions.push(v);
+          }
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        p.log.warn(
+          color.yellow("Leftover .mcp.json check: WARN") +
+            ` — could not read the plugin cache directory` +
+            color.dim(
+              `\n  Path: ${cacheRoot}` +
+              `\n  Reason: ${msg.slice(0, 160)}` +
+              "\n  Fix: check that the directory is readable, then re-run doctor. If the issue persists, run /context-mode:ctx-upgrade.",
+            ),
+        );
+        staleCount = 0;
+      }
+      if (staleCount === 0) {
+        p.log.success(
+          color.green("Leftover .mcp.json check: PASS") +
+            color.dim(" — no old .mcp.json files in the plugin cache"),
+        );
+      } else {
+        // WARN, not FAIL — per architect spec this is recoverable.
+        p.log.warn(
+          color.yellow("Leftover .mcp.json check: WARN") +
+            ` — found ${staleCount} old .mcp.json file(s) left over from previous context-mode versions` +
+            color.dim(
+              "\n  These are harmless but should be cleaned up so they cannot confuse Claude Code after an auto-update." +
+              `\n  Versions affected: ${staleVersions.join(", ")}${staleCount > staleVersions.length ? ", ..." : ""}` +
+              "\n  Fix: run /context-mode:ctx-upgrade — it sweeps these files automatically on the next run." +
+              "\n  Details: https://github.com/mksglu/context-mode/issues/609",
+            ),
+        );
+      }
+    }
+  }
+
   // FTS5 / SQLite
   p.log.step("Checking FTS5 / SQLite...");
   try {
@@ -1006,23 +1184,24 @@ async function upgrade(opts?: { platform?: string }) {
         } catch { /* some files may not exist in source */ }
       }
 
-      // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
-      // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
-      // (#181) deletes after upgrade — breaking MCP server resolution. The literal
-      // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
-      // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
-      const mcpConfig = {
-        mcpServers: {
-          "context-mode": {
-            command: "node",
-            args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
-          },
-        },
-      };
-      writeFileSync(
-        resolve(pluginRoot, ".mcp.json"),
-        JSON.stringify(mcpConfig, null, 2) + "\n",
-      );
+      // Issue #609 — DO NOT write `.mcp.json` into the plugin cache dir.
+      //
+      // Historical context: #411 fixed an absolute-path bake by writing the
+      // ${CLAUDE_PLUGIN_ROOT} placeholder form here. #531 (commit 9261377)
+      // removed `.mcp.json` from `package.json files[]` so the npm tarball
+      // stopped shipping it. But the cli-side write persisted, so every
+      // /ctx-upgrade re-baked one. When Claude Code's native plugin manager
+      // auto-update later carries a previous version's `.mcp.json` forward
+      // into a fresh version dir, the stale start.mjs absolute path goes
+      // with it → MODULE_NOT_FOUND on every MCP boot.
+      //
+      // Architectural fix: Claude Code reads `.claude-plugin/plugin.json`
+      // .mcpServers as the canonical source (upstream:
+      // refs/platforms/claude-code/src/utils/plugins/mcpPluginIntegration.ts:131-212).
+      // `.mcp.json` is a redundant per-version artifact whose only role
+      // historically was to be a write-time poison vector. Don't write it.
+      // The post-bump cache-sweep below removes any pre-existing copies so
+      // the previous-version-carry vector cannot replay.
 
       // Normalize hooks.json + plugin.json against the REAL pluginRoot now that
       // files have been copied. Two reasons:
@@ -1126,31 +1305,34 @@ async function upgrade(opts?: { platform?: string }) {
         throw new Error(`plugin.json drift check failed: ${message}`);
       }
 
-      // v1.0.122 — Issue #531 — Layer 6 heal: assert .mcp.json's
-      // mcpServers["context-mode"].args[0] is the literal ${CLAUDE_PLUGIN_ROOT}/start.mjs
-      // placeholder. Asymmetric-heal sibling of the plugin.json assertion above.
-      // cli.ts writes .mcp.json at ~line 829-845 with the placeholder, but never
-      // asserted the on-disk shape afterwards — if a future regression dropped
-      // the placeholder write or a parallel normalize baked in an absolute path,
-      // upgrade() would declare success on a poisoned tree. Belt-and-braces:
-      // first call cleans any drift; second call MUST return healed:[] or throw.
-      // Single source of truth shared with start.mjs HEAL block + postinstall.
+      // Issue #609 — Layer 6 replacement: sweep stale `.mcp.json` files from
+      // every per-version cache dir. Supersedes the previous healMcpJsonArgs
+      // drift-check block (v1.0.122) — that block existed because cli.ts
+      // itself wrote `.mcp.json`. With the write gone (above), the only
+      // remaining `.mcp.json` files are stale carry-forwards from earlier
+      // versions. Sweep them so Claude Code's auto-update can't replay them
+      // into a fresh version dir.
+      //
+      // Belt-and-braces: a second sweep call MUST report removed:[] or we
+      // throw — same architectural-lock pattern as the plugin.json drift
+      // check above. Single source of truth shared with start.mjs HEAL
+      // block + postinstall.
       try {
         const pluginCacheRoot = resolve(resolveClaudeConfigDir(), "plugins", "cache");
         const pluginKey = "context-mode@context-mode";
-        const firstPass = healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey });
-        if (firstPass && firstPass.error) {
-          throw new Error(firstPass.error);
+        const firstSweep = sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
+        if (firstSweep && firstSweep.removed && firstSweep.removed.length > 0) {
+          p.log.info(color.dim(`  Swept ${firstSweep.removed.length} stale .mcp.json file(s) from cache`));
         }
-        const secondPass = healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey });
-        if (secondPass && Array.isArray(secondPass.healed) && secondPass.healed.length > 0) {
+        const secondSweep = sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
+        if (secondSweep && Array.isArray(secondSweep.removed) && secondSweep.removed.length > 0) {
           throw new Error(
-            `.mcp.json drift: mcpServers.args still poisoned after first heal pass (healed=${secondPass.healed.join(",")})`,
+            `.mcp.json sweep drift: ${secondSweep.removed.length} file(s) still present after first pass`,
           );
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`.mcp.json drift check failed: ${message}`);
+        throw new Error(`.mcp.json sweep check failed: ${message}`);
       }
 
       // v1.0.X — Layer 7 heal: update user-level ~/.claude.json MCP server
