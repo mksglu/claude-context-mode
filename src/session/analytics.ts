@@ -1719,6 +1719,10 @@ export function detectLocaleAndTz(): { locale: string; tz: string } {
       tz = new Intl.DateTimeFormat().resolvedOptions().timeZone;
     } catch { tz = "UTC"; }
   }
+  // Final belt-and-suspenders: if the locale we settled on is somehow still
+  // unusable (env mutation between detection and return, contributor adding
+  // a new extraction path that skips the validator), fall back to en-US so
+  // formatLocalDateTime / monthDay / weekdayCap never throw at render time.
   if (!isUsableBcp47Locale(locale)) locale = "en-US";
   return { locale, tz: tz || "UTC" };
 }
