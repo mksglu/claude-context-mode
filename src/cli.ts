@@ -534,6 +534,174 @@ async function doctor(): Promise<number> {
     );
   }
 
+  // ── Issue #613 — proactive Tier C absolute-path detection ───────────
+  // PR #620 fixed `buildHookCommand` for vscode-copilot + jetbrains-copilot
+  // so future writes are CLI-dispatcher-shape. But users who ran
+  // /ctx-upgrade on v1.0.136 or earlier are still carrying poisoned
+  // committable files in their workspace:
+  //   - `.github/hooks/context-mode.json`      (vscode-copilot, team-shared)
+  //   - `.jetbrains/copilot/hooks.json`        (jetbrains-copilot, team-shared)
+  //   - `.cursor/hooks.json`                   (cursor, team-shared)
+  // Per ISSUE-613-VERDICT §6.1 these are Tier C — workspace-committed
+  // cross-machine config. Doctor scans them for absolute paths and
+  // fnm_multishells shims; if found, FAIL with `ctx_upgrade` remediation.
+  // Per ISSUE-604-VERDICT §11 ("silent-green doctor while hooks are dead
+  // is itself a P0 trust bug") — surface poison BEFORE the user hits a
+  // runtime failure.
+  p.log.step("Checking workspace-committed hook configs (Tier C)...");
+  {
+    const projectDir = process.cwd();
+    const tierCFiles = [
+      ".github/hooks/context-mode.json",
+      ".cursor/hooks.json",
+      ".jetbrains/copilot/hooks.json",
+    ];
+    let tierCFails = 0;
+    let tierCChecked = 0;
+
+    // Detect absolute-path patterns that should never appear in a
+    // workspace-committed config. Per Mert's standing Windows-safety rule:
+    // handle both `/` and `\\` separators.
+    function isAbsoluteOrShimPath(s: string): boolean {
+      // unix absolute
+      if (s.startsWith("/")) return true;
+      // Windows drive-letter absolute (e.g. C:/, C:\)
+      if (/^[A-Za-z]:[/\\]/.test(s)) return true;
+      // Windows UNC or escaped-backslash absolute fragments
+      if (s.includes("\\\\")) return true;
+      // fnm shim hint — issue #613 reporter's exact stderr shape
+      if (s.includes("fnm_multishells")) return true;
+      // process.execPath literal baked into JSON
+      if (s.includes("process.execPath")) return true;
+      return false;
+    }
+
+    function recurseStrings(node: unknown, hit: (s: string) => void): void {
+      if (typeof node === "string") {
+        hit(node);
+      } else if (Array.isArray(node)) {
+        for (const item of node) recurseStrings(item, hit);
+      } else if (node && typeof node === "object") {
+        for (const v of Object.values(node)) recurseStrings(v, hit);
+      }
+    }
+
+    for (const rel of tierCFiles) {
+      const abs = resolve(projectDir, rel);
+      if (!existsSync(abs)) continue; // missing config → SKIP, no false fail
+      tierCChecked++;
+      try {
+        const parsed = JSON.parse(readFileSync(abs, "utf-8"));
+        const offenders: string[] = [];
+        recurseStrings(parsed, (s) => {
+          if (isAbsoluteOrShimPath(s)) offenders.push(s);
+        });
+        if (offenders.length > 0) {
+          criticalFails++;
+          tierCFails++;
+          // Truncate to one example to keep output readable; show count.
+          const example = offenders[0].length > 100
+            ? offenders[0].slice(0, 97) + "..."
+            : offenders[0];
+          p.log.error(
+            color.red(`Tier C config: FAIL`) +
+              ` — ${rel} contains ${offenders.length} absolute path(s)` +
+              color.dim(
+                `\n  Example: ${example}` +
+                "\n  Root cause: pre-v1.0.137 /ctx-upgrade baked machine-local paths into a workspace-committed file (#613)." +
+                "\n  Fix: run /context-mode:ctx-upgrade to rewrite to portable `context-mode hook <platform> <event>` form.",
+              ),
+          );
+        } else {
+          p.log.success(
+            color.green("Tier C config: PASS") +
+              color.dim(` — ${rel} uses portable command shapes`),
+          );
+        }
+      } catch (err: unknown) {
+        // Malformed JSON should not crash doctor; warn and move on.
+        const msg = err instanceof Error ? err.message : String(err);
+        p.log.warn(
+          color.yellow(`Tier C config: WARN`) +
+            ` — could not parse ${rel}` +
+            color.dim(`\n  ${msg.slice(0, 200)}`),
+        );
+      }
+    }
+    if (tierCChecked === 0) {
+      p.log.info(
+        color.dim("Tier C config: SKIP — no workspace-committed hook configs found"),
+      );
+    } else if (tierCFails === 0) {
+      // already individual PASS messages above; no need for a summary
+    }
+  }
+
+  // ── Issue #609 — proactive stale `.mcp.json` detection ──────────────
+  // PR #620 deleted the per-version cache `.mcp.json` write from cli.ts
+  // and shipped `sweepStaleMcpJson` to clean up any pre-existing copies.
+  // But users on the field may still have stale `.mcp.json` files left
+  // by /ctx-upgrade flows that ran before PR #620 (or by Claude Code's
+  // native auto-update copying a poisoned file forward). Surface those
+  // as WARN (recoverable — next ctx_upgrade sweeps them) so the user
+  // knows what to do instead of being told everything is green while
+  // the file lingers on disk.
+  // Per ISSUE-604-VERDICT §11 same trust contract as Tier C check above.
+  p.log.step("Checking for stale per-version `.mcp.json` files...");
+  {
+    const cacheRoot = join(
+      homedir(),
+      ".claude",
+      "plugins",
+      "cache",
+      "context-mode",
+      "context-mode",
+    );
+    if (!existsSync(cacheRoot)) {
+      p.log.info(
+        color.dim("Cache scan: SKIP — no plugin cache present at " + cacheRoot),
+      );
+    } else {
+      let staleCount = 0;
+      const staleVersions: string[] = [];
+      try {
+        const versionDirs = readdirSync(cacheRoot);
+        for (const v of versionDirs) {
+          const candidate = join(cacheRoot, v, ".mcp.json");
+          if (existsSync(candidate)) {
+            staleCount++;
+            if (staleVersions.length < 5) staleVersions.push(v);
+          }
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        p.log.warn(
+          color.yellow("Cache scan: WARN") +
+            ` — could not enumerate ${cacheRoot}` +
+            color.dim(`\n  ${msg.slice(0, 200)}`),
+        );
+        staleCount = 0;
+      }
+      if (staleCount === 0) {
+        p.log.success(
+          color.green("Cache `.mcp.json` sweep: PASS") +
+            color.dim(" — no stale files in per-version cache dirs"),
+        );
+      } else {
+        // WARN, not FAIL — per architect spec this is recoverable.
+        p.log.warn(
+          color.yellow("Cache `.mcp.json` sweep: WARN") +
+            ` — ${staleCount} stale .mcp.json file(s) in ${cacheRoot}` +
+            color.dim(
+              `\n  Versions: ${staleVersions.join(", ")}${staleCount > staleVersions.length ? ", ..." : ""}` +
+              "\n  Root cause: pre-v1.0.137 /ctx-upgrade wrote per-version `.mcp.json` into the plugin cache; PR #620 removed the write + added a sweep (#609)." +
+              "\n  Fix: run /context-mode:ctx-upgrade — `sweepStaleMcpJson` will remove these files on the next run.",
+            ),
+        );
+      }
+    }
+  }
+
   // FTS5 / SQLite
   p.log.step("Checking FTS5 / SQLite...");
   try {

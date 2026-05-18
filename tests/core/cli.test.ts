@@ -2132,3 +2132,121 @@ describe("Upgrade native ABI bootstrap", () => {
     expect(region).toContain("ABI cache present");
   });
 });
+
+// ── Issue #613/#609 — doctor() surfaces persistence-tier bug class ─────
+// PR #620 (Family A) shipped the architectural fixes:
+//   - #609: stop writing per-version cache `.mcp.json` + post-bump sweep
+//   - #613: vscode/jetbrains-copilot hook commands ship CLI-dispatcher form
+//           (no absolute `process.execPath` + script path baked into
+//           workspace-committed `.github/hooks/context-mode.json`)
+//
+// These two slices are the *prevention* surface — root-cause fixes that
+// stop the bug from being written. But users on the field can still be
+// holding pre-PR-620 poisoned state:
+//   - already-committed `.github/hooks/context-mode.json` in their repo
+//     with absolute Windows fnm shim paths from v1.0.136 or earlier
+//   - leftover `.mcp.json` in `~/.claude/plugins/cache/.../<version>/`
+//     from /ctx-upgrade flows that ran before PR #620
+//
+// Doctor's job per the verdict family ("silent-green doctor while hooks
+// are dead is itself a P0 trust bug" — ISSUE-604-VERDICT §11) is to
+// SURFACE that pre-PR state BEFORE the user hits a runtime failure.
+//
+// Architect contract for PR #620 + slice 4:
+//   CHECK A: doctor scans workspace Tier C files (`.github/hooks/context-mode.json`,
+//            `.cursor/hooks.json`, `.jetbrains/copilot/hooks.json` under
+//            process.cwd()) — for each that exists, parse JSON, recurse
+//            into all string values, FAIL if any matches absolute path
+//            patterns (unix `/`, Windows `[A-Z]:[/\\]`, `\\`, fnm_multishells).
+//            Remediation: "run `ctx_upgrade` to rewrite to portable form".
+//            Missing config → SKIP (no false fail).
+//
+//   CHECK B: doctor scans `~/.claude/plugins/cache/context-mode/context-mode/*/`
+//            for `.mcp.json` files (post-PR-620 these should not exist).
+//            Found → WARN (not fail) with remediation:
+//            "ctx_upgrade will sweep on next run".
+//
+// Same static-analysis assertion pattern as Issue #564 doctor test (above)
+// and lines 962, 997, 1010 — runtime spawning would need fixture
+// workspaces on three OSes and is not portable; asserting the gate
+// exists in doctor() source catches the regression at PR time.
+describe("PR #620 slice 4 — doctor() surfaces persistence-tier bug class", () => {
+  const CLI_SRC = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+
+  function doctorBody(): string {
+    const start = CLI_SRC.indexOf("async function doctor(");
+    expect(start).toBeGreaterThan(-1);
+    const end = CLI_SRC.indexOf("async function insight", start);
+    expect(end).toBeGreaterThan(start);
+    return CLI_SRC.slice(start, end);
+  }
+
+  it("doctor scans workspace Tier C config files for absolute paths (#613 proactive)", () => {
+    const body = doctorBody();
+    // Must reference all three Tier C path shapes that PR #620 covers
+    // (vscode-copilot writes `.github/hooks/context-mode.json`,
+    //  cursor writes `.cursor/hooks.json`,
+    //  jetbrains-copilot writes `.jetbrains/copilot/hooks.json`
+    //  — workspace-committed per ISSUE-613-VERDICT §6.1 Tier C table).
+    expect(body).toContain(".github/hooks/context-mode.json");
+    expect(body).toContain(".cursor/hooks.json");
+    expect(body).toContain(".jetbrains/copilot/hooks.json");
+    // Must detect the fnm-shim pattern (reporter's stderr literally shows
+    // `fnm_multishells/<pid>_<ts>/node.exe` per ISSUE-613-VERDICT §2 H2).
+    expect(body).toMatch(/fnm_multishells/);
+    // Must surface the failure with remediation pointing at ctx_upgrade.
+    // The Tier C section is identifiable by the issue anchor `#613`.
+    const anchorIdx = body.indexOf("#613");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    const window_ = body.slice(
+      Math.max(0, anchorIdx - 500),
+      anchorIdx + 3000,
+    );
+    // The check must use p.log.error or p.log.warn (not info) AND
+    // mention ctx_upgrade so the user knows the remediation.
+    expect(window_).toMatch(/p\.log\.(error|warn)/);
+    expect(window_).toMatch(/ctx[_-]?upgrade/i);
+  });
+
+  it("doctor warns on stale `.mcp.json` files in cache version dirs (#609 proactive)", () => {
+    const body = doctorBody();
+    // Must reference the cache plugin path shape that PR #620 sweeps.
+    // The path nests `context-mode/context-mode` (marketplace/plugin
+    // nesting per ISSUE-609-VERDICT path examples). cli.ts uses
+    // path.join() so the literal appears as adjacent string args:
+    //   join(homedir(), ".claude", "plugins", "cache",
+    //        "context-mode", "context-mode")
+    // We assert on both the cache anchor segments AND the join args
+    // (Mert standing rule — use platform-neutral path joins, not literal
+    // separators that fail on Windows).
+    expect(body).toMatch(/"plugins"\s*,\s*"cache"/);
+    expect(body).toMatch(/"context-mode"\s*,\s*"context-mode"/);
+    // Must check for `.mcp.json` (the file that should not exist after
+    // PR #620's architectural untrack — ISSUE-609-VERDICT §H1 → PR #618 → #620).
+    const anchorIdx = body.indexOf("#609");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    const window_ = body.slice(
+      Math.max(0, anchorIdx - 500),
+      anchorIdx + 2500,
+    );
+    expect(window_).toContain(".mcp.json");
+    // WARN (not FAIL) — the verdict spec is explicit that this is
+    // recoverable: "ctx_upgrade will sweep on next run".
+    expect(window_).toMatch(/p\.log\.warn/);
+    expect(window_).toMatch(/ctx[_-]?upgrade/i);
+  });
+
+  it("doctor uses homedir() (cross-platform) not literal '~' for cache scan", () => {
+    const body = doctorBody();
+    // Mert standing rule: Windows safety. Cache path must resolve via
+    // os.homedir() — not a literal `~/` prefix which fails on Windows.
+    const anchorIdx = body.indexOf("#609");
+    expect(anchorIdx).toBeGreaterThan(-1);
+    const window_ = body.slice(anchorIdx, anchorIdx + 2500);
+    // The scan must use homedir() (already imported at the top of cli.ts).
+    expect(window_).toMatch(/homedir\(\)|process\.env\.HOME/);
+    // And must NOT use a literal `~/` path string (would be treated
+    // literally on Windows).
+    expect(window_).not.toMatch(/["']~\//);
+  });
+});
