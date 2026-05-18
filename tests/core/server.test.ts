@@ -4809,3 +4809,27 @@ test("OpenCode legacy MCP suppression parses JSONC URLs without stripping // ins
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Issue #623: when ctx_* tool registration is suppressed for the legacy MCP
+// child on OpenCode/Kilo, an MCP client inspecting tools/list sees an empty
+// list with NO explanation. The plugin-native tools work, but a user who only
+// observes the MCP child (or another MCP host that doesn't load the plugin)
+// has no signal that ctx_* tools were intentionally hidden. Surface a stderr
+// diagnostic frame at first suppressed registerTool() call so operators can
+// tell "tools/list is empty BECAUSE the legacy mcp.context-mode block coexists
+// with plugin: ['context-mode']" — not "the server is broken".
+test("OpenCode/Kilo legacy MCP child emits stderr diagnostic when ctx_* suppression fires (#623)", async () => {
+  const { emitSuppressionDiagnostic, __resetSuppressionDiagnosticForTests } = await import("../../src/server.js");
+  __resetSuppressionDiagnosticForTests();
+  const lines: string[] = [];
+  emitSuppressionDiagnostic({ platform: "opencode", write: (c) => lines.push(c) });
+  // Second call must NOT re-emit — diagnostic is one-shot per process.
+  emitSuppressionDiagnostic({ platform: "opencode", write: (c) => lines.push(c) });
+  const joined = lines.join("");
+  expect(joined).toMatch(/context-mode/);
+  expect(joined).toMatch(/#623|plugin-native|legacy.*mcp\.context-mode|mcp\.context-mode.*legacy/i);
+  // One-shot: exactly one line containing the marker.
+  const matches = joined.match(/\[context-mode\]/g) ?? [];
+  expect(matches.length).toBe(1);
+  __resetSuppressionDiagnosticForTests();
+});

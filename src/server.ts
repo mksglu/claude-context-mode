@@ -198,6 +198,41 @@ function settingsHasLegacyContextModeMcp(settings: Record<string, unknown> | nul
 
 const suppressMcpToolsForNativePluginHost = shouldSuppressMcpToolsForNativePluginHost();
 
+/**
+ * Issue #623 — surface why ctx_* tools/list is empty on suppressed legacy MCP
+ * children. When a user upgrades OpenCode/Kilo from v1.0.136 → v1.0.137+ without
+ * running `context-mode upgrade`, their opencode.json still has BOTH the legacy
+ * mcp.context-mode block AND the plugin entry. The plugin path registers the
+ * tools natively, but the legacy MCP child runs in parallel and used to expose
+ * duplicate tools — v1.0.137 suppressed those duplicates. The suppression was
+ * silent, leaving any MCP client that inspected the child via tools/list with
+ * an empty list and no diagnostic. Emit one stderr line per process so an
+ * operator running the child directly (or any non-plugin MCP host) sees the
+ * exact reason and the `context-mode upgrade` fix.
+ *
+ * Exported for test (suppression-diagnostic regression guard).
+ */
+let __suppressionDiagnosticEmitted = false;
+export function emitSuppressionDiagnostic(
+  opts: { platform?: string; write?: (chunk: string) => void } = {},
+): void {
+  if (__suppressionDiagnosticEmitted) return;
+  __suppressionDiagnosticEmitted = true;
+  const write = opts.write ?? ((c: string) => { process.stderr.write(c); });
+  const platform = opts.platform ?? "opencode/kilo";
+  write(
+    `[context-mode] ctx_* tools/list intentionally empty on this MCP child: ` +
+    `legacy mcp.context-mode block coexists with plugin: ["context-mode"] in ` +
+    `${platform}.json — plugin-native tools are the supported path (#623). ` +
+    `Run \`context-mode upgrade\` to remove the legacy block (preserves other ` +
+    `MCP servers).\n`
+  );
+}
+/** Test-only: reset the one-shot emission flag so suites can re-exercise. */
+export function __resetSuppressionDiagnosticForTests(): void {
+  __suppressionDiagnosticEmitted = false;
+}
+
 const originalRegisterTool = server.registerTool.bind(server);
 (server as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool = (...args: unknown[]) => {
   const [name, config, handler] = args as [
@@ -205,7 +240,10 @@ const originalRegisterTool = server.registerTool.bind(server);
     Record<string, unknown>,
     (toolArgs: Record<string, unknown>) => Promise<unknown> | unknown,
   ];
-  if (suppressMcpToolsForNativePluginHost) return undefined;
+  if (suppressMcpToolsForNativePluginHost) {
+    emitSuppressionDiagnostic();
+    return undefined;
+  }
   REGISTERED_CTX_TOOLS.push({ name, config, handler });
   return (originalRegisterTool as unknown as (...callArgs: unknown[]) => unknown)(...args);
 };
