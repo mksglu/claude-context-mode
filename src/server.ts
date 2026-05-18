@@ -31,6 +31,14 @@ import { startLifecycleGuard } from "./lifecycle.js";
 import { hashProjectDirCanonical, hashProjectDirLegacy, resolveContentStorePath, resolveSessionDbPath, SessionDB } from "./session/db.js";
 import { purgeSession } from "./session/purge.js";
 import {
+  ensureWritableStorageDir,
+  formatStorageDirectoryError,
+  resolveContentStorageDir,
+  resolveSessionStorageDir,
+  resolveStatsStorageDir,
+  StorageDirectoryError,
+} from "./storage-paths.js";
+import {
   emitCacheHitEvent,
   emitIndexWriteEvent,
   emitSandboxExecuteEvent,
@@ -220,7 +228,7 @@ async function getDiagnosticAdapter(): Promise<HookAdapter | null> {
  * Get the platform-specific sessions directory from the detected adapter.
  * Falls back to the detected platform config root before adapter detection.
  */
-function getSessionDir(): string {
+function getDefaultSessionDir(): string {
   if (_detectedAdapter) return _detectedAdapter.getSessionDir();
   // Pre-detection path (race window before MCP `initialize` completes):
   // call detectPlatform() (sync, env-var-based) and look up segments via
@@ -246,6 +254,10 @@ function getSessionDir(): string {
   const dir = join(resolveClaudeConfigRoot(), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+function getSessionDir(): string {
+  return ensureWritableStorageDir(resolveSessionStorageDir(getDefaultSessionDir));
 }
 
 /**
@@ -341,9 +353,7 @@ function getSessionDbPath(): string {
  *         ~/.cursor/context-mode/content/87c28c41ddb64d38.db
  */
 function getStorePath(): string {
-  // Derive content dir from session dir: .../sessions/ → .../content/
-  const dir = join(dirname(getSessionDir()), "content");
-  mkdirSync(dir, { recursive: true });
+  const dir = ensureWritableStorageDir(resolveContentStorageDir(getDefaultSessionDir));
   // Delegate to resolveContentStorePath: same case-fold + one-shot legacy
   // rename behavior as resolveSessionDbPath. On macOS / Windows, an
   // existing legacy raw-casing FTS5 db (with -wal/-shm sidecars) is
@@ -412,6 +422,34 @@ const sessionStats = {
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
+};
+
+function storageErrorResult(err: unknown): ToolResult | null {
+  if (!(err instanceof StorageDirectoryError)) return null;
+  return {
+    content: [{ type: "text", text: formatStorageDirectoryError(err) }],
+    isError: true,
+  };
+}
+
+const registerTool = server.registerTool.bind(server) as any;
+(server as any).registerTool = (name: string, config: unknown, handler: (...args: any[]) => unknown) => {
+  return registerTool(name, config, async (...args: any[]) => {
+    try {
+      return await handler(...args);
+    } catch (err) {
+      const result = storageErrorResult(err);
+      if (result) {
+        try {
+          return trackResponse(name, result);
+        } catch (trackErr) {
+          if (trackErr instanceof StorageDirectoryError) return result;
+          throw trackErr;
+        }
+      }
+      throw err;
+    }
+  });
 };
 
 // ── Version outdated warning ──────────────────────────────────────────────
@@ -621,7 +659,8 @@ let _lifetimeCache: { tokens: number; computedAt: number } | undefined;
  */
 function getStatsFilePath(): string {
   const sessionId = process.env.CLAUDE_SESSION_ID || `pid-${process.ppid}`;
-  return join(getSessionDir(), `stats-${sessionId}.json`);
+  const statsDir = ensureWritableStorageDir(resolveStatsStorageDir(getSessionDir));
+  return join(statsDir, `stats-${sessionId}.json`);
 }
 
 function persistStats(): void {

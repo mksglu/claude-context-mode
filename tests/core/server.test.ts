@@ -2407,6 +2407,14 @@ describe("Project dir hash consistency", () => {
     expect(fn![0]).not.toContain("createHash");
   });
 
+  test("server storage paths are routed through runtime override resolver", () => {
+    expect(serverSrc).toContain("resolveSessionStorageDir");
+    expect(serverSrc).toContain("resolveContentStorageDir");
+    expect(serverSrc).toContain("resolveStatsStorageDir");
+    expect(serverSrc).toContain("ensureWritableStorageDir");
+    expect(serverSrc).toContain("formatStorageDirectoryError");
+  });
+
   test("ctx_stats uses hashProjectDir, not inline hashing", () => {
     const statsMatch = serverSrc.match(
       /server\.registerTool\(\s*"ctx_stats"[\s\S]*?^\);/m,

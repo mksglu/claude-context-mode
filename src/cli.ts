@@ -55,6 +55,15 @@ function browserOpenArgv(
 
 // ── Adapter imports ──────────────────────────────────────
 import { detectPlatform, getAdapter } from "./adapters/detect.js";
+import {
+  ensureWritableStorageDir,
+  formatStorageDirectoryError,
+  resolveContentStorageDir,
+  resolveSessionStorageDir,
+  resolveStatsStorageDir,
+  StorageDirectoryError,
+  type ResolvedStorageDir,
+} from "./storage-paths.js";
 
 /* -------------------------------------------------------
  * Hook dispatcher — `context-mode hook <platform> <event>`
@@ -323,6 +332,30 @@ async function fetchLatestVersion(): Promise<string> {
  * Doctor — adapter-aware diagnostics
  * ------------------------------------------------------- */
 
+function describeStorageSource(dir: ResolvedStorageDir): string {
+  return dir.envVar ? dir.envVar : "adapter default";
+}
+
+function logStorageDir(dir: ResolvedStorageDir): number {
+  try {
+    ensureWritableStorageDir(dir);
+    p.log.success(
+      color.green(`Storage ${dir.kind}: PASS`) +
+        color.dim(` — ${dir.path} (${describeStorageSource(dir)})`),
+    );
+    return 0;
+  } catch (err) {
+    if (err instanceof StorageDirectoryError) {
+      p.log.error(
+        color.red(`Storage ${dir.kind}: FAIL`) +
+          color.dim(` — ${formatStorageDirectoryError(err)}`),
+      );
+      return 1;
+    }
+    throw err;
+  }
+}
+
 async function doctor(): Promise<number> {
   if (process.stdout.isTTY) console.clear();
 
@@ -337,6 +370,34 @@ async function doctor(): Promise<number> {
   );
 
   let criticalFails = 0;
+
+  try {
+    const sessionDir = resolveSessionStorageDir(() => adapter.getSessionDir());
+    const contentDir = resolveContentStorageDir(() => sessionDir.path);
+    const statsDir = resolveStatsStorageDir(() => sessionDir.path);
+
+    p.note(
+      [
+        `sessions: ${sessionDir.path} (${describeStorageSource(sessionDir)})`,
+        `content:  ${contentDir.path} (${describeStorageSource(contentDir)})`,
+        `stats:    ${statsDir.path} (${describeStorageSource(statsDir)})`,
+      ].join("\n"),
+      "Storage paths",
+    );
+    criticalFails += logStorageDir(sessionDir);
+    criticalFails += logStorageDir(contentDir);
+    criticalFails += logStorageDir(statsDir);
+  } catch (err) {
+    if (err instanceof StorageDirectoryError) {
+      criticalFails++;
+      p.log.error(
+        color.red(`Storage ${err.kind}: FAIL`) +
+          color.dim(` — ${formatStorageDirectoryError(err)}`),
+      );
+    } else {
+      throw err;
+    }
+  }
 
   const s = p.spinner();
   s.start("Running diagnostics");
@@ -685,8 +746,8 @@ async function insight(port: number) {
   // Detect platform + adapter for correct session/content paths
   const detection = detectPlatform();
   const adapter = await getAdapter(detection.platform);
-  const sessDir = adapter.getSessionDir();
-  const contentDir = join(dirname(sessDir), "content");
+  const sessDir = ensureWritableStorageDir(resolveSessionStorageDir(() => adapter.getSessionDir()));
+  const contentDir = ensureWritableStorageDir(resolveContentStorageDir(() => sessDir));
   const cacheDir = join(dirname(sessDir), "insight-cache");
 
   if (!existsSync(join(insightSource, "server.mjs"))) {
