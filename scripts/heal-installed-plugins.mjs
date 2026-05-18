@@ -445,8 +445,8 @@ export function healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent, ne
   }
 
   const cacheParentFwd = pluginCacheParent.replace(/\\/g, "/");
-  let mutated = false;
 
+  let mutated = false;
   for (const srv of Object.values(servers)) {
     if (!srv || typeof srv !== "object" || !Array.isArray(srv.args)) continue;
     for (let i = 0; i < srv.args.length; i++) {
