@@ -315,6 +315,18 @@ export class MCPStdioClient {
   }
 
   async callTool(name: string, args: unknown): Promise<MCPCallResult> {
+    // Respawn-on-idle-exit (#583). The MCP server gained an idle
+    // self-shutdown in 1.0.132 (#565/#568, src/lifecycle.ts). When the
+    // Pi-spawned child exits cleanly after the idle window, Pi keeps the
+    // tool handles registered, but the bridge client is `exited=true`
+    // and every subsequent request would reject with
+    // "MCP server has exited" — leaving Pi's ctx_* tools permanently
+    // broken until the user restarts Pi.
+    //
+    // The structural fix is here, not in lifecycle.ts: the bridge owns
+    // the child lifecycle, so it transparently respawns + re-initialises
+    // the server on the next call. Restores parity with adapters whose
+    // host MCP client respawns on EOF (Claude Code, Codex, etc.).
     if (this.exited) await this.respawn();
     return this.request<MCPCallResult>(
       "tools/call",
@@ -323,7 +335,17 @@ export class MCPStdioClient {
     );
   }
 
+  /**
+   * Respawn the MCP child after an exit (clean idle shutdown or crash).
+   * Resets state so a fresh `start()` + `initialize()` cycle runs, then
+   * the caller's pending request flows through the new child.
+   *
+   * Internal — exposed only via the public `callTool()` happy path.
+   */
   private async respawn(): Promise<void> {
+    // Drop the dead child handle and clear stream buffer so leftover
+    // bytes from the previous incarnation don't get parsed as JSON-RPC
+    // for the new one. Pending map is already cleared by onExit().
     this.child = null;
     this.buffer = "";
     this.exited = false;
