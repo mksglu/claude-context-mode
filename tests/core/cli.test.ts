@@ -216,16 +216,39 @@ describe(".mcp.json — MCP server config", () => {
     expect(args[0]).toContain("start.mjs");
   });
 
-  it("package.json files[] MUST NOT ship .mcp.json (architectural lock — closes #531)", () => {
-    // PR #253 flip-flop: source .mcp.json kept switching between the
-    // placeholder form (correct for end-users via marketplace install) and
-    // the relative form (correct for contributors opening the repo as a
-    // regular project). Stop shipping it in the tarball so the two roles
-    // never collide again. End users get MCP via .claude-plugin/plugin.json
-    // and cli.ts upgrade()'s plugin-cache write — both placeholder.
+  it("package.json files[] MUST ship .mcp.json with the placeholder form (#609 reverses #531)", () => {
+    // History:
+    //   - PR #253: .mcp.json source flip-flopped between placeholder + relative
+    //     forms (contributor vs end-user). #531 fixed it by un-tracking + not
+    //     shipping .mcp.json — end-users were supposed to get MCP via
+    //     .claude-plugin/plugin.json.
+    //   - #609: Claude Code's native plugin auto-update doesn't include .mcp.json
+    //     in the new version dir, leaves stale .mcp.json in the previous version,
+    //     and CC's cache scanner picks the stale one → MODULE_NOT_FOUND on every
+    //     boot (start.mjs of the previous version is already deleted).
+    //   - The fix that breaks the deadlock is the simplest one: ship .mcp.json
+    //     (placeholder form) in every npm tarball → every cache version dir has
+    //     its own current .mcp.json → CC's scanner finds the current one.
+    //
+    // Contributor trade-off: local dev sees CC's "Missing environment variable:
+    // CLAUDE_PLUGIN_ROOT" warning. Harmless, silenceable via
+    // `export CLAUDE_PLUGIN_ROOT=$PWD`. Documented in .gitignore comment.
+    //
+    // The DRIFT GUARD lives in `scripts/assert-asymmetric-drift.mjs` + the
+    // sibling vitest at `tests/scripts/asymmetric-drift-assert.test.ts`. Both
+    // pin the args[0] string to "${CLAUDE_PLUGIN_ROOT}/start.mjs" verbatim
+    // across .mcp.json, .mcp.json.example, and .claude-plugin/plugin.json.
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.files).toBeDefined();
-    expect(pkg.files).not.toContain(".mcp.json");
+    expect(pkg.files).toContain(".mcp.json");
+
+    // Content guard: file exists in repo + uses placeholder form (not relative).
+    const mcpJsonPath = resolve(ROOT, ".mcp.json");
+    expect(existsSync(mcpJsonPath)).toBe(true);
+    const mcpJson = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    expect(mcpJson.mcpServers?.["context-mode"]?.args?.[0]).toBe(
+      "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    );
   });
 });
 

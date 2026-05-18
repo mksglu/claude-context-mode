@@ -106,6 +106,20 @@ function buildFakeHome(opts: {
     resolve(cacheDir, ".claude-plugin", "plugin.json"),
     JSON.stringify({ name: "context-mode", version: opts.cacheVersion }, null, 2),
   );
+  // #609: post-fix, every real install dir has .mcp.json shipped from the
+  // tarball. Seed it here so healMcpJsonArgs's missing-file branch doesn't
+  // trigger and emit an extra stderr line in tests that count heal output.
+  writeFileSync(
+    resolve(cacheDir, ".mcp.json"),
+    JSON.stringify({
+      mcpServers: {
+        "context-mode": {
+          command: "node",
+          args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
+        },
+      },
+    }, null, 2) + "\n",
+  );
   const registry: Record<string, unknown> = {
     version: 2,
     plugins: {

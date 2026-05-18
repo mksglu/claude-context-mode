@@ -17,6 +17,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -830,17 +831,21 @@ describe("healMcpJsonArgs (Issue #531)", () => {
     });
   });
 
-  // Defensive — missing file returns silent skip
-  it("returns skipped:'no-mcp-json' when .mcp.json is missing", () => {
-    const cacheRoot = makeTmp("ctx-issue531-cache-");
+  // #609: missing-file branch now CREATES the canonical .mcp.json instead of
+  // skipping. Defensive layer 2 — primary fix is shipping .mcp.json via the
+  // npm tarball (#609 reverses #531's untrack). This branch covers
+  // `/ctx-upgrade` tmpdir + any pipeline that lands files without prepack.
+  it("creates canonical .mcp.json when missing (#609)", () => {
+    const cacheRoot = makeTmp("ctx-issue609-cache-");
     const pluginRoot = resolve(
       cacheRoot,
       "context-mode",
       "context-mode",
-      "1.0.121",
+      "1.0.137",
     );
     mkdirSync(pluginRoot, { recursive: true });
-    // No .mcp.json file written.
+    const mcpJsonPath = resolve(pluginRoot, ".mcp.json");
+    // No .mcp.json file written — the auto-update / cp -r path scenario.
 
     const result = healMcpJsonArgs({
       pluginRoot,
@@ -848,8 +853,13 @@ describe("healMcpJsonArgs (Issue #531)", () => {
       pluginKey: "context-mode@context-mode",
     });
 
-    expect(result.healed).toEqual([]);
-    expect(result.skipped).toBe("no-mcp-json");
+    expect(result.healed).toContain("mcp-json-created");
+    expect(existsSync(mcpJsonPath)).toBe(true);
+    const written = JSON.parse(readFileSync(mcpJsonPath, "utf-8"));
+    expect(written.mcpServers["context-mode"].args).toEqual([
+      "${CLAUDE_PLUGIN_ROOT}/start.mjs",
+    ]);
+    expect(written.mcpServers["context-mode"].command).toBe("node");
   });
 });
 

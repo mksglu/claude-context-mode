@@ -341,7 +341,28 @@ export function healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey }) {
   // `.mcp.json` lives at pluginRoot/.mcp.json (flat), NOT under .claude-plugin/.
   const mcpJsonPath = resolve(pluginRoot, ".mcp.json");
   if (!existsSync(mcpJsonPath)) {
-    return { healed: [], skipped: "no-mcp-json" };
+    // #609: Claude Code's native plugin auto-update doesn't ship a fresh
+    // `.mcp.json` into the new version dir and leaves a stale one behind in
+    // the previous version dir. CC's cache scanner then picks the stale file
+    // and tries to boot from the deleted previous-version `start.mjs`. The
+    // primary fix is shipping `.mcp.json` via the npm tarball; this branch is
+    // the defensive heal for the `/ctx-upgrade` tmpdir path + any other
+    // pipeline that lands files without invoking the prepack.
+    const ourServerName = pluginKey.split("@")[0];
+    const canonical = {
+      mcpServers: {
+        [ourServerName]: {
+          command: "node",
+          args: [PLACEHOLDER_ARG],
+        },
+      },
+    };
+    try {
+      writeFileSync(mcpJsonPath, JSON.stringify(canonical, null, 2) + "\n", "utf-8");
+      return { healed: ["mcp-json-created"] };
+    } catch (err) {
+      return { healed: [], error: `create-failed: ${(err && err.message) || err}` };
+    }
   }
 
   let raw;

@@ -20,16 +20,16 @@ AGENTS.md
 context-mode-guidance-*/
 .claude/worktrees/
 
-# .mcp.json is local-only — purpose splits between contributor dev
-# (relative paths work because cwd = repo root) and end-user marketplace
-# install (placeholder ${CLAUDE_PLUGIN_ROOT}/start.mjs is required).
-# These two forms have flip-flopped 3 times in history (#253 #531 etc),
-# causing every fresh install to silently break. End users get MCP via
-# .claude-plugin/plugin.json (always placeholder) and /ctx-upgrade's
-# cli.ts write (always placeholder). The .mcp.json at repo root only
-# helps contributors during local dev. Untracked → can't regress.
-# Copy .mcp.json.example to .mcp.json for local dev.
-.mcp.json
+# .mcp.json is now tracked + shipped (#609 — Claude Code's native plugin
+# auto-update doesn't include .mcp.json from the previous version, leaves it
+# stranded, and the cache scanner picks up the stale file → MODULE_NOT_FOUND).
+# Canonical placeholder form (${CLAUDE_PLUGIN_ROOT}/start.mjs) is committed
+# at repo root so npm pack includes it in every version's cache dir. Drift is
+# guarded by asymmetric-drift assert + a unit test asserting the exact shape.
+# Contributors running local dev may see Claude Code's "Missing environment
+# variable: CLAUDE_PLUGIN_ROOT" warning — harmless, can be silenced by setting
+# CLAUDE_PLUGIN_ROOT=$PWD in the dev shell. The contributor-relative shape
+# (./start.mjs) is no longer supported — use the placeholder form universally.
 .claude-worktrees/
 .vibetree/
 .cw/
