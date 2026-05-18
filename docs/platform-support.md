@@ -505,7 +505,7 @@ Cursor uses native lower-camel hook names and flat hook entries in `.cursor/hook
 - Project: `.cursor/hooks.json`
 - User: `~/.cursor/hooks.json`
 - MCP config: `.cursor/mcp.json` or `~/.cursor/mcp.json`
-- **Marketplace plugin (recommended):** `.cursor-plugin/plugin.json` at the repo root auto-registers MCP, hooks, rules, and skills. Manifest explicitly points `hooks` at `./hooks/cursor/hooks.json` to avoid colliding with the Claude-format `./hooks/hooks.json`. Local install: `ln -s <repo> ~/.cursor/plugins/local/context-mode`. Plugin hook commands use `npx -y context-mode hook cursor <event>` so no global install is required.
+- **Marketplace plugin (recommended):** `.cursor-plugin/plugin.json` at the repo root auto-registers MCP, hooks, rules, and skills. Manifest explicitly points `hooks` at `./hooks/cursor/hooks.json` to avoid colliding with the Claude-format `./hooks/hooks.json`. Local install: `ln -s <repo> ~/.cursor/plugins/local/context-mode`. Plugin hook commands use `context-mode hook cursor <event>`, matching the packaged command.
 
 **Plugin/native duplication:** `context-mode doctor` warns when both the plugin and `.cursor/hooks.json` register context-mode hooks (each event would otherwise fire twice). Remove one configuration to keep events single-fire.
 

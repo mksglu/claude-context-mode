@@ -12,7 +12,7 @@ context-mode is an MCP server + hook bundle that keeps long-running Cursor agent
 
 ## Install
 
-After clicking **Install** in the Cursor Plugins panel, the plugin registers an MCP server that runs `npx -y context-mode`. The first invocation downloads the package from npm; subsequent invocations are cached.
+After clicking **Install** in the Cursor Plugins panel, the plugin registers an MCP server that runs the packaged `context-mode` command.
 
 If you prefer pinning a global install (faster cold start):
 
@@ -94,7 +94,7 @@ The plugin's `hooks/cursor/hooks.json` registers five events:
 | `afterAgentResponse` | Captures the produced assistant text into session telemetry |
 | `stop` | Records turn lifecycle (status, loop_count) |
 
-Each event runs `npx -y context-mode hook cursor <event>`. Cold start is ~4-5s; trade-off for zero-install distribution.
+Each event runs `context-mode hook cursor <event>`, matching the packaged command used by the plugin.
 
 ## Known limitations
 
