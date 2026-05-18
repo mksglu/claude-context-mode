@@ -1665,15 +1665,26 @@ function formatDuration(uptimeMin: string): string {
  *
  * Ubuntu GHA runners default to `LANG=C.UTF-8`. The extractor below strips
  * that to `"C"` — a valid POSIX locale identifier but NOT a BCP 47 tag.
- * On macOS / Node 20, `new Intl.DateTimeFormat("C", ...)` throws RangeError
- * outright. On Linux + Node 22.5, `new Intl.DateTimeFormat("POSIX")` may not
- * throw, but silently falls back to the root locale and still emits unusable
- * formatting. Strictly require `supportedLocalesOf()` and construction.
+ * On macOS / Node 20, `new Intl.DateTimeFormat("C", …)` throws RangeError
+ * outright. CI run 25887250971 caught this via the v1.0.134 SLICE B test.
+ *
+ * Earlier fix attempt used a permissive `supportedLocalesOf || construction`
+ * OR check — that was wrong: on Linux + Node 22.5, `new Intl.DateTimeFormat
+ * ("POSIX")` does NOT throw, it silently falls back to the root locale and
+ * still emits garbage at format time. CI run 25904838577 surfaced that —
+ * "POSIX" round-tripped through the validator unchanged.
+ *
+ * Strict gate: `Intl.DateTimeFormat.supportedLocalesOf(tag)` returns `[]` for
+ * any tag that doesn't map to a real language (regardless of whether
+ * construction with that tag throws). That's the contract we want — "is this
+ * a BCP 47 tag the host actually has data for". Construction is an explicit
+ * sanity check; both must pass.
  */
 function isUsableBcp47Locale(raw: string): boolean {
   if (!raw) return false;
   try {
     if (Intl.DateTimeFormat.supportedLocalesOf(raw).length === 0) return false;
+    // Belt: confirm construction doesn't throw on this host either.
     new Intl.DateTimeFormat(raw);
     return true;
   } catch {
