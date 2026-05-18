@@ -10,9 +10,11 @@
 // Can be used as a library (`import { registerContextModeInOpenclawConfig } from ...`)
 // or as a CLI (`node register-openclaw-config.mjs <runtimePath> <pluginRoot>`).
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+
+import { atomicWriteFileSync } from "./atomic-fs.mjs";
 
 export function registerContextModeInOpenclawConfig(runtimePath, pluginRoot) {
   let cfg;
@@ -67,7 +69,7 @@ export function registerContextModeInOpenclawConfig(runtimePath, pluginRoot) {
     messages.push(`registered mcp.servers.context-mode → ${serverBundle}`);
   }
 
-  writeFileSync(runtimePath, JSON.stringify(cfg, null, 2) + "\n");
+  atomicWriteFileSync(runtimePath, JSON.stringify(cfg, null, 2) + "\n");
 
   return {
     pluginsAllow: allow,

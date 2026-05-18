@@ -125,4 +125,18 @@ describe("ZedAdapter", () => {
       );
     });
   });
+
+  // ── writeSettings round-trip (atomic write contract) ──
+
+  describe("writeSettings atomic round-trip", () => {
+    it("writeSettings then readSettings returns identical JSON", () => {
+      const payload = {
+        context_servers: {
+          "context-mode": { command: { path: "node", args: ["start.mjs"] } },
+        },
+      };
+      adapter.writeSettings(payload as Record<string, unknown>);
+      expect(adapter.readSettings()).toEqual(payload);
+    });
+  });
 });

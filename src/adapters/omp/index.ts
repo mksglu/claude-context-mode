@@ -27,13 +27,13 @@
 
 import {
   readFileSync,
-  writeFileSync,
   mkdirSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 
 import type {
   HookAdapter,
@@ -159,7 +159,7 @@ export class OMPAdapter extends BaseAdapter implements HookAdapter {
   writeSettings(settings: Record<string, unknown>): void {
     const settingsPath = this.getSettingsPath();
     mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+    atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: "utf-8" });
   }
 
   // ── Diagnostics (doctor) ─────────────────────────────────

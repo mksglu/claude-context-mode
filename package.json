@@ -78,6 +78,7 @@
     "openclaw.plugin.json",
     "start.mjs",
     "scripts/install-openclaw-plugin.sh",
+    "scripts/lib/atomic-fs.mjs",
     "scripts/lib/register-openclaw-config.mjs",
     "scripts/postinstall.mjs",
     "scripts/heal-better-sqlite3.mjs",

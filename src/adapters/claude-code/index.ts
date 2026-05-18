@@ -14,7 +14,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
   readdirSync,
   chmodSync,
@@ -28,6 +27,7 @@ import { homedir } from "node:os";
 import { ClaudeCodeBaseAdapter, type ClaudeCodeWireInput } from "../claude-code-base.js";
 import { resolveClaudeConfigDir } from "../../util/claude-config.js";
 import { checkPluginCacheIntegritySync } from "../../util/plugin-cache-integrity.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 
 import {
   buildNodeCommand,
@@ -187,10 +187,10 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
   }
 
   writeSettings(settings: Record<string, unknown>): void {
-    writeFileSync(
+    atomicWriteFileSync(
       this.getSettingsPath(),
       JSON.stringify(settings, null, 2) + "\n",
-      "utf-8",
+      { encoding: "utf-8" },
     );
   }
 
@@ -621,7 +621,7 @@ export class ClaudeCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdap
           entry.lastUpdated = new Date().toISOString();
         }
       }
-      writeFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(ipPath, JSON.stringify(ipRaw, null, 2) + "\n", { encoding: "utf-8" });
     } catch {
       /* best effort */
     }

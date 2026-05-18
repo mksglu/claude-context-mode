@@ -25,7 +25,6 @@ function stripJsonComments(str: string): string {
 }
 import {
   readFileSync,
-  writeFileSync,
   mkdirSync,
   copyFileSync,
   accessSync,
@@ -35,6 +34,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 
 import type {
   HookAdapter,
@@ -372,10 +372,10 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
 
   writeSettings(settings: Record<string, unknown>): void {
     // Write to opencode.json(c)/kilo.json(c) in current directory
-    writeFileSync(
+    atomicWriteFileSync(
       this.getSettingsPath(),
       JSON.stringify(settings, null, 2) + "\n",
-      "utf-8",
+      { encoding: "utf-8" },
     );
   }
 

@@ -17,9 +17,11 @@
  * @see https://github.com/anthropics/claude-code/issues/46915
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
+
+import { atomicWriteFileSync } from "./lib/atomic-fs.mjs";
 
 /**
  * @typedef {Object} HealResult
@@ -120,7 +122,7 @@ export function healInstalledPlugins({ registryPath, pluginCacheRoot, pluginKey 
 
   if (healed.length > 0) {
     try {
-      writeFileSync(registryPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(registryPath, JSON.stringify(ip, null, 2) + "\n", { encoding: "utf-8" });
     } catch (err) {
       return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
     }
@@ -172,7 +174,7 @@ export function healSettingsEnabledPlugins({ settingsPath, pluginKey }) {
 
   if (healed.length > 0) {
     try {
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf-8" });
     } catch (err) {
       return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
     }
@@ -276,7 +278,7 @@ export function healPluginJsonMcpServers({ pluginRoot, pluginCacheRoot, pluginKe
     ours.args = after;
     healed.push("plugin-json-args");
     try {
-      writeFileSync(pluginJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(pluginJsonPath, JSON.stringify(parsed, null, 2) + "\n", { encoding: "utf-8" });
     } catch (err) {
       return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
     }
@@ -387,7 +389,7 @@ export function healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey }) {
     ours.args = after;
     healed.push("mcp-json-args");
     try {
-      writeFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(mcpJsonPath, JSON.stringify(parsed, null, 2) + "\n", { encoding: "utf-8" });
     } catch (err) {
       return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
     }
@@ -469,7 +471,7 @@ export function healClaudeJsonMcpArgs({ dotClaudeJsonPath, pluginCacheParent, ne
   if (!mutated) return { healed: [] };
 
   try {
-    writeFileSync(dotClaudeJsonPath, JSON.stringify(config, null, 2), "utf-8");
+    atomicWriteFileSync(dotClaudeJsonPath, JSON.stringify(config, null, 2), { encoding: "utf-8" });
   } catch (err) {
     return { healed: [], error: `write-failed: ${(err && err.message) || err}` };
   }

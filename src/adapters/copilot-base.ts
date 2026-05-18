@@ -20,7 +20,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   mkdirSync,
   accessSync,
   chmodSync,
@@ -29,6 +28,7 @@ import {
 import { resolve, join } from "node:path";
 
 import { BaseAdapter } from "./base.js";
+import { atomicWriteFileSync } from "../util/atomic-fs.js";
 
 import type {
   HookAdapter,
@@ -345,10 +345,10 @@ export abstract class CopilotBaseAdapter extends BaseAdapter implements HookAdap
   writeSettings(settings: Record<string, unknown>): void {
     const configPath = this.getSettingsPath();
     mkdirSync(resolve(".github", "hooks"), { recursive: true });
-    writeFileSync(
+    atomicWriteFileSync(
       configPath,
       JSON.stringify(settings, null, 2) + "\n",
-      "utf-8",
+      { encoding: "utf-8" },
     );
   }
 
