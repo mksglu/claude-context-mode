@@ -146,6 +146,30 @@ describe("Pi Extension", () => {
         tool_result: "ok",
       });
     });
+
+    it("maps 'context_mode_' prefix to 'mcp__context_mode__' so MCP tool calls get extracted", async () => {
+      await registerPiExtension(api);
+      await api._trigger("session_start", {
+        session_id: "test-fix1",
+        project_dir: tempDir,
+      });
+
+      // Pi prefixes MCP-registered tools with "context_mode_". Without
+      // normalisation the extract functions (P, F) silently drop all
+      // events because they gate on e.startsWith("mcp__").
+      await api._trigger("tool_result", {
+        tool_name: "context_mode_ctx_execute",
+        params: { language: "javascript", code: "console.log(1)" },
+        result: "1",
+      });
+
+      // Verify via ctx-stats that events include "mcp" category
+      // (meaning they were extracted, not just the generic fallback).
+      const stats = (await api._getCommand("ctx-stats")!.handler!({})) as {
+        text: string;
+      };
+      expect(stats.text).toContain("mcp");
+    });
   });
 
   // ═══════════════════════════════════════════════════════════
@@ -174,6 +198,31 @@ describe("Pi Extension", () => {
         tool_input: { file_path: "/src/index.ts" },
         tool_result: "export const hello = 'world';",
       });
+    });
+
+    it("extracts file_read event when Pi passes 'path' instead of 'file_path'", async () => {
+      await registerPiExtension(api);
+      await api._trigger("session_start", {
+        session_id: "test-fix2",
+        project_dir: tempDir,
+      });
+
+      // Pi's native Read tool sends { path: "..." } rather than
+      // { file_path: "..." } (Claude Code convention). Without
+      // normalisation the extractor reads n.file_path → undefined,
+      // producing file_read events with an empty path.
+      await api._trigger("tool_result", {
+        tool_name: "read",
+        params: { path: "/src/index.ts" },
+        result: "export const hello = 'world';",
+      });
+
+      // Verify the file_read event was captured by checking
+      // ctx-stats shows "file" category events.
+      const stats = (await api._getCommand("ctx-stats")!.handler!({})) as {
+        text: string;
+      };
+      expect(stats.text).toContain("file");
     });
 
     it("extracts cwd event from cd command", async () => {

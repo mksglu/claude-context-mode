@@ -388,8 +388,14 @@ export default function piExtension(pi: any): void {
       if (!_sessionId) return;
 
       const rawToolName = String(event?.toolName ?? event?.tool_name ?? "");
-      const mappedToolName =
+      let mappedToolName =
         PI_TOOL_MAP[rawToolName.toLowerCase()] ?? rawToolName;
+
+      // Pi namespaces MCP-registered tools with the "context_mode_" prefix;
+      // the extract functions expect the "mcp__" prefix for MCP tool calls.
+      if (/^context_mode_/.test(rawToolName)) {
+        mappedToolName = rawToolName.replace(/^context_mode_/, "mcp__context_mode__");
+      }
 
       // Normalize result to string
       const rawResult = event?.result ?? event?.output;
@@ -403,9 +409,17 @@ export default function piExtension(pi: any): void {
       // Detect errors
       const hasError = Boolean(event?.error || event?.isError);
 
+      // Pi sends file tool parameters as "path"; the extract functions
+      // expect "file_path" (Claude Code convention). Normalise before
+      // passing to extractEvents so file reads/writes/edits are tracked.
+      const rawInput = { ...(event?.params ?? event?.input ?? {}) };
+      if (rawInput.path !== undefined && rawInput.file_path === undefined) {
+        rawInput.file_path = String(rawInput.path);
+      }
+
       const hookInput: HookInput = {
         tool_name: mappedToolName,
-        tool_input: event?.params ?? event?.input ?? {},
+        tool_input: rawInput,
         tool_response: resultStr,
         tool_output: hasError ? { isError: true } : undefined,
       };
