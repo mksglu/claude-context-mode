@@ -290,6 +290,38 @@ describe("OpenCodeAdapter", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("readSettings discovers XDG_CONFIG_HOME opencode config", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const xdg = join(root, "xdg");
+      const conf = join(xdg, "opencode");
+      const file = join(conf, "opencode.json");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(file, JSON.stringify({ plugin: ["context-mode"] }, null, 2) + "\n");
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();a.readSettings();console.log(JSON.stringify({path:a.settingsPath}))`,
+        ],
+        {
+          cwd: dir,
+          env: { ...env(home), XDG_CONFIG_HOME: xdg },
+          encoding: "utf-8",
+        },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout).path).toBe(file);
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
     it("readSettings reads opencode.jsonc with comments stripped", () => {
       const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
       const dir = join(root, "project");

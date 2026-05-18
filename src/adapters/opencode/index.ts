@@ -232,6 +232,7 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
   }
 
   private paths(): string[] {
+    const xdgRoot = process.env.XDG_CONFIG_HOME;
     if (this.platform === "kilo") {
       // Kilo runtime accepts `.kilo/`, `.kilocode/`, and `.opencode/` as
       // project config dirs (refs/platforms/kilo/packages/opencode/src/
@@ -244,6 +245,10 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
         resolve(".kilo", "kilo.jsonc"),
         resolve(".kilocode", "kilo.json"),
         resolve(".kilocode", "kilo.jsonc"),
+        ...(xdgRoot ? [
+          join(xdgRoot, "kilo", "kilo.json"),
+          join(xdgRoot, "kilo", "kilo.jsonc"),
+        ] : []),
         join(homedir(), ".config", "kilo", "kilo.json"),
         join(homedir(), ".config", "kilo", "kilo.jsonc"),
       ];
@@ -253,6 +258,10 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       resolve("opencode.jsonc"),
       resolve(".opencode", "opencode.json"),
       resolve(".opencode", "opencode.jsonc"),
+      ...(xdgRoot ? [
+        join(xdgRoot, "opencode", "opencode.json"),
+        join(xdgRoot, "opencode", "opencode.jsonc"),
+      ] : []),
       join(homedir(), ".config", "opencode", "opencode.json"),
       join(homedir(), ".config", "opencode", "opencode.jsonc"),
     ];
