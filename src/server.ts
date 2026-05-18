@@ -2132,6 +2132,7 @@ const dnsPromises = require('no' + 'de:dns/promises');
 const url = ${JSON.stringify(url)};
 const outputPath = ${escapedOutputPath};
 const configuredFetchProxy = process.env.CONTEXT_MODE_FETCH_PROXY || '';
+const configuredNoProxy = process.env.NO_PROXY || process.env.no_proxy || '';
 
 // Strip generic proxy env vars from this subprocess only. A generic outbound
 // proxy (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) would route fetch through
@@ -2168,8 +2169,30 @@ function normalizeLoopbackFetchProxy(raw) {
   return parsed.toString();
 }
 
+function shouldBypassProxy(hostname) {
+  if (!hostname) return false;
+  const host = String(hostname).toLowerCase();
+  const entries = String(configuredNoProxy || '')
+    .split(',')
+    .map((entry) => String(entry || '').trim().toLowerCase())
+    .filter(Boolean)
+    .map((entry) => entry.startsWith('*.') ? '.' + entry.slice(2) : entry);
+
+  for (var i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    if (entry === host) return true;
+    if (entry.startsWith('.')) {
+      if (host === entry.slice(1) || host.endsWith(entry)) return true;
+    }
+  }
+  return false;
+}
+
+const parsedTargetUrl = new URL(url);
+const targetHost = parsedTargetUrl.hostname;
 const normalizedFetchProxy = normalizeLoopbackFetchProxy(configuredFetchProxy);
-if (normalizedFetchProxy) {
+if (normalizedFetchProxy && !shouldBypassProxy(targetHost)) {
   const { ProxyAgent, setGlobalDispatcher } = require(${undiciPath});
   setGlobalDispatcher(new ProxyAgent(normalizedFetchProxy));
 }
@@ -4083,6 +4106,15 @@ async function main() {
   });
   process.on("SIGINT", () => { gracefulShutdown(); });
   process.on("SIGTERM", () => { gracefulShutdown(); });
+
+  const shutdownOnBrokenStdio = (err: unknown) => {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
+      void gracefulShutdown();
+    }
+  };
+  process.stdout.on("error", shutdownOnBrokenStdio);
+  process.stderr.on("error", shutdownOnBrokenStdio);
 
   // Lifecycle guard: detect parent death + stdin close to prevent orphaned processes (#103)
   // Also: idle self-shutdown (#565) — OpenCode/KiloCode open one MCP child per
