@@ -41,17 +41,17 @@ describe("storage path overrides", () => {
     const stats = resolveStatsStorageDir(() => session.path);
 
     expect(session).toMatchObject({
-      path: "/home/me/.codex/context-mode/sessions",
+      path: resolve("/home/me/.codex/context-mode/sessions"),
       envVar: null,
       source: "default",
     });
     expect(content).toMatchObject({
-      path: "/home/me/.codex/context-mode/content",
+      path: resolve("/home/me/.codex/context-mode/content"),
       envVar: null,
       source: "default",
     });
     expect(stats).toMatchObject({
-      path: "/home/me/.codex/context-mode/sessions",
+      path: resolve("/home/me/.codex/context-mode/sessions"),
       envVar: null,
       source: "default",
     });
@@ -82,11 +82,11 @@ describe("storage path overrides", () => {
     const content = resolveContentStorageDir(() => session.path);
     const stats = resolveStatsStorageDir(() => session.path);
 
-    expect(session.path).toBe("/split/sessions");
+    expect(session.path).toBe(resolve("/split/sessions"));
     expect(session.envVar).toBe("CONTEXT_MODE_SESSION_DIR");
-    expect(content.path).toBe("/split/content");
+    expect(content.path).toBe(resolve("/split/content"));
     expect(content.envVar).toBe("CONTEXT_MODE_CONTENT_DIR");
-    expect(stats.path).toBe("/split/stats");
+    expect(stats.path).toBe(resolve("/split/stats"));
     expect(stats.envVar).toBe("CONTEXT_MODE_STATS_DIR");
   });
 
