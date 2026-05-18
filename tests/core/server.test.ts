@@ -2370,7 +2370,7 @@ describe("Platform-aware session paths via adapter", () => {
     // Must NOT use the shared platform-agnostic directory
     expect(body).not.toContain('".context-mode"');
     // Must derive content dir from adapter/session dir (platform-specific)
-    expect(body).toContain("getSessionDir()");
+    expect(body).toContain("resolveContentStorageDir(getDefaultSessionDir)");
   });
 });
 
@@ -3987,23 +3987,23 @@ describe("getSessionDirSegments — sync platform → segments map", () => {
   });
 });
 
-describe("getSessionDir uses pre-detection when adapter not yet detected", () => {
+describe("getDefaultSessionDir uses pre-detection when adapter not yet detected", () => {
   const serverSrc = readFileSync(
     resolve(__dirname, "../../src/server.ts"),
     "utf-8",
   );
 
-  test("getSessionDir invokes detectPlatform + getSessionDirSegments before fallback", () => {
-    const fn = serverSrc.match(/function getSessionDir\(\)[\s\S]*?^}/m);
-    expect(fn, "getSessionDir not found in server.ts").not.toBeNull();
+  test("getDefaultSessionDir invokes detectPlatform + getSessionDirSegments before fallback", () => {
+    const fn = serverSrc.match(/function getDefaultSessionDir\(\)[\s\S]*?^}/m);
+    expect(fn, "getDefaultSessionDir not found in server.ts").not.toBeNull();
     const body = fn![0];
     // Pre-detection path must consult detectPlatform() and the sync segments map
     expect(body).toContain("detectPlatform");
     expect(body).toContain("getSessionDirSegments");
   });
 
-  test("getSessionDir falls back to .claude only as last resort", () => {
-    const fn = serverSrc.match(/function getSessionDir\(\)[\s\S]*?^}/m);
+  test("getDefaultSessionDir falls back to .claude only as last resort", () => {
+    const fn = serverSrc.match(/function getDefaultSessionDir\(\)[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
     const body = fn![0];
     // The .claude literal must still appear (last-resort fallback) but only
@@ -4016,8 +4016,8 @@ describe("getSessionDir uses pre-detection when adapter not yet detected", () =>
     expect(detectIdx).toBeLessThan(claudeIdx);
   });
 
-  test("getSessionDir honors CODEX_HOME in the Codex pre-detection branch", () => {
-    const fn = serverSrc.match(/function getSessionDir\(\)[\s\S]*?^}/m);
+  test("getDefaultSessionDir honors CODEX_HOME in the Codex pre-detection branch", () => {
+    const fn = serverSrc.match(/function getDefaultSessionDir\(\)[\s\S]*?^}/m);
     expect(fn).not.toBeNull();
     const body = fn![0];
     expect(serverSrc).toContain('import { resolveCodexConfigDir } from "./adapters/codex/paths.js";');
