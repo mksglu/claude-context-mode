@@ -418,14 +418,62 @@ export class MCPStdioClient {
         },
       });
       const frame = JSON.stringify({ jsonrpc: "2.0", id, method, params });
-      this.child!.stdin?.write(frame + "\n");
+      const rejectWrite = (err: Error) => {
+        const handler = this.pending.get(id);
+        if (handler) {
+          this.pending.delete(id);
+          handler.reject(err);
+          return;
+        }
+        reject(err);
+      };
+      this.writeFrame(frame, rejectWrite);
     });
+  }
+
+  private writeFrame(frame: string, onError?: (err: Error) => void): boolean {
+    if (!this.child || this.exited) {
+      onError?.(new Error("MCP server exited"));
+      return false;
+    }
+
+    const stdin = this.child.stdin;
+    if (!stdin || stdin.destroyed || stdin.writableEnded || stdin.closed) {
+      this.onExit();
+      onError?.(new Error("MCP server stdin unavailable"));
+      return false;
+    }
+
+    try {
+      stdin.write(frame + "\n", (err) => {
+        if (!err) return;
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") {
+          this.onExit();
+          onError?.(err);
+          return;
+        }
+        onError?.(err);
+      });
+      return true;
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? (err as NodeJS.ErrnoException).code
+          : undefined;
+      if (err instanceof Error && (code === "EPIPE" || code === "ERR_STREAM_DESTROYED")) {
+        this.onExit();
+        onError?.(err);
+        return false;
+      }
+      throw err;
+    }
   }
 
   notify(method: string, params: unknown): void {
     if (!this.child) return;
     const frame = JSON.stringify({ jsonrpc: "2.0", method, params });
-    this.child.stdin?.write(frame + "\n");
+    this.writeFrame(frame);
   }
 
   async initialize(): Promise<void> {
