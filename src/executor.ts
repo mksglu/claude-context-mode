@@ -199,13 +199,13 @@ export class PolyglotExecutor {
 
       // Rust: compile then run
       if (cmd[0] === "__rust_compile_run__") {
-        return await this.#compileAndRun(filePath, tmpDir, timeout);
+        return await this.#compileAndRun(filePath, tmpDir, this.#projectRoot, tmpDir, timeout);
       }
 
-      // Shell commands run in the project directory so git, relative paths,
-      // and other project-aware tools work naturally. Non-shell languages
-      // run in the temp directory where their script file is written.
-      const cwd = language === "shell" ? this.#projectRoot : tmpDir;
+      // Run user code from the project directory so process.cwd(), relative
+      // paths, git, and other project-aware tools match the agent workspace.
+      // The generated script and TMPDIR still live in the per-call temp dir.
+      const cwd = this.#projectRoot;
       const result = await this.#spawn(cmd, cwd, tmpDir, timeout, background);
 
       // Skip tmpDir cleanup if process was backgrounded — it may still need files
@@ -292,7 +292,9 @@ export class PolyglotExecutor {
 
   async #compileAndRun(
     srcPath: string,
-    cwd: string,
+    compileCwd: string,
+    runCwd: string,
+    sandboxTmpDir: string,
     timeout: number | undefined,
   ): Promise<ExecResult> {
     const binSuffix = isWin ? ".exe" : "";
@@ -303,7 +305,7 @@ export class PolyglotExecutor {
     // caller is fine with a long-running binary afterwards).
     try {
       execFileSync("rustc", [srcPath, "-o", binPath], {
-        cwd,
+        cwd: compileCwd,
         timeout: timeout === undefined ? 60_000 : Math.min(timeout, 60_000),
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
@@ -319,7 +321,7 @@ export class PolyglotExecutor {
     }
 
     // Run
-    return this.#spawn([binPath], cwd, cwd, timeout);
+    return this.#spawn([binPath], runCwd, sandboxTmpDir, timeout);
   }
 
   async #spawn(

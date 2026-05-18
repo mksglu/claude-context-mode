@@ -475,6 +475,44 @@ describe("Shell Execution", () => {
     );
   });
 
+  test("javascript process.cwd() points to project root, not sandbox temp dir", async () => {
+    const r = await executor.execute({
+      language: "javascript",
+      code: "console.log(process.cwd())",
+      timeout: 5_000,
+    });
+    const reported = r.stdout.trim();
+    assert.equal(reported, process.cwd());
+    assert.ok(!reported.includes(".ctx-mode-"), `cwd should be project root, got: ${reported}`);
+  });
+
+  test("javascript TMPDIR still points to sandbox temp dir", async () => {
+    const r = await executor.execute({
+      language: "javascript",
+      code: "console.log(process.env.TMPDIR)",
+      timeout: 5_000,
+    });
+    const reported = r.stdout.trim();
+    assert.ok(
+      !reported.startsWith(process.cwd()),
+      `TMPDIR should not be project root, got: ${reported}`,
+    );
+    assert.ok(
+      reported.includes(".ctx-mode-"),
+      `TMPDIR should be the sandbox temp dir, got: ${reported}`,
+    );
+  });
+
+  test.runIf(runtimes.rust)("rust process cwd points to project root", async () => {
+    const r = await executor.execute({
+      language: "rust",
+      code: 'fn main() { println!("{}", std::env::current_dir().unwrap().display()); }',
+      timeout: 10_000,
+    });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.equal(r.stdout.trim(), process.cwd());
+  });
+
   test("shell TMPDIR works cross-platform (not just echo)", async () => {
     // Use a command that writes to TMPDIR to verify it's writable
     const r = await executor.execute({
@@ -1690,7 +1728,7 @@ describe("Temp Cleanup Resilience", () => {
           const fs = require('fs');
           const path = require('path');
           for (let j = 0; j < 3; j++) {
-            fs.writeFileSync(path.join(process.cwd(), 'f' + j + '.tmp'), 'data');
+            fs.writeFileSync(path.join(process.env.TMPDIR, 'f' + j + '.tmp'), 'data');
           }
           console.log("ok-${i}");
         `,
@@ -1763,8 +1801,8 @@ describe("Background Mode", () => {
     const bgExecutor = new PolyglotExecutor({ runtimes });
     const r = await bgExecutor.execute({
       language: "javascript",
-      code: `console.log(process.cwd()); setTimeout(() => {}, 150);`,
-      timeout: 50,
+      code: `process.stdout.write((process.env.TMPDIR || require("node:os").tmpdir()) + "\\n"); setTimeout(() => {}, 350);`,
+      timeout: 200,
       background: true,
     });
     const tmpDir = r.stdout.trim();
@@ -1772,7 +1810,7 @@ describe("Background Mode", () => {
     assert.ok(tmpDir.includes(".ctx-mode-"), `Expected executor temp dir, got: ${tmpDir}`);
     assert.equal(existsSync(tmpDir), true, "Temp dir should exist while background process is alive");
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 700));
 
     assert.equal(existsSync(tmpDir), false, `Temp dir should be removed after background close: ${tmpDir}`);
     bgExecutor.cleanupBackgrounded();
