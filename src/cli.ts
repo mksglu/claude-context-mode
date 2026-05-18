@@ -548,7 +548,7 @@ async function doctor(): Promise<number> {
   // Per ISSUE-604-VERDICT §11 ("silent-green doctor while hooks are dead
   // is itself a P0 trust bug") — surface poison BEFORE the user hits a
   // runtime failure.
-  p.log.step("Checking workspace-committed hook configs (Tier C)...");
+  p.log.step("Checking team-shared hook configs in your workspace...");
   {
     const projectDir = process.cwd();
     const tierCFiles = [
@@ -604,33 +604,38 @@ async function doctor(): Promise<number> {
             ? offenders[0].slice(0, 97) + "..."
             : offenders[0];
           p.log.error(
-            color.red(`Tier C config: FAIL`) +
-              ` — ${rel} contains ${offenders.length} absolute path(s)` +
+            color.red(`Hook config: FAIL`) +
+              ` — ${rel} has your machine's local paths baked in` +
               color.dim(
-                `\n  Example: ${example}` +
-                "\n  Root cause: pre-v1.0.137 /ctx-upgrade baked machine-local paths into a workspace-committed file (#613)." +
-                "\n  Fix: run /context-mode:ctx-upgrade to rewrite to portable `context-mode hook <platform> <event>` form.",
+                "\n  This file is committed to git, so teammates and CI will get your path and the hooks will break for them." +
+                `\n  Found ${offenders.length} hard-coded path(s), e.g.: ${example}` +
+                "\n  Fix: run /context-mode:ctx-upgrade — it rewrites the file to a portable form that works on every machine." +
+                "\n  Details: https://github.com/mksglu/context-mode/issues/613",
               ),
           );
         } else {
           p.log.success(
-            color.green("Tier C config: PASS") +
-              color.dim(` — ${rel} uses portable command shapes`),
+            color.green("Hook config: PASS") +
+              color.dim(` — ${rel} is portable (no hard-coded paths)`),
           );
         }
       } catch (err: unknown) {
         // Malformed JSON should not crash doctor; warn and move on.
         const msg = err instanceof Error ? err.message : String(err);
         p.log.warn(
-          color.yellow(`Tier C config: WARN`) +
-            ` — could not parse ${rel}` +
-            color.dim(`\n  ${msg.slice(0, 200)}`),
+          color.yellow(`Hook config: WARN`) +
+            ` — ${rel} is not valid JSON` +
+            color.dim(
+              "\n  Doctor cannot scan it for portability issues until the file parses." +
+              "\n  Fix: open the file and check it in a JSON validator, or delete it and run /context-mode:ctx-upgrade to regenerate." +
+              `\n  Parser said: ${msg.slice(0, 160)}`,
+            ),
         );
       }
     }
     if (tierCChecked === 0) {
       p.log.info(
-        color.dim("Tier C config: SKIP — no workspace-committed hook configs found"),
+        color.dim("Hook config: SKIP — no team-shared hook configs found in this workspace"),
       );
     } else if (tierCFails === 0) {
       // already individual PASS messages above; no need for a summary
@@ -647,7 +652,7 @@ async function doctor(): Promise<number> {
   // knows what to do instead of being told everything is green while
   // the file lingers on disk.
   // Per ISSUE-604-VERDICT §11 same trust contract as Tier C check above.
-  p.log.step("Checking for stale per-version `.mcp.json` files...");
+  p.log.step("Checking for leftover .mcp.json files from older versions...");
   {
     const cacheRoot = join(
       homedir(),
@@ -659,7 +664,7 @@ async function doctor(): Promise<number> {
     );
     if (!existsSync(cacheRoot)) {
       p.log.info(
-        color.dim("Cache scan: SKIP — no plugin cache present at " + cacheRoot),
+        color.dim("Leftover .mcp.json check: SKIP — no plugin cache exists yet (Claude Code has not installed context-mode here)"),
       );
     } else {
       let staleCount = 0;
@@ -676,26 +681,31 @@ async function doctor(): Promise<number> {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         p.log.warn(
-          color.yellow("Cache scan: WARN") +
-            ` — could not enumerate ${cacheRoot}` +
-            color.dim(`\n  ${msg.slice(0, 200)}`),
+          color.yellow("Leftover .mcp.json check: WARN") +
+            ` — could not read the plugin cache directory` +
+            color.dim(
+              `\n  Path: ${cacheRoot}` +
+              `\n  Reason: ${msg.slice(0, 160)}` +
+              "\n  Fix: check that the directory is readable, then re-run doctor. If the issue persists, run /context-mode:ctx-upgrade.",
+            ),
         );
         staleCount = 0;
       }
       if (staleCount === 0) {
         p.log.success(
-          color.green("Cache `.mcp.json` sweep: PASS") +
-            color.dim(" — no stale files in per-version cache dirs"),
+          color.green("Leftover .mcp.json check: PASS") +
+            color.dim(" — no old .mcp.json files in the plugin cache"),
         );
       } else {
         // WARN, not FAIL — per architect spec this is recoverable.
         p.log.warn(
-          color.yellow("Cache `.mcp.json` sweep: WARN") +
-            ` — ${staleCount} stale .mcp.json file(s) in ${cacheRoot}` +
+          color.yellow("Leftover .mcp.json check: WARN") +
+            ` — found ${staleCount} old .mcp.json file(s) left over from previous context-mode versions` +
             color.dim(
-              `\n  Versions: ${staleVersions.join(", ")}${staleCount > staleVersions.length ? ", ..." : ""}` +
-              "\n  Root cause: pre-v1.0.137 /ctx-upgrade wrote per-version `.mcp.json` into the plugin cache; PR #620 removed the write + added a sweep (#609)." +
-              "\n  Fix: run /context-mode:ctx-upgrade — `sweepStaleMcpJson` will remove these files on the next run.",
+              "\n  These are harmless but should be cleaned up so they cannot confuse Claude Code after an auto-update." +
+              `\n  Versions affected: ${staleVersions.join(", ")}${staleCount > staleVersions.length ? ", ..." : ""}` +
+              "\n  Fix: run /context-mode:ctx-upgrade — it sweeps these files automatically on the next run." +
+              "\n  Details: https://github.com/mksglu/context-mode/issues/609",
             ),
         );
       }
