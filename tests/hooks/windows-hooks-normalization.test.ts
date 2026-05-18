@@ -402,3 +402,109 @@ describe("normalizeHooksOnStartup", () => {
     ).not.toThrow();
   });
 });
+
+// ─────────────────────────────────────────────────────────
+// Slice 5: version-bump regression (#604)
+//
+// Claude Code's native plugin manager auto-update carries the previous
+// version's *already-normalized* hooks.json forward into the new version
+// directory. The placeholder is gone, so normalize-hooks short-circuits
+// and the stale `…/<old-version>/hooks/<file>.mjs` command paths persist.
+// The old version dir has been cleaned up → every hook fires MODULE_NOT_FOUND.
+// `ctx-doctor` stays green because it only checks the current dir exists
+// and that hooks are *configured*, not that command paths point at it.
+//
+// Fix: detection + rewrite must also handle stale absolute paths whose
+// `context-mode/context-mode/<version>` segment differs from the current
+// pluginRoot. See `hooks/cache-heal-utils.mjs` `isStaleNodePath` for the
+// precedent on stale-absolute-path repair.
+// ─────────────────────────────────────────────────────────
+
+describe("normalize-hooks survives a version bump (#604)", () => {
+  const NODE = "/usr/bin/node";
+  const ROOT_V135 = "/cache/context-mode/context-mode/1.0.135";
+  const ROOT_V136 = "/cache/context-mode/context-mode/1.0.136";
+  const PLACEHOLDER_SOURCE = JSON.stringify({
+    hooks: {
+      SessionStart: [
+        {
+          matcher: "",
+          hooks: [
+            {
+              type: "command",
+              command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs"',
+            },
+          ],
+        },
+      ],
+    },
+  });
+
+  test("re-points an already-normalized hooks.json to the new version (#604)", () => {
+    // v135 boot: placeholder → absolute 1.0.135 path
+    const v135 = normalizeHooksJson(PLACEHOLDER_SOURCE, NODE, ROOT_V135);
+    expect(v135).toContain("/1.0.135/");
+
+    // Auto-update carries v135's normalized hooks.json into the 1.0.136 dir;
+    // the 1.0.136 MCP server boots and normalize runs again with the new root.
+    const v136 = normalizeHooksJson(v135, NODE, ROOT_V136);
+
+    // After the fix: stale `/1.0.135/` segment must be re-pointed to `/1.0.136/`.
+    // Pre-fix this fails because needsHookNormalization(v135) === false
+    // (placeholder gone) → normalizeHooksJson short-circuits → v136 === v135.
+    expect(v136).toContain("/1.0.136/");
+    expect(v136).not.toContain("/1.0.135/");
+  });
+
+  test("needsHookNormalization detects stale cache-root version segment", () => {
+    // Already-normalized content with the OLD version segment must still be
+    // flagged for normalization when the current pluginRoot has a NEW segment.
+    const v135 = normalizeHooksJson(PLACEHOLDER_SOURCE, NODE, ROOT_V135);
+    expect(needsHookNormalization(v135, ROOT_V136)).toBe(true);
+
+    // Same content + same pluginRoot → no work needed.
+    expect(needsHookNormalization(v135, ROOT_V135)).toBe(false);
+
+    // Placeholder always wins.
+    expect(needsHookNormalization(PLACEHOLDER_SOURCE, ROOT_V136)).toBe(true);
+  });
+
+  test("normalizeHooksOnStartup self-heals stale hooks.json on next boot (end-to-end)", () => {
+    const cacheBase = makeTmp();
+    const v135Dir = join(cacheBase, "context-mode", "context-mode", "1.0.135");
+    const v136Dir = join(cacheBase, "context-mode", "context-mode", "1.0.136");
+    mkdirSync(join(v135Dir, "hooks"), { recursive: true });
+    mkdirSync(join(v136Dir, "hooks"), { recursive: true });
+
+    // v135 boot: write fresh placeholder hooks.json + normalize.
+    writeFileSync(join(v135Dir, "hooks", "hooks.json"), PLACEHOLDER_SOURCE);
+    normalizeHooksOnStartup({
+      pluginRoot: v135Dir,
+      nodePath: NODE,
+      platform: "linux",
+    });
+    const normalizedV135 = readFileSync(
+      join(v135Dir, "hooks", "hooks.json"),
+      "utf-8",
+    );
+    expect(normalizedV135).toContain("/1.0.135/");
+
+    // Claude Code's native auto-update: copy v135's normalized hooks.json
+    // forward into v136 dir, then clean up v135.
+    writeFileSync(join(v136Dir, "hooks", "hooks.json"), normalizedV135);
+    rmSync(v135Dir, { recursive: true, force: true });
+
+    // v136 boot: normalize must re-point the stale absolute paths.
+    normalizeHooksOnStartup({
+      pluginRoot: v136Dir,
+      nodePath: NODE,
+      platform: "linux",
+    });
+    const healedV136 = readFileSync(
+      join(v136Dir, "hooks", "hooks.json"),
+      "utf-8",
+    );
+    expect(healedV136).toContain("/1.0.136/");
+    expect(healedV136).not.toContain("/1.0.135/");
+  });
+});
