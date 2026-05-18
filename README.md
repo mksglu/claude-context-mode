@@ -421,17 +421,11 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
    ```json
    {
      "$schema": "https://opencode.ai/config.json",
-     "mcp": {
-       "context-mode": {
-         "type": "local",
-         "command": ["context-mode"]
-       }
-     },
      "plugin": ["context-mode"]
    }
    ```
 
-   The `mcp` entry registers all 11 MCP tools. The `plugin` entry enables hooks — OpenCode calls the plugin's TypeScript functions directly before and after each tool execution, blocking dangerous commands and enforcing sandbox routing.
+   The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — OpenCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
 3. *(Optional)* Copy the routing rules file. The model needs an `AGENTS.md` file for routing awareness:
 
@@ -444,6 +438,8 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 4. Restart OpenCode.
 
 **Verify:** In the OpenCode session, type `ctx stats`. Context-mode tools should appear and respond.
+
+**Upgrade note:** If an existing config still has `mcp.context-mode`, run `context-mode upgrade`. OpenCode now gets `ctx_*` tools from the plugin; the upgrade removes only `mcp.context-mode` and preserves any other MCP servers.
 
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
@@ -471,17 +467,11 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
    ```json
    {
      "$schema": "https://app.kilo.ai/config.json",
-     "mcp": {
-       "context-mode": {
-         "type": "local",
-         "command": ["context-mode"]
-       }
-     },
      "plugin": ["context-mode"]
    }
    ```
 
-   The `mcp` entry registers all 11 MCP tools. The `plugin` entry enables hooks — KiloCode calls the plugin's TypeScript functions directly before and after each tool execution, blocking dangerous commands and enforcing sandbox routing.
+   The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — KiloCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
 3. *(Optional)* Copy the routing rules file. KiloCode shares the OpenCode plugin architecture, so the model needs an `AGENTS.md` file for routing awareness:
 
@@ -492,6 +482,8 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 4. Restart KiloCode.
 
 **Verify:** In the KiloCode session, type `ctx stats`. Context-mode tools should appear and respond.
+
+**Upgrade note:** If an existing config still has `mcp.context-mode`, run `context-mode upgrade`. KiloCode now gets `ctx_*` tools from the plugin; the upgrade removes only `mcp.context-mode` and preserves any other MCP servers.
 
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
@@ -1202,7 +1194,7 @@ Tool call output can be collapsed/expanded with the default Pi's default keybind
 
 | Feature | Claude Code | Qwen Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi | OMP |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| MCP Server / Native Tools | Yes | Yes | Yes | Yes | Yes | Yes | Native plugin | Native plugin | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | PreToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | Plugin |
 | PostToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | Plugin |
 | SessionStart Hook | Yes | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | Yes (extension) | Plugin |
@@ -1396,6 +1388,16 @@ export CTX_FETCH_STRICT=1
 That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. Useful when context-mode runs as a shared service, not on a developer's own machine.
 
 `tool_input` for any `mcp__*` tool call is also redacted before persistence — keys matching `authorization`, `token`, `secret`, `password`, `api_key`, `cookie`, `signature`, `private_key` get masked to `[REDACTED]` so credentials in MCP arguments don't end up in the session DB.
+
+### Lifecycle environment variables
+
+One runtime knob controls MCP sibling cleanup. Idle self-shutdown was removed after [#592](https://github.com/mksglu/context-mode/issues/592): hosts can keep registered tool handles after a clean MCP exit, making a timer-driven exit unsafe.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONTEXT_MODE_STARTUP_SWEEP` | `1` (enabled) | At boot, a newly-spawned MCP child reaps any other context-mode MCP server pids that share its parent process (`sameParentOnly: true` — never touches MCP children of a different host). This reclaims accumulated siblings immediately instead of waiting for each idle timer to fire. Set to `0` or `false` to disable (useful when you intentionally want multiple concurrent MCP children under the same host, e.g. multi-tenant test runners). |
+
+`CONTEXT_MODE_STARTUP_SWEEP` is read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Unrecognized values fall back to enabled.
 
 ### Routing-guidance environment variables
 

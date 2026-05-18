@@ -408,6 +408,15 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
       });
     }
 
+    if (this.hasLegacyContextModeMcp(settings)) {
+      results.push({
+        check: "Legacy MCP registration",
+        status: "warn",
+        message: "mcp.context-mode is redundant: ctx_* tools are now provided by the plugin",
+        fix: "context-mode upgrade (removes only mcp.context-mode; preserves other MCP servers)",
+      });
+    }
+
     // Note: SessionStart handled via experimental.chat.system.transform surrogate
     results.push({
       check: "SessionStart hook",
@@ -480,6 +489,17 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
     }
 
     settings.plugin = plugins;
+
+    const mcp = settings.mcp;
+    if (mcp && typeof mcp === "object" && !Array.isArray(mcp)) {
+      const servers = mcp as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(servers, "context-mode")) {
+        delete servers["context-mode"];
+        changes.push("Removed legacy context-mode MCP block (plugin-native tools)");
+      }
+      if (Object.keys(servers).length === 0) delete settings.mcp;
+    }
+
     this.writeSettings(settings);
     return changes;
   }
@@ -520,6 +540,16 @@ export class OpenCodeAdapter extends BaseAdapter implements HookAdapter {
   private hasContextModePlugin(settings: Record<string, unknown>): boolean {
     const plugins = settings.plugin;
     return Array.isArray(plugins) && plugins.some((p: unknown) => typeof p === "string" && p.includes("context-mode"));
+  }
+
+  private hasLegacyContextModeMcp(settings: Record<string, unknown>): boolean {
+    const mcp = settings.mcp;
+    return !!(
+      mcp &&
+      typeof mcp === "object" &&
+      !Array.isArray(mcp) &&
+      Object.prototype.hasOwnProperty.call(mcp, "context-mode")
+    );
   }
 
   /**

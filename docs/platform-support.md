@@ -4,13 +4,13 @@ This document provides a comprehensive comparison of all platforms supported by 
 
 ## Overview
 
-context-mode supports thirteen platforms across three hook paradigms:
+context-mode supports fifteen platforms across three hook paradigms:
 
 | Paradigm | Platforms |
 |----------|-----------|
 | **JSON stdin/stdout** | Claude Code, Gemini CLI, VS Code Copilot, JetBrains Copilot, Cursor, Codex CLI, Qwen Code |
-| **TS Plugin** | OpenCode, OpenClaw |
-| **MCP-only** | Antigravity, Kiro, Zed, OMP (Oh My Pi) |
+| **TS Plugin** | OpenCode, KiloCode, OpenClaw |
+| **MCP-only** | Antigravity, Kiro, Zed, Pi, OMP (Oh My Pi) |
 
 The MCP server layer is 100% portable and needs no adapter. Only the hook layer requires platform-specific adapters.
 
@@ -47,10 +47,10 @@ This puts the `context-mode` binary in PATH, which is required for:
 | **Config location** | `~/.claude/settings.json` | `~/.gemini/settings.json` | `.github/hooks/*.json` | `.github/hooks/*.json` | `.cursor/hooks.json` or `~/.cursor/hooks.json` | `opencode.json` | `~/.codex/hooks.json` + `~/.codex/config.toml` | `~/.gemini/antigravity/mcp_config.json` | `~/.kiro/settings/mcp.json` | `~/.omp/agent/mcp_config.json` |
 | **Session ID field** | `session_id` | `session_id` | `sessionId` (camelCase) | `sessionId` (camelCase) | `conversation_id` | `sessionID` (camelCase) | N/A | N/A | N/A | N/A |
 | **Project dir env** | `CLAUDE_PROJECT_DIR` | `GEMINI_PROJECT_DIR` | `CLAUDE_PROJECT_DIR` | `CLAUDE_PROJECT_DIR` | stdin `workspace_roots` | `ctx.directory` (plugin init) | N/A | N/A | N/A | `OMP_PROCESSING_AGENT_DIR` |
-| **MCP tool naming** | `mcp__server__tool` | `mcp__server__tool` | `f1e_` prefix | `f1e_` prefix | `MCP:<tool>` in hook payloads | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` |
+| **MCP/tool naming** | `mcp__server__tool` | `mcp__server__tool` | `f1e_` prefix | `f1e_` prefix | `MCP:<tool>` in hook payloads | native `ctx_*` plugin tools | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` | `mcp__server__tool` |
 | **Hook command format** | `context-mode hook claude-code <event>` | `context-mode hook gemini-cli <event>` | `context-mode hook vscode-copilot <event>` | `context-mode hook jetbrains-copilot <event>` | `context-mode hook cursor <event>` | TS plugin (no command) | `context-mode hook codex <event>` | N/A | N/A |
 | **Hook registration** | settings.json hooks object | settings.json hooks object | `.github/hooks/*.json` | `.github/hooks/*.json` | `hooks.json` native hook arrays | opencode.json plugin array | `~/.codex/hooks.json` | N/A | N/A |
-| **MCP server command** | `context-mode` (or plugin auto) | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` | `context-mode` |
+| **MCP server command** | `context-mode` (or plugin auto) | `context-mode` | `context-mode` | `context-mode` | `context-mode` | N/A (native plugin tools) | `context-mode` | `context-mode` | `context-mode` | `context-mode` |
 | **Plugin distribution** | Claude plugin registry | npm global | npm global | npm global | npm global | npm global | npm global | npm global | npm global |
 | **Session dir** | `~/.claude/context-mode/sessions/` | `~/.gemini/context-mode/sessions/` | `.github/context-mode/sessions/` or `~/.vscode/context-mode/sessions/` | `.github/context-mode/sessions/` | `~/.cursor/context-mode/sessions/` | `~/.config/opencode/context-mode/sessions/` | `~/.codex/context-mode/sessions/` | `~/.gemini/context-mode/sessions/` | `~/.kiro/context-mode/sessions/` |
 
@@ -145,11 +145,11 @@ context-mode hook gemini-cli sessionstart
 
 ### OpenCode
 
-**Status:** Partially supported
+**Status:** Fully supported
 
 **Hook Paradigm:** TS Plugin
 
-OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks are registered via the `plugin` array in `opencode.json`.
+OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks and the 11 `ctx_*` tools are registered via the `plugin` array in `opencode.json`; no separate `mcp` block or stdio MCP child is required.
 
 **Hook Names:**
 - `tool.execute.before` -- equivalent to PreToolUse
@@ -172,6 +172,8 @@ OpenCode uses a TypeScript plugin paradigm instead of JSON stdin/stdout. Hooks a
 **Configuration:**
 - `opencode.json` or `.opencode/opencode.json`
 - Plugin registered in the `plugin` array with npm package names
+- `ctx_*` tools are native plugin tools, not `mcp__server__tool` calls
+- KiloCode uses the same plugin path via `kilo.json`; `context-mode upgrade` removes stale `mcp.context-mode` entries for both hosts while preserving other MCP servers
 
 **Cross-session resume:**
 When OpenCode triggers `experimental.session.compacting` (auto on context overflow OR manual `/compact`), context-mode saves a snapshot to its per-project SQLite store. The NEXT new session in the same project — typically after `Ctrl+D` then re-running `opencode`, or starting a fresh chat — claims that snapshot via `experimental.chat.system.transform` and prepends it to `system[1]` (preserves OpenCode's `[header, body]` cache fold). The current session never claims its OWN snapshot back (self-injection guard, v1.0.106). To verify the injection landed, run with `OPENCODE_DEBUG=1` and grep for `<!-- context-mode v` in the system prompt — that's the visible marker.
@@ -664,7 +666,7 @@ The hook adapter exists only to satisfy the interface contract — every parser 
 | Modify Output | Yes | Yes | Yes | Yes | No | Yes** | -- | -- | -- | -- |
 | Inject Context | Yes | Yes | Yes | Yes | Yes | -- | Yes | -- | -- | -- |
 | Block Tools | Yes | Yes | Yes | Yes | Yes | Yes | Yes | -- | -- | -- |
-| MCP Support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| MCP/native tool support | Yes | Yes | Yes | Yes | Yes | Native plugin | Yes | Yes | Yes | Yes |
 
 \* OpenCode `experimental.session.compacting` is experimental
 \*\* OpenCode has a TUI rendering bug for bash tool output (#13575)
