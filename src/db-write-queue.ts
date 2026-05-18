@@ -33,3 +33,12 @@ export function enqueueDbWrite<T>(dbPath: string, job: WriteJob<T>): Promise<T> 
 export function getDbWriteQueueDepthForTest(): number {
   return tails.size;
 }
+
+/**
+ * Resolve once the current tail for `dbPath` has settled. Used by graceful
+ * shutdown to flush in-flight writes before closing the database.
+ */
+export function flushDbWriteQueue(dbPath: string): Promise<void> {
+  const tail = tails.get(queueKey(dbPath));
+  return tail ? tail.then(() => undefined, () => undefined) : Promise.resolve();
+}

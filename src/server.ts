@@ -12,6 +12,7 @@ import { z } from "zod";
 import { PolyglotExecutor, hasStaticEsmSyntax } from "./executor.js";
 import { runPool, type PoolJob } from "./runPool.js";
 import { ContentStore, cleanupStaleDBs, cleanupStaleContentDBs, type SearchResult, type IndexResult } from "./store.js";
+import { enqueueDbWrite, flushDbWriteQueue } from "./db-write-queue.js";
 import { composeFetchCacheKey } from "./fetch-cache.js";
 import {
   readBashPolicies,
@@ -474,11 +475,15 @@ function getStore(): ContentStore {
       }
     });
 
-    // One-time startup cleanup: remove stale content DBs (>14 days)
+    // One-time startup cleanup: remove stale content DBs (>14 days).
+    // cleanupStaleSources writes to the same DB as indexQueued so we serialize
+    // it through the per-dbPath write queue. Fire-and-forget because getStore()
+    // is synchronous; the queue still orders this against later writes.
     try {
       const contentDir = dirname(getStorePath());
       cleanupStaleContentDBs(contentDir, 14);
-      _store.cleanupStaleSources(14);
+      const store = _store;
+      enqueueDbWrite(store.dbPath, () => store.cleanupStaleSources(14)).catch(() => { /* best-effort */ });
       // Also clean legacy shared dir from before platform isolation
       const legacyDir = join(homedir(), ".context-mode", "content");
       if (existsSync(legacyDir)) cleanupStaleContentDBs(legacyDir, 0);
@@ -4223,14 +4228,17 @@ async function main() {
   const mcpSentinelDir = process.platform === "win32" ? tmpdir() : "/tmp";
   const mcpSentinel = join(mcpSentinelDir, `context-mode-mcp-ready-${process.pid}`);
 
-  // Clean up own DB + backgrounded processes + preload script on shutdown
+  // Clean up own DB + backgrounded processes + preload script on shutdown.
+  // `shutdown` is invoked from process.on("exit") (synchronous, cannot await)
+  // so it uses `closeImmediate()` — the queue is not drained here. Pending
+  // writes that did not flush in `gracefulShutdown` rely on SQLite WAL.
   let shutdownStarted = false;
   let gracefulShutdownStarted = false;
   const shutdown = () => {
     if (shutdownStarted) return;
     shutdownStarted = true;
     executor.cleanupBackgrounded();
-    if (_store) _store.close(); // persist DB for --continue sessions
+    if (_store) _store.closeImmediate(); // persist DB for --continue sessions
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
     // Remove MCP readiness sentinel (#230)
     try { unlinkSync(mcpSentinel); } catch { /* best effort */ }
@@ -4251,6 +4259,12 @@ async function main() {
       await flushToolCallCounters();
       await flushSessionEvents();
     } catch { /* best effort — never block shutdown */ }
+    // Drain pending DB writes (cleanupStaleSources, queued index, etc.) so
+    // closeImmediate's inline optimize sees a quiet DB. Best-effort:
+    // flushDbWriteQueue absorbs task errors internally.
+    if (_store) {
+      try { await flushDbWriteQueue(_store.dbPath); } catch { /* best effort */ }
+    }
     shutdown();
     process.exit(0);
   };
