@@ -634,7 +634,7 @@ export class SessionDB extends SQLiteBase {
     p(S.searchEvents,
       `SELECT id, session_id, category, type, data, created_at
        FROM session_events
-       WHERE project_dir = ?
+       WHERE (project_dir = ? OR project_dir = '')
          AND (data LIKE '%' || ? || '%' ESCAPE '\\' OR category LIKE '%' || ? || '%' ESCAPE '\\')
          AND (? IS NULL OR category = ?)
        ORDER BY id ASC
@@ -698,7 +698,7 @@ export class SessionDB extends SQLiteBase {
     const projectDir = String(
       attribution?.projectDir
       ?? event.project_dir
-      ?? "",
+      ?? this._getSessionProjectDir(sessionId),
     ).trim();
     const attributionSource = String(
       attribution?.source
@@ -787,7 +787,7 @@ export class SessionDB extends SQLiteBase {
         .toUpperCase();
       const attribution = attributions?.[i];
       const projectDir = String(
-        attribution?.projectDir ?? event.project_dir ?? "",
+        attribution?.projectDir ?? event.project_dir ?? this._getSessionProjectDir(sessionId) ?? "",
       ).trim();
       const attributionSource = String(
         attribution?.source ?? event.attribution_source ?? "unknown",
@@ -902,6 +902,20 @@ export class SessionDB extends SQLiteBase {
   getLatestAttributedProjectDir(sessionId: string): string | null {
     const row = this.stmt(S.getLatestAttributedProject).get(sessionId) as { project_dir: string } | undefined;
     return row?.project_dir || null;
+  }
+
+  /**
+   * Look up the project_dir from session_meta as a last-resort fallback
+   * for event attribution. Prevents project_dir='' orphans when the caller
+   * (e.g. pi adapter) omits the attribution parameter.
+   */
+  _getSessionProjectDir(sessionId: string): string {
+    try {
+      const row = this.db.prepare("SELECT project_dir FROM session_meta WHERE session_id = ?").get(sessionId) as { project_dir: string } | undefined;
+      return row?.project_dir || "";
+    } catch {
+      return "";
+    }
   }
 
   /**

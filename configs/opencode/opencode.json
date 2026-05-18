@@ -3,15 +3,8 @@
   "mcp": {
     "context-mode": {
       "type": "local",
-      "command": [
-        "context-mode"
-      ],
-      "environment": {
-        "CONTEXT_MODE_IDLE_TIMEOUT_MS": "900000"
-      }
+      "command": ["context-mode"]
     }
   },
-  "plugin": [
-    "context-mode"
-  ]
+  "plugin": ["context-mode"]
 }
