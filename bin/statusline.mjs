@@ -101,6 +101,9 @@ function resolveSessionDir() {
   if (process.env.CONTEXT_MODE_SESSION_DIR) {
     return process.env.CONTEXT_MODE_SESSION_DIR;
   }
+  if (process.env.CONTEXT_MODE_DIR) {
+    return join(process.env.CONTEXT_MODE_DIR, "sessions");
+  }
   return join(homedir(), ".claude", "context-mode", "sessions");
 }
 

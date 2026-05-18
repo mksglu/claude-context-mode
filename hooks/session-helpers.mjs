@@ -18,7 +18,7 @@
  * artifacts instead of pre-built bundles.
  */
 
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -265,9 +265,19 @@ export function getSessionId(input, opts = CLAUDE_OPTS) {
 // Per-project file paths — thin wrappers around resolveSessionPath.
 // ─────────────────────────────────────────────────────────
 
+function resolveSessionDir(opts) {
+  if (process.env.CONTEXT_MODE_SESSION_DIR) {
+    return resolve(process.env.CONTEXT_MODE_SESSION_DIR);
+  }
+  if (process.env.CONTEXT_MODE_DIR) {
+    return resolve(process.env.CONTEXT_MODE_DIR, "sessions");
+  }
+  return join(resolveConfigDir(opts), "context-mode", "sessions");
+}
+
 function _resolveProjectFile(opts, projectDirOverride, ext) {
   const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
-  const sessionsDir = join(resolveConfigDir(opts), "context-mode", "sessions");
+  const sessionsDir = resolveSessionDir(opts);
   mkdirSync(sessionsDir, { recursive: true });
   return _resolveSessionPath({
     projectDir,
@@ -303,4 +313,3 @@ export function getSessionEventsPath(opts = CLAUDE_OPTS, projectDirOverride) {
 export function getCleanupFlagPath(opts = CLAUDE_OPTS, projectDirOverride) {
   return _resolveProjectFile(opts, projectDirOverride, ".cleanup");
 }
-
