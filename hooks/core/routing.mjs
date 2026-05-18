@@ -17,7 +17,7 @@ import {
 } from "../routing-block.mjs";
 import { createToolNamer } from "./tool-naming.mjs";
 import { isMCPReady } from "./mcp-ready.mjs";
-import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, statSync, constants as fsConstants } from "node:fs";
+import { existsSync, mkdirSync, rmSync, rmdirSync, readdirSync, unlinkSync, openSync, closeSync, readFileSync, writeFileSync, statSync, constants as fsConstants } from "node:fs";
 
 /**
  * Guard for actions that redirect to MCP tools (#230).
@@ -48,6 +48,32 @@ import { resolve } from "node:path";
 // pass it to routePreToolUse so the marker directory stays consistent across
 // invocations of the same logical session.
 const _guidanceShown = new Set();
+
+// Periodic-guidance counters: how many times each (sessionId, type) pair has
+// fired the periodic branch. Keyed by `${sessionId-or-ppid}::${type}`.
+// File-backed for cross-process so hook invocations from the same logical
+// session keep the counter coherent.
+const _guidanceCounters = new Map();
+
+// External-MCP nudge cadence — fire every N matching tool calls.
+// Default 10: keeps the guidance fresh in long MCP-heavy sessions (e.g. a
+// Jira/Slack/Notion run with 50+ tool calls — see #567 follow-up) without
+// flooding context with repeat nudges. Bounds [1, 100]; invalid env values
+// fall back to default. period=1 means "fire every call" (opt-in only).
+const EXTERNAL_MCP_NUDGE_DEFAULT = 10;
+const EXTERNAL_MCP_NUDGE_MIN = 1;
+const EXTERNAL_MCP_NUDGE_MAX = 100;
+const EXTERNAL_MCP_NUDGE_ENV = "CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY";
+
+function getExternalMcpNudgeEvery() {
+  const raw = process.env[EXTERNAL_MCP_NUDGE_ENV];
+  if (raw == null || raw === "") return EXTERNAL_MCP_NUDGE_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < EXTERNAL_MCP_NUDGE_MIN || parsed > EXTERNAL_MCP_NUDGE_MAX) {
+    return EXTERNAL_MCP_NUDGE_DEFAULT;
+  }
+  return parsed;
+}
 
 function defaultGuidanceId() {
   return process.env.VITEST_WORKER_ID
@@ -86,6 +112,56 @@ function guidanceOnce(type, content, sessionId) {
 }
 
 /**
+ * Like guidanceOnce, but fires on a periodic cadence (calls 1, period+1,
+ * 2·period+1, …) rather than once per session.
+ *
+ * Motivation: external-MCP tool runs can span 50+ calls (e.g. a Jira/Slack
+ * search loop — see #567 follow-up). A single one-shot nudge gets lost
+ * after the model's context compaction kicks in, and subsequent large MCP
+ * payloads flood context unchecked. Re-firing the nudge every N calls
+ * keeps the guidance in the model's recent window without saturating it.
+ *
+ * Counter state is process-aware: in-memory Map for same-process callers,
+ * file-backed `<guidanceDir>/<type>.count` for cross-process hook
+ * invocations. On any IO/parse failure we fall back to firing — losing a
+ * counter is preferable to silently dropping the advisory.
+ */
+function guidancePeriodic(type, content, sessionId, period) {
+  const safePeriod = Math.max(1, period | 0);
+  const id = sessionId ? `s-${sessionId}` : defaultGuidanceId();
+  const key = `${id}::${type}`;
+
+  // Read counter from memory first; fall through to disk on miss.
+  let count = _guidanceCounters.get(key);
+  const dir = guidanceDirFor(sessionId);
+  const counterPath = resolve(dir, `${type}.count`);
+
+  if (count == null) {
+    try {
+      const parsed = Number.parseInt(readFileSync(counterPath, "utf8"), 10);
+      count = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    } catch {
+      count = 0;
+    }
+  }
+
+  const next = count + 1;
+  _guidanceCounters.set(key, next);
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(counterPath, String(next), "utf8");
+  } catch {
+    // Best-effort: cross-process counter may drift on FS failure, but we
+    // still return a decision based on the in-memory tick.
+  }
+
+  // Fire on the 1st, (period+1)th, (2·period+1)th… call.
+  if ((next - 1) % safePeriod !== 0) return null;
+  return { action: "context", additionalContext: content };
+}
+
+/**
  * Robust recursive delete. On Windows, `fs.rmSync` on directories under a
  * tmpdir whose path contains non-ASCII characters (e.g. a Chinese / Japanese /
  * Korean username) silently no-ops without throwing — see #454. Fall back to a
@@ -105,6 +181,7 @@ function rmSyncRobust(dir) {
 
 export function resetGuidanceThrottle(sessionId) {
   _guidanceShown.clear();
+  _guidanceCounters.clear();
   // Clear ppid-based dir (legacy / fallback callers) and the sessionId dir if given
   rmSyncRobust(guidanceDirFor());
   if (sessionId) {
@@ -806,14 +883,20 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     return null;
   }
 
-  // ─── External MCP tools: one-shot guidance about routing large payloads ─── (#529)
+  // ─── External MCP tools: periodic guidance about routing large payloads ─── (#529, #567 follow-up)
   // hooks/hooks.json registers a `mcp__(?!plugin_context-mode_)` matcher so this
   // branch fires for slack/telegram/gdrive/notion-style MCPs whose results would
   // otherwise spill into context. We don't deny or modify — the agent still needs
   // the tool's output; we just nudge it to pipe large results through ctx_execute.
+  //
+  // Cadence: every N calls (default 10, tunable via CONTEXT_MODE_EXTERNAL_MCP_NUDGE_EVERY).
+  // The original one-shot nudge (#529) was lost after context compaction in
+  // MCP-heavy sessions (e.g. 50+ Jira calls in #567 follow-up), letting later
+  // payloads flood context unchecked. Re-firing periodically keeps the guidance
+  // in the model's recent window without saturating it.
   if (isExternalMcpTool(toolName)) {
     const externalMcpGuidance = platform ? createExternalMcpGuidance(t) : EXTERNAL_MCP_GUIDANCE;
-    return guidanceOnce("external-mcp", externalMcpGuidance, sessionId);
+    return guidancePeriodic("external-mcp", externalMcpGuidance, sessionId, getExternalMcpNudgeEvery());
   }
 
   // Unknown tool — pass through

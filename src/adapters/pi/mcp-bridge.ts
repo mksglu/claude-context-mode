@@ -147,6 +147,15 @@ export class MCPStdioClient {
   private initialized = false;
   private exited = false;
   /**
+   * In-flight respawn promise — set while {@link respawn} runs so
+   * concurrent callers awaiting `request()` after an idle exit observe
+   * the SAME respawn, not N parallel ones. Without this guard, two
+   * simultaneous `callTool` calls would each see `this.exited === true`,
+   * each fire their own `respawn()`, and the loser leaks an orphaned
+   * child process the GC cannot reach (no `.kill()` reference).
+   */
+  private respawnPromise: Promise<void> | null = null;
+  /**
    * Live env passed to the spawned child — exposed (read-only intent)
    * so tests can pin the fork-bomb-prevention env counter (#516)
    * without needing to attach a process-tree probe.
@@ -260,13 +269,34 @@ export class MCPStdioClient {
     }
   }
 
-  request<T = unknown>(
+  async request<T = unknown>(
     method: string,
     params: unknown,
     timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
   ): Promise<T> {
+    // Respawn-on-idle-exit (#583, #583-followup).
+    //
+    // Initial #583 fix patched callTool() only. The structural location is
+    // here: `request()` is the single chokepoint for `initialize`,
+    // `tools/list`, `tools/call`, and any future method. Patching at this
+    // layer means listTools / re-initialize paths after an idle exit also
+    // self-heal, not just the registered-tool happy path.
+    //
+    // Sequencing is critical: respawn() resets `exited`, `child`, and
+    // `buffer` BEFORE start() + initialize(). The initialize() call inside
+    // respawn() goes through this same request() — recursion is safe
+    // because by the time we re-enter, `exited` is false again. We use a
+    // single-flight `respawnPromise` so concurrent callers share the same
+    // respawn (orphan-child guard, see field comment).
+    if (this.exited) {
+      if (!this.respawnPromise) {
+        this.respawnPromise = this.respawn().finally(() => {
+          this.respawnPromise = null;
+        });
+      }
+      await this.respawnPromise;
+    }
     if (!this.child) throw new Error("MCP client not started");
-    if (this.exited) return Promise.reject(new Error("MCP server has exited"));
     const id = ++this.requestId;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -315,19 +345,11 @@ export class MCPStdioClient {
   }
 
   async callTool(name: string, args: unknown): Promise<MCPCallResult> {
-    // Respawn-on-idle-exit (#583). The MCP server gained an idle
-    // self-shutdown in 1.0.132 (#565/#568, src/lifecycle.ts). When the
-    // Pi-spawned child exits cleanly after the idle window, Pi keeps the
-    // tool handles registered, but the bridge client is `exited=true`
-    // and every subsequent request would reject with
-    // "MCP server has exited" — leaving Pi's ctx_* tools permanently
-    // broken until the user restarts Pi.
-    //
-    // The structural fix is here, not in lifecycle.ts: the bridge owns
-    // the child lifecycle, so it transparently respawns + re-initialises
-    // the server on the next call. Restores parity with adapters whose
-    // host MCP client respawns on EOF (Claude Code, Codex, etc.).
-    if (this.exited) await this.respawn();
+    // Respawn-on-idle-exit is now handled centrally in `request()`
+    // (#583 follow-up). Originally patched here in #583 — moving it up
+    // one layer covers `listTools` / `initialize` paths too, with a
+    // single-flight guard against orphan child processes from
+    // concurrent callers.
     return this.request<MCPCallResult>(
       "tools/call",
       { name, arguments: args ?? {} },
@@ -340,12 +362,23 @@ export class MCPStdioClient {
    * Resets state so a fresh `start()` + `initialize()` cycle runs, then
    * the caller's pending request flows through the new child.
    *
-   * Internal — exposed only via the public `callTool()` happy path.
+   * Single-flight — concurrent callers share one in-flight respawn via
+   * {@link respawnPromise}. Internal — only entered via {@link request}.
+   *
+   * Sequencing pinned (do not reorder without updating the regression
+   * test in tests/adapters/pi-mcp-bridge.test.ts):
+   *   1. `this.child = null`     — drop stale handle
+   *   2. `this.buffer = ""`       — discard leftover bytes from old child
+   *   3. `this.exited = false`    — must precede `start()` + `initialize()`,
+   *                                 because `request("initialize", …)`
+   *                                 inside `initialize()` re-checks this
+   *                                 flag and would otherwise re-enter
+   *                                 respawn in an infinite loop
+   *   4. `this.initialized = false`
+   *   5. `this.start()`
+   *   6. `await this.initialize()` — flows through `request()` recursively
    */
   private async respawn(): Promise<void> {
-    // Drop the dead child handle and clear stream buffer so leftover
-    // bytes from the previous incarnation don't get parsed as JSON-RPC
-    // for the new one. Pending map is already cleared by onExit().
     this.child = null;
     this.buffer = "";
     this.exited = false;
