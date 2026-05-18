@@ -551,6 +551,45 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 
 **Install:**
 
+1. Add the context-mode marketplace and install the plugin from Codex's plugin UI:
+
+   ```bash
+   codex plugin marketplace add mksglu/context-mode
+   ```
+
+2. Enable plugin-provided hooks while the Codex feature is still gated:
+
+   ```toml
+   [features]
+   plugin_hooks = true
+   hooks = true
+   ```
+
+   > **Feature flag note:** Current Codex builds expose hooks under `[features].hooks`
+   > (or `codex --enable hooks`). Prefer `[features].hooks`; `[features].codex_hooks`
+   > remains accepted as a legacy alias in current Codex builds. Bundled plugin hooks
+   > additionally require `plugin_hooks` until Codex enables plugin hooks by default.
+
+3. Restart Codex CLI and verify MCP with `ctx stats`.
+
+   `ctx stats` proves the plugin MCP server is installed and reachable; it does
+   not prove hooks are trusted or running.
+
+4. Review and trust the context-mode plugin hooks if Codex prompts for hook
+   approval. Plugin hooks are only active after both feature flags are enabled
+   and Codex has accepted the hook commands.
+
+The Codex plugin manifest provides MCP via `.codex-plugin/mcp.json`, skills via
+`skills/`, and bundled hooks via `.codex-plugin/hooks.json`. No manual
+`[mcp_servers.context-mode]` block or `$CODEX_HOME/hooks.json` is needed when
+`plugin_hooks` is enabled and the plugin hooks are trusted.
+
+> **Node/PATH note:** context-mode still needs `node` visible to the Codex process.
+> The plugin removes manual Codex config, but it does not vendor Node or inherit
+> login-shell PATH fixes automatically.
+
+**Manual fallback for Codex builds without `plugin_hooks`:**
+
 1. Install context-mode globally:
 
    ```bash
@@ -567,11 +606,7 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
    command = "context-mode"
    ```
 
-   > **Feature flag note:** Current Codex builds expose hooks under `[features].hooks`
-   > (or `codex --enable hooks`). Prefer `[features].hooks`; `[features].codex_hooks`
-   > remains accepted as a legacy alias in current Codex builds.
-
-3. Add hooks for routing enforcement and session tracking. Create `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json` when `CODEX_HOME` is unset):
+3. Create `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json` when `CODEX_HOME` is unset):
 
    ```json
    {
@@ -603,9 +638,9 @@ Full documentation: [`docs/adapters/openclaw.md`](docs/adapters/openclaw.md)
 
 5. Restart Codex CLI.
 
-**Verify:** Start a session and type `ctx stats`. Context-mode tools should appear and respond.
+**Verify:** Start a session and type `ctx stats` to verify MCP. To verify hook routing, confirm Codex lists/trusts the context-mode plugin hooks, then run a command that matches the routing rules.
 
-**Routing:** MCP tools work. Hook-based routing is active when `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json` is configured. The `AGENTS.md` file provides routing instructions for model awareness.
+**Routing:** MCP tools work after plugin install. Plugin hook routing is active only when `hooks` and `plugin_hooks` are enabled and Codex trusts the plugin hook commands. Manual hook routing is active when `$CODEX_HOME/hooks.json` or `~/.codex/hooks.json` is configured. The `AGENTS.md` file provides routing instructions for model awareness.
 
 </details>
 

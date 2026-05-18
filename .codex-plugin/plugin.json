@@ -20,6 +20,7 @@
     "context7"
   ],
   "mcpServers": "./.codex-plugin/mcp.json",
+  "hooks": "./.codex-plugin/hooks.json",
   "skills": "./skills/",
   "interface": {
     "displayName": "context-mode",

@@ -40,6 +40,11 @@ describe("cli.bundle.mjs — marketplace install support", () => {
     expect(cliSrc).toContain("doctor --deep");
   });
 
+  it("package.json files field includes Codex plugin files", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+    expect(pkg.files).toContain(".codex-plugin");
+  });
+
   it("package.json bundle script builds cli.bundle.mjs", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.scripts.bundle).toContain("cli.bundle.mjs");

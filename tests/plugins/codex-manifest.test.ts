@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "..", "..");
@@ -84,6 +84,41 @@ describe(".codex-plugin/plugin.json", () => {
 
   it("version matches package.json (kept in lockstep by version-sync)", () => {
     expect(manifest.version).toBe(pkg.version);
+  });
+});
+
+describe(".codex-plugin/hooks.json", () => {
+  const hooksPath = resolve(REPO_ROOT, ".codex-plugin/hooks.json");
+  const hooks = readJson(".codex-plugin/hooks.json") as {
+    hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+  };
+
+  it("ships the Codex plugin hooks manifest", () => {
+    expect(existsSync(hooksPath)).toBe(true);
+  });
+
+  it("uses simple plugin-root hook script commands", () => {
+    for (const groups of Object.values(hooks.hooks)) {
+      const command = groups[0]?.hooks[0]?.command ?? "";
+      expect(command).toContain('node "${PLUGIN_ROOT}/hooks/codex/');
+    }
+  });
+
+  it("sets CONTEXT_MODE_PLATFORM=codex in hook wrapper modules", () => {
+    const platformSource = readFileSync(resolve(REPO_ROOT, "hooks/codex/platform.mjs"), "utf8");
+    expect(platformSource).toContain('process.env.CONTEXT_MODE_PLATFORM = "codex";');
+
+    for (const groups of Object.values(hooks.hooks)) {
+      const command = groups[0]?.hooks[0]?.command ?? "";
+      const match = command.match(/\$\{PLUGIN_ROOT\}\/(hooks\/codex\/[^"]+\.mjs)/);
+      expect(match, `expected codex hook script path in ${command}`).not.toBeNull();
+
+      const hookSource = readFileSync(resolve(REPO_ROOT, match![1]), "utf8");
+      const platformImport = hookSource.indexOf('import "./platform.mjs";');
+      const firstSharedImport = hookSource.indexOf('import "../');
+      expect(platformImport).toBeGreaterThanOrEqual(0);
+      expect(firstSharedImport).toBeGreaterThan(platformImport);
+    }
   });
 });
 

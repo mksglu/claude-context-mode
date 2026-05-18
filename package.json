@@ -73,6 +73,7 @@
     "bin",
     "skills",
     ".claude-plugin",
+    ".codex-plugin",
     ".openclaw-plugin",
     "openclaw.plugin.json",
     "start.mjs",

@@ -29,7 +29,7 @@ function mcpRedirect(result) {
   if (!isMCPReady()) return null;
   return result;
 }
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 // Guidance throttle: show each advisory type at most once per session.
@@ -576,6 +576,24 @@ function isExternalMcpTool(toolName) {
   return false;
 }
 
+function getShellCommand(toolInput) {
+  if (!toolInput || typeof toolInput !== "object") return "";
+  if (typeof toolInput.command === "string") return toolInput.command;
+  if (typeof toolInput.cmd === "string") return toolInput.cmd;
+  return "";
+}
+
+function getCodexConfigDir(env = process.env) {
+  const codexHome = env.CODEX_HOME;
+  if (codexHome && codexHome.trim() !== "") return resolve(codexHome);
+  return resolve(homedir(), ".codex");
+}
+
+function getPlatformSettingsPath(platform) {
+  if (platform === "codex") return resolve(getCodexConfigDir(), "settings.json");
+  return undefined;
+}
+
 /**
  * Route a PreToolUse event. Returns normalized decision object or null for passthrough.
  *
@@ -616,17 +634,18 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
 
   // Normalize platform-specific tool name to canonical
   const canonical = TOOL_ALIASES[toolName] ?? toolName;
+  const platformSettingsPath = getPlatformSettingsPath(platform);
 
   // ─── Bash: Stage 1 security check, then Stage 2 routing ───
   if (canonical === "Bash") {
-    const command = toolInput.command ?? "";
+    const command = getShellCommand(toolInput);
 
     // Stage 1: Security check against user's deny/allow patterns.
     // Only act when an explicit pattern matched. When no pattern matches,
     // evaluateCommand returns { decision: "ask" } with no matchedPattern —
     // in that case fall through so other hooks and the platform's native engine can decide.
     if (security) {
-      const policies = security.readBashPolicies(projectDir);
+      const policies = security.readBashPolicies(projectDir, platformSettingsPath);
       if (policies.length > 0) {
         const result = security.evaluateCommand(command, policies);
         if (result.decision === "deny") {
@@ -818,7 +837,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   if (matchesContextModeTool(toolName, "ctx_execute", "execute")) {
     if (security && toolInput.language === "shell") {
       const code = toolInput.code ?? "";
-      const policies = security.readBashPolicies(projectDir);
+      const policies = security.readBashPolicies(projectDir, platformSettingsPath);
       if (policies.length > 0) {
         const result = security.evaluateCommand(code, policies);
         if (result.decision === "deny") {
@@ -837,7 +856,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
     if (security) {
       // Check file path against Read deny patterns
       const filePath = toolInput.path ?? "";
-      const denyGlobs = security.readToolDenyPatterns("Read", projectDir);
+      const denyGlobs = security.readToolDenyPatterns("Read", projectDir, platformSettingsPath);
       const evalResult = security.evaluateFilePath(filePath, denyGlobs);
       if (evalResult.denied) {
         return { action: "deny", reason: `Blocked by security policy: file path matches Read deny pattern ${evalResult.matchedPattern}` };
@@ -847,7 +866,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
       const lang = toolInput.language ?? "";
       const code = toolInput.code ?? "";
       if (lang === "shell") {
-        const policies = security.readBashPolicies(projectDir);
+        const policies = security.readBashPolicies(projectDir, platformSettingsPath);
         if (policies.length > 0) {
           const result = security.evaluateCommand(code, policies);
           if (result.decision === "deny") {
@@ -866,7 +885,7 @@ export function routePreToolUse(toolName, toolInput, projectDir, platform, sessi
   if (matchesContextModeTool(toolName, "ctx_batch_execute", "batch_execute")) {
     if (security) {
       const commands = toolInput.commands ?? [];
-      const policies = security.readBashPolicies(projectDir);
+      const policies = security.readBashPolicies(projectDir, platformSettingsPath);
       if (policies.length > 0) {
         for (const entry of commands) {
           const cmd = entry.command ?? "";

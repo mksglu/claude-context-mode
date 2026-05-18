@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "./platform.mjs";
 import "../suppress-stderr.mjs";
 /**
  * Codex CLI preToolUse hook for context-mode.
