@@ -3843,22 +3843,6 @@ server.registerTool(
 // ─────────────────────────────────────────────────────────
 
 async function main() {
-  // Startup sibling sweep (#565). OpenCode/KiloCode spawn one MCP child
-  // per session/subagent and never reap them. When a new MCP child boots
-  // under a host that already has N stale idle siblings (sharing OUR
-  // ppid), reclaim them before opening our own DB / sentinel / stdio.
-  // Best effort — never blocks startup.
-  try {
-    const { startupSiblingSweep } = await import("./util/sibling-mcp.js");
-    const report = await startupSiblingSweep();
-    if (report.totalKilled > 0) {
-      console.error(
-        `Reaped ${report.totalKilled} stale sibling MCP server(s) ` +
-        `(SIGTERM: ${report.terminatedBySigterm}, SIGKILL: ${report.terminatedBySigkill})`,
-      );
-    }
-  } catch { /* best effort */ }
-
   // Clean up stale DB files from previous sessions
   const cleaned = cleanupStaleDBs();
   if (cleaned > 0) {
@@ -3900,36 +3884,7 @@ async function main() {
   process.on("SIGTERM", () => { gracefulShutdown(); });
 
   // Lifecycle guard: detect parent death + stdin close to prevent orphaned processes (#103)
-  // Also: idle self-shutdown (#565) — OpenCode/KiloCode open one MCP child per
-  // session AND per subagent and never tear them down for the host's lifetime,
-  // accumulating one stdio child per session (observed: 26 children / 1.6 GB
-  // RSS under a single `opencode serve` parent). Idle timeout reaps quiescent
-  // servers; live ones bump `recordActivity()` on every JSON-RPC request via
-  // the MCP SDK's `_onrequest` hook wrapped below.
-  const lifecycle = startLifecycleGuard({ onShutdown: () => gracefulShutdown() });
-
-  // Wrap the SDK's internal request entry so every JSON-RPC `tools/call`,
-  // `tools/list`, etc. resets the idle timer. We intercept at this layer
-  // rather than per-tool because (a) it covers ALL requests, including
-  // listTools / listPrompts / listResources / ping, and (b) it survives
-  // future tool additions without each handler needing to remember to opt in.
-  //
-  // The cast is necessary because `_onrequest` is intentionally undocumented
-  // in the SDK's public types. Best effort — if the field shape changes in
-  // a future SDK release the lifecycle still works, idle reset just degrades
-  // to "untriggered" which simply means the server lives until the next
-  // ppid/signal-based exit path fires. We never block the request path.
-  try {
-    type SDKServerInternals = { _onrequest?: (...args: unknown[]) => unknown };
-    const inner = (server.server as unknown as SDKServerInternals);
-    const origOnRequest = inner._onrequest;
-    if (typeof origOnRequest === "function") {
-      inner._onrequest = function (this: unknown, ...args: unknown[]) {
-        try { lifecycle.recordActivity(); } catch { /* never break request path */ }
-        return origOnRequest.apply(this, args);
-      };
-    }
-  } catch { /* best effort — see comment above */ }
+  startLifecycleGuard({ onShutdown: () => gracefulShutdown() });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

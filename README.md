@@ -424,10 +424,7 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
      "mcp": {
        "context-mode": {
          "type": "local",
-         "command": ["context-mode"],
-         "environment": {
-           "CONTEXT_MODE_IDLE_TIMEOUT_MS": "900000"
-         }
+         "command": ["context-mode"]
        }
      },
      "plugin": ["context-mode"]
@@ -477,10 +474,7 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
      "mcp": {
        "context-mode": {
          "type": "local",
-         "command": ["context-mode"],
-         "environment": {
-           "CONTEXT_MODE_IDLE_TIMEOUT_MS": "900000"
-         }
+         "command": ["context-mode"]
        }
      },
      "plugin": ["context-mode"]
@@ -1402,17 +1396,6 @@ export CTX_FETCH_STRICT=1
 That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. Useful when context-mode runs as a shared service, not on a developer's own machine.
 
 `tool_input` for any `mcp__*` tool call is also redacted before persistence — keys matching `authorization`, `token`, `secret`, `password`, `api_key`, `cookie`, `signature`, `private_key` get masked to `[REDACTED]` so credentials in MCP arguments don't end up in the session DB.
-
-### Lifecycle environment variables
-
-Two runtime knobs control how MCP server processes self-manage. Defaults are conservative after [#592](https://github.com/mksglu/context-mode/issues/592): idle self-shutdown is disabled unless a host config explicitly opts in. OpenCode and KiloCode opt in because they open one MCP child per session/subagent; Claude Code/Codex/editor hosts keep registered tool handles after a clean MCP exit and therefore must not idle-exit by default.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CONTEXT_MODE_IDLE_TIMEOUT_MS` | `0` (disabled) | When set to a positive integer, an MCP child self-exits cleanly after this many milliseconds of stdin/request inactivity. OpenCode and KiloCode configs set `900000` (15 min) because those hosts can accumulate one MCP child per session/subagent. Leave disabled for hosts that do not auto-respawn after MCP EOF (Claude Code, Codex, editor MCP clients) or ctx_* tools may go stale after idle. |
-| `CONTEXT_MODE_STARTUP_SWEEP` | `1` (enabled) | At boot, a newly-spawned MCP child reaps any other context-mode MCP server pids that share its parent process (`sameParentOnly: true` — never touches MCP children of a different host). This reclaims accumulated siblings immediately instead of waiting for each idle timer to fire. Set to `0` or `false` to disable (useful when you intentionally want multiple concurrent MCP children under the same host, e.g. multi-tenant test runners). |
-
-Both vars are read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Invalid/non-numeric `CONTEXT_MODE_IDLE_TIMEOUT_MS` values fall back to `0` (disabled); unrecognized `CONTEXT_MODE_STARTUP_SWEEP` values fall back to enabled.
 
 ### Routing-guidance environment variables
 

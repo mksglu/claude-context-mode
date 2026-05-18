@@ -44,21 +44,6 @@ export interface DiscoverOptions {
   platform?: NodeJS.Platform;
   /** Test injection point — defaults to `child_process.execFileSync`. */
   runCommand?: RunCommand;
-  /**
-   * When true, only return pids whose parent (ppid) is the SAME as the
-   * caller's own ppid (i.e. siblings under the same host process).
-   *
-   * Used by the startup sweep (#565) so an opencode-spawned MCP child
-   * only reaps OTHER opencode-spawned MCP children, never the children
-   * of a different opencode/Claude host running in parallel.
-   *
-   * Requires a way to read each pid's ppid. Defaults to a `ps -o ppid=`
-   * probe on POSIX and PowerShell `Get-CimInstance` on Windows. Set
-   * `readPpid` to inject in tests.
-   */
-  sameParentOnly?: boolean;
-  /** Test injection — read ppid for a given pid. Defaults to platform probe. */
-  readPpid?: (pid: number) => number;
 }
 
 export interface KillOptions {
@@ -80,78 +65,22 @@ export interface KillReport {
   totalKilled: number;
 }
 
-// Match every shape an installed context-mode MCP server can take in argv:
-//
-//   1. `~/.claude/plugins/cache/context-mode/context-mode/<v>/start.mjs`
-//      and `~/.claude/plugins/marketplaces/context-mode/start.mjs` — Claude
-//      Code plugin shapes (original #559 case).
-//   2. `<prefix>/node_modules/context-mode/start.mjs` or `.../server.bundle.mjs`
-//      — npm-global, marketplace, manual installs.
-//   3. `<prefix>/bin/context-mode` — npm-global bin shim. This is the argv
-//      OpenCode + KiloCode see when they spawn `mcp.command = ["context-mode"]`.
-//      Without this entry, sibling discovery missed the 26-child / 1.6 GB
-//      RSS accumulation reported in #565.
-//   4. `bun .../context-mode/server.bundle.mjs` — Pi/Bun hosts.
-//
-// All four can be alive concurrently — VERDICT R1 dump confirmed multi-version
-// coexistence on real macOS, and #565 confirmed concurrent OpenCode children
-// alongside Claude Code children on Linux.
+// Match BOTH `~/.claude/plugins/cache/context-mode/context-mode/<v>/start.mjs`
+// AND `~/.claude/plugins/marketplaces/context-mode/start.mjs` shapes.
+// Both can be alive concurrently — VERDICT R1 dump confirmed all four
+// PIDs simultaneously across three different versions on a real Mac.
 const POSIX_PGREP_PATTERN =
-  "(node|bun).*(plugins/(cache|marketplaces)/.*context-mode.*start\\.mjs" +
-  "|context-mode/start\\.mjs" +
-  "|context-mode/server\\.bundle\\.mjs" +
-  "|bin/context-mode($|[^a-zA-Z0-9_-]))";
+  "node.*plugins/(cache|marketplaces)/.*context-mode.*start\\.mjs";
 
 // Windows: PowerShell + Get-CimInstance (wmic deprecated since Win11 22H2).
-// Filter includes both node.exe and bun.exe (Pi/Bun hosts). CommandLine
-// matching covers the same four install shapes as POSIX_PGREP_PATTERN.
+// Filter on CommandLine because Win32_Process.Name is just "node.exe".
+// Two backslashes inside `start\.mjs` are needed because the Like operator
+// uses regex-ish escaping at the JS layer.
 const WIN_PS_SCRIPT =
   "Get-CimInstance Win32_Process " +
-  "-Filter \"Name='node.exe' OR Name='bun.exe'\" | " +
-  "Where-Object { $_.CommandLine -match " +
-  "'plugins[\\\\/](cache|marketplaces)[\\\\/].*context-mode.*start\\.mjs" +
-  "|context-mode[\\\\/]start\\.mjs" +
-  "|context-mode[\\\\/]server\\.bundle\\.mjs" +
-  "|bin[\\\\/]context-mode($|[^a-zA-Z0-9_-])' } | " +
+  "-Filter \"Name='node.exe'\" | " +
+  "Where-Object { $_.CommandLine -match 'plugins[\\\\/](cache|marketplaces)[\\\\/].*context-mode.*start\\.mjs' } | " +
   "Select-Object -ExpandProperty ProcessId";
-
-/** POSIX ppid probe — empty / NaN on failure. */
-function readPpidPosix(pid: number): number {
-  try {
-    const out = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
-      encoding: "utf-8",
-      timeout: 2000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const n = Number.parseInt(out, 10);
-    return Number.isFinite(n) ? n : NaN;
-  } catch {
-    return NaN;
-  }
-}
-
-/** Windows ppid probe — empty / NaN on failure. */
-function readPpidWin32(pid: number): number {
-  try {
-    const out = execFileSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-Command",
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`,
-      ],
-      { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] },
-    ).trim();
-    const n = Number.parseInt(out, 10);
-    return Number.isFinite(n) ? n : NaN;
-  } catch {
-    return NaN;
-  }
-}
-
-function defaultReadPpid(pid: number): number {
-  return process.platform === "win32" ? readPpidWin32(pid) : readPpidPosix(pid);
-}
 
 const defaultRun: RunCommand = (cmd, args) =>
   execFileSync(cmd, [...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
@@ -204,21 +133,9 @@ export function discoverSiblingMcpPids(opts: DiscoverOptions): number[] {
     return [];
   }
 
-  const candidates = parsePidList(stdout).filter(
+  return parsePidList(stdout).filter(
     (pid) => pid !== opts.ownPid && pid !== opts.ownPpid,
   );
-
-  if (!opts.sameParentOnly) return candidates;
-
-  // Startup-sweep mode (#565): only reap siblings sharing OUR ppid. This
-  // prevents an opencode-spawned MCP child from killing a Claude Code MCP
-  // child (or another concurrent opencode host's children) when both are
-  // present on the same machine.
-  const readPpid = opts.readPpid ?? defaultReadPpid;
-  return candidates.filter((pid) => {
-    const ppid = readPpid(pid);
-    return Number.isFinite(ppid) && ppid === opts.ownPpid;
-  });
 }
 
 /** Sleep helper — Promise-based for use inside the kill polling loop. */
@@ -308,48 +225,4 @@ export async function killSiblingMcpServers(
     terminatedBySigkill,
     totalKilled: terminatedBySigterm + terminatedBySigkill,
   };
-}
-
-/**
- * Startup-time sibling sweep (#565).
- *
- * Discovers any context-mode MCP server pids that share OUR parent process
- * (i.e. other MCP children of the same host like `opencode serve`) and
- * terminates them. The intent is "exactly one MCP child per host" — when a
- * new MCP client spawns inside an opencode host that already has 25 stale
- * idle siblings, this sweep reclaims them at boot rather than waiting for
- * the idle timeout to fire on each one independently.
- *
- * Gated by env (default-on but easy to disable):
- *
- *   CONTEXT_MODE_STARTUP_SWEEP=0   → disabled
- *   CONTEXT_MODE_STARTUP_SWEEP=1   → enabled (default)
- *
- * Safety:
- *   - `sameParentOnly: true` — never touches MCP children of a different host.
- *   - Best-effort throughout: failures never block server startup.
- *   - Composes with the idle-timeout path: if a sibling is actively in use
- *     by another session, the parent process will simply spawn a new MCP
- *     child on its next request. The cost is one cold-start (~1–3 s) for
- *     that session, which is identical to opencode's existing behaviour
- *     of spawning a fresh MCP child per session anyway.
- */
-export async function startupSiblingSweep(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<KillReport> {
-  const empty: KillReport = { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 };
-  const raw = env.CONTEXT_MODE_STARTUP_SWEEP;
-  if (raw === "0" || raw === "false") return empty;
-
-  try {
-    const pids = discoverSiblingMcpPids({
-      ownPid: process.pid,
-      ownPpid: process.ppid,
-      sameParentOnly: true,
-    });
-    if (pids.length === 0) return empty;
-    return await killSiblingMcpServers({ pids });
-  } catch {
-    return empty;
-  }
 }
