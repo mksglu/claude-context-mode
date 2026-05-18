@@ -437,6 +437,100 @@ describe("CodexAdapter", () => {
       expect(readFileSync(`${hooksPath}.bak`, "utf-8")).toContain('"hooks"');
       expect(readFileSync(`${settingsPath}.bak`, "utf-8")).toContain("hooks = false");
     });
+
+    // ─────────────────────────────────────────────────────
+    // Duplicate dedup regression suite (#603)
+    //
+    // Reported by jowch + skbsasikumar-rgb: after a context-mode upgrade,
+    // ~/.codex/hooks.json carries TWO context-mode entries for the same
+    // hook event (e.g., a legacy `node /path/.../hooks/codex/pretooluse.mjs`
+    // alongside the new `context-mode hook codex pretooluse`). Codex then
+    // fires both, doubling work and historically saturating the MCP
+    // transport / inflating codex-tui.log. `configureAllHooks` must collapse
+    // these to exactly one canonical entry per event.
+    // ─────────────────────────────────────────────────────
+
+    it("dedups twin canonical context-mode entries to a single entry (#603)", () => {
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "old-matcher-A", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
+            { matcher: "old-matcher-B", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
+          ],
+          SessionStart: [
+            { hooks: [{ type: "command", command: "context-mode hook codex sessionstart" }] },
+            { hooks: [{ type: "command", command: "context-mode hook codex sessionstart" }] },
+          ],
+        },
+      }, null, 2));
+
+      const changes = adapter.configureAllHooks("/ignored/plugin/root");
+
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+
+      expect(written.hooks.PreToolUse).toHaveLength(1);
+      expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.SessionStart).toHaveLength(1);
+      expect(written.hooks.SessionStart[0]?.hooks[0]?.command).toBe("context-mode hook codex sessionstart");
+      expect(changes.some((c) => c.includes("Removed duplicate"))).toBe(true);
+    });
+
+    it("dedups legacy-direct-node entry coexisting with canonical entry (#603)", () => {
+      // Mirrors the exact user-reported pattern: old direct-node hook left
+      // behind by an earlier installer + new canonical entry from a later
+      // upgrade run.
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: [{ type: "command", command: "node /Users/foo/.nvm/versions/node/v20/lib/node_modules/context-mode/hooks/codex/pretooluse.mjs" }] },
+            { matcher: "", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
+          ],
+          PostToolUse: [
+            { hooks: [{ type: "command", command: "/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/context-mode/hooks/posttooluse.mjs" }] },
+            { hooks: [{ type: "command", command: "context-mode hook codex posttooluse" }] },
+          ],
+        },
+      }, null, 2));
+
+      adapter.configureAllHooks("/ignored/plugin/root");
+
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+
+      expect(written.hooks.PreToolUse).toHaveLength(1);
+      expect(written.hooks.PreToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex pretooluse");
+      expect(written.hooks.PostToolUse).toHaveLength(1);
+      expect(written.hooks.PostToolUse[0]?.hooks[0]?.command).toBe("context-mode hook codex posttooluse");
+    });
+
+    it("dedups plugin-cache legacy entry left by /ctx-upgrade with canonical entry (#603)", () => {
+      // Plugin-cache install layout: ~/.claude/plugins/cache/context-mode/<v>/hooks/codex/<event>.mjs
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          UserPromptSubmit: [
+            { hooks: [{ type: "command", command: "node /Users/foo/.claude/plugins/cache/context-mode/context-mode/1.0.124/hooks/codex/userpromptsubmit.mjs" }] },
+            { hooks: [{ type: "command", command: "context-mode hook codex userpromptsubmit" }] },
+          ],
+          Stop: [
+            { hooks: [{ type: "command", command: "/usr/bin/node /Users/foo/.claude/plugins/marketplaces/context-mode/hooks/codex/stop.mjs" }] },
+          ],
+        },
+      }, null, 2));
+
+      adapter.configureAllHooks("/ignored/plugin/root");
+
+      const written = JSON.parse(readFileSync(hooksPath, "utf-8")) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      };
+
+      expect(written.hooks.UserPromptSubmit).toHaveLength(1);
+      expect(written.hooks.UserPromptSubmit[0]?.hooks[0]?.command).toBe("context-mode hook codex userpromptsubmit");
+      expect(written.hooks.Stop).toHaveLength(1);
+      expect(written.hooks.Stop[0]?.hooks[0]?.command).toBe("context-mode hook codex stop");
+    });
   });
 
   describe("validateHooks", () => {
@@ -481,6 +575,53 @@ describe("CodexAdapter", () => {
       const results = adapter.validateHooks("/ignored/plugin/root");
 
       expect(results.some((result) => result.status === "fail" && result.message.includes("not valid JSON"))).toBe(true);
+    });
+
+    it("warns when duplicate context-mode entries exist for the same hook event (#603)", () => {
+      // Mirrors the user-reported scenario: hooks.json carries two
+      // context-mode entries for the same event after a partial upgrade.
+      // Doctor should surface this so the user knows to run upgrade.
+      writeFileSync(hooksPath, JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            { matcher: "", hooks: [{ type: "command", command: "context-mode hook codex pretooluse" }] },
+            { matcher: "", hooks: [{ type: "command", command: "node /Users/foo/.nvm/versions/node/v20/lib/node_modules/context-mode/hooks/codex/pretooluse.mjs" }] },
+          ],
+          PostToolUse: [
+            { hooks: [{ type: "command", command: "context-mode hook codex posttooluse" }] },
+            { hooks: [{ type: "command", command: "context-mode hook codex posttooluse" }] },
+          ],
+          SessionStart: [
+            { hooks: [{ type: "command", command: "context-mode hook codex sessionstart" }] },
+          ],
+          PreCompact: [
+            { hooks: [{ type: "command", command: "context-mode hook codex precompact" }] },
+          ],
+          UserPromptSubmit: [
+            { hooks: [{ type: "command", command: "context-mode hook codex userpromptsubmit" }] },
+          ],
+          Stop: [
+            { hooks: [{ type: "command", command: "context-mode hook codex stop" }] },
+          ],
+        },
+      }, null, 2), "utf-8");
+      writeFileSync(join(codexDir, "config.toml"), "[features]\nhooks = true\n", "utf-8");
+
+      const results = adapter.validateHooks("/ignored/plugin/root");
+
+      const preToolDup = results.find((r) => r.check === "PreToolUse duplicates");
+      expect(preToolDup?.status).toBe("warn");
+      expect(preToolDup?.message).toMatch(/2 context-mode entries/);
+      expect(preToolDup?.fix).toMatch(/context-mode upgrade/);
+
+      const postToolDup = results.find((r) => r.check === "PostToolUse duplicates");
+      expect(postToolDup?.status).toBe("warn");
+      expect(postToolDup?.message).toMatch(/2 context-mode entries/);
+
+      // Events with only one context-mode entry must NOT trigger the duplicate warning.
+      expect(results.some((r) => r.check === "SessionStart duplicates")).toBe(false);
+      expect(results.some((r) => r.check === "PreCompact duplicates")).toBe(false);
+      expect(results.some((r) => r.check === "Stop duplicates")).toBe(false);
     });
 
     it("fails with a read error message when hooks.json cannot be read", () => {

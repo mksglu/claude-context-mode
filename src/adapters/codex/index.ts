@@ -502,7 +502,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
     }
 
     const expected = this.generateHookConfig("");
-    return results.concat(Object.entries(expected).map(([hookName, entries]) => {
+    const hookChecks = Object.entries(expected).map(([hookName, entries]) => {
       const actualEntries = hookConfig.config.hooks?.[hookName];
       const expectedEntry = entries[0];
       const ok = Array.isArray(actualEntries)
@@ -511,7 +511,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
 
       return {
         check: `${hookName} hook`,
-        status: ok ? "pass" : missingStatus,
+        status: (ok ? "pass" : missingStatus) as "pass" | "warn" | "fail",
         message: ok
           ? `${hookName} hook configured in ${this.getHooksPath()}`
           : hookName === "PreCompact"
@@ -519,7 +519,31 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
             : `${hookName} hook missing or not pointing to context-mode`,
         fix: ok ? undefined : `Update ${this.getHooksPath()} to match configs/codex/hooks.json`,
       };
-    }));
+    });
+
+    // #603: surface duplicate context-mode entries per hook event. Codex fires
+    // every matching entry, so duplicates double the work, can saturate the
+    // MCP transport (`Transport closed`), and have been observed to inflate
+    // codex-tui.log into the multi-GB range. `context-mode upgrade` collapses
+    // them via `upsertManagedHookEntry`, so the fix is one command away.
+    const duplicateChecks: DiagnosticResult[] = [];
+    for (const hookName of Object.keys(expected)) {
+      const actualEntries = hookConfig.config.hooks?.[hookName];
+      if (!Array.isArray(actualEntries)) continue;
+      const managedCount = actualEntries.filter(
+        (entry) => this.isManagedContextModeEntry(hookName, entry as HookEntry),
+      ).length;
+      if (managedCount > 1) {
+        duplicateChecks.push({
+          check: `${hookName} duplicates`,
+          status: "warn",
+          message: `${managedCount} context-mode entries found for ${hookName} in ${this.getHooksPath()}; Codex will fire all of them`,
+          fix: "context-mode upgrade (collapses duplicate context-mode entries; preserves unrelated hooks)",
+        });
+      }
+    }
+
+    return results.concat(hookChecks, duplicateChecks);
   }
 
   checkPluginRegistration(): DiagnosticResult {
