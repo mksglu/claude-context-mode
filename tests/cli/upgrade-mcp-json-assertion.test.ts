@@ -1,20 +1,32 @@
 /**
- * Issue #531 — cli.ts upgrade() MUST guarantee `.mcp.json`'s
- * mcpServers["context-mode"].args[0] is the literal ${CLAUDE_PLUGIN_ROOT}
- * placeholder before declaring upgrade success.
+ * Issue #609 — cli.ts upgrade() MUST sweep stale `.mcp.json` files from
+ * every per-version plugin-cache dir before declaring upgrade success.
  *
- * Asymmetric-heal sibling of upgrade-plugin-json-assertion.test.ts (#523).
- * Same static-analysis pattern: read src/cli.ts, slice the upgrade()
- * function body, assert the post-bump block contains the right code shape.
+ * History:
+ *   v1.0.122 (Issue #531) — this file previously locked in the assertion
+ *   that `healMcpJsonArgs` runs post-bump to heal any per-version
+ *   `.mcp.json` carrying a poisoned arg. cli.ts itself wrote `.mcp.json`
+ *   at upgrade time (#411 fix), so the heal was the right shape then.
  *
- * The bug being prevented:
- *   cli.ts upgrade() already writes `.mcp.json` with the placeholder (#411
- *   fix at line ~829-845). But upgrade() never asserted the on-disk shape
- *   afterwards. If a future regression dropped the placeholder write —
- *   or if a parallel hook normalized the file with an absolute tmpdir
- *   path — upgrade() would declare success on a poisoned tree. This
- *   slice locks in the post-bump assertion using the same belt-and-
- *   braces double-call pattern as #523's plugin.json assertion.
+ *   Issue #609 superseded that approach. The architectural fix is to
+ *   STOP writing `.mcp.json` from cli.ts entirely — Claude Code reads
+ *   `.claude-plugin/plugin.json.mcpServers` as the canonical source
+ *   (refs/platforms/claude-code/src/utils/plugins/mcpPluginIntegration.ts:131-212).
+ *   With the write gone, the residual `.mcp.json` files in the cache are
+ *   stale carry-forwards from prior installs / Claude Code's auto-update.
+ *   `sweepStaleMcpJson` removes them so the carry-forward vector cannot
+ *   replay.
+ *
+ * Two contracts this file enforces:
+ *   1. `sweepStaleMcpJson` is invoked AFTER `updatePluginRegistry` from the
+ *      shared `scripts/heal-installed-plugins.mjs` module.
+ *   2. Belt-and-braces: second sweep pass MUST report `removed:[]` or
+ *      upgrade() throws — same shape as plugin.json drift check (#523).
+ *
+ * The legacy `healMcpJsonArgs` assertion is intentionally replaced (not
+ * just appended) — that function still exists for backwards-compat / boot-
+ * time recovery, but cli.ts no longer needs to invoke it because there is
+ * no `.mcp.json` to heal.
  */
 
 import { describe, expect, test } from "vitest";
@@ -29,43 +41,41 @@ const cliSrc = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
 const upgradeIdx = cliSrc.indexOf("async function upgrade");
 const upgradeBody = cliSrc.slice(upgradeIdx, upgradeIdx + 16000);
 
-describe("cli.ts upgrade() — Issue #531 .mcp.json placeholder assertion", () => {
-  test("post-bump block invokes healMcpJsonArgs from the shared module", () => {
+describe("cli.ts upgrade() — Issue #609 .mcp.json sweep assertion", () => {
+  test("post-bump block invokes sweepStaleMcpJson from the shared module", () => {
     // Must run AFTER updatePluginRegistry so the on-disk shape is final.
     const updateIdx = upgradeBody.indexOf("updatePluginRegistry");
-    const healCallIdx = upgradeBody.indexOf("healMcpJsonArgs");
+    const sweepCallIdx = upgradeBody.indexOf("sweepStaleMcpJson");
     expect(updateIdx).toBeGreaterThan(-1);
-    expect(healCallIdx).toBeGreaterThan(updateIdx);
+    expect(sweepCallIdx).toBeGreaterThan(updateIdx);
   });
 
-  test("imports healMcpJsonArgs from scripts/heal-installed-plugins.mjs", () => {
+  test("imports sweepStaleMcpJson from scripts/heal-installed-plugins.mjs", () => {
     expect(cliSrc).toMatch(
       /from\s+["']\.\.\/scripts\/heal-installed-plugins\.mjs["']/,
     );
-    expect(cliSrc).toContain("healMcpJsonArgs");
+    expect(cliSrc).toContain("sweepStaleMcpJson");
   });
 
-  test("upgrade() throws on drift — refuses to declare success when .mcp.json args[0] is poisoned", () => {
+  test("upgrade() throws on sweep drift — second pass MUST report removed:[]", () => {
     // Belt-and-braces contract (mirrors #523's plugin.json assertion):
-    //   1. First healMcpJsonArgs pass cleans any drift.
-    //   2. Second healMcpJsonArgs pass MUST return healed:[] or upgrade()
-    //      throws with a "drift" error.
-    const healCallIdx = upgradeBody.indexOf("healMcpJsonArgs");
-    expect(healCallIdx).toBeGreaterThan(-1);
-    const block = upgradeBody.slice(healCallIdx, healCallIdx + 1500);
-    expect(block).toMatch(/\.mcp\.json.*drift|drift.*\.mcp\.json|mcp\.json drift/i);
+    //   1. First sweep pass removes any pre-existing `.mcp.json`.
+    //   2. Second sweep MUST report removed:[] or upgrade() throws.
+    const sweepCallIdx = upgradeBody.indexOf("sweepStaleMcpJson");
+    expect(sweepCallIdx).toBeGreaterThan(-1);
+    const block = upgradeBody.slice(sweepCallIdx, sweepCallIdx + 1500);
+    expect(block).toMatch(/sweep drift|sweep check failed|still present/i);
     expect(block).toMatch(/throw new Error/);
   });
 
-  test("Layer 6 heal call passes pluginRoot, pluginCacheRoot, pluginKey", () => {
-    const healCallIdx = upgradeBody.indexOf("healMcpJsonArgs");
+  test("sweep call passes pluginCacheRoot, pluginKey (no per-version pluginRoot)", () => {
+    const sweepCallIdx = upgradeBody.indexOf("sweepStaleMcpJson");
     // Widen the window 400 chars BEFORE the call to capture the local
-    // pluginCacheRoot binding, plus 800 after to cover both heal-pass calls.
+    // pluginCacheRoot binding, plus 800 after to cover both sweep-pass calls.
     const block = upgradeBody.slice(
-      Math.max(0, healCallIdx - 400),
-      healCallIdx + 800,
+      Math.max(0, sweepCallIdx - 400),
+      sweepCallIdx + 800,
     );
-    expect(block).toContain("pluginRoot");
     expect(block).toContain("pluginCacheRoot");
     expect(block).toContain("pluginKey");
     // pluginCacheRoot must derive from resolveClaudeConfigDir() so we don't

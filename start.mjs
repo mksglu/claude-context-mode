@@ -174,7 +174,7 @@ if (cacheMatch) {
 // truth) so users who fix themselves via `npm install -g context-mode`
 // follow the exact same code path. Best-effort, never blocks MCP boot.
 try {
-  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, healMcpJsonArgs } =
+  const { healInstalledPlugins, healSettingsEnabledPlugins, healPluginJsonMcpServers, sweepStaleMcpJson } =
     await import("./scripts/heal-installed-plugins.mjs");
   const pluginKey = "context-mode@context-mode";
   const claudeConfigDir = resolveClaudeConfigDir();
@@ -193,12 +193,6 @@ try {
   // path baked in. Iterates EVERY installed cache entry's installPath so
   // multi-version installs all self-recover. Each call is independently wrapped
   // because one poisoned entry must not block heals on the others. Best effort.
-  //
-  // v1.0.122 — Layer 5b extended (Issue #531): asymmetric-heal sibling for the
-  // `.mcp.json` file Claude Code reads at plugin load. Same per-entry loop, same
-  // defensive wrap. Covers both the #253/aea633c bare `./start.mjs` fresh-install
-  // regression AND the /ctx-upgrade tmpdir leak class. Both heals must run on
-  // every boot so users self-recover regardless of which drift shape hit them.
   try {
     if (existsSync(registryPath)) {
       const ip = JSON.parse(readFileSync(registryPath, "utf-8"));
@@ -214,16 +208,19 @@ try {
               pluginKey,
             });
           } catch { /* best effort — per-entry */ }
-          try {
-            healMcpJsonArgs({
-              pluginRoot: installPath,
-              pluginCacheRoot,
-              pluginKey,
-            });
-          } catch { /* best effort — per-entry */ }
         }
       }
     }
+  } catch { /* best effort */ }
+  // Issue #609 — Layer 5c (replaces v1.0.122 healMcpJsonArgs per-entry loop):
+  // sweep stale `.mcp.json` files from every per-version cache dir. cli.ts
+  // no longer writes `.mcp.json` (PR fix for #609), so the only `.mcp.json`
+  // files in the cache are stale carry-forwards from earlier installs or
+  // Claude Code's plugin manager copying them between version dirs. Removing
+  // them blocks the previous-version-carry replay vector at MCP boot.
+  // One sweep per boot — bounded, idempotent, best-effort.
+  try {
+    sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
   } catch { /* best effort */ }
 } catch { /* best effort — never block MCP boot */ }
 

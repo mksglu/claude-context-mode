@@ -33,7 +33,7 @@ import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mc
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
-import { healPluginJsonMcpServers, healMcpJsonArgs } from "../scripts/heal-installed-plugins.mjs";
+import { healPluginJsonMcpServers, sweepStaleMcpJson } from "../scripts/heal-installed-plugins.mjs";
 // @ts-expect-error — JS module, no TS declarations
 import { detectWindowsVsYear } from "../scripts/heal-better-sqlite3.mjs";
 // Private 16-LOC copy of browserOpenArgv. Canonical version lives in src/server.ts;
@@ -945,23 +945,24 @@ async function upgrade(opts?: { platform?: string }) {
         } catch { /* some files may not exist in source */ }
       }
 
-      // Write .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (fixes #411).
-      // Absolute paths bake-in the current pluginRoot dir, which sessionstart.mjs
-      // (#181) deletes after upgrade — breaking MCP server resolution. The literal
-      // ${CLAUDE_PLUGIN_ROOT} placeholder is resolved by Claude at load-time and
-      // stays valid across version cleanups. Matches .claude-plugin/plugin.json.
-      const mcpConfig = {
-        mcpServers: {
-          "context-mode": {
-            command: "node",
-            args: ["${CLAUDE_PLUGIN_ROOT}/start.mjs"],
-          },
-        },
-      };
-      writeFileSync(
-        resolve(pluginRoot, ".mcp.json"),
-        JSON.stringify(mcpConfig, null, 2) + "\n",
-      );
+      // Issue #609 — DO NOT write `.mcp.json` into the plugin cache dir.
+      //
+      // Historical context: #411 fixed an absolute-path bake by writing the
+      // ${CLAUDE_PLUGIN_ROOT} placeholder form here. #531 (commit 9261377)
+      // removed `.mcp.json` from `package.json files[]` so the npm tarball
+      // stopped shipping it. But the cli-side write persisted, so every
+      // /ctx-upgrade re-baked one. When Claude Code's native plugin manager
+      // auto-update later carries a previous version's `.mcp.json` forward
+      // into a fresh version dir, the stale start.mjs absolute path goes
+      // with it → MODULE_NOT_FOUND on every MCP boot.
+      //
+      // Architectural fix: Claude Code reads `.claude-plugin/plugin.json`
+      // .mcpServers as the canonical source (upstream:
+      // refs/platforms/claude-code/src/utils/plugins/mcpPluginIntegration.ts:131-212).
+      // `.mcp.json` is a redundant per-version artifact whose only role
+      // historically was to be a write-time poison vector. Don't write it.
+      // The post-bump cache-sweep below removes any pre-existing copies so
+      // the previous-version-carry vector cannot replay.
 
       // Normalize hooks.json + plugin.json against the REAL pluginRoot now that
       // files have been copied. Two reasons:
@@ -1065,31 +1066,34 @@ async function upgrade(opts?: { platform?: string }) {
         throw new Error(`plugin.json drift check failed: ${message}`);
       }
 
-      // v1.0.122 — Issue #531 — Layer 6 heal: assert .mcp.json's
-      // mcpServers["context-mode"].args[0] is the literal ${CLAUDE_PLUGIN_ROOT}/start.mjs
-      // placeholder. Asymmetric-heal sibling of the plugin.json assertion above.
-      // cli.ts writes .mcp.json at ~line 829-845 with the placeholder, but never
-      // asserted the on-disk shape afterwards — if a future regression dropped
-      // the placeholder write or a parallel normalize baked in an absolute path,
-      // upgrade() would declare success on a poisoned tree. Belt-and-braces:
-      // first call cleans any drift; second call MUST return healed:[] or throw.
-      // Single source of truth shared with start.mjs HEAL block + postinstall.
+      // Issue #609 — Layer 6 replacement: sweep stale `.mcp.json` files from
+      // every per-version cache dir. Supersedes the previous healMcpJsonArgs
+      // drift-check block (v1.0.122) — that block existed because cli.ts
+      // itself wrote `.mcp.json`. With the write gone (above), the only
+      // remaining `.mcp.json` files are stale carry-forwards from earlier
+      // versions. Sweep them so Claude Code's auto-update can't replay them
+      // into a fresh version dir.
+      //
+      // Belt-and-braces: a second sweep call MUST report removed:[] or we
+      // throw — same architectural-lock pattern as the plugin.json drift
+      // check above. Single source of truth shared with start.mjs HEAL
+      // block + postinstall.
       try {
         const pluginCacheRoot = resolve(resolveClaudeConfigDir(), "plugins", "cache");
         const pluginKey = "context-mode@context-mode";
-        const firstPass = healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey });
-        if (firstPass && firstPass.error) {
-          throw new Error(firstPass.error);
+        const firstSweep = sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
+        if (firstSweep && firstSweep.removed && firstSweep.removed.length > 0) {
+          p.log.info(color.dim(`  Swept ${firstSweep.removed.length} stale .mcp.json file(s) from cache`));
         }
-        const secondPass = healMcpJsonArgs({ pluginRoot, pluginCacheRoot, pluginKey });
-        if (secondPass && Array.isArray(secondPass.healed) && secondPass.healed.length > 0) {
+        const secondSweep = sweepStaleMcpJson({ pluginCacheRoot, pluginKey });
+        if (secondSweep && Array.isArray(secondSweep.removed) && secondSweep.removed.length > 0) {
           throw new Error(
-            `.mcp.json drift: mcpServers.args still poisoned after first heal pass (healed=${secondPass.healed.join(",")})`,
+            `.mcp.json sweep drift: ${secondSweep.removed.length} file(s) still present after first pass`,
           );
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`.mcp.json drift check failed: ${message}`);
+        throw new Error(`.mcp.json sweep check failed: ${message}`);
       }
 
       // v1.0.X — Layer 7 heal: update user-level ~/.claude.json MCP server

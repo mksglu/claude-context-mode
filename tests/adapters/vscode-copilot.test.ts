@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { VSCodeCopilotAdapter } from "../../src/adapters/vscode-copilot/index.js";
-import { HOOK_TYPES, HOOK_SCRIPTS } from "../../src/adapters/vscode-copilot/hooks.js";
+import { HOOK_TYPES, HOOK_SCRIPTS, buildHookCommand } from "../../src/adapters/vscode-copilot/hooks.js";
 
 describe("VSCodeCopilotAdapter", () => {
   let adapter: VSCodeCopilotAdapter;
@@ -176,6 +176,77 @@ describe("VSCodeCopilotAdapter", () => {
       const sessionDir = adapter.getSessionDir();
       expect(sessionDir).toContain("context-mode");
       expect(sessionDir).toContain("sessions");
+    });
+  });
+
+  // ── buildHookCommand portability — Tier C lock (Issue #613) ────
+  //
+  // VS Code Copilot hook config lives at `.github/hooks/context-mode.json`
+  // — a WORKSPACE-COMMITTED file (upstream:
+  // refs/platforms/vscode-copilot/assets/prompts/skills/agent-customization/references/hooks.md
+  // line 7: "Workspace (team-shared)"). Embedding absolute Windows
+  // `fnm_multishells/<PID>_<TS>/node.exe` paths into a file that lands in
+  // every teammate's `git status` is a categorically-unacceptable PII leak
+  // AND a non-portable cross-machine config.
+  //
+  // The pre-`f5c9d02` shape was correct: emit the CLI dispatcher form
+  // `context-mode hook vscode-copilot <event>` regardless of pluginRoot.
+  // Commit `f5c9d02` (2026-03-06) added an absolute-path branch when
+  // `pluginRoot` is passed; the CLI always passes pluginRoot, so the
+  // dispatcher form became unreachable in production.
+  //
+  // Fix: drop the pluginRoot branch entirely. The CLI dispatcher form
+  // works for every install pattern that has a `bin` entry on PATH
+  // (npm-global, brew, asdf, nvm, volta, fnm — all wire `npm install -g`
+  // through the `bin` field). For users without global install, the
+  // workaround is `npm install -g context-mode` — same as every other
+  // adapter that emits CLI-dispatcher commands (cursor, codex).
+
+  describe("buildHookCommand portability (Issue #613 Tier C lock)", () => {
+    it("emits CLI dispatcher form when no pluginRoot is passed", () => {
+      const cmd = buildHookCommand(HOOK_TYPES.PRE_TOOL_USE);
+      expect(cmd).toBe("context-mode hook vscode-copilot pretooluse");
+    });
+
+    it("emits CLI dispatcher form EVEN WHEN pluginRoot is passed (Tier C — workspace-committed)", () => {
+      // The reporter's bug: configureAllHooks passes pluginRoot which used to
+      // trigger the absolute-path branch and bake fnm_multishells paths into
+      // .github/hooks/context-mode.json. The fix: pluginRoot is ignored for
+      // emit purposes. Every commit'd hook command MUST be portable.
+      const fakeAbsRoot = "/Users/test/AppData/Local/fnm_multishells/12345_67890/node_modules/context-mode";
+      const cmd = buildHookCommand(HOOK_TYPES.PRE_TOOL_USE, fakeAbsRoot);
+      expect(cmd).toBe("context-mode hook vscode-copilot pretooluse");
+      // Belt-and-braces — explicit anti-patterns the Tier C lock forbids.
+      expect(cmd).not.toContain("/Users/");
+      expect(cmd).not.toContain("fnm_multishells");
+      expect(cmd).not.toContain("node.exe");
+      expect(cmd).not.toContain(process.execPath);
+      expect(cmd).not.toContain(fakeAbsRoot);
+    });
+
+    it("emits portable form for every hook type", () => {
+      for (const hookType of Object.values(HOOK_TYPES)) {
+        const cmd = buildHookCommand(hookType, "/any/abs/path");
+        expect(cmd.startsWith("context-mode hook vscode-copilot ")).toBe(true);
+        expect(cmd).not.toContain("/any/abs/path");
+      }
+    });
+
+    it("configureAllHooks writes only portable commands into .github/hooks/context-mode.json", () => {
+      // End-to-end check: walk the generated hook registration and assert
+      // every command is the CLI dispatcher form. Prevents the regression
+      // that the configureAllHooks path's wiring of buildHookCommand was
+      // the actual #613 surface.
+      const reg = adapter.generateHookConfig("/any/abs/plugin/root");
+      for (const entries of Object.values(reg)) {
+        for (const entry of entries) {
+          for (const hook of entry.hooks) {
+            expect(hook.command).toMatch(/^context-mode hook vscode-copilot /);
+            expect(hook.command).not.toContain("/any/abs/plugin/root");
+            expect(hook.command).not.toContain(process.execPath);
+          }
+        }
+      }
     });
   });
 

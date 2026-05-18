@@ -142,41 +142,60 @@ describe("cli.bundle.mjs — marketplace install support", () => {
 // ── .mcp.json — MCP server config ────────────────────────────────────
 
 describe(".mcp.json — MCP server config", () => {
-  it("upgrade writes cached .mcp.json with CLAUDE_PLUGIN_ROOT placeholder (#411)", () => {
+  it("upgrade MUST NOT write `.mcp.json` into the plugin cache dir (Issue #609 architectural lock)", () => {
+    // Bug-class history this lock protects:
+    //   #411 introduced a `.mcp.json` write here with a CLAUDE_PLUGIN_ROOT
+    //   placeholder. That solved an absolute-path-bake symptom but kept the
+    //   write itself in place. Every /ctx-upgrade since then re-baked a
+    //   per-version .mcp.json. When Claude Code's native plugin auto-update
+    //   later copies the previous version's .mcp.json forward into the new
+    //   cache dir, the path goes stale → MODULE_NOT_FOUND on every MCP boot,
+    //   while ctx-doctor stays green (#609).
+    //
+    // Architectural fix: STOP writing `.mcp.json` from cli.ts entirely. The
+    // canonical MCP source is `.claude-plugin/plugin.json.mcpServers`
+    // (Claude Code upstream: mcpPluginIntegration.ts:131-212 reads it first).
+    // The post-bump `sweepStaleMcpJson` call removes any pre-existing files
+    // so the carry-forward vector cannot replay.
+    //
+    // This test enforces the architectural decision. Re-introducing the write
+    // would re-open the bug class regardless of which path shape is used
+    // (placeholder OR absolute) — the write itself is the surface area.
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
     const upgradeStart = src.indexOf("async function upgrade");
     const upgradeSrc = src.slice(upgradeStart);
-    // items array must NOT include .mcp.json (it's written dynamically)
+    // The items[] copy list must still NOT include .mcp.json (kept from #531).
     const itemsMatch = upgradeSrc.match(/const items\s*=\s*\[([\s\S]*?)\];/);
     expect(itemsMatch).not.toBeNull();
     expect(itemsMatch![1]).not.toContain(".mcp.json");
-    // Must write .mcp.json dynamically with placeholder, not absolute path.
-    // Absolute paths break when sessionstart.mjs (#181) deletes old version dirs.
-    expect(upgradeSrc).toContain('resolve(pluginRoot, ".mcp.json")');
-    expect(upgradeSrc).not.toContain('resolve(pluginRoot, "start.mjs")');
-    expect(upgradeSrc).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    // cli.ts upgrade() MUST NOT write `.mcp.json` to pluginRoot. Any
+    // resolve(pluginRoot, ".mcp.json") + writeFileSync chain is forbidden.
+    expect(upgradeSrc).not.toMatch(/writeFileSync\(\s*resolve\(\s*pluginRoot\s*,\s*["']\.mcp\.json["']/);
   });
 
-  it("upgrade .mcp.json placeholder is resilient to version cleanup (#411)", () => {
-    // Simulate two upgrade runs into different pluginRoot dirs and assert both
-    // produce identical placeholder-based args (no absolute paths to old dirs).
+  it("upgrade MUST sweep stale .mcp.json files post-bump (Issue #609)", () => {
+    // Belt-and-braces partner to the no-write lock above: cli.ts MUST call
+    // `sweepStaleMcpJson` after `updatePluginRegistry` so any pre-existing
+    // copies left by prior versions (or carried forward by Claude Code's
+    // auto-update) are removed before the upgrade is declared successful.
     const src = readFileSync(resolve(ROOT, "src", "cli.ts"), "utf-8");
+    // Import from the shared heal module — single source of truth.
+    expect(src).toMatch(
+      /sweepStaleMcpJson[^;]*from\s+["']\.\.\/scripts\/heal-installed-plugins\.mjs["']/,
+    );
     const upgradeStart = src.indexOf("async function upgrade");
-    const upgradeSrc = src.slice(upgradeStart);
-    // Extract the literal mcpConfig args entry — must be a string literal
-    // with ${CLAUDE_PLUGIN_ROOT}, not a runtime resolve(pluginRoot, ...) call.
-    const argsMatch = upgradeSrc.match(/args:\s*\[([^\]]+)\]/);
-    expect(argsMatch).not.toBeNull();
-    const argsContent = argsMatch![1];
-    // Must NOT depend on pluginRoot at write-time
-    expect(argsContent).not.toContain("pluginRoot");
-    expect(argsContent).not.toContain("resolve(");
-    // Must contain the literal placeholder
-    expect(argsContent).toContain("${CLAUDE_PLUGIN_ROOT}/start.mjs");
-    // Two simulated runs would produce identical JSON regardless of pluginRoot
-    // because the args value is a static string literal.
-    const literalCount = (upgradeSrc.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/start\.mjs/g) || []).length;
-    expect(literalCount).toBeGreaterThanOrEqual(1);
+    const upgradeSrc = src.slice(upgradeStart, upgradeStart + 16000);
+    // Order constraint: sweep runs AFTER updatePluginRegistry so the
+    // cleanup operates against the final on-disk shape.
+    const updateIdx = upgradeSrc.indexOf("updatePluginRegistry");
+    const sweepIdx = upgradeSrc.indexOf("sweepStaleMcpJson");
+    expect(updateIdx).toBeGreaterThan(-1);
+    expect(sweepIdx).toBeGreaterThan(updateIdx);
+    // Belt-and-braces second-call assertion: if first sweep removed files,
+    // a second pass MUST report removed:[] or upgrade() throws.
+    const block = upgradeSrc.slice(sweepIdx, sweepIdx + 1500);
+    expect(block).toMatch(/sweep drift|sweep check failed/i);
+    expect(block).toMatch(/throw new Error/);
   });
 
   it("plugin manifest keeps ${CLAUDE_PLUGIN_ROOT} for marketplace compatibility", () => {
@@ -204,10 +223,10 @@ describe(".mcp.json — MCP server config", () => {
   it(".mcp.json.example template MUST use ${CLAUDE_PLUGIN_ROOT} placeholder (closes #531)", () => {
     // Architectural lock-in after PR #253 (aea633c) regression:
     // .mcp.json is no longer tracked in source. The canonical template lives
-    // at .mcp.json.example and MUST use the placeholder so that any
-    // contributor or tool that copies it gets the marketplace-correct form.
-    // The placeholder form is what cli.ts upgrade() writes to the plugin
-    // cache (line 843) and what .claude-plugin/plugin.json mcpServers uses.
+    // at .mcp.json.example so contributors who copy it locally still get
+    // the marketplace-correct placeholder form. End-user MCP launch flows
+    // through `.claude-plugin/plugin.json.mcpServers` only — cli.ts no longer
+    // writes `.mcp.json` into the plugin cache (Issue #609 fix).
     const example = JSON.parse(
       readFileSync(resolve(ROOT, ".mcp.json.example"), "utf-8"),
     );
@@ -222,7 +241,7 @@ describe(".mcp.json — MCP server config", () => {
     // the relative form (correct for contributors opening the repo as a
     // regular project). Stop shipping it in the tarball so the two roles
     // never collide again. End users get MCP via .claude-plugin/plugin.json
-    // and cli.ts upgrade()'s plugin-cache write — both placeholder.
+    // — cli.ts no longer writes `.mcp.json` to the plugin cache (#609).
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
     expect(pkg.files).toBeDefined();
     expect(pkg.files).not.toContain(".mcp.json");
@@ -1580,8 +1599,11 @@ describe("Shell-free upgrade (#185)", () => {
     expect(inlineSection).toContain("pkg.files");
     expect(inlineSection).toContain("Array.isArray(pkg.files)");
     expect(inlineSection).toContain("for(const item of items)");
-    expect(inlineSection).toContain('writeFileSync(join(P,".mcp.json")');
-    expect(inlineSection).toContain("\\${CLAUDE_PLUGIN_ROOT}/start.mjs");
+    // Issue #609: server.ts inline-fallback MUST NOT write `.mcp.json` either.
+    // Same architectural-lock as cli.ts upgrade(). The inline-fallback was the
+    // OTHER producer of per-version `.mcp.json` files — both writers had to go
+    // for the carry-forward bug class to be structurally impossible.
+    expect(inlineSection).not.toContain('writeFileSync(join(P,".mcp.json")');
     expect(inlineSection).not.toContain("copyDirs");
     expect(inlineSection).not.toContain("copyFiles");
   });
