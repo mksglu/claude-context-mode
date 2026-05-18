@@ -16,6 +16,9 @@
 
 import { execFileSync } from "node:child_process";
 
+import { FIXED_TRANSPORT_PLATFORMS, isFixedTransportHost } from "./util/sibling-mcp.js";
+import type { PlatformId } from "./adapters/types.js";
+
 export interface LifecycleGuardOptions {
   /** Interval in ms to check parent liveness. Default: 30_000 */
   checkIntervalMs?: number;
@@ -33,6 +36,13 @@ export interface LifecycleGuardOptions {
    * MCP request the server handles so genuinely busy servers never trip.
    */
   idleTimeoutMs?: number;
+  /**
+   * Env-detected platform. Forwarded to `idleTimeoutForEnv` so a leaked
+   * `CONTEXT_MODE_IDLE_TIMEOUT_MS` (e.g. from a co-resident OpenCode
+   * session's shell init) is ignored under fixed-transport hosts.
+   * `"unknown"` (or omitted) preserves the env-marker probe fallback.
+   */
+  platform?: PlatformId;
   /** Test injection — defaults to `Date.now`. */
   now?: () => number;
 }
@@ -53,19 +63,19 @@ export interface LifecycleGuardHandle {
 }
 
 /**
- * Resolve the idle-shutdown threshold (#565).
+ * Resolve the idle-shutdown threshold (#565, #592).
  *
- * Idle shutdown is OFF by default (#592) because most hosts (Claude
- * Code, Codex, editor MCP clients) keep registered tool handles after a
- * clean MCP child exit and do NOT transparently respawn on the next call.
- * The global 15 min default introduced in #568 solved OpenCode's child
- * accumulation, but stranded ctx_* tools in Claude Code/Codex-style
- * hosts once the MCP server exited cleanly while the editor stayed alive.
+ * Idle shutdown is OFF by default because most hosts (Claude Code, Codex,
+ * editor MCP clients) keep registered tool handles after a clean MCP child
+ * exit and do NOT transparently respawn on the next call. Only OpenCode
+ * and Kilo opt in (their configs set CONTEXT_MODE_IDLE_TIMEOUT_MS=900000).
  *
- * Hosts that are known to benefit from idle shutdown MUST opt in via
- * CONTEXT_MODE_IDLE_TIMEOUT_MS in their MCP config. Today that is
- * OpenCode/KiloCode (their configs set 900000 = 15 min). Users and test
- * harnesses can also opt in explicitly with any positive integer.
+ * When `opts.platform` identifies a fixed-transport host (e.g. Claude Code
+ * or Codex) AND an inherited shell has `CONTEXT_MODE_IDLE_TIMEOUT_MS` set,
+ * we IGNORE it — that env leaked from a co-resident OpenCode session and
+ * applying it would prematurely kill MCP children that the host still
+ * holds tool handles to. Set `CONTEXT_MODE_IDLE_TIMEOUT_MS_FORCE=1` to
+ * override (escape hatch parallel to `CONTEXT_MODE_STARTUP_SWEEP_FORCE`).
  *
  * Missing or malformed env = 0 (disabled, safe default). Set env to
  * `0` to disable explicitly.
@@ -74,12 +84,34 @@ export interface LifecycleGuardHandle {
  */
 export function idleTimeoutForEnv(
   env: NodeJS.ProcessEnv = process.env,
+  opts: { platform?: PlatformId } = {},
 ): number {
-  const raw = env.CONTEXT_MODE_IDLE_TIMEOUT_MS;
-  if (raw === undefined) return 0;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
+  const parseTimeout = (): number => {
+    const raw = env.CONTEXT_MODE_IDLE_TIMEOUT_MS;
+    if (raw === undefined) return 0;
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return n;
+  };
+
+  if (isTruthyEnv(env.CONTEXT_MODE_IDLE_TIMEOUT_MS_FORCE)) return parseTimeout();
+
+  // Fixed-transport host: ignore leaked env unless _FORCE=1. When platform
+  // is precomputed (passed from boot detect), use the cheap set lookup;
+  // otherwise fall back to the env-only probe (which is what the boot path
+  // uses too).
+  const { platform } = opts;
+  const isFixed = platform !== undefined && platform !== "unknown"
+    ? FIXED_TRANSPORT_PLATFORMS.has(platform)
+    : isFixedTransportHost(env);
+  if (isFixed) return 0;
+
+  return parseTimeout();
+}
+
+function isTruthyEnv(value: string | undefined): boolean {
+  const raw = String(value ?? "").toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
 }
 
 /** Read grandparent PID via `ps -o ppid= -p $PPID`. Returns NaN on failure or Windows. */
@@ -180,7 +212,8 @@ export function lifecycleGuardIntervalForEnv(
 export function startLifecycleGuard(opts: LifecycleGuardOptions): LifecycleGuardHandle {
   const interval = opts.checkIntervalMs ?? lifecycleGuardIntervalForEnv();
   const check = opts.isParentAlive ?? defaultIsParentAlive;
-  const idleTimeoutMs = opts.idleTimeoutMs ?? idleTimeoutForEnv();
+  const idleTimeoutMs = opts.idleTimeoutMs
+    ?? idleTimeoutForEnv(process.env, { platform: opts.platform });
   const now = opts.now ?? Date.now;
   let stopped = false;
   let lastActivity = now();

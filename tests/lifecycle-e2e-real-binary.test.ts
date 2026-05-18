@@ -71,6 +71,12 @@ describe.skipIf(!RUN)("lifecycle e2e — real binary (#565)", () => {
       env: {
         ...process.env,
         CONTEXT_MODE_IDLE_TIMEOUT_MS: String(IDLE_MS),
+        // PR-A: when the test runs under a fixed-transport host (e.g. this
+        // suite is itself invoked from Claude Code), the inherited
+        // CLAUDE_CODE_ENTRYPOINT/CLAUDE_PLUGIN_ROOT would cause the new
+        // env-isolation logic to ignore CONTEXT_MODE_IDLE_TIMEOUT_MS. Test
+        // harnesses opting in to a short window must use the FORCE escape.
+        CONTEXT_MODE_IDLE_TIMEOUT_MS_FORCE: "1",
         CONTEXT_MODE_STARTUP_SWEEP: "0", // isolated test — don't reap siblings
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -169,11 +175,14 @@ describe.skipIf(!RUN)("lifecycle e2e — real binary (#565)", () => {
       expect(decoyPids.every(isAlive)).toBe(true);
 
       // Spawn the 4th — sweep ENABLED. It should reap the other 3 at boot.
+      // PR-A: when this suite is invoked from a fixed-transport host
+      // (CLAUDE_CODE_ENTRYPOINT inherited), STARTUP_SWEEP=1 alone no
+      // longer overrides the sweep-skip default — use FORCE explicitly.
       sweepChild = spawn(process.execPath, [START_MJS], {
         env: {
           ...process.env,
           CONTEXT_MODE_IDLE_TIMEOUT_MS: "0",
-          CONTEXT_MODE_STARTUP_SWEEP: "1",
+          CONTEXT_MODE_STARTUP_SWEEP_FORCE: "1",
         },
         stdio: ["pipe", "pipe", "pipe"],
       });

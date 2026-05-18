@@ -16,6 +16,7 @@ import { describe, test, assert } from "vitest";
 import {
   discoverSiblingMcpPids,
   isCodexFixedTransportHost,
+  isFixedTransportHost,
   killSiblingMcpServers,
   startupSiblingSweep,
   shouldRunStartupSiblingSweep,
@@ -333,4 +334,96 @@ describe("startupSiblingSweep (#565)", () => {
     assert.equal(typeof report.terminatedBySigkill, "number");
     assert.equal(typeof report.totalKilled, "number");
   });
+});
+
+describe("isFixedTransportHost — per-platform env markers (#592 follow-up)", () => {
+  // Probe stubs that prevent Codex parent-cmdline / arg0 fallbacks from
+  // accidentally tripping on the developer machine running these tests.
+  const inertProbes = {
+    runCommand: () => "",
+    readFile: () => "",
+    arg0Path: "/dev/null/never-exists",
+    ppid: 1,
+  } as const;
+
+  const cases: ReadonlyArray<{ name: string; env: NodeJS.ProcessEnv }> = [
+    { name: "claude-code via CLAUDE_CODE_ENTRYPOINT", env: { CLAUDE_CODE_ENTRYPOINT: "cli" } },
+    { name: "claude-code via CLAUDE_PLUGIN_ROOT", env: { CLAUDE_PLUGIN_ROOT: "/x" } },
+    { name: "claude-code via CLAUDE_SESSION_ID", env: { CLAUDE_SESSION_ID: "abc" } },
+    { name: "cursor via CURSOR_TRACE_ID", env: { CURSOR_TRACE_ID: "trace-1" } },
+    { name: "cursor via CURSOR_CLI", env: { CURSOR_CLI: "1" } },
+    { name: "vscode-copilot via VSCODE_PID", env: { VSCODE_PID: "1234" } },
+    { name: "vscode-copilot via VSCODE_CWD", env: { VSCODE_CWD: "/x" } },
+    { name: "jetbrains-copilot via IDEA_INITIAL_DIRECTORY", env: { IDEA_INITIAL_DIRECTORY: "/x" } },
+    { name: "antigravity via ANTIGRAVITY_CLI_ALIAS", env: { ANTIGRAVITY_CLI_ALIAS: "alias" } },
+    { name: "zed via ZED_SESSION_ID", env: { ZED_SESSION_ID: "sess" } },
+    { name: "zed via ZED_TERM", env: { ZED_TERM: "true" } },
+    { name: "gemini-cli via GEMINI_CLI", env: { GEMINI_CLI: "1" } },
+    { name: "gemini-cli via GEMINI_PROJECT_DIR", env: { GEMINI_PROJECT_DIR: "/x" } },
+    { name: "qwen-code via QWEN_PROJECT_DIR", env: { QWEN_PROJECT_DIR: "/x" } },
+  ];
+
+  for (const c of cases) {
+    test(`${c.name} → fixed-transport`, () => {
+      assert.equal(isFixedTransportHost(c.env, inertProbes), true);
+    });
+    test(`${c.name} → shouldRunStartupSiblingSweep is false`, () => {
+      assert.equal(shouldRunStartupSiblingSweep(c.env, inertProbes), false);
+    });
+  }
+
+  test("VSCODE_PID with Claude plugin probe true → still fixed-transport", () => {
+    // The probe accepts a function for parity with detect.ts. Production
+    // logic treats both as fixed-transport (#539 leakage AND genuine VS
+    // Code Copilot are both fixed-transport).
+    assert.equal(isFixedTransportHost({ VSCODE_PID: "1" }, inertProbes), true);
+  });
+
+  test("Codex parent-cmdline fallback flows through isFixedTransportHost", () => {
+    assert.equal(
+      isFixedTransportHost(
+        {},
+        {
+          platform: "darwin",
+          ppid: 42,
+          runCommand: () => "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex",
+          readFile: () => "",
+        },
+      ),
+      true,
+    );
+  });
+
+  test("CONTEXT_MODE_STARTUP_SWEEP_FORCE=1 still overrides every fixed-transport host", () => {
+    for (const c of cases) {
+      assert.equal(
+        shouldRunStartupSiblingSweep(
+          { ...c.env, CONTEXT_MODE_STARTUP_SWEEP_FORCE: "1" },
+          inertProbes,
+        ),
+        true,
+        `FORCE=1 must enable sweep even when ${c.name}`,
+      );
+    }
+  });
+
+  // Negative cases — these platforms are NOT fixed-transport. The startup
+  // sweep MUST still run there (that's its purpose).
+  const negatives: ReadonlyArray<{ name: string; env: NodeJS.ProcessEnv }> = [
+    { name: "opencode via OPENCODE", env: { OPENCODE: "1" } },
+    { name: "opencode via OPENCODE_PROJECT_DIR", env: { OPENCODE_PROJECT_DIR: "/x" } },
+    { name: "kilo via KILO", env: { KILO: "1" } },
+    { name: "kilo via KILO_PID", env: { KILO_PID: "1" } },
+    { name: "pi via PI_CONFIG_DIR", env: { PI_CONFIG_DIR: "/x" } },
+    { name: "omp via PI_CODING_AGENT_DIR", env: { PI_CODING_AGENT_DIR: "/x" } },
+  ];
+
+  for (const c of negatives) {
+    test(`${c.name} → NOT fixed-transport`, () => {
+      assert.equal(isFixedTransportHost(c.env, inertProbes), false);
+    });
+    test(`${c.name} → shouldRunStartupSiblingSweep stays true`, () => {
+      assert.equal(shouldRunStartupSiblingSweep(c.env, inertProbes), true);
+    });
+  }
 });
