@@ -57,6 +57,12 @@ export interface DiscoverOptions {
    * `readPpid` to inject in tests.
    */
   sameParentOnly?: boolean;
+  /**
+   * In startup sweep mode, also return already-orphaned MCP servers
+   * (PPID 0/1). They no longer have a live MCP client, but a stale
+   * readiness sentinel can still make hooks believe the server is usable.
+   */
+  includeOrphans?: boolean;
   /** Test injection — read ppid for a given pid. Defaults to platform probe. */
   readPpid?: (pid: number) => number;
 }
@@ -213,11 +219,13 @@ export function discoverSiblingMcpPids(opts: DiscoverOptions): number[] {
   // Startup-sweep mode (#565): only reap siblings sharing OUR ppid. This
   // prevents an opencode-spawned MCP child from killing a Claude Code MCP
   // child (or another concurrent opencode host's children) when both are
-  // present on the same machine.
+  // present on the same machine. With includeOrphans, also reap PPID 0/1
+  // processes: a stdio MCP server with no parent cannot have a live client.
   const readPpid = opts.readPpid ?? defaultReadPpid;
   return candidates.filter((pid) => {
     const ppid = readPpid(pid);
-    return Number.isFinite(ppid) && ppid === opts.ownPpid;
+    return Number.isFinite(ppid) &&
+      (ppid === opts.ownPpid || (opts.includeOrphans === true && ppid <= 1));
   });
 }
 
@@ -326,7 +334,11 @@ export async function killSiblingMcpServers(
  *   CONTEXT_MODE_STARTUP_SWEEP=1   → enabled (default)
  *
  * Safety:
+ *   - Codex default: disabled because Codex keeps a fixed MCP transport per
+ *     thread; if another same-parent thread kills it, later calls fail with
+ *     "Transport closed" instead of spawning a replacement.
  *   - `sameParentOnly: true` — never touches MCP children of a different host.
+ *   - Orphans (PPID 0/1) are safe to reap: their stdio client is gone.
  *   - Best-effort throughout: failures never block server startup.
  *   - Composes with the idle-timeout path: if a sibling is actively in use
  *     by another session, the parent process will simply spawn a new MCP
@@ -338,18 +350,31 @@ export async function startupSiblingSweep(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<KillReport> {
   const empty: KillReport = { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 };
-  const raw = env.CONTEXT_MODE_STARTUP_SWEEP;
-  if (raw === "0" || raw === "false") return empty;
+  if (!shouldRunStartupSiblingSweep(env)) return empty;
 
   try {
     const pids = discoverSiblingMcpPids({
       ownPid: process.pid,
       ownPpid: process.ppid,
       sameParentOnly: true,
+      includeOrphans: true,
     });
     if (pids.length === 0) return empty;
     return await killSiblingMcpServers({ pids });
   } catch {
     return empty;
   }
+}
+
+export function shouldRunStartupSiblingSweep(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = String(env.CONTEXT_MODE_STARTUP_SWEEP ?? "").toLowerCase();
+  if (raw === "0" || raw === "false") return false;
+  if (raw === "1" || raw === "true") return true;
+
+  // Codex keeps a fixed stdio transport for the thread. Killing a same-parent
+  // sibling from another Codex thread leaves that thread with Transport closed
+  // instead of forcing Codex to spawn a replacement.
+  return String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase() !== "codex";
 }

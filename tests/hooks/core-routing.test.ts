@@ -17,6 +17,7 @@ import {
   sentinelDir,
   sentinelPathForPid,
   isMCPReady,
+  isDefinitelyOrphanedPid,
 } from "../../hooks/core/mcp-ready.mjs";
 
 // Dynamic import for .mjs module
@@ -776,6 +777,13 @@ describe("mcp-ready: contract", () => {
     createSentinel(pid, content);
     expect(() => isMCPReady()).not.toThrow();
   });
+
+  it("classifies PPID 0/1 sentinels as orphaned MCP servers", () => {
+    expect(isDefinitelyOrphanedPid(123, () => 1)).toBe(true);
+    expect(isDefinitelyOrphanedPid(123, () => 0)).toBe(true);
+    expect(isDefinitelyOrphanedPid(123, () => 5000)).toBe(false);
+    expect(isDefinitelyOrphanedPid(123, () => NaN)).toBe(false);
+  });
 });
 
 describe.skipIf(POLLUTED)("mcp-ready: stale-cleanup self-healing", () => {
@@ -807,6 +815,13 @@ describe.skipIf(POLLUTED)("mcp-ready: stale-cleanup self-healing", () => {
     expect(existsSync(b)).toBe(false);
     fixtures.delete(a);
     fixtures.delete(b);
+  });
+
+  it("unlinks a live sentinel when the MCP process is orphaned", () => {
+    const path = createSentinel(process.pid);
+    expect(isMCPReady({ readParentPid: () => 1 })).toBe(false);
+    expect(existsSync(path)).toBe(false);
+    fixtures.delete(path);
   });
 });
 

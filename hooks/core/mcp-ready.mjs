@@ -12,6 +12,7 @@
  * Scan: glob all context-mode-mcp-ready-* files, probe each PID.
  */
 import { readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +46,26 @@ export function sentinelPath() {
   return join(sentinelDir(), `${SENTINEL_PREFIX}${process.ppid}`);
 }
 
+function readParentPid(pid) {
+  if (process.platform === "win32") return NaN;
+  try {
+    const out = execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], {
+      encoding: "utf-8",
+      timeout: 1000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const n = parseInt(out, 10);
+    return Number.isFinite(n) ? n : NaN;
+  } catch {
+    return NaN;
+  }
+}
+
+export function isDefinitelyOrphanedPid(pid, readParent = readParentPid) {
+  const ppid = readParent(pid);
+  return Number.isFinite(ppid) && ppid <= 1;
+}
+
 /**
  * Check if any MCP server is alive by scanning sentinel files.
  *
@@ -55,18 +76,24 @@ export function sentinelPath() {
  * Handles:
  * - PPID mismatch (WSL2 shell wrappers) — no ppid dependency
  * - Stale sentinels (SIGKILL, OOM) — PID liveness check
+ * - Orphaned MCP sentinels (PPID 0/1) — ignored and cleaned up
  * - TMPDIR mismatch — hardcoded /tmp on Unix
  */
-export function isMCPReady() {
+export function isMCPReady(options = {}) {
   try {
     const dir = sentinelDir();
     const files = readdirSync(dir).filter(f => f.startsWith(SENTINEL_PREFIX));
+    const readParent = options.readParentPid ?? readParentPid;
     for (const f of files) {
       const fullPath = join(dir, f);
       try {
         const pid = parseInt(readFileSync(fullPath, "utf8"), 10);
         if (isNaN(pid)) continue;
         process.kill(pid, 0); // throws if process doesn't exist
+        if (isDefinitelyOrphanedPid(pid, readParent)) {
+          try { unlinkSync(fullPath); } catch {}
+          continue;
+        }
         return true;
       } catch {
         // Dead PID or unreadable — clean up stale sentinel

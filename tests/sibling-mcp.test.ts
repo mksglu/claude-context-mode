@@ -8,6 +8,7 @@
  *     server.bundle.mjs hosts).
  *   - Windows PowerShell regex matches the same shapes.
  *   - `sameParentOnly` filter only returns pids whose ppid === ownPpid.
+ *   - startup sweep may also include orphaned PPID 0/1 MCP servers.
  *   - `startupSiblingSweep` respects CONTEXT_MODE_STARTUP_SWEEP=0.
  */
 
@@ -16,6 +17,7 @@ import {
   discoverSiblingMcpPids,
   killSiblingMcpServers,
   startupSiblingSweep,
+  shouldRunStartupSiblingSweep,
 } from "../src/util/sibling-mcp.js";
 
 // Same patterns as production. Sourced here verbatim so a regex regression
@@ -148,6 +150,25 @@ describe("discoverSiblingMcpPids", () => {
     });
     assert.deepEqual(pids, []);
   });
+
+  test("sameParentOnly can include orphaned MCP servers for startup cleanup", () => {
+    const fakeRun = () => "200\n201\n999\n";
+    const ppidMap: Record<number, number> = {
+      200: 5000, // current host sibling
+      201: 1,    // orphaned launchd/systemd child
+      999: 7777, // another live host
+    };
+    const pids = discoverSiblingMcpPids({
+      ownPid: 123,
+      ownPpid: 5000,
+      platform: "linux",
+      runCommand: fakeRun,
+      sameParentOnly: true,
+      includeOrphans: true,
+      readPpid: (pid) => ppidMap[pid] ?? NaN,
+    });
+    assert.deepEqual(pids.sort((a, b) => a - b), [200, 201]);
+  });
 });
 
 describe("killSiblingMcpServers", () => {
@@ -224,6 +245,14 @@ describe("killSiblingMcpServers", () => {
 });
 
 describe("startupSiblingSweep (#565)", () => {
+  test("defaults to disabled on Codex because Codex keeps a fixed MCP transport", () => {
+    assert.equal(shouldRunStartupSiblingSweep({ CONTEXT_MODE_PLATFORM: "codex" }), false);
+  });
+
+  test("defaults to enabled on non-Codex hosts", () => {
+    assert.equal(shouldRunStartupSiblingSweep({ CONTEXT_MODE_PLATFORM: "opencode" }), true);
+  });
+
   test("CONTEXT_MODE_STARTUP_SWEEP=0 disables sweep entirely", async () => {
     const report = await startupSiblingSweep({ CONTEXT_MODE_STARTUP_SWEEP: "0" });
     assert.deepEqual(report, { terminatedBySigterm: 0, terminatedBySigkill: 0, totalKilled: 0 });
