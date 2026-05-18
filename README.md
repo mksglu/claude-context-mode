@@ -439,6 +439,8 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
 
 **Verify:** In the OpenCode session, type `ctx stats`. Context-mode tools should appear and respond.
 
+**Upgrade note:** If an existing config still has `mcp.context-mode`, run `context-mode upgrade`. OpenCode now gets `ctx_*` tools from the plugin; the upgrade removes only `mcp.context-mode` and preserves any other MCP servers.
+
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
 > **Note:** OpenCode lacks a real SessionStart hook ([#14808](https://github.com/sst/opencode/issues/14808), [#5409](https://github.com/sst/opencode/issues/5409)). The plugin uses `experimental.chat.system.transform` as a surrogate — it injects both the routing block and resume snapshots into the system prompt. User-prompt capture uses `chat.message` instead of the missing UserPromptSubmit hook. AGENTS.md/CLAUDE.md/CONTEXT.md rules are captured automatically on first hook fire per project.
@@ -480,6 +482,8 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
 4. Restart KiloCode.
 
 **Verify:** In the KiloCode session, type `ctx stats`. Context-mode tools should appear and respond.
+
+**Upgrade note:** If an existing config still has `mcp.context-mode`, run `context-mode upgrade`. KiloCode now gets `ctx_*` tools from the plugin; the upgrade removes only `mcp.context-mode` and preserves any other MCP servers.
 
 **Routing:** Hooks enforce routing programmatically via `tool.execute.before` and `tool.execute.after`. The optional [`AGENTS.md`](configs/opencode/AGENTS.md) file provides routing instructions for model awareness. The `experimental.session.compacting` hook builds resume snapshots when the conversation compacts. The `experimental.chat.system.transform` hook injects the routing block and prior-session snapshots at session start, enabling session continuity across restarts. The `chat.message` hook captures user prompts and decisions (UserPromptSubmit equivalent).
 
@@ -1190,7 +1194,7 @@ Tool call output can be collapsed/expanded with the default Pi's default keybind
 
 | Feature | Claude Code | Qwen Code | Gemini CLI | VS Code Copilot | JetBrains Copilot | Cursor | OpenCode | KiloCode | OpenClaw | Codex CLI | Antigravity | Kiro | Zed | Pi | OMP |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| MCP Server | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| MCP Server / Native Tools | Yes | Yes | Yes | Yes | Yes | Yes | Native plugin | Native plugin | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | PreToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | Plugin |
 | PostToolUse Hook | Yes | Yes | Yes | Yes | Yes | Yes | Plugin | Plugin | Plugin | Yes | -- | Yes | -- | Yes (extension) | Plugin |
 | SessionStart Hook | Yes | Yes | Yes | Yes | Yes | -- | ✓ (via experimental.chat.system.transform) | ✓ (via experimental.chat.system.transform) | Plugin | Yes | -- | -- | -- | Yes (extension) | Plugin |
