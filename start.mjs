@@ -4,6 +4,7 @@ import { existsSync, chmodSync, readFileSync, writeFileSync, readdirSync, symlin
 import { dirname, resolve, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { atomicWriteFileSync } from "./hooks/util/atomic-fs.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const originalCwd = process.cwd();
@@ -130,7 +131,7 @@ if (cacheMatch) {
             entry.lastUpdated = new Date().toISOString();
           }
         }
-        writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+        atomicWriteFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n");
       }
     }
 
@@ -290,7 +291,7 @@ try{
   }
 }catch{}
 `;
-    writeFileSync(healHookPath, healScript, { mode: 0o755 });
+    atomicWriteFileSync(healHookPath, healScript, { mode: 0o755 });
   }
 
   // Always re-assert shebang + chmod +x on Unix so the bare-script hook
@@ -324,7 +325,7 @@ try{
       });
       hooks.SessionStart = sessionStart;
       settings.hooks = hooks;
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
     }
 
     // Self-heal: rewrite an existing cache-heal hook command if it points at
