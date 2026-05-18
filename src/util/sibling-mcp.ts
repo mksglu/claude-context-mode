@@ -27,6 +27,8 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 /** Inject `child_process.execFileSync` for tests. Must return stdout as utf-8. */
 export type RunCommand = (cmd: string, args: readonly string[]) => string;
@@ -84,6 +86,19 @@ export interface KillReport {
   terminatedBySigkill: number;
   /** Sum of the two — used by the cli summary line. */
   totalKilled: number;
+}
+
+export interface CodexHostDetectionOptions {
+  /** `process.platform` injection. Defaults to live process.platform. */
+  platform?: NodeJS.Platform;
+  /** Parent process id to inspect. Defaults to live process.ppid. */
+  ppid?: number;
+  /** Test injection point — defaults to `child_process.execFileSync`. */
+  runCommand?: RunCommand;
+  /** Test injection for `.codex/tmp/arg0`. Defaults to `fs.readFileSync`. */
+  readFile?: (path: string) => string;
+  /** Extra explicit arg0 marker path for tests or alternate hosts. */
+  arg0Path?: string;
 }
 
 // Match every shape an installed context-mode MCP server can take in argv:
@@ -162,6 +177,8 @@ function defaultReadPpid(pid: number): number {
 const defaultRun: RunCommand = (cmd, args) =>
   execFileSync(cmd, [...args], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
 
+const defaultReadFile = (path: string): string => readFileSync(path, "utf-8");
+
 const defaultIsAlive: IsAlive = (pid) => {
   try { process.kill(pid, 0); return true; } catch { return false; }
 };
@@ -170,6 +187,79 @@ const defaultSendSignal: SendSignal = (pid, sig) => {
   // Throws ESRCH if the process is already dead — callers must swallow.
   process.kill(pid, sig);
 };
+
+function isTruthyEnv(value: string | undefined): boolean {
+  const raw = String(value ?? "").toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+function isFalsyEnv(value: string | undefined): boolean {
+  const raw = String(value ?? "").toLowerCase();
+  return raw === "0" || raw === "false" || raw === "no";
+}
+
+function looksLikeCodexHost(value: string | undefined): boolean {
+  const raw = String(value ?? "").trim();
+  if (!raw) return false;
+  const normalized = raw.replace(/\\/g, "/").toLowerCase();
+  if (normalized.includes("@openai/codex")) return true;
+  if (normalized.includes("codex.system")) return true;
+  if (normalized.includes("/.codex/tmp/arg0")) return true;
+  return /(^|[\s/])codex($|[\s/.-])/.test(normalized);
+}
+
+function readProcessCommandLine(
+  pid: number,
+  platform: NodeJS.Platform,
+  run: RunCommand,
+): string {
+  try {
+    if (!Number.isFinite(pid) || pid <= 0) return "";
+    if (platform === "win32") {
+      return run("powershell", [
+        "-NoProfile",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+      ]);
+    }
+    return run("ps", ["-o", "command=", "-p", String(pid)]);
+  } catch {
+    return "";
+  }
+}
+
+function codexArg0Paths(env: NodeJS.ProcessEnv, explicit?: string): string[] {
+  const paths = new Set<string>();
+  if (explicit) paths.add(explicit);
+  if (env.CODEX_HOME) paths.add(join(env.CODEX_HOME, "tmp", "arg0"));
+  if (env.HOME) paths.add(join(env.HOME, ".codex", "tmp", "arg0"));
+  if (env.USERPROFILE) paths.add(join(env.USERPROFILE, ".codex", "tmp", "arg0"));
+  return [...paths];
+}
+
+export function isCodexFixedTransportHost(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: CodexHostDetectionOptions = {},
+): boolean {
+  if (String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase() === "codex") return true;
+  if (env.CODEX_THREAD_ID || env.CODEX_CI) return true;
+
+  const platform = opts.platform ?? process.platform;
+  const run = opts.runCommand ?? defaultRun;
+  const ppid = opts.ppid ?? process.ppid;
+  if (looksLikeCodexHost(readProcessCommandLine(ppid, platform, run))) return true;
+
+  const readFile = opts.readFile ?? defaultReadFile;
+  for (const arg0Path of codexArg0Paths(env, opts.arg0Path)) {
+    try {
+      if (looksLikeCodexHost(readFile(arg0Path))) return true;
+      if (looksLikeCodexHost(arg0Path)) return true;
+    } catch {
+      // Missing/unreadable arg0 marker is normal outside Codex.
+    }
+  }
+  return false;
+}
 
 /**
  * Parse newline-separated PID output. Tolerates header rows
@@ -330,8 +420,9 @@ export async function killSiblingMcpServers(
  *
  * Gated by env (default-on but easy to disable):
  *
- *   CONTEXT_MODE_STARTUP_SWEEP=0   → disabled
- *   CONTEXT_MODE_STARTUP_SWEEP=1   → enabled (default)
+ *   CONTEXT_MODE_STARTUP_SWEEP=0         → disabled
+ *   CONTEXT_MODE_STARTUP_SWEEP=1         → enabled for non-Codex hosts
+ *   CONTEXT_MODE_STARTUP_SWEEP_FORCE=1   → enabled even for Codex
  *
  * Safety:
  *   - Codex default: disabled because Codex keeps a fixed MCP transport per
@@ -368,16 +459,17 @@ export async function startupSiblingSweep(
 
 export function shouldRunStartupSiblingSweep(
   env: NodeJS.ProcessEnv = process.env,
+  opts: CodexHostDetectionOptions = {},
 ): boolean {
-  const raw = String(env.CONTEXT_MODE_STARTUP_SWEEP ?? "").toLowerCase();
-  if (raw === "0" || raw === "false") return false;
-  if (raw === "1" || raw === "true") return true;
+  if (isTruthyEnv(env.CONTEXT_MODE_STARTUP_SWEEP_FORCE)) return true;
 
   // Codex keeps a fixed stdio transport for the thread. Killing a same-parent
   // sibling from another Codex thread leaves that thread with Transport closed
   // instead of forcing Codex to spawn a replacement. Native Codex env markers
-  // are available before MCP clientInfo can be read.
-  if (String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase() === "codex") return false;
-  if (env.CODEX_THREAD_ID || env.CODEX_CI) return false;
+  // and parent-process markers are available before MCP clientInfo can be read.
+  if (isCodexFixedTransportHost(env, opts)) return false;
+
+  if (isFalsyEnv(env.CONTEXT_MODE_STARTUP_SWEEP)) return false;
+  if (isTruthyEnv(env.CONTEXT_MODE_STARTUP_SWEEP)) return true;
   return true;
 }

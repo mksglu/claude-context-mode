@@ -30,7 +30,11 @@ import { getHookScriptPaths } from "./util/hook-config.js";
 import { ensurePluginCacheIntegrityLoaded } from "./util/plugin-cache-integrity.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
 // v1.0.128 — Issue #559 sibling MCP kill helpers (see PR-559-560-FIX-DESIGN.md).
-import { discoverSiblingMcpPids, killSiblingMcpServers } from "./util/sibling-mcp.js";
+import {
+  discoverSiblingMcpPids,
+  killSiblingMcpServers,
+  shouldRunStartupSiblingSweep,
+} from "./util/sibling-mcp.js";
 // v1.0.119 — Issue #523 Layer 5 heal: post-bump assertion on .claude-plugin/plugin.json
 // mcpServers args. Single source of truth shared with start.mjs HEAL block + postinstall.
 // @ts-expect-error — JS module, no TS declarations
@@ -868,24 +872,26 @@ async function upgrade(opts?: { platform?: string }) {
       // (stripped Linux distro) or unavailable PowerShell (weird Windows)
       // can never block the upgrade itself.
       try {
-        const siblingPids = discoverSiblingMcpPids({
-          ownPid: process.pid,
-          ownPpid: process.ppid,
-        });
-        if (siblingPids.length > 0) {
-          const killReport = await killSiblingMcpServers({ pids: siblingPids });
-          if (killReport.totalKilled > 0) {
-            // Concise summary only — no PIDs in the user-facing log to keep
-            // the line readable. Plural-aware so "1 sibling MCP server" reads
-            // naturally alongside "3 sibling MCP servers".
-            const noun = killReport.totalKilled === 1
-              ? "sibling MCP server"
-              : "sibling MCP servers";
-            p.log.info(
-              color.dim(
-                `Stopped ${killReport.totalKilled} ${noun} (SIGTERM: ${killReport.terminatedBySigterm}, SIGKILL: ${killReport.terminatedBySigkill})`,
-              ),
-            );
+        if (shouldRunStartupSiblingSweep(process.env)) {
+          const siblingPids = discoverSiblingMcpPids({
+            ownPid: process.pid,
+            ownPpid: process.ppid,
+          });
+          if (siblingPids.length > 0) {
+            const killReport = await killSiblingMcpServers({ pids: siblingPids });
+            if (killReport.totalKilled > 0) {
+              // Concise summary only — no PIDs in the user-facing log to keep
+              // the line readable. Plural-aware so "1 sibling MCP server" reads
+              // naturally alongside "3 sibling MCP servers".
+              const noun = killReport.totalKilled === 1
+                ? "sibling MCP server"
+                : "sibling MCP servers";
+              p.log.info(
+                color.dim(
+                  `Stopped ${killReport.totalKilled} ${noun} (SIGTERM: ${killReport.terminatedBySigterm}, SIGKILL: ${killReport.terminatedBySigkill})`,
+                ),
+              );
+            }
           }
         }
       } catch { /* never block upgrade on discovery/kill failure */ }

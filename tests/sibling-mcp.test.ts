@@ -15,6 +15,7 @@
 import { describe, test, assert } from "vitest";
 import {
   discoverSiblingMcpPids,
+  isCodexFixedTransportHost,
   killSiblingMcpServers,
   startupSiblingSweep,
   shouldRunStartupSiblingSweep,
@@ -255,6 +256,56 @@ describe("startupSiblingSweep (#565)", () => {
 
   test("defaults to disabled when Codex CI marker is present", () => {
     assert.equal(shouldRunStartupSiblingSweep({ CODEX_CI: "1" }), false);
+  });
+
+  test("defaults to disabled when parent command is Codex without env markers", () => {
+    assert.equal(
+      shouldRunStartupSiblingSweep(
+        {},
+        {
+          platform: "darwin",
+          ppid: 42,
+          runCommand: () => "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex",
+        },
+      ),
+      false,
+    );
+  });
+
+  test("detects Codex arg0 marker without env markers", () => {
+    assert.equal(
+      isCodexFixedTransportHost(
+        { HOME: "/Users/me" },
+        {
+          platform: "darwin",
+          ppid: 42,
+          runCommand: () => "",
+          readFile: (path) => path.endsWith(".codex/tmp/arg0") ? "codex.system" : "",
+        },
+      ),
+      true,
+    );
+  });
+
+  test("CONTEXT_MODE_STARTUP_SWEEP=1 does not override Codex fixed transport guard", () => {
+    assert.equal(
+      shouldRunStartupSiblingSweep({
+        CONTEXT_MODE_PLATFORM: "codex",
+        CONTEXT_MODE_STARTUP_SWEEP: "1",
+      }),
+      false,
+    );
+  });
+
+  test("CONTEXT_MODE_STARTUP_SWEEP_FORCE=1 explicitly overrides Codex fixed transport guard", () => {
+    assert.equal(
+      shouldRunStartupSiblingSweep({
+        CONTEXT_MODE_PLATFORM: "codex",
+        CONTEXT_MODE_STARTUP_SWEEP: "0",
+        CONTEXT_MODE_STARTUP_SWEEP_FORCE: "1",
+      }),
+      true,
+    );
   });
 
   test("defaults to enabled on non-Codex hosts", () => {
