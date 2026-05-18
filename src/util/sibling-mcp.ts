@@ -375,6 +375,9 @@ export function shouldRunStartupSiblingSweep(
 
   // Codex keeps a fixed stdio transport for the thread. Killing a same-parent
   // sibling from another Codex thread leaves that thread with Transport closed
-  // instead of forcing Codex to spawn a replacement.
-  return String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase() !== "codex";
+  // instead of forcing Codex to spawn a replacement. Native Codex env markers
+  // are available before MCP clientInfo can be read.
+  if (String(env.CONTEXT_MODE_PLATFORM ?? "").toLowerCase() === "codex") return false;
+  if (env.CODEX_THREAD_ID || env.CODEX_CI) return false;
+  return true;
 }

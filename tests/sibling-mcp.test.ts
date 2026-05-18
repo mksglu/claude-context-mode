@@ -249,6 +249,14 @@ describe("startupSiblingSweep (#565)", () => {
     assert.equal(shouldRunStartupSiblingSweep({ CONTEXT_MODE_PLATFORM: "codex" }), false);
   });
 
+  test("defaults to disabled when Codex native thread marker is present", () => {
+    assert.equal(shouldRunStartupSiblingSweep({ CODEX_THREAD_ID: "thread-1" }), false);
+  });
+
+  test("defaults to disabled when Codex CI marker is present", () => {
+    assert.equal(shouldRunStartupSiblingSweep({ CODEX_CI: "1" }), false);
+  });
+
   test("defaults to enabled on non-Codex hosts", () => {
     assert.equal(shouldRunStartupSiblingSweep({ CONTEXT_MODE_PLATFORM: "opencode" }), true);
   });
