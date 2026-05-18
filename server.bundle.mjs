@@ -644,13 +644,14 @@ stderr:
 ${i.stderr}`}],isError:!0})}if(i.exitCode!==0){let{isError:d,output:l}=yh({language:t,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return o&&o.trim().length>0&&Buffer.byteLength(l)>hu?du()?(rr(Buffer.byteLength(l)),B("ctx_execute",{content:[{type:"text",text:await Yo(l,o,d?`execute:${t}:error`:`execute:${t}`)}],isError:d})):B("ctx_execute",{...await $i(l,d?`execute:${t}:error`:`execute:${t}`,o),isError:d}):Buffer.byteLength(l)>gu?du()?(rr(Buffer.byteLength(l)),B("ctx_execute",{content:[{type:"text",text:await Yo(l,"errors failures exceptions",d?`execute:${t}:error`:`execute:${t}`)}],isError:d})):B("ctx_execute",{...await $i(l,d?`execute:${t}:error`:`execute:${t}`,"errors failures exceptions"),isError:d}):B("ctx_execute",{content:[{type:"text",text:l}],isError:d})}let u=i.stdout||"(no output)";return o&&o.trim().length>0&&Buffer.byteLength(u)>hu?du()?(rr(Buffer.byteLength(u)),B("ctx_execute",{content:[{type:"text",text:await Yo(u,o,`execute:${t}`)}]})):B("ctx_execute",await $i(u,`execute:${t}`,o)):Buffer.byteLength(u)>gu?B("ctx_execute",await $i(u,`execute:${t}`)):B("ctx_execute",{content:[{type:"text",text:u}]})}catch(s){let i=s instanceof Error?s.message:String(s);return B("ctx_execute",{content:[{type:"text",text:`Runtime error: ${i}`}],isError:!0})}});async function $i(t,e,r){let n=Qn();rr(Buffer.byteLength(t));let o=await n.indexQueued({content:t,source:e,attribution:Qo()}),s=r?`
 Intent "${r}" was not searched synchronously; run ctx_search with the same query and source.`:"";return{content:[{type:"text",text:`Indexed ${o.totalChunks} sections (${o.codeChunks} with code) from: ${o.label}${s}
 Use ctx_search(queries: ["..."], source: "${o.label}") to query this content.`}]}}var hu=5e3,gu=102400,KE=64*1024;function du(){return process.env.CONTEXT_MODE_DISABLE_PERF_DEFER==="1"}async function Yo(t,e,r,n=5){let o=t.split(`
-`).length,s=Buffer.byteLength(t),i=Qn(),a=await i.indexPlainTextQueued(t,r,20,Qo()),c=i.searchWithFallback(e,n,r),u=i.getDistinctiveTerms(a.sourceId);if(c.length===0){let l=[`Indexed ${a.totalChunks} sections from "${r}" into knowledge base.`,`No sections matched intent "${e}" in ${o}-line output (${(s/1024).toFixed(1)}KB).`];return u.length>0&&(l.push(""),l.push(`Searchable terms: ${u.join(", ")}`)),l.push("""];for(let l of c){let m=l.content.split(`
+`).length,s=Buffer.byteLength(t),i=Qn(),a=await i.indexPlainTextQueued(t,r,20,Qo()),c=i.searchWithFallback(e,n,r),u=i.getDistinctiveTerms(a.sourceId);if(c.length===0){let l=[`Indexed ${a.totalChunks} sections from "${r}" into knowledge base.`,`No sections matched intent "${e}" in ${o}-line output (${(s/1024).toFixed(1)}KB).`];return u.length>0&&(l.push(""),l.push(`Searchable terms: ${u.join(", ")}`)),l.push(""),l.push("Use ctx_search(queries: [...]) to explore the indexed content."),l.join(`
+`)}let d=[`Indexed ${a.totalChunks} sections from "${r}" into knowledge base.`,`${c.length} sections matched "${e}" (${o} lines, ${(s/1024).toFixed(1)}KB):`,""];for(let l of c){let m=l.content.split(`
 `)[0].slice(0,120);d.push(`  - ${l.title}: ${m}`)}return u.length>0&&(d.push(""),d.push(`Searchable terms: ${u.join(", ")}`)),d.push(""),d.push("Use ctx_search(queries: [...]) to retrieve full content of any section."),d.join(`
 `)}Le.registerTool("ctx_execute_file",{title:"Execute File Processing",description:`Read a bounded-size file and process it without loading contents into context. The file is read into a FILE_CONTENT variable inside a managed subprocess; default cap is 50 MiB, override with CONTEXT_MODE_EXECUTE_FILE_MAX_BYTES. Only your printed summary enters context.
 
 PREFER THIS OVER Read/cat for: logs, data files (CSV, JSON, XML), source files, and any file where you need to extract specific information rather than read the entire content. For truly large files, use ctx_execute with streaming/path-based code instead of FILE_CONTENT.
 
-THINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript \u2014 no npm deps, try/catch, null-safe. Node.js + Bun compatible.`,inputSchema:M.object({path:M.string().describe("Absolute file path or relative to project root"),language:M.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:M.string().describe("Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."),timeout:M.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs."),intent:M.string().optional().describe("What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.")})},async({path:t,language:e,code:r,timeout:n,intent:o})=>{let s=qE(t,"ctx_execute_file");if(s)return s;if(e==="shell"){let i=Fh(r,"execute_file");if(i)return i}else{let i=BE(r,e,"execute_file");if(i)return i}try{let i=await Di.executeFile({path:t,language:e,code:r,timeout:n});if(i.timedOut)return B("ctx_execute_file",{content:[{type:"text",text:`Timed out processing ${t} after ${n}ms`}],isError:!0});if(i.exitCode!==0){let{isError:c,output:u}=yh({language:e,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return o&&o.trim().length>0&&Buffer.byteLength(u)>hu?(rr(Buffer.byteLength(u)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(u,o,c?`file:${t}:error`:`file:${t}`)}],isError:c})):Buffer.byteLength(u)>gu?(rr(Buffer.byteLength(u)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(u,"errors failures exceptions",c?`file:${t}:error`:`file:${t}`)}],isError:c})):B("ctx_execute_file",{content:[{type:"text",text:u}],isError:c})}let a=i.stdout||"(no output)";return o&&o.trim().length>0&&Buffer.byteLength(a)>hu?(rr(Buffer.byteLength(a)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(a,o,`file:${t}`)}]})):Buffer.byteLength(a)>gu?B("ctx_execute_file",await $i(a,`file:${t}`)):B("ctx_execute_file",{content:[{type:"text",text:a}]})}catch(i){let a=i instanceof Error?i.message:String(i);return B("ctx_execute_file",{content:[{type:"text",text:`Runtime error: ${a}`}],isError:!0})}});Le.registerTool("ctx_index",{title:"Index Content",description:`Index documentation or knowledge content into a searchable BM25 knowledge base. Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. The full content does NOT stay in context \u2014 only a brief summary is returned.
+THINK IN CODE: Write code that processes FILE_CONTENT and console.log() only the answer. Don't read files into context to analyze mentally. Write robust, pure JavaScript \u2014 no npm deps, try/catch, null-safe. Node.js + Bun compatible.`,inputSchema:M.object({path:M.string().describe("Absolute file path or relative to project root"),language:M.enum(["javascript","typescript","python","shell","ruby","go","rust","php","perl","r","elixir","csharp"]).describe("Runtime language"),code:M.string().describe("Code to process FILE_CONTENT (file_content in Elixir). Print summary via console.log/print/echo/IO.puts/Console.WriteLine."),timeout:M.coerce.number().optional().describe("Max execution time in ms. When omitted, no server-side timer fires \u2014 the MCP host's RPC timeout governs."),intent:M.string().optional().describe("What you're looking for in the output. When provided and output is large (>5KB), returns only matching sections via BM25 search instead of truncated output.")})},async({path:t,language:e,code:r,timeout:n,intent:o})=>{let s=VE(t,"ctx_execute_file");if(s)return s;if(e==="shell"){let i=Fh(r,"execute_file");if(i)return i}else{let i=qE(r,e,"execute_file");if(i)return i}try{let i=await Di.executeFile({path:t,language:e,code:r,timeout:n});if(i.timedOut)return B("ctx_execute_file",{content:[{type:"text",text:`Timed out processing ${t} after ${n}ms`}],isError:!0});if(i.exitCode!==0){let{isError:c,output:u}=yh({language:e,exitCode:i.exitCode,stdout:i.stdout,stderr:i.stderr});return o&&o.trim().length>0&&Buffer.byteLength(u)>hu?(rr(Buffer.byteLength(u)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(u,o,c?`file:${t}:error`:`file:${t}`)}],isError:c})):Buffer.byteLength(u)>gu?(rr(Buffer.byteLength(u)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(u,"errors failures exceptions",c?`file:${t}:error`:`file:${t}`)}],isError:c})):B("ctx_execute_file",{content:[{type:"text",text:u}],isError:c})}let a=i.stdout||"(no output)";return o&&o.trim().length>0&&Buffer.byteLength(a)>hu?(rr(Buffer.byteLength(a)),B("ctx_execute_file",{content:[{type:"text",text:await Yo(a,o,`file:${t}`)}]})):Buffer.byteLength(a)>gu?B("ctx_execute_file",await $i(a,`file:${t}`)):B("ctx_execute_file",{content:[{type:"text",text:a}]})}catch(i){let a=i instanceof Error?i.message:String(i);return B("ctx_execute_file",{content:[{type:"text",text:`Runtime error: ${a}`}],isError:!0})}});Le.registerTool("ctx_index",{title:"Index Content",description:`Index documentation or knowledge content into a searchable BM25 knowledge base. Chunks markdown by headings (keeping code blocks intact) and stores in ephemeral FTS5 database. The full content does NOT stay in context \u2014 only a brief summary is returned.
 
 WHEN TO USE:
 - Documentation from Context7, Skills, or MCP tools (API docs, framework guides, code examples)
@@ -662,8 +663,8 @@ WHEN TO USE:
 
 After indexing, use 'ctx_search' to retrieve specific sections on-demand.
 When \`path\` is provided, a content hash is stored for automatic stale detection in search results.
-Do NOT use for: log files, test output, CSV, build output \u2014 use 'ctx_execute_file' for those.`,inputSchema:M.object({content:M.string().optional().describe("Raw text/markdown to index. Provide this OR path, not both."),path:M.string().optional().describe("File path to read and index (content never enters context). Provide this OR content."),source:M.string().optional().describe("Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')")})},async({content:t,path:e,source:r})=>{if(!t&&!e)return B("ctx_index",{content:[{type:"text",text:"Error: Either content or path must be provided"}],isError:!0});if(e){let n=qE(e,"ctx_index");if(n)return n}try{let n=e?Qj(e):void 0;if(t)rr(Buffer.byteLength(t));else if(n)try{let i=await import("fs");rr(i.readFileSync(n).byteLength)}catch{}let s=await Qn().indexQueued({content:t,path:n,source:r??n,attribution:Qo()});return B("ctx_index",{content:[{type:"text",text:`Indexed ${s.totalChunks} sections (${s.codeChunks} with code) from: ${s.label}
-Use ctx_search(queries: ["..."]) to query this content. Use source: "${s.label}" to scope results.`}]})}catch(n){let o=n instanceof Error?n.message:String(n);return B("ctx_index",{content:[{type:"text",text:`Index error: ${o}`}],isError:!0})}});var Yn=0,Ch=Date.now(),vL=6e4,NE=3,DE=8;function Zh(t){if(typeof t=="string")try{let e=JSON.parse(t);if(Array.isArray(e))return e}catch{}return t}function kL(t){let e=Zh(t);return Array.isArray(e)?e.map((r,n)=>typeof r=="string"?{label:`cmd_${n+1}`,command:r}:r):e}Le.registerTool("ctx_search",{title:"Search Indexed Content",description:`Search indexed content. Requires prior indexing via ctx_batch_execute, ctx_index, or ctx_fetch_and_index. Pass ALL search questions as queries array in ONE call. File-backed sources are auto-refreshed when the source file changes.
+Do NOT use for: log files, test output, CSV, build output \u2014 use 'ctx_execute_file' for those.`,inputSchema:M.object({content:M.string().optional().describe("Raw text/markdown to index. Provide this OR path, not both."),path:M.string().optional().describe("File path to read and index (content never enters context). Provide this OR content."),source:M.string().optional().describe("Label for the indexed content (e.g., 'Context7: React useEffect', 'Skill: frontend-design')")})},async({content:t,path:e,source:r})=>{if(!t&&!e)return B("ctx_index",{content:[{type:"text",text:"Error: Either content or path must be provided"}],isError:!0});if(e){let n=VE(e,"ctx_index");if(n)return n}try{let n=e?eL(e):void 0;if(t)rr(Buffer.byteLength(t));else if(n)try{let i=await import("fs");rr(i.readFileSync(n).byteLength)}catch{}let s=await Qn().indexQueued({content:t,path:n,source:r??n,attribution:Qo()});return B("ctx_index",{content:[{type:"text",text:`Indexed ${s.totalChunks} sections (${s.codeChunks} with code) from: ${s.label}
+Use ctx_search(queries: ["..."]) to query this content. Use source: "${s.label}" to scope results.`}]})}catch(n){let o=n instanceof Error?n.message:String(n);return B("ctx_index",{content:[{type:"text",text:`Index error: ${o}`}],isError:!0})}});var Yn=0,Ch=Date.now(),kL=6e4,DE=3,ME=8;function Zh(t){if(typeof t=="string")try{let e=JSON.parse(t);if(Array.isArray(e))return e}catch{}return t}function EL(t){let e=Zh(t);return Array.isArray(e)?e.map((r,n)=>typeof r=="string"?{label:`cmd_${n+1}`,command:r}:r):e}Le.registerTool("ctx_search",{title:"Search Indexed Content",description:`Search indexed content. Requires prior indexing via ctx_batch_execute, ctx_index, or ctx_fetch_and_index. Pass ALL search questions as queries array in ONE call. File-backed sources are auto-refreshed when the source file changes.
 
 TIPS: 2-4 specific terms per query. Use 'source' to scope results.
 
@@ -674,10 +675,10 @@ ctx_search is a follow-up tool that queries previously indexed content. To gathe
   \u2022 ctx_fetch_and_index(url) \u2014 fetch a URL, index it, then search with ctx_search
   \u2022 ctx_index(content, source) \u2014 manually index text content
 
-After indexing, ctx_search becomes available for follow-up queries.`}],isError:!0});let n=t,o=[];if(Array.isArray(n.queries)&&n.queries.length>0?o.push(...n.queries):typeof n.query=="string"&&n.query.length>0&&o.push(n.query),o.length===0)return B("ctx_search",{content:[{type:"text",text:"Error: provide query or queries."}],isError:!0});let{limit:s=3,source:i,contentType:a}=t,c=Date.now();if(c-Ch>vL&&(Yn=0,Ch=c),Yn++,Yn>DE)return B("ctx_search",{content:[{type:"text",text:`BLOCKED: ${Yn} search calls in ${Math.round((c-Ch)/1e3)}s. You're flooding context. STOP making individual search calls. Use ctx_batch_execute(commands, queries) for your next research step.`}],isError:!0});let u=Yn>NE?1:Math.min(s,2),d=40*1024,l=0,m=[],f=null;if(r==="timeline")try{let g=Ge(),_=Et(),b=vi({projectDir:_,sessionsDir:g});Oe(b)&&(f=new Qt({dbPath:b}))}catch{}let p=Ar?.getConfigDir()??Nh();r!=="timeline"&&e.refreshStaleSources();try{for(let g of o){if(l>d){m.push(`## ${g}
+After indexing, ctx_search becomes available for follow-up queries.`}],isError:!0});let n=t,o=[];if(Array.isArray(n.queries)&&n.queries.length>0?o.push(...n.queries):typeof n.query=="string"&&n.query.length>0&&o.push(n.query),o.length===0)return B("ctx_search",{content:[{type:"text",text:"Error: provide query or queries."}],isError:!0});let{limit:s=3,source:i,contentType:a}=t,c=Date.now();if(c-Ch>kL&&(Yn=0,Ch=c),Yn++,Yn>ME)return B("ctx_search",{content:[{type:"text",text:`BLOCKED: ${Yn} search calls in ${Math.round((c-Ch)/1e3)}s. You're flooding context. STOP making individual search calls. Use ctx_batch_execute(commands, queries) for your next research step.`}],isError:!0});let u=Yn>DE?1:Math.min(s,2),d=40*1024,l=0,m=[],f=null;if(r==="timeline")try{let g=Ge(),_=Et(),b=vi({projectDir:_,sessionsDir:g});Oe(b)&&(f=new Qt({dbPath:b}))}catch{}let p=Ar?.getConfigDir()??Nh();r!=="timeline"&&e.refreshStaleSources();try{for(let g of o){if(l>d){m.push(`## ${g}
 (output cap reached)
 `);continue}let _;if(r==="timeline"?_=cE({query:g,limit:u,store:e,sort:r,source:i,contentType:a,sessionDB:f,projectDir:Et(),configDir:p,adapter:Ar??void 0}):_=e.searchWithFallback(g,u,i,a,"like",!1),_.length===0){m.push(`## ${g}
-No results found.`);continue}let b=_.map((y,S)=>{let k=y.origin||"current-session",I=y.timestamp?y.timestamp.slice(0,16).replace("T"," "):"",L=`--- [${k}${I?" | "+I:""} | ${y.source}] ---`,$=`### ${y.title}`,j=VE(y.content,g,1500,y.highlighted);return`${L}
+No results found.`);continue}let b=_.map((y,S)=>{let k=y.origin||"current-session",I=y.timestamp?y.timestamp.slice(0,16).replace("T"," "):"",L=`--- [${k}${I?" | "+I:""} | ${y.source}] ---`,$=`### ${y.title}`,j=WE(y.content,g,1500,y.highlighted);return`${L}
 ${$}
 
 ${j}`}).join(`
@@ -690,10 +691,10 @@ ${b}`),l+=b.length}}finally{try{f?.close()}catch{}}let h=m.join(`
 
 `);if(e.lastRefreshCount>0&&(h=`> Auto-refreshed ${e.lastRefreshCount} stale source${e.lastRefreshCount>1?"s":""} (file changed since indexing).
 
-`+h),Yn>=NE&&(h+=`
+`+h),Yn>=DE&&(h+=`
 
-\u26A0 search call #${Yn}/${DE} in this window. Results limited to ${u}/query. Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`),h.trim().length===0){let g=e.listSources(),_=g.length>0?`
-Indexed sources: ${g.map(b=>`"${b.label}" (${b.chunkCount} sections)`).join(", ")}`:"";return B("ctx_search",{content:[{type:"text",text:`No results found.${_}`}]})}return B("ctx_search",{content:[{type:"text",text:h}]})}catch(e){let r=e instanceof Error?e.message:String(e);return B("ctx_search",{content:[{type:"text",text:`Search error: ${r}`}],isError:!0})}});var Oh=null,Ih=null,Ah=null;function EL(){return Oh||(Oh=Mh(import.meta.url).resolve("turndown")),Oh}function wL(){return Ih||(Ih=Mh(import.meta.url).resolve("turndown-plugin-gfm")),Ih}function TL(){return Ah||(Ah=Mh(import.meta.url).resolve("undici")),Ah}function PL(t,e){let r=JSON.stringify(EL()),n=JSON.stringify(wL()),o=JSON.stringify(TL()),s=JSON.stringify(e),i=yu.toString(),a=yu.name||"classifyIp",c=a==="classifyIp"?`var classifyIp = ${i};`:`var ${a} = ${i};
+\u26A0 search call #${Yn}/${ME} in this window. Results limited to ${u}/query. Batch queries: ctx_search(queries: ["q1","q2","q3"]) or use ctx_batch_execute.`),h.trim().length===0){let g=e.listSources(),_=g.length>0?`
+Indexed sources: ${g.map(b=>`"${b.label}" (${b.chunkCount} sections)`).join(", ")}`:"";return B("ctx_search",{content:[{type:"text",text:`No results found.${_}`}]})}return B("ctx_search",{content:[{type:"text",text:h}]})}catch(e){let r=e instanceof Error?e.message:String(e);return B("ctx_search",{content:[{type:"text",text:`Search error: ${r}`}],isError:!0})}});var Oh=null,Ih=null,Ah=null;function wL(){return Oh||(Oh=Mh(import.meta.url).resolve("turndown")),Oh}function TL(){return Ih||(Ih=Mh(import.meta.url).resolve("turndown-plugin-gfm")),Ih}function PL(){return Ah||(Ah=Mh(import.meta.url).resolve("undici")),Ah}function RL(t,e){let r=JSON.stringify(wL()),n=JSON.stringify(TL()),o=JSON.stringify(PL()),s=JSON.stringify(e),i=yu.toString(),a=yu.name||"classifyIp",c=a==="classifyIp"?`var classifyIp = ${i};`:`var ${a} = ${i};
 var classifyIp = ${a};`,u=process.env.CTX_FETCH_STRICT==="1";return`
 const TurndownService = require(${r});
 const { gfm } = require(${n});
@@ -703,6 +704,7 @@ const dnsPromises = require('no' + 'de:dns/promises');
 const url = ${JSON.stringify(t)};
 const outputPath = ${s};
 const configuredFetchProxy = process.env.CONTEXT_MODE_FETCH_PROXY || '';
+const configuredNoProxy = process.env.NO_PROXY || process.env.no_proxy || '';
 
 // Strip generic proxy env vars from this subprocess only. A generic outbound
 // proxy (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) would route fetch through
@@ -739,8 +741,30 @@ function normalizeLoopbackFetchProxy(raw) {
   return parsed.toString();
 }
 
+function shouldBypassProxy(hostname) {
+  if (!hostname) return false;
+  const host = String(hostname).toLowerCase();
+  const entries = String(configuredNoProxy || '')
+    .split(',')
+    .map((entry) => String(entry || '').trim().toLowerCase())
+    .filter(Boolean)
+    .map((entry) => entry.startsWith('*.') ? '.' + entry.slice(2) : entry);
+
+  for (var i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    if (entry === host) return true;
+    if (entry.startsWith('.')) {
+      if (host === entry.slice(1) || host.endsWith(entry)) return true;
+    }
+  }
+  return false;
+}
+
+const parsedTargetUrl = new URL(url);
+const targetHost = parsedTargetUrl.hostname;
 const normalizedFetchProxy = normalizeLoopbackFetchProxy(configuredFetchProxy);
-if (normalizedFetchProxy) {
+if (normalizedFetchProxy && !shouldBypassProxy(targetHost)) {
   const { ProxyAgent, setGlobalDispatcher } = require(${o});
   setGlobalDispatcher(new ProxyAgent(normalizedFetchProxy));
 }
@@ -844,34 +868,7 @@ dns.resolve = function patchedResolveGeneric(hostname, rrtype, cb) {
       for (var i = 0; i < records.length; i++) {
         var ip = records[i];
         var v = classifyIp(ip);
-        if (v === 'block' || (STRICT && v === 'private')) {
-          return cb(new Error(
-            'SSRF blocked at connect-time: ' + hostname +
-            ' resolves to ' + ip + ' (' + v + ')'
-          ));
-        }
-      }
-    }
-    cb(null, records);
-  });
-};
-
-function emit(ct, content) {
-  // Write content to file to bypass executor stdout truncation (100KB limit).
-  // Only the content-type marker goes to stdout.
-  fs.writeFileSync(outputPath, content);
-  console.log('__CM_CT__:' + ct);
-}
-
-// Manual redirect handling: a 3xx Location header can rebind the subprocess
-// fetch to an alternate host the parent's pre-flight ssrfGuard never saw.
-// Even with the connect-time DNS patch, a redirect target that is a literal
-// IP (e.g. http://169.254.169.254/) skips getaddrinfo entirely. Walk the
-// chain manually so every hop runs through classifyIp before the next fetch.
-const MAX_REDIRECTS = 5;
-async function fetchWithManualRedirect(initialUrl) {
-  let currentUrl = initialUrl;
-  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+        if (v === '++) {
     const resp = await fetch(currentUrl, { redirect: 'manual' });
     if (resp.status < 300 || resp.status >= 400) return resp;
     const location = resp.headers.get('location') || resp.headers.get('Location');
