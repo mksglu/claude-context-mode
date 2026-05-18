@@ -1512,9 +1512,23 @@ export class ContentStore {
     } catch { /* best effort — don't block indexing */ }
   }
 
-  close(): void {
+  /**
+   * Synchronous close for `process.on("exit")` handlers — that hook cannot
+   * await a promise, so we cannot drain the write queue from there. Caller
+   * must await `flushDbWriteQueue(dbPath)` BEFORE invoking this if pending
+   * queued writes might still be in flight.
+   *
+   * Inlines `#optimizeFTS` (no enqueue) and resets the insert counter so a
+   * re-open at the same path starts with a fresh optimization budget.
+   */
+  closeImmediate(): void {
     if (this.#insertCount > 0) this.#optimizeFTS(); // defragment only after writes
+    this.#insertCount = 0;
     closeDB(this.#db); // WAL checkpoint before close — important for persistent DBs
+  }
+
+  close(): void {
+    this.closeImmediate();
   }
 
   // ── Vocabulary Extraction ──
