@@ -94,6 +94,23 @@ describe("needsHookNormalization", () => {
     expect(needsHookNormalization(content)).toBe(false);
   });
 
+  test("returns true when content contains stale absolute plugin-cache path", () => {
+    const content = JSON.stringify({
+      hooks: {
+        SessionStart: [{
+          hooks: [{
+            command:
+              'node "/Users/me/.claude/plugins/cache/context-mode/context-mode/1.0.135/hooks/sessionstart.mjs"',
+          }],
+        }],
+      },
+    });
+    expect(needsHookNormalization(
+      content,
+      "/Users/me/.claude/plugins/cache/context-mode/context-mode/1.0.136",
+    )).toBe(true);
+  });
+
   test("returns false for empty/invalid content", () => {
     expect(needsHookNormalization("")).toBe(false);
     expect(needsHookNormalization("{}")).toBe(false);
@@ -177,6 +194,32 @@ describe("normalizeHooksJson", () => {
     );
     expect(out).toBe(input);
   });
+
+  test("rewrites stale absolute hook paths to current pluginRoot", () => {
+    const input = JSON.stringify({
+      hooks: {
+        SessionStart: [{
+          hooks: [{
+            type: "command",
+            command:
+              'node "/Users/me/.claude/plugins/cache/context-mode/context-mode/1.0.135/hooks/sessionstart.mjs"',
+          }],
+        }],
+      },
+    });
+
+    const out = normalizeHooksJson(
+      input,
+      "/usr/local/bin/node",
+      "/Users/me/.claude/plugins/cache/context-mode/context-mode/1.0.136",
+      { rewriteNodeCommand: false },
+    );
+    const cmd = JSON.parse(out).hooks.SessionStart[0].hooks[0].command;
+
+    expect(cmd).toContain("/Users/me/.claude/plugins/cache/context-mode/context-mode/1.0.136/hooks/sessionstart.mjs");
+    expect(cmd).not.toContain("1.0.135");
+    expect(cmd).toMatch(/^node\s/);
+  });
 });
 
 // ─────────────────────────────────────────────────────────
@@ -242,7 +285,7 @@ describe("normalizePluginJson", () => {
 // ─────────────────────────────────────────────────────────
 
 describe("normalizeHooksOnStartup", () => {
-  test("no-op when platform is not win32 or linux (e.g. darwin)", () => {
+  test("normalizes paths on darwin without replacing bare node", () => {
     const dir = makeTmp();
     const hooksPath = join(dir, "hooks", "hooks.json");
     mkdirSync(join(dir, "hooks"), { recursive: true });
@@ -256,7 +299,11 @@ describe("normalizeHooksOnStartup", () => {
       platform: "darwin",
     });
 
-    expect(readFileSync(hooksPath, "utf-8")).toBe(original);
+    const after = readFileSync(hooksPath, "utf-8");
+    expect(after).not.toBe(original);
+    expect(after).not.toContain("${CLAUDE_PLUGIN_ROOT}");
+    expect(after).toContain(`node \\"${dir.replace(/\\/g, "/")}/x.mjs\\"`);
+    expect(after).not.toContain("/usr/bin/node");
   });
 
   test("normalizes hooks.json on Linux (bare node not in PATH for /bin/sh)", () => {

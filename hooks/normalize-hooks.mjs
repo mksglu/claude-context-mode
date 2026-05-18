@@ -17,6 +17,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
+const STALE_PLUGIN_ROOT_RE =
+  /(?:[A-Za-z]:)?\/?[^"'\s]*\/\.claude\/plugins\/(?:cache\/[^/"'\s]+\/[^/"'\s]+\/[^/"'\s]+|marketplaces\/[^/"'\s]+)/g;
 
 /** Convert any path string to forward slashes (MSYS-safe). */
 function fwd(p) {
@@ -25,11 +27,20 @@ function fwd(p) {
 
 /**
  * Pure detection: does this content contain an unresolved CLAUDE_PLUGIN_ROOT
- * placeholder that should be normalized?
+ * placeholder or stale absolute plugin-cache path that should be normalized?
  */
-export function needsHookNormalization(content) {
+export function needsHookNormalization(content, pluginRoot) {
   if (!content || typeof content !== "string") return false;
-  return content.includes(PLACEHOLDER);
+  if (content.includes(PLACEHOLDER)) return true;
+  const safeRoot = pluginRoot ? fwd(pluginRoot) : "";
+  const matches = fwd(content).match(STALE_PLUGIN_ROOT_RE) ?? [];
+  return matches.some((m) => !safeRoot || m !== safeRoot);
+}
+
+function replacePluginRootRefs(value, safeRoot) {
+  return fwd(value)
+    .replaceAll(PLACEHOLDER, safeRoot)
+    .replace(STALE_PLUGIN_ROOT_RE, safeRoot);
 }
 
 /**
@@ -40,11 +51,12 @@ export function needsHookNormalization(content) {
  * Pure function — takes content + paths, returns new content.
  * Idempotent — leaves already-normalized content unchanged.
  */
-export function normalizeHooksJson(content, nodePath, pluginRoot) {
-  if (!needsHookNormalization(content)) return content;
+export function normalizeHooksJson(content, nodePath, pluginRoot, opts = {}) {
+  if (!needsHookNormalization(content, pluginRoot)) return content;
 
   const safeNode = fwd(nodePath);
   const safeRoot = fwd(pluginRoot);
+  const rewriteNodeCommand = opts.rewriteNodeCommand !== false;
 
   let parsed;
   try {
@@ -65,12 +77,15 @@ export function normalizeHooksJson(content, nodePath, pluginRoot) {
       if (!Array.isArray(inner)) continue;
       for (const h of inner) {
         if (typeof h?.command !== "string") continue;
-        if (!h.command.includes(PLACEHOLDER)) continue;
+        const nextRoot = replacePluginRootRefs(h.command, safeRoot);
+        if (nextRoot === h.command) continue;
         // Replace placeholder with absolute root (forward-slash).
-        let next = h.command.replaceAll(PLACEHOLDER, safeRoot);
+        let next = nextRoot;
         // Replace bare `node ` prefix with quoted execPath. Match both
         // `node ` and `node\t` at start, with optional surrounding whitespace.
-        next = next.replace(/^\s*node\s+/, `"${safeNode}" `);
+        if (rewriteNodeCommand) {
+          next = next.replace(/^\s*node\s+/, `"${safeNode}" `);
+        }
         h.command = next;
         mutated = true;
       }
@@ -91,11 +106,12 @@ export function normalizeHooksJson(content, nodePath, pluginRoot) {
  *
  * Idempotent.
  */
-export function normalizePluginJson(content, nodePath, pluginRoot) {
-  if (!needsHookNormalization(content)) return content;
+export function normalizePluginJson(content, nodePath, pluginRoot, opts = {}) {
+  if (!needsHookNormalization(content, pluginRoot)) return content;
 
   const safeNode = fwd(nodePath);
   const safeRoot = fwd(pluginRoot);
+  const rewriteNodeCommand = opts.rewriteNodeCommand !== false;
 
   let parsed;
   try {
@@ -115,8 +131,8 @@ export function normalizePluginJson(content, nodePath, pluginRoot) {
     if (Array.isArray(srv.args)) {
       const before = srv.args;
       const after = before.map((a) =>
-        typeof a === "string" && a.includes(PLACEHOLDER)
-          ? a.replaceAll(PLACEHOLDER, safeRoot)
+        typeof a === "string"
+          ? replacePluginRootRefs(a, safeRoot)
           : a,
       );
       if (after.some((v, i) => v !== before[i])) {
@@ -125,7 +141,7 @@ export function normalizePluginJson(content, nodePath, pluginRoot) {
       }
     }
 
-    if (srv.command === "node" && mutated) {
+    if (rewriteNodeCommand && srv.command === "node" && mutated) {
       // Only swap bare `node` when we also rewrote args — otherwise we'd
       // touch user-customized server entries unrelated to placeholders.
       srv.command = safeNode;
@@ -142,24 +158,21 @@ export function normalizePluginJson(content, nodePath, pluginRoot) {
  * Options:
  *   - pluginRoot: absolute path to plugin install dir (e.g. __dirname of start.mjs)
  *   - nodePath:   process.execPath
- *   - platform:   process.platform ("win32" and "linux" trigger a write)
+ *   - platform:   process.platform ("win32" and "linux" rewrite bare `node`)
  *
  * Best-effort — never throws.
  */
 export function normalizeHooksOnStartup({ pluginRoot, nodePath, platform }) {
-  // Normalize on Windows (MSYS path mangling, #369/#372/#378) and Linux
-  // (bare `node` not in PATH when invoked via /bin/sh, e.g. nvm users).
-  // macOS ships a system node so bare `node` resolves reliably there.
-  if (platform !== "win32" && platform !== "linux") return;
   if (!pluginRoot || !nodePath) return;
+  const rewriteNodeCommand = platform === "win32" || platform === "linux";
 
   // hooks/hooks.json
   try {
     const hooksPath = resolve(pluginRoot, "hooks", "hooks.json");
     if (existsSync(hooksPath)) {
       const original = readFileSync(hooksPath, "utf-8");
-      if (needsHookNormalization(original)) {
-        const next = normalizeHooksJson(original, nodePath, pluginRoot);
+      if (needsHookNormalization(original, pluginRoot)) {
+        const next = normalizeHooksJson(original, nodePath, pluginRoot, { rewriteNodeCommand });
         if (next !== original) {
           writeFileSync(hooksPath, next, "utf-8");
         }
@@ -174,8 +187,8 @@ export function normalizeHooksOnStartup({ pluginRoot, nodePath, platform }) {
     const pluginPath = resolve(pluginRoot, ".claude-plugin", "plugin.json");
     if (existsSync(pluginPath)) {
       const original = readFileSync(pluginPath, "utf-8");
-      if (needsHookNormalization(original)) {
-        const next = normalizePluginJson(original, nodePath, pluginRoot);
+      if (needsHookNormalization(original, pluginRoot)) {
+        const next = normalizePluginJson(original, nodePath, pluginRoot, { rewriteNodeCommand });
         if (next !== original) {
           writeFileSync(pluginPath, next, "utf-8");
         }
