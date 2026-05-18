@@ -30,6 +30,7 @@ import {
   chmodSync,
   statSync,
 } from "node:fs";
+import { atomicWriteFileSync } from "./util/atomic-fs.mjs";
 
 /**
  * Convert any path string to forward slashes (matches normalize-hooks style,
@@ -198,10 +199,9 @@ export function selfHealCacheHealHook({
   }
 
   try {
-    writeFileSync(
+    atomicWriteFileSync(
       settingsPath,
       JSON.stringify(parsed, null, 2) + "\n",
-      "utf-8",
     );
   } catch {
     return "noop";

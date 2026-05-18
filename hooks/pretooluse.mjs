@@ -29,6 +29,7 @@ await runHook(async () => {
   const { routePreToolUse, initSecurity } = await import("./core/routing.mjs");
   const { formatDecision } = await import("./core/formatters.mjs");
   const { parseStdin, getSessionId, resolveConfigDir } = await import("./session-helpers.mjs");
+  const { atomicWriteFileSync } = await import("./util/atomic-fs.mjs");
 
   // ─── Manual recursive copy (avoids cpSync libuv crash on non-ASCII paths, Windows + Node 24) ───
   function copyDirSync(src, dest) {
@@ -95,7 +96,7 @@ await runHook(async () => {
             entry.lastUpdated = new Date().toISOString();
           }
         }
-        writeFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n", "utf-8");
+        atomicWriteFileSync(ipPath, JSON.stringify(ip, null, 2) + "\n");
       }
 
       // 3. Legacy: hooks.json absent — rewrite stale paths in settings.json to current version dir.
@@ -136,7 +137,7 @@ await runHook(async () => {
           }
         }
 
-        if (changed) writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+        if (changed) atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
       } catch { /* skip settings update */ }
 
       // Old version dirs are cleaned lazily by sessionstart.mjs (age-gated >1h)

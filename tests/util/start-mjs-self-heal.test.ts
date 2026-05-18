@@ -225,7 +225,7 @@ describe("start.mjs — Issue #577 CLAUDE_CONFIG_DIR honoring", () => {
     // the heal script to whatever CLAUDE_CONFIG_DIR was set to at install.
     const startOfTpl = startSrc.indexOf("const healScript = `");
     expect(startOfTpl).toBeGreaterThan(-1);
-    const endMarker = "writeFileSync(healHookPath, healScript";
+    const endMarker = "atomicWriteFileSync(healHookPath, healScript";
     const endIdx = startSrc.indexOf(endMarker, startOfTpl);
     expect(endIdx).toBeGreaterThan(startOfTpl);
     const tpl = startSrc.slice(startOfTpl, endIdx);

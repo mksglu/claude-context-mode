@@ -13,8 +13,9 @@
 // process.execPath + forward slashes. Idempotent — only rewrites when needed.
 // Survives upgrades because it runs at every start.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { atomicWriteFileSync } from "./util/atomic-fs.mjs";
 
 const PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
 const STALE_PLUGIN_ROOT_RE =
@@ -174,7 +175,7 @@ export function normalizeHooksOnStartup({ pluginRoot, nodePath, platform }) {
       if (needsHookNormalization(original, pluginRoot)) {
         const next = normalizeHooksJson(original, nodePath, pluginRoot, { rewriteNodeCommand });
         if (next !== original) {
-          writeFileSync(hooksPath, next, "utf-8");
+          atomicWriteFileSync(hooksPath, next);
         }
       }
     }
@@ -190,7 +191,7 @@ export function normalizeHooksOnStartup({ pluginRoot, nodePath, platform }) {
       if (needsHookNormalization(original, pluginRoot)) {
         const next = normalizePluginJson(original, nodePath, pluginRoot, { rewriteNodeCommand });
         if (next !== original) {
-          writeFileSync(pluginPath, next, "utf-8");
+          atomicWriteFileSync(pluginPath, next);
         }
       }
     }
