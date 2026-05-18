@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SessionDB } from "../../session/db.js";
+import type { ProjectAttribution } from "../../session/project-attribution.js";
 import { extractEvents, extractUserEvents } from "../../session/extract.js";
 import type { HookInput } from "../../session/extract.js";
 import { buildResumeSnapshot } from "../../session/snapshot.js";
@@ -332,6 +333,12 @@ export default function piExtension(pi: any): void {
     cwd: process.cwd(),
   });
 
+  // Attribution object for project isolation — ensures every event recorded
+  // by the pi adapter carries the correct project_dir. Without this, all
+  // events default to project_dir="" which causes cross-project data leakage
+  // in shared SessionDB instances.
+  const _attribution: Partial<ProjectAttribution> = { projectDir, source: "workspace_root", confidence: 0.98 };
+
   const db = getOrCreateDB();
 
   // ── 1. session_start — Initialize session ──────────────
@@ -407,7 +414,7 @@ export default function piExtension(pi: any): void {
 
       if (events.length > 0) {
         for (const ev of events) {
-          db.insertEvent(_sessionId, ev as SessionEvent, "PostToolUse");
+          db.insertEvent(_sessionId, ev as SessionEvent, "PostToolUse", _attribution);
         }
       } else if (rawToolName) {
         // Fallback: record unrecognized tool call as generic event
@@ -427,7 +434,7 @@ export default function piExtension(pi: any): void {
               .digest("hex")
               .slice(0, 16),
           },
-          "PostToolUse",
+          "PostToolUse", _attribution,
         );
       }
     } catch {
@@ -460,7 +467,7 @@ export default function piExtension(pi: any): void {
       if (prompt) {
         const userEvents = extractUserEvents(prompt);
         for (const ev of userEvents) {
-          db.insertEvent(_sessionId, ev as SessionEvent, "UserPromptSubmit");
+          db.insertEvent(_sessionId, ev as SessionEvent, "UserPromptSubmit", _attribution);
         }
       }
 
@@ -561,7 +568,7 @@ export default function piExtension(pi: any): void {
           priority: 1,
           data_hash: createHash("sha256").update(data).digest("hex").slice(0, 16),
         },
-        "PostToolUse",
+        "PostToolUse", _attribution,
       );
     } catch {
       // best effort — never break provider response
