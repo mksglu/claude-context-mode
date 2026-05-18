@@ -226,6 +226,79 @@ describe("OpenCodeAdapter", () => {
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("configureAllHooks removes legacy context-mode MCP block for plugin-only mode (#574)", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      const conf = join(home, ".config", "opencode");
+      const file = join(conf, "opencode.json");
+      const src = resolve(process.cwd(), "src", "adapters", "opencode", "index.ts");
+      const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      mkdirSync(dir, { recursive: true });
+      mkdirSync(conf, { recursive: true });
+      writeFileSync(file, JSON.stringify({
+        mcp: {
+          "context-mode": {
+            type: "local",
+            command: ["context-mode"],
+          },
+          other: { type: "local", command: ["other"] },
+        },
+        plugin: ["context-mode"],
+      }, null, 2) + "\n");
+
+      const run = spawnSync(
+        process.execPath,
+        [
+          tsx,
+          "-e",
+          `import { OpenCodeAdapter } from ${JSON.stringify(src)};const a=new OpenCodeAdapter();console.log(JSON.stringify(a.configureAllHooks('/tmp/plugin')))`,
+        ],
+        { cwd: dir, env: env(home), encoding: "utf-8" },
+      );
+
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout)).toContain("Removed legacy context-mode MCP block (plugin-native tools)");
+      expect(JSON.parse(readFileSync(file, "utf-8"))).toEqual({
+        mcp: { other: { type: "local", command: ["other"] } },
+        plugin: ["context-mode"],
+      });
+
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it("validateHooks warns when a legacy mcp.context-mode block remains after upgrade (#574)", () => {
+      const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
+      const dir = join(root, "project");
+      const home = join(root, "home");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "opencode.json"), JSON.stringify({
+        mcp: { "context-mode": { type: "local", command: ["context-mode"] } },
+        plugin: ["context-mode"],
+      }, null, 2) + "\n");
+
+      const prevHome = process.env.HOME;
+      const prevUserProfile = process.env.USERPROFILE;
+      Object.assign(process.env, env(home));
+      const cwd = process.cwd();
+      process.chdir(dir);
+      try {
+        const results = new OpenCodeAdapter().validateHooks("/tmp/plugin");
+        expect(results).toContainEqual(expect.objectContaining({
+          check: "Legacy MCP registration",
+          status: "warn",
+          fix: expect.stringContaining("removes only mcp.context-mode"),
+        }));
+      } finally {
+        process.chdir(cwd);
+        if (prevHome !== undefined) process.env.HOME = prevHome;
+        else delete process.env.HOME;
+        if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
+        else delete process.env.USERPROFILE;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it("readSettings prioritizes config with context-mode plugin", () => {
       const root = mkdtempSync(join(tmpdir(), "opencode-adapter-"));
       const dir = join(root, "project");

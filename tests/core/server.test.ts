@@ -4752,3 +4752,52 @@ describe("v1.0.134 SLICE A — cross-adapter currentAttribution session DB fallb
     }
   });
 });
+
+test("withProjectDirOverride carries native plugin session id into currentAttribution (#574)", async () => {
+  const { withProjectDirOverride, currentAttribution } = await import("../../src/server.js");
+  const projectDir = mkdtempSync(join(tmpdir(), "native-plugin-attr-proj-"));
+  try {
+    const attr = await withProjectDirOverride(
+      { projectDir, sessionId: "opencode-session-override" },
+      async () => currentAttribution(),
+    );
+    expect(attr).toEqual({ sessionId: "opencode-session-override" });
+  } finally {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode/Kilo legacy MCP child suppresses ctx_* tool registration while embedded plugin import keeps it", async () => {
+  const { shouldSuppressMcpToolsForNativePluginHost } = await import("../../src/server.js");
+  const legacySettings = {
+    plugin: ["context-mode"],
+    mcp: { "context-mode": { type: "local", command: ["context-mode"] } },
+  };
+  expect(shouldSuppressMcpToolsForNativePluginHost({ platform: "opencode", settings: legacySettings })).toBe(true);
+  expect(shouldSuppressMcpToolsForNativePluginHost({ platform: "kilo", settings: legacySettings })).toBe(true);
+  expect(shouldSuppressMcpToolsForNativePluginHost({ platform: "opencode", settings: { plugin: ["context-mode"] } })).toBe(false);
+  expect(shouldSuppressMcpToolsForNativePluginHost({ platform: "opencode", embedded: "1", settings: legacySettings })).toBe(false);
+  expect(shouldSuppressMcpToolsForNativePluginHost({ platform: "claude-code", embedded: undefined })).toBe(false);
+});
+
+test("OpenCode legacy MCP suppression parses JSONC URLs without stripping // inside strings", async () => {
+  const { shouldSuppressMcpToolsForNativePluginHost } = await import("../../src/server.js");
+  const dir = mkdtempSync(join(tmpdir(), "opencode-jsonc-url-"));
+  const cwd = process.cwd();
+  try {
+    writeFileSync(join(dir, "opencode.jsonc"), `{
+      // Keep this URL intact; a naive /\\/\\/.*/ stripper corrupts it.
+      "endpoint": "https://example.com/api",
+      "plugin": ["context-mode"],
+      "mcp": {
+        "context-mode": { "type": "local", "command": ["context-mode"] },
+        "other": { "type": "local", "command": ["other"] }
+      }
+    }\n`);
+    process.chdir(dir);
+    expect(shouldSuppressMcpToolsForNativePluginHost({ platform: "opencode" })).toBe(true);
+  } finally {
+    process.chdir(cwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

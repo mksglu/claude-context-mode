@@ -19,14 +19,6 @@ SMOKE_DIR="$REPO_ROOT/scripts/tier2-smoke"
 LOG_DIR="${RUNNER_TEMP:-/tmp}/tier2-smoke-pi"
 mkdir -p "$LOG_DIR"
 
-# Disable MCP idle self-shutdown for the smoke run (#583 follow-up).
-# v1.0.132+ idles the MCP child after CONTEXT_MODE_IDLE_TIMEOUT_MS of no
-# activity (default 15 min). The Pi adapter's bridge auto-respawns on the
-# next tool call — which would mask a real silent-death regression by
-# making it look like a normal idle exit. Pin to 0 here so any MCP exit
-# during the smoke is genuinely anomalous and shows up in the log.
-export CONTEXT_MODE_IDLE_TIMEOUT_MS=0
-
 PI_BIN="${PI_BIN:-$(command -v pi || true)}"
 PI_HEADLESS_FLAGS="${PI_HEADLESS_FLAGS:---headless}"
 FIXTURE="${FIXTURE:-$SMOKE_DIR/fixtures/search-corpus.txt}"

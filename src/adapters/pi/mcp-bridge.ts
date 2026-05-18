@@ -509,7 +509,7 @@ export class MCPStdioClient {
   }
 
   /**
-   * Respawn the MCP child after an exit (clean idle shutdown or crash).
+   * Respawn the MCP child after an exit (clean shutdown or crash).
    * Resets state so a fresh `start()` + `initialize()` cycle runs, then
    * the caller's pending request flows through the new child.
    *

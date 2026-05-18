@@ -244,12 +244,10 @@ describe("MCPStdioClient — handles EPIPE when writing to child stdin", () => {
   });
 });
 
-// Slice 6 — respawn after idle self-shutdown (#583)
+// Slice 6 — respawn after MCP child exit (#583)
 //
-// Regression: in v1.0.132 the MCP server gained an idle self-shutdown
-// (#565/#568, lifecycle.ts). When the Pi-spawned child exits cleanly
-// after CONTEXT_MODE_IDLE_TIMEOUT_MS of inactivity, Pi keeps the
-// previously-registered tool handles, but the bridge client has
+// Regression: when the Pi-spawned child exits cleanly while Pi keeps the
+// previously-registered tool handles, the bridge client has
 // `exited=true` and every subsequent request rejects with
 // "MCP server has exited". The user sees a permanently broken set of
 // `ctx_*` tools until they restart Pi.
@@ -257,12 +255,11 @@ describe("MCPStdioClient — handles EPIPE when writing to child stdin", () => {
 // Fix: when `callTool()` is invoked on an exited client, respawn the
 // MCP child + re-`initialize()` transparently before issuing the call,
 // so already-registered Pi tools recover on the very next use.
-describe("MCPStdioClient — respawns after idle self-shutdown (#583)", () => {
+describe("MCPStdioClient — respawns after MCP child exit (#583)", () => {
   it("re-spawns the child when callTool is invoked after exit, and the call succeeds", async () => {
     // Fake MCP server: handles initialize, tools/list, tools/call.
     // On its FIRST process incarnation it exits cleanly after the first
-    // tools/call — mirroring lifecycle.ts gracefulShutdown(0) firing on
-    // idle. A marker file on disk distinguishes the original child from
+    // tools/call — mirroring a clean MCP child shutdown. A marker file on disk distinguishes the original child from
     // the respawned one so the second incarnation stays alive.
     const markerPath = join(scratch, "first-incarnation-marker");
     const fakePath = join(scratch, "exit-after-call.mjs");
@@ -290,7 +287,7 @@ describe("MCPStdioClient — respawns after idle self-shutdown (#583)", () => {
           } else if (msg.method === "tools/call") {
             callCount++;
             process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "pong-pid-" + process.pid }] } }) + "\\n");
-            // First incarnation: mimic idle self-shutdown after one call.
+            // First incarnation: mimic clean MCP child shutdown after one call.
             if (isFirst && callCount === 1) {
               writeFileSync(MARKER, "1");
               setTimeout(() => process.exit(0), 10);

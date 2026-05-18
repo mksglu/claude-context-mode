@@ -421,17 +421,11 @@ Full configs: [`configs/cursor/hooks.json`](configs/cursor/hooks.json) | [`confi
    ```json
    {
      "$schema": "https://opencode.ai/config.json",
-     "mcp": {
-       "context-mode": {
-         "type": "local",
-         "command": ["context-mode"]
-       }
-     },
      "plugin": ["context-mode"]
    }
    ```
 
-   The `mcp` entry registers all 11 MCP tools. The `plugin` entry enables hooks — OpenCode calls the plugin's TypeScript functions directly before and after each tool execution, blocking dangerous commands and enforcing sandbox routing.
+   The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — OpenCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
 3. *(Optional)* Copy the routing rules file. The model needs an `AGENTS.md` file for routing awareness:
 
@@ -471,17 +465,11 @@ Full configs: [`configs/opencode/opencode.json`](configs/opencode/opencode.json)
    ```json
    {
      "$schema": "https://app.kilo.ai/config.json",
-     "mcp": {
-       "context-mode": {
-         "type": "local",
-         "command": ["context-mode"]
-       }
-     },
      "plugin": ["context-mode"]
    }
    ```
 
-   The `mcp` entry registers all 11 MCP tools. The `plugin` entry enables hooks — KiloCode calls the plugin's TypeScript functions directly before and after each tool execution, blocking dangerous commands and enforcing sandbox routing.
+   The `plugin` entry registers all 11 `ctx_*` tools natively and enables hooks — KiloCode calls context-mode's TypeScript plugin in-process, so there is no redundant stdio MCP child per session.
 
 3. *(Optional)* Copy the routing rules file. KiloCode shares the OpenCode plugin architecture, so the model needs an `AGENTS.md` file for routing awareness:
 
@@ -1396,6 +1384,16 @@ export CTX_FETCH_STRICT=1
 That blocks loopback + RFC1918 + ULA in addition to the always-blocked ranges. Useful when context-mode runs as a shared service, not on a developer's own machine.
 
 `tool_input` for any `mcp__*` tool call is also redacted before persistence — keys matching `authorization`, `token`, `secret`, `password`, `api_key`, `cookie`, `signature`, `private_key` get masked to `[REDACTED]` so credentials in MCP arguments don't end up in the session DB.
+
+### Lifecycle environment variables
+
+One runtime knob controls MCP sibling cleanup. Idle self-shutdown was removed after [#592](https://github.com/mksglu/context-mode/issues/592): hosts can keep registered tool handles after a clean MCP exit, making a timer-driven exit unsafe.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CONTEXT_MODE_STARTUP_SWEEP` | `1` (enabled) | At boot, a newly-spawned MCP child reaps any other context-mode MCP server pids that share its parent process (`sameParentOnly: true` — never touches MCP children of a different host). This reclaims accumulated siblings immediately instead of waiting for each idle timer to fire. Set to `0` or `false` to disable (useful when you intentionally want multiple concurrent MCP children under the same host, e.g. multi-tenant test runners). |
+
+`CONTEXT_MODE_STARTUP_SWEEP` is read fresh at MCP server start — no restart of the host CLI is required, just spawn a new MCP child (open a new session) for changes to take effect. Unrecognized values fall back to enabled.
 
 ### Routing-guidance environment variables
 

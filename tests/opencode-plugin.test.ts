@@ -11,7 +11,9 @@ import "./setup-home";
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 // ── Test helpers ──────────────────────────────────────────
 
@@ -81,6 +83,77 @@ describe("ContextModePlugin", () => {
       expect(typeof plugin["experimental.session.compacting"]).toBe("function");
       expect(typeof plugin["experimental.chat.system.transform"]).toBe("function");
       expect(typeof plugin["chat.message"]).toBe("function");
+    });
+
+    it("registers all ctx_* tools natively via the plugin tool map (#574)", async () => {
+      const plugin = await createTestPlugin(join(tempDir, "factory-native-tools"));
+      expect(plugin).toHaveProperty("tool");
+      expect(Object.keys(plugin.tool ?? {}).sort()).toEqual([
+        "ctx_batch_execute",
+        "ctx_doctor",
+        "ctx_execute",
+        "ctx_execute_file",
+        "ctx_fetch_and_index",
+        "ctx_index",
+        "ctx_insight",
+        "ctx_purge",
+        "ctx_search",
+        "ctx_stats",
+        "ctx_upgrade",
+      ]);
+    });
+
+    it("ctx_stats native plugin tool executes without an MCP child (#574 smoke)", async () => {
+      const projectDir = join(tempDir, "factory-native-tool-exec");
+      const plugin = await createTestPlugin(projectDir);
+      const result = await plugin.tool!.ctx_stats.execute({}, {
+        sessionID: "session-native-tool",
+        messageID: "msg-native-tool",
+        agent: "test-agent",
+        directory: projectDir,
+        worktree: projectDir,
+        abort: new AbortController().signal,
+        metadata: () => {},
+        ask: (() => ({}) as any) as any,
+      });
+      const output = typeof result === "string" ? result : result.output;
+      expect(output).toContain("context-mode");
+    });
+
+    it("native tool registry import does not leak process handlers or embedded env into OpenCode host", () => {
+      const childHome = mkdtempSync(join(tmpdir(), "opencode-plugin-side-effects-"));
+      try {
+        const tsx = resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+        const pluginPath = pathToFileURL(resolve(process.cwd(), "src", "adapters", "opencode", "plugin.ts")).href;
+        const script = `
+          (async () => {
+          const { ContextModePlugin } = await import(${JSON.stringify(pluginPath)});
+          const before = {
+            unhandled: process.listenerCount("unhandledRejection"),
+            uncaught: process.listenerCount("uncaughtException"),
+          };
+          await ContextModePlugin({ directory: ${JSON.stringify(childHome)}, client: { app: { log: async () => {} } } });
+          const after = {
+            unhandled: process.listenerCount("unhandledRejection"),
+            uncaught: process.listenerCount("uncaughtException"),
+            embedded: process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS ?? null,
+          };
+          console.log(JSON.stringify({ before, after }));
+          })().catch((err) => { console.error(err); process.exit(1); });
+        `;
+        const run = spawnSync(process.execPath, [tsx, "-e", script], {
+          cwd: process.cwd(),
+          env: { ...process.env, HOME: childHome, USERPROFILE: childHome },
+          encoding: "utf-8",
+        });
+        expect(run.status, run.stderr).toBe(0);
+        const result = JSON.parse(run.stdout.trim());
+        expect(result.after.unhandled).toBe(result.before.unhandled);
+        expect(result.after.uncaught).toBe(result.before.uncaught);
+        expect(result.after.embedded).toBeNull();
+      } finally {
+        rmSync(childHome, { recursive: true, force: true });
+      }
     });
 
     it("does not write AGENTS.md routing instructions on startup", async () => {

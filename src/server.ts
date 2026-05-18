@@ -8,6 +8,7 @@ import { join, dirname, resolve, sep, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir, cpus } from "node:os";
 import { request as httpsRequest } from "node:https";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { PolyglotExecutor } from "./executor.js";
 import { runPool, type PoolJob } from "./runPool.js";
@@ -56,20 +57,161 @@ const VERSION: string = (() => {
   return "unknown";
 })();
 
-// Prevent silent server death from unhandled async errors
-process.on("unhandledRejection", (err) => {
-  process.stderr.write(`[context-mode] unhandledRejection: ${err}\n`);
-});
-process.on("uncaughtException", (err) => {
-  process.stderr.write(`[context-mode] uncaughtException: ${err?.message ?? err}\n`);
-});
+// Prevent silent MCP server death from unhandled async errors.
+//
+// Guarded for plugin-native OpenCode/Kilo imports (#574): when server.js is
+// imported only to reuse the ctx_* tool registry, these handlers would become
+// process-wide OpenCode/Kilo host handlers. In Node, adding an
+// `uncaughtException` listener changes default crash behavior, so only the
+// standalone MCP process may install them.
+if (process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS !== "1") {
+  process.on("unhandledRejection", (err) => {
+    process.stderr.write(`[context-mode] unhandledRejection: ${err}\n`);
+  });
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`[context-mode] uncaughtException: ${err?.message ?? err}\n`);
+  });
+}
 
 const runtimes = detectRuntimes();
 const available = getAvailableLanguages(runtimes);
-const server = new McpServer({
+export const server = new McpServer({
   name: "context-mode",
   version: VERSION,
 });
+
+export interface RegisteredCtxTool {
+  name: string;
+  config: Record<string, unknown>;
+  handler: (args: Record<string, unknown>) => Promise<unknown> | unknown;
+}
+
+export const REGISTERED_CTX_TOOLS: RegisteredCtxTool[] = [];
+
+export function shouldSuppressMcpToolsForNativePluginHost(
+  opts: { embedded?: string; platform?: PlatformId; settings?: Record<string, unknown> | null } = {},
+): boolean {
+  const embedded = opts.embedded ?? process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS;
+  if (embedded === "1") return false;
+  const platform = opts.platform ?? detectPlatform().platform;
+  if (platform !== "opencode" && platform !== "kilo") return false;
+  const settings = opts.settings ?? readNativePluginHostSettings(platform);
+  return settingsHasContextModePlugin(settings) && settingsHasLegacyContextModeMcp(settings);
+}
+
+function stripJsonComments(str: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    const next = str[i + 1];
+
+    if (inBlockComment) {
+      if (c === "*" && next === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (escaped) {
+      out += c;
+      escaped = false;
+      continue;
+    }
+
+    if (c === "\\") {
+      out += c;
+      escaped = inString;
+      continue;
+    }
+
+    if (c === '"') {
+      inString = !inString;
+      out += c;
+      continue;
+    }
+
+    if (!inString && c === "/" && next === "/") {
+      while (i < str.length && str[i] !== "\n") i++;
+      if (i < str.length) out += "\n";
+      continue;
+    }
+
+    if (!inString && c === "/" && next === "*") {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+
+    out += c;
+  }
+
+  return out
+    .replace(/,(\s*[}\]])/g, "$1");
+}
+
+function readNativePluginHostSettings(platform: PlatformId): Record<string, unknown> | null {
+  const base = platform === "kilo" ? "kilo" : "opencode";
+  const paths = [
+    resolve(`${base}.json`),
+    resolve(`${base}.jsonc`),
+    resolve(`.${base}`, `${base}.json`),
+    resolve(`.${base}`, `${base}.jsonc`),
+    join(homedir(), ".config", base, `${base}.json`),
+    join(homedir(), ".config", base, `${base}.jsonc`),
+  ];
+  for (const p of paths) {
+    try {
+      if (!existsSync(p)) continue;
+      return JSON.parse(stripJsonComments(readFileSync(p, "utf8"))) as Record<string, unknown>;
+    } catch { /* try next config path */ }
+  }
+  return null;
+}
+
+function settingsHasContextModePlugin(settings: Record<string, unknown> | null | undefined): boolean {
+  const plugins = settings?.plugin;
+  return Array.isArray(plugins) && plugins.some((p) => typeof p === "string" && p.includes("context-mode"));
+}
+
+function settingsHasLegacyContextModeMcp(settings: Record<string, unknown> | null | undefined): boolean {
+  const mcp = settings?.mcp;
+  return !!(
+    mcp &&
+    typeof mcp === "object" &&
+    !Array.isArray(mcp) &&
+    Object.prototype.hasOwnProperty.call(mcp, "context-mode")
+  );
+}
+
+const suppressMcpToolsForNativePluginHost = shouldSuppressMcpToolsForNativePluginHost();
+
+const originalRegisterTool = server.registerTool.bind(server);
+(server as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool = (...args: unknown[]) => {
+  const [name, config, handler] = args as [
+    string,
+    Record<string, unknown>,
+    (toolArgs: Record<string, unknown>) => Promise<unknown> | unknown,
+  ];
+  if (suppressMcpToolsForNativePluginHost) return undefined;
+  REGISTERED_CTX_TOOLS.push({ name, config, handler });
+  return (originalRegisterTool as unknown as (...callArgs: unknown[]) => unknown)(...args);
+};
+
+type ToolContextOverride = { projectDir: string; sessionId?: string };
+const projectDirOverride = new AsyncLocalStorage<ToolContextOverride>();
+
+export async function withProjectDirOverride<T>(
+  projectDir: string | ToolContextOverride,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const ctx = typeof projectDir === "string" ? { projectDir } : projectDir;
+  return projectDirOverride.run(ctx, fn);
+}
 
 // Register empty prompts/resources handlers so MCP clients don't get -32601 (#168).
 // OpenCode calls listPrompts()/listResources() unconditionally — the error can poison
@@ -96,6 +238,11 @@ writeFileSync(
   CM_FS_PRELOAD,
   `(function(){var __cm_fs=0;process.on('exit',function(){if(__cm_fs>0)try{process.stderr.write('__CM_FS__:'+__cm_fs+'\\n')}catch(e){}});try{var f=require('fs');var ors=f.readFileSync;f.readFileSync=function(){var r=ors.apply(this,arguments);if(Buffer.isBuffer(r))__cm_fs+=r.length;else if(typeof r==='string')__cm_fs+=Buffer.byteLength(r);return r;};}catch(e){}})();\n`,
 );
+// In the stdio MCP path, main() also removes this file during graceful
+// shutdown. Plugin-native OpenCode/Kilo imports skip main() (#574), so
+// register a top-level best-effort cleanup too to avoid leaking preload
+// snippets under /tmp when the host process exits.
+process.on("exit", () => { try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ } });
 
 // Lazy singleton — no DB overhead unless index/search is used
 let _store: ContentStore | null = null;
@@ -109,6 +256,9 @@ let _store: ContentStore | null = null;
  * legacy unattributed rows readable.
  */
 export function currentAttribution(): { sessionId?: string } | undefined {
+  const override = projectDirOverride.getStore();
+  if (override?.sessionId) return { sessionId: override.sessionId };
+
   // CLAUDE_SESSION_ID env var is NOT propagated to MCP servers (only to hooks).
   // Cross-adapter resolution: every adapter (15 of them) sets *_PROJECT_DIR env
   // and writes session_events via hooks. Read the most-recent session_id from
@@ -260,6 +410,9 @@ function getSessionDir(): string {
  * that don't set their own env var (Cursor, OpenClaw, Codex, Kiro, Zed).
  */
 function getProjectDir(): string {
+  const override = projectDirOverride.getStore();
+  if (override) return override.projectDir;
+
   // Delegated to the shared resolver so the env-var chain rejects plugin
   // install paths (set by a prior MCP boot's start.mjs after `/ctx-upgrade`)
   // and prefers the shell-set PWD before the chdir'd cwd. v1.0.115 adds
@@ -3955,7 +4108,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("Fatal:", err);
-  process.exit(1);
-});
+if (process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS !== "1") {
+  main().catch((err) => {
+    console.error("Fatal:", err);
+    process.exit(1);
+  });
+}

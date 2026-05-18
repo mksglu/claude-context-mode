@@ -83,6 +83,25 @@ type PluginContext = {
   directory: string;
 };
 
+type NativeToolContext = {
+  sessionID: string;
+  messageID: string;
+  agent: string;
+  directory: string;
+  worktree?: string;
+  abort?: AbortSignal;
+  metadata?: (input: { title?: string; metadata?: Record<string, unknown> }) => void;
+};
+
+type NativeToolDefinition = {
+  description: string;
+  args: Record<string, unknown>;
+  execute: (
+    args: Record<string, unknown>,
+    ctx: NativeToolContext,
+  ) => Promise<string | { title?: string; output: string; metadata?: Record<string, unknown> }>;
+};
+
 /** OpenCode tool.execute.before — first parameter */
 interface BeforeHookInput {
   tool: string;
@@ -370,7 +389,69 @@ async function createContextModePlugin(ctx: PluginContext) {
     }
   }
 
+  async function buildNativeTools(): Promise<Record<string, NativeToolDefinition>> {
+    // Import the existing MCP server registry without starting its stdio
+    // transport. This is the plugin-only bridge for #574: OpenCode/Kilo
+    // call ctx_* tools in-process through Hooks.tool instead of spawning
+    // a separate MCP child per session.
+    const prevEmbedded = process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS;
+    process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS = "1";
+    let mod: typeof import("../../server.js");
+    try {
+      mod = await import("../../server.js");
+    } finally {
+      if (prevEmbedded === undefined) delete process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS;
+      else process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS = prevEmbedded;
+    }
+    const tools: Record<string, NativeToolDefinition> = {};
+
+    for (const registered of mod.REGISTERED_CTX_TOOLS) {
+      const config = registered.config as Record<string, unknown>;
+      const schema = config.inputSchema as { shape?: unknown; _def?: { shape?: unknown } } | undefined;
+      const shape =
+        typeof schema?.shape === "object" && schema.shape !== null
+          ? schema.shape
+          : typeof schema?._def?.shape === "function"
+            ? (schema._def.shape as () => unknown)()
+            : {};
+
+      tools[registered.name] = {
+        description: String(config.description ?? ""),
+        args: shape as Record<string, unknown>,
+        async execute(args: Record<string, unknown>, toolCtx: NativeToolContext) {
+          toolCtx.metadata?.({ title: String(config.title ?? registered.name) });
+          const project = toolCtx.directory || projectDir;
+          const result = await mod.withProjectDirOverride({ projectDir: project, sessionId: toolCtx.sessionID }, async () =>
+            registered.handler(args ?? {}),
+          );
+
+          const r = result as {
+            content?: Array<{ type?: string; text?: string }>;
+            isError?: boolean;
+          };
+          const text = Array.isArray(r?.content)
+            ? r.content
+                .filter((c) => c?.type === "text" && typeof c.text === "string")
+                .map((c) => c.text)
+                .join("\n")
+            : typeof result === "string"
+              ? result
+              : JSON.stringify(result ?? "");
+
+          if (r?.isError) throw new Error(text || `${registered.name} returned an error`);
+          return { title: String(config.title ?? registered.name), output: text };
+        },
+      };
+    }
+
+    return tools;
+  }
+
+  const nativeTools = await buildNativeTools();
+
   return {
+    tool: nativeTools,
+
     // ── PreToolUse: Routing enforcement ─────────────────
 
     "tool.execute.before": async (input: BeforeHookInput, output: BeforeHookOutput) => {
