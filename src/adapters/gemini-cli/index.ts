@@ -21,7 +21,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   mkdirSync,
   accessSync,
   chmodSync,
@@ -31,6 +30,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 
 import type {
   HookAdapter,
@@ -304,10 +304,10 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
   writeSettings(settings: Record<string, unknown>): void {
     const dir = resolve(homedir(), ".gemini");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(
+    atomicWriteFileSync(
       this.getSettingsPath(),
       JSON.stringify(settings, null, 2) + "\n",
-      "utf-8",
+      { encoding: "utf-8" },
     );
   }
 
@@ -520,7 +520,7 @@ export class GeminiCLIAdapter extends BaseAdapter implements HookAdapter {
       pkg.version = version;
       pkg.installPath = pluginRoot;
       pkg.lastUpdated = new Date().toISOString();
-      writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+      atomicWriteFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", { encoding: "utf-8" });
     } catch {
       /* best effort */
     }

@@ -18,7 +18,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   copyFileSync,
   accessSync,
   constants,
@@ -27,6 +26,7 @@ import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 
 import type {
   HookAdapter,
@@ -286,10 +286,10 @@ export class OpenClawAdapter extends BaseAdapter implements HookAdapter {
   writeSettings(settings: Record<string, unknown>): void {
     // Write to openclaw.json in current directory
     const configPath = resolve("openclaw.json");
-    writeFileSync(
+    atomicWriteFileSync(
       configPath,
       JSON.stringify(settings, null, 2) + "\n",
-      "utf-8",
+      { encoding: "utf-8" },
     );
   }
 

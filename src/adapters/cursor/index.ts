@@ -7,7 +7,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   mkdirSync,
   accessSync,
   chmodSync,
@@ -21,6 +20,7 @@ import { homedir } from "node:os";
 
 import { BaseAdapter } from "../base.js";
 import { resolveClaudeConfigDir } from "../../util/claude-config.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 
 import type {
   HookAdapter,
@@ -294,7 +294,7 @@ export class CursorAdapter extends BaseAdapter implements HookAdapter {
   writeSettings(settings: Record<string, unknown>): void {
     const configPath = this.getSettingsPath();
     mkdirSync(resolve(".cursor"), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+    atomicWriteFileSync(configPath, JSON.stringify(settings, null, 2) + "\n", { encoding: "utf-8" });
   }
 
   validateHooks(_pluginRoot: string): DiagnosticResult[] {

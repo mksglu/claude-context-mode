@@ -181,4 +181,18 @@ describe("OMPAdapter", () => {
       expect(adapter.getInstructionFiles()).toEqual(["SYSTEM.md", "AGENTS.md"]);
     });
   });
+
+  // ── writeSettings round-trip (atomic write contract) ──
+
+  describe("writeSettings atomic round-trip", () => {
+    it("writeSettings then readSettings returns identical JSON", () => {
+      const payload = {
+        mcpServers: {
+          "context-mode": { command: "node", args: ["start.mjs"] },
+        },
+      };
+      adapter.writeSettings(payload as Record<string, unknown>);
+      expect(adapter.readSettings()).toEqual(payload);
+    });
+  });
 });

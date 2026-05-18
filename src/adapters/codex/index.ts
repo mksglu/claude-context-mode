@@ -16,7 +16,6 @@
 
 import {
   readFileSync,
-  writeFileSync,
   accessSync,
   copyFileSync,
   constants,
@@ -26,6 +25,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BaseAdapter } from "../base.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 import { resolveCodexConfigDir } from "./paths.js";
 
 import {
@@ -616,7 +616,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
         ? enabledSettings.text
         : `${enabledSettings.text}${newline}`;
       mkdirSync(dirname(settingsPath), { recursive: true });
-      writeFileSync(settingsPath, text, "utf-8");
+      atomicWriteFileSync(settingsPath, text, { encoding: "utf-8" });
       changes.push("Enabled Codex hooks feature flag");
     }
 
@@ -714,7 +714,7 @@ export class CodexAdapter extends BaseAdapter implements HookAdapter {
   private writeHooksConfig(config: CodexHooksFile): void {
     const hooksPath = this.getHooksPath();
     mkdirSync(dirname(hooksPath), { recursive: true });
-    writeFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+    atomicWriteFileSync(hooksPath, JSON.stringify(config, null, 2) + "\n", { encoding: "utf-8" });
   }
 
   private upsertManagedHookEntry(

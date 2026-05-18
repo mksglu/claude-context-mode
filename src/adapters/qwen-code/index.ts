@@ -15,13 +15,13 @@
 
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 
 import { ClaudeCodeBaseAdapter, type ClaudeCodeWireInput } from "../claude-code-base.js";
+import { atomicWriteFileSync } from "../../util/atomic-fs.js";
 import { EXTERNAL_MCP_MATCHER_PATTERN } from "./hooks.js";
 
 import {
@@ -144,7 +144,7 @@ export class QwenCodeAdapter extends ClaudeCodeBaseAdapter implements HookAdapte
     // a `__require` shim that throws `Dynamic require of "node:fs" is not
     // supported` under Node ESM/Bun (this adapter is pulled into both
     // server.bundle.mjs and cli.bundle.mjs via adapter detect).
-    writeFileSync(this.getSettingsPath(), JSON.stringify(settings, null, 2));
+    atomicWriteFileSync(this.getSettingsPath(), JSON.stringify(settings, null, 2));
   }
 
   // ── Diagnostics (doctor) ───────────────────────────────

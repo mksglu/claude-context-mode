@@ -15,7 +15,7 @@
 import * as p from "@clack/prompts";
 import color from "picocolors";
 import { execFileSync, execSync, execFile as nodeExecFile, type ExecSyncOptions } from "node:child_process";
-import { readFileSync, writeFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, mkdirSync, constants } from "node:fs";
+import { readFileSync, cpSync, accessSync, existsSync, readdirSync, rmSync, closeSync, openSync, chmodSync, mkdirSync, constants } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { resolve, dirname, join } from "node:path";
 import { tmpdir, devNull, homedir } from "node:os";
@@ -28,6 +28,7 @@ import {
 } from "./runtime.js";
 import { getHookScriptPaths } from "./util/hook-config.js";
 import { ensurePluginCacheIntegrityLoaded } from "./util/plugin-cache-integrity.js";
+import { atomicWriteFileSync } from "./util/atomic-fs.js";
 import { resolveClaudeConfigDir } from "./util/claude-config.js";
 // v1.0.128 — Issue #559 sibling MCP kill helpers (see PR-559-560-FIX-DESIGN.md).
 import {
@@ -946,7 +947,7 @@ async function upgrade(opts?: { platform?: string }) {
           },
         },
       };
-      writeFileSync(
+      atomicWriteFileSync(
         resolve(pluginRoot, ".mcp.json"),
         JSON.stringify(mcpConfig, null, 2) + "\n",
       );
