@@ -407,12 +407,21 @@ async function createContextModePlugin(ctx: PluginContext) {
 
     for (const registered of mod.REGISTERED_CTX_TOOLS) {
       const config = registered.config as Record<string, unknown>;
-      const schema = config.inputSchema as { shape?: unknown; _def?: { shape?: unknown } } | undefined;
+      // Zod schema object that the MCP framework normally calls
+      // safeParseAsync() on before invoking the handler. The native
+      // OpenCode plugin path bypasses MCP's transport layer entirely
+      // (refs/platforms/opencode/packages/opencode/src/tool/registry.ts:127),
+      // so we must parse args here too — otherwise z.preprocess() coercions
+      // (coerceCommandsArray / coerceJsonArray in server.ts) and defaults
+      // never fire. Fixes #621.
+      const inputSchema = config.inputSchema as
+        | { shape?: unknown; _def?: { shape?: unknown }; parse?: (input: unknown) => unknown }
+        | undefined;
       const shape =
-        typeof schema?.shape === "object" && schema.shape !== null
-          ? schema.shape
-          : typeof schema?._def?.shape === "function"
-            ? (schema._def.shape as () => unknown)()
+        typeof inputSchema?.shape === "object" && inputSchema.shape !== null
+          ? inputSchema.shape
+          : typeof inputSchema?._def?.shape === "function"
+            ? (inputSchema._def.shape as () => unknown)()
             : {};
 
       tools[registered.name] = {
@@ -421,8 +430,28 @@ async function createContextModePlugin(ctx: PluginContext) {
         async execute(args: Record<string, unknown>, toolCtx: NativeToolContext) {
           toolCtx.metadata?.({ title: String(config.title ?? registered.name) });
           const project = toolCtx.directory || projectDir;
+
+          // Run the registered Zod schema BEFORE the handler — same contract
+          // as the MCP SDK (server/mcp.js safeParseAsync at line 174). This
+          // applies z.preprocess() coercions, populates .default() values,
+          // and produces the validation error the handler expects (#621).
+          let parsedArgs: Record<string, unknown> = args ?? {};
+          if (typeof inputSchema?.parse === "function") {
+            try {
+              parsedArgs = inputSchema.parse(args ?? {}) as Record<string, unknown>;
+            } catch (err) {
+              // Surface validation failures with a clear, actionable message
+              // (mirrors MCP SDK error format) instead of a downstream
+              // "x.map is not a function" crash.
+              const message = err instanceof Error ? err.message : String(err);
+              throw new Error(
+                `Invalid arguments for ${registered.name}: ${message}`,
+              );
+            }
+          }
+
           const result = await mod.withProjectDirOverride({ projectDir: project, sessionId: toolCtx.sessionID }, async () =>
-            registered.handler(args ?? {}),
+            registered.handler(parsedArgs),
           );
 
           const r = result as {

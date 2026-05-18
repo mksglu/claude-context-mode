@@ -120,6 +120,116 @@ describe("ContextModePlugin", () => {
       expect(output).toContain("context-mode");
     });
 
+    // ── #621: native plugin must run Zod preprocessing on args ────────
+    // OpenCode's plugin tool registry (refs/platforms/opencode/packages/
+    // opencode/src/tool/registry.ts:127) only uses the Zod schema as a
+    // boolean type guard via .safeParse(u).success — it passes RAW args
+    // to def.execute(). Our handlers in server.ts rely on
+    // z.preprocess(coerceCommandsArray|coerceJsonArray, …) to coerce
+    // JSON-string args back into arrays and to fill defaults. Before
+    // the fix, registered.handler(args ?? {}) ran without parsing,
+    // so commands could arrive as `undefined` or `"[...]"`, and the
+    // handler crashed with `commands.map is not a function`.
+    describe("#621: native plugin runs Zod preprocessing on args", () => {
+      const baseCtx = (projectDir: string) => ({
+        sessionID: "issue-621-sess",
+        messageID: "issue-621-msg",
+        agent: "test-agent",
+        directory: projectDir,
+        worktree: projectDir,
+        abort: new AbortController().signal,
+        metadata: () => {},
+        ask: (() => ({}) as any) as any,
+      });
+
+      it("ctx_batch_execute accepts well-formed args without crashing", async () => {
+        const projectDir = join(tempDir, "issue-621-baseline");
+        const plugin = await createTestPlugin(projectDir);
+        const result = await plugin.tool!.ctx_batch_execute.execute(
+          {
+            commands: [
+              { label: "echo test", command: "echo issue621-baseline" },
+            ],
+            queries: ["issue621-baseline"],
+            concurrency: 1,
+          },
+          baseCtx(projectDir),
+        );
+        const output = typeof result === "string" ? result : result.output;
+        // Should succeed (no "commands.map is not a function" error).
+        expect(output).toContain("Executed");
+      });
+
+      it("ctx_batch_execute coerces JSON-stringified commands array (#621)", async () => {
+        const projectDir = join(tempDir, "issue-621-json-string");
+        const plugin = await createTestPlugin(projectDir);
+        // Simulate OpenCode delivering JSON-stringified array — the
+        // coerceCommandsArray preprocessor must turn this back into an
+        // array via z.preprocess before the handler runs.
+        const result = await plugin.tool!.ctx_batch_execute.execute(
+          {
+            commands: JSON.stringify([
+              { label: "echo coerced", command: "echo issue621-coerced" },
+            ]) as unknown as Array<{ label: string; command: string }>,
+            queries: JSON.stringify(["issue621-coerced"]) as unknown as string[],
+          },
+          baseCtx(projectDir),
+        );
+        const output = typeof result === "string" ? result : result.output;
+        expect(output).toContain("Executed");
+      });
+
+      it("ctx_batch_execute coerces plain-string commands into {label,command} (#621)", async () => {
+        const projectDir = join(tempDir, "issue-621-string-cmds");
+        const plugin = await createTestPlugin(projectDir);
+        // coerceCommandsArray also lifts bare strings into {label,command}.
+        const result = await plugin.tool!.ctx_batch_execute.execute(
+          {
+            commands: ["echo issue621-string-cmd"] as unknown as Array<{
+              label: string;
+              command: string;
+            }>,
+            queries: ["issue621-string-cmd"],
+          },
+          baseCtx(projectDir),
+        );
+        const output = typeof result === "string" ? result : result.output;
+        expect(output).toContain("Executed");
+      });
+
+      it("ctx_batch_execute surfaces actionable error when commands is missing (#621)", async () => {
+        const projectDir = join(tempDir, "issue-621-missing-commands");
+        const plugin = await createTestPlugin(projectDir);
+        // Before the fix this crashed with "commands.map is not a function"
+        // — opaque, hard for the LLM to recover from. After the fix the
+        // Zod schema rejects the missing field with a clear error.
+        await expect(
+          plugin.tool!.ctx_batch_execute.execute(
+            { queries: ["whatever"] } as unknown as Record<string, unknown>,
+            baseCtx(projectDir),
+          ),
+        ).rejects.toThrow(/Invalid arguments for ctx_batch_execute/);
+      });
+
+      it("ctx_search coerces JSON-stringified queries array (#621)", async () => {
+        const projectDir = join(tempDir, "issue-621-search-coerce");
+        const plugin = await createTestPlugin(projectDir);
+        // ctx_search also uses z.preprocess(coerceJsonArray, …) on queries.
+        // Empty knowledge base is fine — we only assert the call returns
+        // without a TypeError (the original symptom).
+        const result = await plugin.tool!.ctx_search.execute(
+          {
+            queries: JSON.stringify(["issue621-search"]) as unknown as string[],
+          },
+          baseCtx(projectDir),
+        );
+        const output = typeof result === "string" ? result : result.output;
+        // Should not throw; output is a normal search response (possibly
+        // "No results" / guidance) but never the JS TypeError symptom.
+        expect(typeof output).toBe("string");
+      });
+    });
+
     it("native tool registry import does not leak process handlers or embedded env into OpenCode host", () => {
       const childHome = mkdtempSync(join(tmpdir(), "opencode-plugin-side-effects-"));
       try {
