@@ -9,7 +9,7 @@
 |--------|-------|
 | Total scenarios | 21 |
 | Tools benchmarked | `ctx_execute_file` (summarize) + `ctx_index`/`ctx_search` (knowledge retrieval) |
-| Smart truncation | Head + tail preservation (60/40 split) |
+| Large output handling | Auto-externalize to FTS5 (>100 KB → pointer) |
 | Total raw data processed | 376 KB |
 | Total context consumed | 16.5 KB |
 | Overall context savings | **96%** |
@@ -74,35 +74,28 @@
 - `ctx_execute_file` on React docs: `"5 code blocks, 3 sections about cleanup"` → **useless for coding**
 - `ctx_index + ctx_search` on React docs: returns the full `useEffect(() => { ... }, [deps])` block → **actually useful**
 
-## Part 3: Smart Truncation
+## Part 3: Large Output Externalization (FTS5 Pointer)
 
-*When output exceeds the limit, context-mode keeps the first 60% + last 40% of lines — preserving both initial context and final error messages.*
+*When output exceeds 100 KB, context-mode auto-indexes the full content into FTS5 and returns a pointer message instead of raw content. No data is discarded — the LLM queries it on demand via `ctx_search()`.*
 
-| Before (v0.2) | After (v0.3) |
+| Before | After |
 |---|---|
-| Blindly keeps first N bytes | Keeps head (60%) + tail (40%) |
-| Cuts mid-line, corrupts UTF-8 | Snaps to line boundaries |
-| Error messages at end: **LOST** | Error messages at end: **PRESERVED** |
-| `"... [output truncated]"` | `"[47 lines / 3.2KB truncated — showing first 12 + last 8 lines]"` |
+| Raw output floods context window | Output indexed into FTS5, pointer returned |
+| LLM sees truncated/partial content | Full content preserved, queryable on demand |
+| Large logs: **LOST** | Large logs: **FULLY INDEXED** |
+| `"... [output truncated]"` | `"Indexed N sections from: execute:shell\nUse ctx_search(...) to query."` |
 
 ### Example
 
 ```
-line 0: data initialization
-line 1: loading config
-line 2: starting server
-...
+# ctx_execute output > 100 KB:
 
-... [47 lines / 3.2KB truncated — showing first 12 + last 8 lines] ...
-
-line 92: connection timeout
-line 93: retry attempt 3 failed
-line 94: FATAL: database unreachable
-line 95: Stack trace: Error at connect()
-line 96: exit code: 1
+Indexed 42 sections (12 with code) from: execute:shell
+Use ctx_search(queries: ["..."]) to query this content.
+Use source: "execute:shell" to scope results.
 ```
 
-The LLM can now see **both** the setup context (head) and the actual error (tail).
+The LLM retrieves only the relevant sections via `ctx_search()` — no context budget wasted on raw output.
 
 ## Context Window Impact
 

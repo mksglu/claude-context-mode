@@ -742,7 +742,7 @@ Self-update from GitHub:
 | Total context consumed | 16.5 KB |
 | Overall context savings | 96% |
 | Code examples preserved | 100% |
-| Smart truncation strategy | Head 60% + tail 40% |
+| Large output handling | Auto-externalize to FTS5 (>100 KB → pointer) |
 
 ## Edge Cases and Constraints
 
@@ -752,7 +752,7 @@ Self-update from GitHub:
 - **Binary output:** Decoded as UTF-8 (may produce replacement characters).
 - **Timeout:** Returns partial stdout collected before kill + timeout message with elapsed time.
 - **Hard cap exceeded (>100 MB):** Process tree killed immediately, stderr appended with `"[output capped at 100MB -- process killed]"`.
-- **Smart truncation message format:** `"... [N lines / X.XKB truncated -- showing first M + last K lines] ..."`.
+- **Large output externalization (>100 KB):** Full stdout auto-indexed into FTS5; pointer message returned: `"Indexed N sections from: execute:<lang>\nUse ctx_search(...) to query."`.
 
 ### Search Constraints
 
