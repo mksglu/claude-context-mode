@@ -364,16 +364,45 @@ if (!process.env.VITEST) {
 // Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs)
 // ensure-deps handles better-sqlite3 install + ABI cache/rebuild automatically (#148, #203)
 import "./hooks/ensure-deps.mjs";
-// Also install pure-JS deps used by server
-for (const pkg of ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"]) {
-  if (!existsSync(resolve(__dirname, "node_modules", pkg))) {
+// Pure-JS runtime deps used only by `ctx_fetch_and_index` (HTML → Markdown
+// pipeline runs in a sandboxed subprocess that `require.resolve()`s these at
+// call time). Plugin distributions that bypass `npm install` — most notably
+// codex's marketplace, which git-clones into `~/.codex/plugins/cache/<pkg>/`
+// without installing dependencies — land here with no `node_modules/`.
+//
+// Before #634: synchronous `execSync("npm install …")` per package
+// (turndown + turndown-plugin-gfm + @mixmark-io/domino) blocked MCP boot
+// for ~15–25s cold. Codex's per-MCP `startup_timeout_sec` is 30s, so on
+// any host where its prewarm + DNS already eats a few seconds the timer
+// fires before context-mode replies to `initialize` and the MCP child is
+// dropped with "MCP client for `context-mode` timed out after 30 seconds".
+//
+// Fix: spawn each `npm install` detached + unref'd so it runs in the
+// background while the MCP server proceeds with its handshake. The deps
+// land asynchronously, well before any LLM-driven `ctx_fetch_and_index`
+// call can plausibly fire. If a user invokes that tool faster than the
+// install completes, the subprocess's own `require.resolve("turndown")`
+// failure surfaces a typed error to the caller — same posture as any
+// other missing-runtime-dep situation in that code path.
+{
+  const NPM_INSTALL_BG_PKGS = ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"];
+  const NPM_BIN = process.platform === "win32" ? "npm.cmd" : "npm";
+  for (const pkg of NPM_INSTALL_BG_PKGS) {
+    if (existsSync(resolve(__dirname, "node_modules", pkg))) continue;
     try {
-      execSync(`npm install ${pkg} --no-package-lock --no-save --silent`, {
-        cwd: __dirname,
-        stdio: "pipe",
-        timeout: 120000,
-      });
-    } catch { /* best effort */ }
+      const child = spawn(
+        NPM_BIN,
+        ["install", pkg, "--no-package-lock", "--no-save", "--silent", "--no-audit", "--no-fund"],
+        {
+          cwd: __dirname,
+          stdio: "ignore",
+          detached: true,
+          shell: process.platform === "win32",
+        },
+      );
+      child.on("error", () => { /* best effort — npm missing, broken cache, etc. */ });
+      child.unref();
+    } catch { /* best effort — never block MCP boot */ }
   }
 }
 
