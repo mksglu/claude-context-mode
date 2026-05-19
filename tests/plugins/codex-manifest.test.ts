@@ -66,6 +66,22 @@ describe(".codex-plugin/mcp.json", () => {
     expect(entry.cwd).toBe(".");
   });
 
+  it("ships `startup_timeout_sec` >= 60s to survive Codex's prewarm stack (#634)", () => {
+    // Codex's default `startup_timeout_sec` is 30s (codex-rs/config/src/mcp_types.rs
+    // RawMcpServerConfig.try_from). Before the first turn, Codex serializes a
+    // ~15s `startup_prewarm_resolve` websocket prewarm against chatgpt.com.
+    // On slower networks (macOS Wi-Fi in particular) the cumulative time from
+    // codex spawn → context-mode MCP `InitializeResult` exceeds 30s and Codex
+    // drops the MCP child with "MCP client for `context-mode` timed out after
+    // 30 seconds". Bumping this in the plugin manifest is propagated by
+    // codex's plugin-installer into `[mcp_servers.context-mode]` so users
+    // never see the failure on a fresh install.
+    const servers = mcp.mcpServers as Record<string, { startup_timeout_sec?: number }>;
+    const entry = servers["context-mode"];
+    expect(entry.startup_timeout_sec).toBeTypeOf("number");
+    expect(entry.startup_timeout_sec).toBeGreaterThanOrEqual(60);
+  });
+
   it("does NOT use `${CODEX_PLUGIN_ROOT}` placeholders (no var expansion happens)", () => {
     const raw = readFileSync(resolve(REPO_ROOT, ".codex-plugin/mcp.json"), "utf8");
     expect(raw).not.toMatch(/\$\{[^}]*PLUGIN_ROOT[^}]*\}/);

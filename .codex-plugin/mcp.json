@@ -3,7 +3,8 @@
     "context-mode": {
       "command": "node",
       "args": ["./start.mjs"],
-      "cwd": "."
+      "cwd": ".",
+      "startup_timeout_sec": 60
     }
   }
 }
