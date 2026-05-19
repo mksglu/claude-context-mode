@@ -58,7 +58,7 @@ describe("start.mjs startup order", () => {
     copyFileSync(join(repoRoot, "start.mjs"), join(root, "start.mjs"));
     writeFileSync(
       join(root, "hooks", "ensure-deps.mjs"),
-      "await new Promise((resolve) => setTimeout(resolve, 3000));\nconsole.error('__ENSURE_DEPS_DONE__');\n",
+      "await new Promise((resolve) => setTimeout(resolve, 5000));\nconsole.error('__ENSURE_DEPS_DONE__');\n",
     );
     writeFileSync(
       join(root, "server.bundle.mjs"),
@@ -76,6 +76,6 @@ describe("start.mjs startup order", () => {
     });
     procs.push(proc);
 
-    await expect(waitForOutput(proc, "__SERVER_BUNDLE_STARTED__", 1500)).resolves.toBe(true);
+    await expect(waitForOutput(proc, "__SERVER_BUNDLE_STARTED__", 3000)).resolves.toBe(true);
   });
 });

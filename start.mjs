@@ -362,6 +362,10 @@ if (!process.env.VITEST) {
 }
 
 function warmRuntimeDependencies() {
+  // Test pollution guard: detached child would spawn `npm install` against
+  // the test's temp clone, leaving zombie processes and modifying its
+  // node_modules. The startup-order test sets VITEST=1; mirror that here.
+  if (process.env.VITEST) return;
   try {
     const code = `
       import { existsSync } from "node:fs";

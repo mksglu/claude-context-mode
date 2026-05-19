@@ -1077,7 +1077,7 @@ describe("start.mjs CLI self-heal", () => {
     expect(src).toContain("writeFileSync");
   });
 
-  test("start.mjs CLI self-heal is after ensure-deps import and before server import", () => {
+  test("start.mjs CLI self-heal runs before server import and dependency warmup runs after", () => {
     const src = readFileSync(resolve(ROOT, "start.mjs"), "utf-8");
     // Anchor on actual statements, not raw filename mentions. The Linux Bun
     // re-exec change in commit f985afa added a documentation comment that
@@ -1086,15 +1086,16 @@ describe("start.mjs CLI self-heal", () => {
     // pushing the assertion to compare selfHealIdx=16381 < commentIdx=2347 →
     // FAIL on otherwise-correct ordering. Use uniquely-shaped statement
     // fragments so a future comment cannot shift the test's compass.
-    const ensureDepsIdx    = src.indexOf('import "./hooks/ensure-deps.mjs"');
-    const selfHealIdx      = src.indexOf('if (!existsSync(resolve(__dirname, "cli.bundle.mjs"))');
-    const serverImportIdx  = src.indexOf('await import("./server.bundle.mjs")');
-    expect(ensureDepsIdx,   "ensure-deps import statement missing").toBeGreaterThan(-1);
+    const selfHealIdx     = src.indexOf('if (!existsSync(resolve(__dirname, "cli.bundle.mjs"))');
+    const serverImportIdx = src.indexOf('await import("./server.bundle.mjs")');
+    const warmupCallIdx   = src.indexOf("warmRuntimeDependencies();", serverImportIdx);
     expect(selfHealIdx,     "cli.bundle.mjs self-heal block missing").toBeGreaterThan(-1);
     expect(serverImportIdx, "server.bundle.mjs await-import missing").toBeGreaterThan(-1);
-    // Self-heal must be between ensure-deps import and server import.
-    expect(selfHealIdx).toBeGreaterThan(ensureDepsIdx);
+    expect(warmupCallIdx,   "runtime dependency warmup call missing").toBeGreaterThan(-1);
+    // CLI shim self-heal must remain before server import, but dependency
+    // warmup must not block the MCP startup critical path.
     expect(selfHealIdx).toBeLessThan(serverImportIdx);
+    expect(warmupCallIdx).toBeGreaterThan(serverImportIdx);
   });
 
   // ── Algo-D4: plugin-cache integrity from package.json files[] ──
