@@ -69,6 +69,7 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
     userpromptsubmit: "hooks/userpromptsubmit.mjs",
   },
   "gemini-cli": {
+    beforeagent: "hooks/gemini-cli/beforeagent.mjs",
     beforetool: "hooks/gemini-cli/beforetool.mjs",
     aftertool: "hooks/gemini-cli/aftertool.mjs",
     precompress: "hooks/gemini-cli/precompress.mjs",

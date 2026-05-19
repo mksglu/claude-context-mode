@@ -25,6 +25,7 @@ import {
   mkdirSync,
   accessSync,
   chmodSync,
+  existsSync,
   constants,
 } from "node:fs";
 import { resolve, join } from "node:path";
