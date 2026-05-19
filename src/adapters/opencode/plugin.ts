@@ -32,6 +32,7 @@ import { buildResumeSnapshot } from "../../session/snapshot.js";
 import type { SessionEvent } from "../../types.js";
 import { AdapterPlatformType, OpenCodeAdapter } from "./index.js";
 import { PLATFORM_ENV_VARS } from "../detect.js";
+import { zod3ShapeToV4 } from "./zod3tov4.js";
 
 // Read package.json version once at module load (not on every hook call).
 // Used in the resume-injection visible signal so users can confirm in
@@ -424,9 +425,13 @@ async function createContextModePlugin(ctx: PluginContext) {
             ? (inputSchema._def.shape as () => unknown)()
             : {};
 
+      const argsForHost = platform === "kilo"
+        ? zod3ShapeToV4(shape as Record<string, unknown>)
+        : shape as Record<string, unknown>;
+
       tools[registered.name] = {
         description: String(config.description ?? ""),
-        args: shape as Record<string, unknown>,
+        args: argsForHost,
         async execute(args: Record<string, unknown>, toolCtx: NativeToolContext) {
           toolCtx.metadata?.({ title: String(config.title ?? registered.name) });
           const project = toolCtx.directory || projectDir;

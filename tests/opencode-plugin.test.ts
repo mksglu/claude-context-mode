@@ -103,6 +103,29 @@ describe("ContextModePlugin", () => {
       ]);
     });
 
+    it("converts tool args to Zod v4 when platform is kilo (#_zod.def fix)", async () => {
+      const prevKiloPid = process.env.KILO_PID;
+      process.env.KILO_PID = String(process.pid);
+      try {
+        const plugin = await createTestPlugin(join(tempDir, "kilo-zod-v4-args"));
+        expect(plugin).toHaveProperty("tool");
+        expect(Object.keys(plugin.tool ?? {}).length).toBeGreaterThan(0);
+
+        for (const [toolName, toolDef] of Object.entries(plugin.tool ?? {})) {
+          const args = (toolDef as any).args as Record<string, unknown>;
+          for (const [argName, argSchema] of Object.entries(args)) {
+            expect(
+              (argSchema as any)._zod,
+              `tool ${toolName} arg ${argName} missing _zod (Zod v4 marker)`,
+            ).toBeDefined();
+          }
+        }
+      } finally {
+        if (prevKiloPid !== undefined) process.env.KILO_PID = prevKiloPid;
+        else delete process.env.KILO_PID;
+      }
+    });
+
     it("ctx_stats native plugin tool executes without an MCP child (#574 smoke)", async () => {
       const projectDir = join(tempDir, "factory-native-tool-exec");
       const plugin = await createTestPlugin(projectDir);
