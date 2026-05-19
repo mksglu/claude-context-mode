@@ -386,7 +386,8 @@ import "./hooks/ensure-deps.mjs";
 // other missing-runtime-dep situation in that code path.
 {
   const NPM_INSTALL_BG_PKGS = ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"];
-  const NPM_BIN = process.platform === "win32" ? "npm.cmd" : "npm";
+  const IS_WIN32 = process.platform === "win32";
+  const NPM_BIN = IS_WIN32 ? "npm.cmd" : "npm";
   for (const pkg of NPM_INSTALL_BG_PKGS) {
     if (existsSync(resolve(__dirname, "node_modules", pkg))) continue;
     try {
@@ -397,7 +398,8 @@ import "./hooks/ensure-deps.mjs";
           cwd: __dirname,
           stdio: "ignore",
           detached: true,
-          shell: process.platform === "win32",
+          // npm on Windows ships as a `.cmd` shim — must go through cmd.exe.
+          shell: IS_WIN32,
         },
       );
       child.on("error", () => { /* best effort — npm missing, broken cache, etc. */ });
