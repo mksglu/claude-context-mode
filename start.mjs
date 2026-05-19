@@ -361,20 +361,40 @@ if (!process.env.VITEST) {
   } catch { /* best effort — never block server startup */ }
 }
 
-// Ensure native dependencies + ABI compatibility (shared with hooks via ensure-deps.mjs)
-// ensure-deps handles better-sqlite3 install + ABI cache/rebuild automatically (#148, #203)
-import "./hooks/ensure-deps.mjs";
-// Also install pure-JS deps used by server
-for (const pkg of ["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"]) {
-  if (!existsSync(resolve(__dirname, "node_modules", pkg))) {
-    try {
-      execSync(`npm install ${pkg} --no-package-lock --no-save --silent`, {
-        cwd: __dirname,
-        stdio: "pipe",
-        timeout: 120000,
-      });
-    } catch { /* best effort */ }
-  }
+function warmRuntimeDependencies() {
+  try {
+    const code = `
+      import { existsSync } from "node:fs";
+      import { execSync } from "node:child_process";
+      import { resolve } from "node:path";
+
+      const root = process.cwd();
+      try { await import("./hooks/ensure-deps.mjs"); } catch {}
+
+      for (const pkg of ${JSON.stringify(["turndown", "turndown-plugin-gfm", "@mixmark-io/domino"])}) {
+        if (!existsSync(resolve(root, "node_modules", pkg))) {
+          try {
+            execSync(\`\${process.platform === "win32" ? "npm.cmd" : "npm"} install \${pkg} --no-package-lock --no-save --silent\`, {
+              cwd: root,
+              stdio: "pipe",
+              timeout: 120000,
+              shell: true,
+            });
+          } catch {}
+        }
+      }
+    `;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], {
+      cwd: __dirname,
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        CONTEXT_MODE_BACKGROUND_BOOTSTRAP: "1",
+      },
+    });
+    child.unref();
+  } catch { /* best effort */ }
 }
 
 // Self-heal: create CLI shim if cli.bundle.mjs is missing (marketplace installs)
@@ -424,6 +444,7 @@ if (!process.env.VITEST) {
 // Bundle exists (CI-built) — start instantly
 if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {
   await import("./server.bundle.mjs");
+  warmRuntimeDependencies();
 } else {
   // Dev or npm install — full build
   if (!existsSync(resolve(__dirname, "node_modules"))) {
@@ -437,4 +458,5 @@ if (existsSync(resolve(__dirname, "server.bundle.mjs"))) {
     } catch { /* best effort */ }
   }
   await import("./build/server.js");
+  warmRuntimeDependencies();
 }
